@@ -495,7 +495,8 @@ def draw_cattotals(w, h, data):
     return im
 
 
-def main():
+def load_fonts():
+    """フォントを読み込みモジュールグローバルへ。layout/comparison 両プレビュー共通。"""
     global f_head, f_leg, f_lbl, f_sm, f_meta, f_pal
     f_head = ImageFont.truetype(FONT, 33)
     f_leg = ImageFont.truetype(FONT, 15)
@@ -503,6 +504,20 @@ def main():
     f_sm = ImageFont.truetype(FONT, 12)
     f_meta = ImageFont.truetype(FONT, 18)
     f_pal = ImageFont.truetype(FONT, 14)
+
+
+def draw_footer(cv, data):
+    """Analysis / Comparison 共通フッター。上部レイアウトを差し替えても使い回せる。
+    status帯(Req/Comp/Buff/DMA + パレット Prev/Current/Next + 3段タイムライン)と
+    カテゴリ合計バーを、共通の STATUS_XY / PAL_XY へ貼る。"""
+    st = draw_status(STATUS_W, STATUS_H, data)
+    cv.paste(st, STATUS_XY)
+    ct = draw_cattotals(PAL_W, PAL_H, data)
+    cv.paste(ct, PAL_XY)
+
+
+def main():
+    load_fonts()
 
     data = dummy_data()
     cv = Image.new("RGB", (CW, CH), BG)
@@ -557,12 +572,8 @@ def main():
     g = draw_graph(GRAPH_FRAME[2] - GRAPH_FRAME[0], GRAPH_FRAME[3] - GRAPH_FRAME[1], data)
     cv.paste(g, (GRAPH_FRAME[0], GRAPH_FRAME[1]))
 
-    # status帯(Req/Comp/Buff/DMA + メーター下にパレット Prev/Current/Next + タイムライン)
-    st = draw_status(STATUS_W, STATUS_H, data)
-    cv.paste(st, STATUS_XY)
-    # metricパネルの下: カテゴリ合計の横棒グラフ(旧パレット枠の位置)
-    ct = draw_cattotals(PAL_W, PAL_H, data)
-    cv.paste(ct, PAL_XY)
+    # 共通フッター(status帯 + カテゴリ合計バー)
+    draw_footer(cv, data)
 
     out = Path("tmp/layout_preview.png")
     out.parent.mkdir(exist_ok=True)
