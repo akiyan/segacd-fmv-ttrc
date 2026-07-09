@@ -40,8 +40,10 @@ from quantize_md_video import (  # noqa: E402
     rgb888_to_rgb333, rgb333_to_rgb888, run, prepare_dir, MD_LEVELS,
 )
 from quantize_global4_tiles import tile_blocks, build_palettes, pals_to_bytes, TILE  # noqa: E402
+from cbr_paths import sim_work_dir  # noqa: E402
 
-# 対象動画・寸法・fps は env で差し替え可(既定はサンプル動画)。別素材は CBRSIM_OUT で出力先も分離。
+# 対象動画・寸法・fps は env で差し替え可(既定はサンプル動画)。
+# CBRSIM_OUT を指定しない場合は videos/<stem>/tmp に出力する。
 SRC = os.environ.get("CBRSIM_SRC", "movies/disc1/061.mp4")
 # master(量子化入力)の抽出フィルタ。既定はディザ除去(拡大→平滑→縮小)。末尾は W:H に一致させる。
 DEDITHER_VF = os.environ.get("CBRSIM_MASTER_VF",
@@ -246,7 +248,7 @@ def segment_and_train(frames):
     return pals_arr, seg_pals, frame_seg, seg_bounds
 
 
-OUT = Path(os.environ.get("CBRSIM_OUT", "tmp/sim"))
+OUT = sim_work_dir()
 # 実機TTRCエンコード用の決定ログ出力先。既定off(mp4出力に一切影響しない・追加のみ)。
 # 毎フレームの「更新セル(cell,pal,key)」＋区間パレットを吐き、pack_streamが再生してTTRC化する。
 EMIT_DEC = os.environ.get("CBRSIM_EMIT_DEC", "")

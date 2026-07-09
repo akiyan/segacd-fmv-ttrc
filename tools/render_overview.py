@@ -3,13 +3,15 @@
 OUT/stats.npz と OUT/buffer_remaining.npz から作る。数値だけでなく「どの区間で何が起きたか」を見せる用。
 使い方: python3 tools/render_overview.py [出力png] [見出し文字列]
 """
-import os
 import sys
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-OUT = Path(os.environ.get("CBRSIM_OUT", "tmp/sim"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cbr_paths import sim_work_dir  # noqa: E402
+
+OUT = sim_work_dir()
 FONT = "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf"
 W = 1600                     # 画像幅
 HM_H, BUF_H = 340, 150       # ヒートマップ高 / Bufマップ高

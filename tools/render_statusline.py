@@ -10,12 +10,15 @@
   4) Timeline       : 全長ヒートマップ + 再生ヘッド、Time/Frame。
 各バーの幅は真下のラベル文字列の幅に合わせる。
 """
-import os
+import sys
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-OUT = Path(os.environ.get("CBRSIM_OUT", "tmp/sim"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cbr_paths import sim_work_dir  # noqa: E402
+
+OUT = sim_work_dir()
 STATUS = OUT / "status"
 CATLEG = OUT / "catleg"          # 右2段目の凡例+カウント(□Raw Same Dedup Buf)
 MISSLEG = OUT / "missleg"        # 右3段目の凡例+カウント(■Miss ■MissCarry)

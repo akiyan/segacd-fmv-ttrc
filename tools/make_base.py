@@ -9,11 +9,15 @@
 座標は compose_cbr_delta.sh と共有。
 """
 import os
+import sys
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cbr_paths import sim_work_dir  # noqa: E402
+
 FONT = "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf"
-OUT = Path(os.environ.get("CBRSIM_OUT", "tmp/sim"))
+OUT = sim_work_dir()
 CW, CH = 1920, 1080
 
 # --- レイアウト(frame=枠 [x0,y0,x1,y1]、動画は枠の内側に PAD だけ余白) ---

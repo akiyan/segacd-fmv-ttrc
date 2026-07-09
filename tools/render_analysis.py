@@ -10,7 +10,7 @@ sim 側(sim.py)や旧 compose(make_base/render_statusline/compose_*.sh)は使わ
                    buffer_remaining.npz/palettes.bin/audio_13k3_u8_mono.wav/report.txt)
   CBRSIM_SRCLABEL  右Sourceパネル見出し(既定 "Source")
   CBRSIM_MODE      画面モード H32/H40 (既定 H32。DMA理論値に使う)
-  ANALYSIS_OUT     出力mp4パス (既定 {CBRSIM_OUT}/analysis.mp4)
+  ANALYSIS_OUT     出力mp4パス (既定 videos/<stem>_analysis.mp4)
   ANALYSIS_CQ      h264_nvenc cq (既定 23)
 W/H/タイル数/表示アスペクト/諸元は sim 出力から自動導出。
 
@@ -28,8 +28,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).parent))
 import layout_preview as L
+from cbr_paths import artifact_path, sim_work_dir
 
-SIM = os.environ.get("CBRSIM_OUT", "tmp/sim")
+SIM = str(sim_work_dir())
 SRCLABEL = os.environ.get("CBRSIM_SRCLABEL", "Source")
 
 
@@ -63,7 +64,7 @@ def _source_spec():
 
 SRC_SPEC = _source_spec()
 MODE = os.environ.get("CBRSIM_MODE", "H32")
-OUT_MP4 = os.environ.get("ANALYSIS_OUT", f"{SIM}/analysis.mp4")
+OUT_MP4 = os.environ.get("ANALYSIS_OUT", str(artifact_path("analysis", sim_dir=SIM)))
 CQ = os.environ.get("ANALYSIS_CQ", "23")
 FRAMES_DIR = f"{SIM}/analysis_frames"
 AUDIO_STR = "13.3kHz mono 8bit PCM"          # 既定。sim出力(stats)にラベルがあればそれを使う

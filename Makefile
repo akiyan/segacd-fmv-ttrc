@@ -105,7 +105,7 @@ $(OUT_DIR)/CDCBENCH.cue: $(OUT_DIR)/CDCBENCH.iso
 
 # --- Phase A: H32 256x144 静止画レンダラ(描画土台検証, CD読み無し/CPU書き込みのみ) ---
 STILL256_DISC := $(OUT_DIR)/disc_still256
-STILL256_DATA ?= tmp/sim/still256.bin
+STILL256_DATA ?= $(shell python3 -c 'import sys; sys.path.insert(0, "tools"); from cbr_paths import sim_work_dir; print(sim_work_dir() / "still256.bin")')
 
 still256: check-tools $(OUT_DIR)/STILL256.iso $(OUT_DIR)/STILL256.cue
 

@@ -13,7 +13,7 @@
 入力(env):
   CMP_REAL   左パネルの実機録画 mp4 (256x192 想定, デバッグHUDあり)
   CMP_OUT    出力 mp4 (既定 videos/comparison.mp4)
-  CBRSIM_OUT フッター/右パネル用 sim ディレクトリ(既定 tmp/sim)
+  CBRSIM_OUT フッター/右パネル用 sim ディレクトリ(既定 videos/<stem>/tmp)
   CBRSIM_MODE フッターの画面モード(既定 mode4)
   CMP_FPS    サンプリング/出力 fps (既定 15)
   CMP_EMU    左パネル見出しの emulator 名/ver (既定 "(Genesis Plus GX 1.7.4)")
@@ -22,7 +22,6 @@ usage: python3 tools/render_comparison.py            # 全編→mp4
        python3 tools/render_comparison.py A B         # frame [A,B) だけPNG(検証用)
 """
 import os
-os.environ.setdefault("CBRSIM_OUT", "tmp/sim")
 os.environ.setdefault("CBRSIM_MODE", "mode4")
 
 import sys
@@ -32,8 +31,10 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).parent))
+from cbr_paths import sim_work_dir
+os.environ.setdefault("CBRSIM_OUT", str(sim_work_dir()))
 import layout_preview as L
-import render_analysis as R          # tmp/sim をロードし frame_data/draw_status_real/CAT_TOTALS を提供
+import render_analysis as R          # loads sim data for frame_data/draw_status_real/CAT_TOTALS
 import comparison_preview as CP       # CMP_L/CMP_R/TITLE_BASE/LABEL_BASE/SIDE など
 from read_frameno import read_frameno
 
@@ -45,7 +46,7 @@ TITLE = "SEGA-CD Tile Texture Reuse Codec: Real vs Ideal"
 
 WORK = Path(OUT_MP4).with_suffix("")
 FR_REAL = WORK / "real"; FR_OUT = WORK / "frames"
-SIMDIR = R.SIM                                          # tmp/sim
+SIMDIR = R.SIM
 SCREEN_W, SCREEN_H = R.SCREEN_W, R.SCREEN_H             # mode4 なら 256x192
 CONTENT_W, CONTENT_H = R.W, R.H                         # 256x144
 # sim preview を実機画面へ載せる縦位置。諸元からの計算値=画面中央配置(既定)。

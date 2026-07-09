@@ -32,6 +32,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sim as sim
 from sim import C_CELLS, TCOLS, TROWS, TILE, PATTERN_BYTES, AUDIO_RATE, FPS
+from cbr_paths import sim_work_dir
 
 SECTOR = 2048
 MAGIC = b"TTRC"             # Tile Texture Reuse Codec
@@ -419,14 +420,15 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dec-log", default="tmp/sim/decisions.pkl")
+    sim_dir = sim_work_dir()
+    ap.add_argument("--dec-log", default=str(sim_dir / "decisions.pkl"))
     ap.add_argument("--pool-slots", type=int, default=0)
     ap.add_argument("--alloc", choices=["lru", "contig"], default="contig",
                     help="スロット割当: contig=フレーム内cold連番(MD大DMA向け, 既定) / lru=旧方式")
     ap.add_argument("--output", default="out/movieplay/MOVIE.DAT")
     ap.add_argument("--audio", default="")
     ap.add_argument("--verify", action="store_true")
-    ap.add_argument("--compare", default="tmp/sim/preview")
+    ap.add_argument("--compare", default=str(sim_dir / "preview"))
     ap.add_argument("--no-write", action="store_true")
     args = ap.parse_args()
 

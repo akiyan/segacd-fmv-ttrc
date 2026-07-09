@@ -9,9 +9,9 @@ sim(sim.py)は解析フレーム用の素材(preview/ = オーバーレイ無し
 ffmpeg の pad+scale だけで完結(PILループ不要=速い)。
 
 env:
-  CBRSIM_OUT      sim出力ディレクトリ(既定 tmp/sim)。preview/ と audio_*.wav を使う
+  CBRSIM_OUT      sim出力ディレクトリ(既定 videos/<stem>/tmp)。preview/ と audio_*.wav を使う
   CBRSIM_MODE     画面モード H32/H40/mode4 (既定 H32)。画面サイズと PAR に使う
-  STRAIGHT_OUT    出力mp4 (既定 {CBRSIM_OUT}/sim_straight.mp4)
+  STRAIGHT_OUT    出力mp4 (既定 videos/<stem>_sim.mp4)
   STRAIGHT_SCALE  整数拡大率 (既定 4)
 
 usage: python3 tools/export_sim_video.py
@@ -26,11 +26,12 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 import layout_preview as L
+from cbr_paths import artifact_path, sim_work_dir
 
-SIM = os.environ.get("CBRSIM_OUT", "tmp/sim")
+SIM = str(sim_work_dir())
 MODE = os.environ.get("CBRSIM_MODE", "H32")
 SCALE = int(os.environ.get("STRAIGHT_SCALE", "4"))
-OUT = os.environ.get("STRAIGHT_OUT", f"{SIM}/sim_straight.mp4")
+OUT = os.environ.get("STRAIGHT_OUT", str(artifact_path("sim", sim_dir=SIM)))
 
 
 def main():

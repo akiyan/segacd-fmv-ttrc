@@ -14,10 +14,11 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cbr_paths import sim_work_dir
 import sim as sim
 from quantize_md_video import MD_LEVELS, rgb333_to_rgb888
 
-D = Path("tmp/sim")
+D = sim_work_dir()
 FRAME = int(sys.argv[1]) if len(sys.argv) > 1 else 900
 TCOLS, TROWS = 32, 18
 CELLS = TCOLS * TROWS

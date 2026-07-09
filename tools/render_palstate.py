@@ -3,19 +3,19 @@
 4行(PL0..PL3=CRAMの4面) × 3列(直前 / 現在 / 次 の区間パレット)。各列見出しに切替時刻(mm:ss)。
 現在列を黄枠で強調。暗転で区間別パレットが差し替わる様子が分かる。
 区間分割/パレット学習は sim と同じ segment_and_train を使う(env CBRSIM_DITHER/SEGPAL を合わせる)。"""
-import os
 import sys
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cbr_paths import sim_work_dir
 from sim import (segment_and_train, to_rgb333, flatten_low_detail,
                            assign_palette, idx_for, FPS)
 from quantize_global4_tiles import tile_blocks
 from quantize_md_video import rgb333_to_rgb888
 
-OUT = Path(os.environ.get("CBRSIM_OUT", "tmp/sim"))
+OUT = sim_work_dir()
 FONT = "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf"
 DST = OUT / "palstate"
 
