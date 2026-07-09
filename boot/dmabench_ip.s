@@ -4,7 +4,7 @@
  * 1VBLANK で「Main-RAM → VRAM」DMA に何ワード入るかを二分探索で測る。
  * 手順(fits): active→vblank の立ち上がりを待って即 X ワードDMA。DMA完了後に
  * まだ vblank 中なら「その vblank に収まった」。X を二分探索して最大語数を求める。
- * 結果を右下にフォント表示: W=語/vblank T=タイル/vblank(=W/16) F=タイル/コマ(3.3vblank換算)。
+ * 結果を左上にフォント表示: W=語/vblank F=タイル/コマ(3vblank換算)。
  *
  * モード: --defsym MODE=0(H32,既定) / 1(H40) / 2(mode4=SMS)。Makefile の dmabench-<mode> から。
  */
@@ -14,11 +14,12 @@
 .equ BIOS_CLEAR_VRAM,            0x000002A0
 .equ BIOS_VDP_DISP_ENABLE,       0x000002D8
 .equ SRC, 0x00FF4000			/* Main-RAM テスト源(内容不問, タイミングのみ) */
+.equ DMA_DST, 0x2000			/* フォント/NTを壊さない測定用VRAM先 */
 .equ DBGFONT_VTILE, 1
 .equ DBGFONT_VADDR, 1*32
 .equ DBGFONT_N, 27
 .equ NT, 0xC000				/* nametable */
-.equ HI0, 4000				/* 二分探索上限(<2vblank) */
+.equ HI0, 9000				/* 二分探索上限(mode4理論値も超える値) */
 
 .ifndef MODE
 .equ MODE, 0
@@ -35,11 +36,17 @@ ip_entry:
 	lea	0x00FFFD00, sp
 	jsr	BIOS_LOAD_DEFAULT_VDP_REGS
 	jsr	BIOS_CLEAR_VRAM
-	/* 表示モード */
+	/* 表示モード。BIOS_VDP_DISP_ENABLE は reg1 を戻し得るので使わない。 */
 .if MODE == 1
 	move.w	#0x8C81, (VDP_CTRL).l		/* reg12 H40 */
 .elseif MODE == 2
-	move.w	#0x8C00, (VDP_CTRL).l		/* reg12 H32(mode4はH32相当) */
+	move.w	#0x8006, (VDP_CTRL).l		/* SMS reg0: M4+M3, 192-line mode4 */
+	move.w	#0x81E0, (VDP_CTRL).l		/* SMS reg1: display+vint, M1/M2=0 */
+	move.w	#0x82FF, (VDP_CTRL).l		/* SMS NT base = 0x3800 */
+	move.w	#0x83FF, (VDP_CTRL).l		/* SMS color mask normal */
+	move.w	#0x84FF, (VDP_CTRL).l		/* SMS pattern mask normal */
+	move.w	#0x85FF, (VDP_CTRL).l		/* SMS sprite attr mask normal */
+	move.w	#0x86FF, (VDP_CTRL).l		/* SMS sprite pattern mask normal */
 .else
 	move.w	#0x8C00, (VDP_CTRL).l		/* reg12 H32 */
 .endif
@@ -58,12 +65,9 @@ ip_entry:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
 	/* 表示ON + DMA許可 */
-.if MODE == 2
-	move.w	#0x8144, (VDP_CTRL).l		/* reg1: disp on+DMA, M5=0(mode4) */
-.else
+.if MODE != 2
 	move.w	#0x8174, (VDP_CTRL).l		/* reg1: disp on+vint+DMA+M5 */
 .endif
-	jsr	BIOS_VDP_DISP_ENABLE
 
 	/* 二分探索: lo=収まる最大, hi=収まらない最小 */
 	moveq	#0, d4				/* lo */
@@ -86,6 +90,12 @@ bs_loop:
 	move.w	d6, d5				/* not -> hi=mid */
 	bra	bs_loop
 bs_done:
+	/* true mode4 ではMDフォント/NTが読めないので、結果表示だけH32 mode5へ戻す。 */
+	move.w	#0x8004, (VDP_CTRL).l
+	move.w	#0x8174, (VDP_CTRL).l
+	move.w	#0x8C00, (VDP_CTRL).l
+	move.w	#0x9001, (VDP_CTRL).l
+	move.w	#0x8230, (VDP_CTRL).l
 	/* 結果表示: d4 = 最大語/vblank。行間はプレーン64幅=128バイト。 */
 	move.w	d4, d7				/* W */
 	/* 行2: W xxxx = 語/vblank */
@@ -154,8 +164,17 @@ dma_words:
 	move.w	#0x9700, d1
 	or.b	d2, d1
 	move.w	d1, (VDP_CTRL).l
-	move.w	#0x4000, (VDP_CTRL).l		/* dst=0 VRAM書込 */
-	move.w	#0x0080, (VDP_CTRL).l		/* CD5起動 */
+	move.l	#DMA_DST, d2			/* dst コマンド(VRAM書込+CD5起動) */
+	move.l	d2, d1
+	andi.w	#0x3FFF, d1
+	ori.w	#0x4000, d1
+	move.w	d1, (VDP_CTRL).l
+	move.l	d2, d1
+	lsr.l	#8, d1
+	lsr.l	#6, d1
+	andi.w	#0x0003, d1
+	ori.w	#0x0080, d1
+	move.w	d1, (VDP_CTRL).l
 1:
 	move.w	(VDP_CTRL).l, d1
 	btst	#1, d1

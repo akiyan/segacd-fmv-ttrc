@@ -133,27 +133,31 @@ $(OUT_DIR)/STILL256.cue: $(OUT_DIR)/STILL256.iso
 # 使い方: make dmabench DMABENCH_MODE=0|1|2  (0=H32, 1=H40, 2=mode4)
 # 右下に W=語/vblank T=タイル/vblank F=タイル/コマ(3vblank換算) を表示。結果は BUDGETS.md 参照。
 DMABENCH_MODE ?= 0
-dmabench: check-tools $(OUT_DIR)/DMABENCH.iso $(OUT_DIR)/DMABENCH.cue
+DMABENCH_TAG := mode$(DMABENCH_MODE)
+dmabench: check-tools $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).iso $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).cue
+	@cp $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).iso $(OUT_DIR)/DMABENCH.iso
+	@cp $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).cue $(OUT_DIR)/DMABENCH.cue
 
-$(OUT_DIR)/dmabench_ip.o: $(BOOT_DIR)/dmabench_ip.s $(BOOT_DIR)/security.bin $(BOOT_DIR)/dbgfont.bin | setup
+$(OUT_DIR)/dmabench_ip_$(DMABENCH_TAG).o: $(BOOT_DIR)/dmabench_ip.s $(BOOT_DIR)/security.bin $(BOOT_DIR)/dbgfont.bin | setup
 	$(AS) $(ASFLAGS) --defsym MODE=$(DMABENCH_MODE) -I$(BOOT_DIR) $< -o $@
 
-$(OUT_DIR)/dmabench_ip.bin: $(OUT_DIR)/dmabench_ip.o
+$(OUT_DIR)/dmabench_ip_$(DMABENCH_TAG).bin: $(OUT_DIR)/dmabench_ip_$(DMABENCH_TAG).o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/ip.ld -o $@ $<
 
-$(OUT_DIR)/dmabench_boot.bin: $(OUT_DIR)/dmabench_ip.bin $(OUT_DIR)/cdcbench_sp.bin $(BOOT_DIR)/dmabench_boot.s
-	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $(BOOT_DIR)/dmabench_boot.s -o $(OUT_DIR)/dmabench_boot.out
-	$(OBJCOPY) -O binary $(OUT_DIR)/dmabench_boot.out $@
+$(OUT_DIR)/dmabench_boot_$(DMABENCH_TAG).bin: $(OUT_DIR)/dmabench_ip_$(DMABENCH_TAG).bin $(OUT_DIR)/cdcbench_sp.bin $(BOOT_DIR)/dmabench_boot.s
+	cp $(OUT_DIR)/dmabench_ip_$(DMABENCH_TAG).bin $(OUT_DIR)/dmabench_ip.bin
+	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $(BOOT_DIR)/dmabench_boot.s -o $(OUT_DIR)/dmabench_boot_$(DMABENCH_TAG).out
+	$(OBJCOPY) -O binary $(OUT_DIR)/dmabench_boot_$(DMABENCH_TAG).out $@
 
-$(OUT_DIR)/DMABENCH.iso: $(OUT_DIR)/dmabench_boot.bin
+$(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).iso: $(OUT_DIR)/dmabench_boot_$(DMABENCH_TAG).bin
 	@mkdir -p $(OUT_DIR)/disc_dmabench
 	@printf "dmabench\n" > $(OUT_DIR)/disc_dmabench/README.TXT
-	@rm -f $@ $(OUT_DIR)/DMABENCH.cue
+	@rm -f $@ $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).cue
 	$(MKISOFS) -iso-level 1 -G $< -pad -V "DMABENCH" -o $@ $(OUT_DIR)/disc_dmabench
 
-$(OUT_DIR)/DMABENCH.cue: $(OUT_DIR)/DMABENCH.iso
+$(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).cue: $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).iso
 	@rm -f $@
-	@printf 'FILE "DMABENCH.iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
+	@printf 'FILE "DMABENCH_$(DMABENCH_TAG).iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
 
 # --- Phase B2: 差分ストリーム再生(単バッファ, MOVIE.DAT を連続供給) ---
 # MOVIE.DAT/palettes.bin は事前に: python3 tools/pack_stream.py --frames N --raw-dir out/movieplay

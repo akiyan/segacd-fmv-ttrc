@@ -12,8 +12,9 @@ choosing encoder targets. Numbers are estimates for NTSC 60 Hz playback.
 - CD rate: 150 KiB/s = 153,600 bytes/s.
 - Audio: 22.05 kHz mono ADPCM at 4 bits/sample = 11,025 bytes/s.
 - Raw video CD budget after audio: 142,575 bytes/s.
-- DMA bytes per VBlank use the current analysis constants from
-  `tools/layout_preview.py`: `bpl * (262 - active_lines)`.
+- DMA bytes per VBlank in the first table are theory estimates from
+  `tools/layout_preview.py`: `bpl * (262 - active_lines)`. The measured table
+  below is the one to use when choosing safe player limits.
 - DMA tile counts below use pattern bytes only: `floor(bytes / 32)`. Name-table
   DMA still needs to be budgeted separately in a real frame.
 - H40's exact full-width 16:9 height is 180 pixels, which is 22.5 tile rows.
@@ -34,6 +35,11 @@ choosing encoder targets. Numbers are estimates for NTSC 60 Hz playback.
 | H40 | 224 | 38 | 205 | 7,790 | 243 |
 | H32 | 224 | 38 | 167 | 6,346 | 198 |
 | mode4 | 192 | 70 | 167 | 11,690 | 365 |
+
+The mode4 row is only a theory estimate for a 192-line SMS-style display. It is
+not a confirmed Main-RAM to VRAM DMA budget. True SMS Mode 4 changes the meaning
+of VDP registers; in particular, the bit used as DMA enable in Mode 5 is a
+height-mode bit in SMS Mode 4.
 
 ## DMA Update Budget Per Video Frame
 
@@ -75,10 +81,15 @@ is lenient and over-reports.
 
 | Mode  | W (words/VBlank) | tiles/VBlank (W/16) | note |
 |-------|------------------|---------------------|------|
-| H32   | 0x0F98 = 3992    | 249                 | |
-| H40   | 0x0F98 = 3992    | 249                 | same as H32 (VBlank has no active rendering) |
-| mode4 | 0x0F98 = 3992    | 249                 | **suspect** — the harness set reg1 M5=0 but did not switch to 192-line SMS timing, so it measured H32-equivalent blanking. mode4's longer blanking (theory: 365) is unconfirmed. TODO: real mode4 line-count setup. |
+| H32   | 0x0BA6 = 2982    | 186                 | `out/DMABENCH_mode0.cue`, screenshot `tmp/dmabench_h32_sheet.jpg` |
+| H40   | 0x0E50 = 3664    | 229                 | `out/DMABENCH_mode1.cue`, screenshot `tmp/dmabench_h40_seq_sheet.jpg` |
+| mode4 | invalid          | invalid             | `out/DMABENCH_mode2.cue` enters true SMS Mode 4, but the Main-RAM to VRAM DMA/result-display path does not produce a readable result in GPGX. Do not reuse the H32/H40 budget for mode4. |
 | *ares* | TBD             | TBD                 | run the ISO to fill in |
+
+The earlier GPGX result `0x0F98` for every mode was invalid. The old harness
+used `reg1 = 0x8144` for mode4: that left Mode 5 selected, did not enable Mode 5
+DMA, and was followed by a BIOS display-enable call that could restore register
+1 anyway. It was measuring a Mode 5-like setup, not true 192-line SMS Mode 4.
 
 ### The real limit is the pipeline, not raw DMA
 
@@ -108,7 +119,10 @@ later frame). Conservative start pending ares testing: **~400 cold tiles/frame**
 (below the observed glitch threshold, above the common ~260 load). The debug
 overlay `M` (Miss) shows the deferred count in capped sections.
 
-`boot/movieplay_ip.s` `VBLANK_DMA_WORDS` = 2800 (margin below the ~3992 GPGX
-ceiling so a DMA never spills into active display, which corrupts on strict
-emulators/hardware). Re-check against the ares `dmabench` value.
+`boot/movieplay_ip.s` `VBLANK_DMA_WORDS` = 2800. This is below the H32 GPGX
+ceiling of 2982 words/VBlank and below the H40 GPGX ceiling of 3664
+words/VBlank. Re-check against the ares `dmabench` value before raising it.
 
+For future mode4 player work, first decide whether the player is using true SMS
+Mode 4 or a Mode 5 layout shaped like 256x192. If it is true SMS Mode 4, prove
+the VRAM update path separately; do not assume the Mode 5 DMA budget applies.
