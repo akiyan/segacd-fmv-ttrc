@@ -35,15 +35,17 @@
 
 /* --- PRG-RAM レイアウト(program 0x6000〜, <0x1000) --- */
 /* 0x6800-0x8000 は連続読み中にBIOSが踏む(実証)。0x8000以上は安全(マーカー実証)。 */
-.equ ROUTING,     0x00008000        /* routing table(3sec=6KB) 0x8000-0x9800 */
+.equ ROUTING,     0x00075000        /* routing table(最大8KB=4096フレーム) 0x75000-0x77000
+                                       旧0x8000-0x9800(6KB)は3072フレームまでしか入らないため
+                                       安全な高位PRGへ移設(0x9800-0xC000はBIOSが踏むので拡張不可) */
 .equ ISO_BUF,     0x00007000        /* ISO初期化用(streaming前のみ・BIOS領域を一時利用) */
 .equ SP_STACK,    0x0007FF00        /* スタック最上位(apply端0x7F800の上, 1.8KB) */
 /* 0x9800-0xC000は連続読み中にBIOSが踏む(回収を試みたら化けた)。RINGは0xC000から。 */
 .equ RING_BASE,   0x0000C000
 .equ RING_SIZE,   0x00069000        /* 420KB(全機能ON tank414のdecode peak<=410KB向け) */
 .equ RING_END,    RING_BASE+RING_SIZE     /* 0x75000 */
-.equ APPLY_BASE,  0x00075000
-.equ APPLY_SIZE,  0x0000A800        /* 42KB(16KBは頭詰まり→滑りを実測) */
+.equ APPLY_BASE,  0x00077000        /* routing(8KB)の直後 */
+.equ APPLY_SIZE,  0x00008800        /* 34KB(16KBは頭詰まり→滑りを実測。42KB→34KBはrouting移設分) */
 .equ APPLY_END,   APPLY_BASE+APPLY_SIZE   /* 0x7F800 */
 
 /* --- Word-RAM スクラッチ(SPバンク内, 毎フレーム再利用=スワップ影響なし) --- */
@@ -51,18 +53,18 @@
 .equ PAD_SCR,     0x000D2000        /* pad セクタ捨て場 */
 
 /* --- Word-RAM 出力(MDが読む) ---
-   H40(最大720セル)対応: loads は最大 720*32B+ランヘッダ ≈ 24.5KB。
-   O_LOADS を 0x84..0x7000(約28.4KB) に拡大し、以降を上へ移動(MD側と一致必須)。 */
+   フル画面H40(最大1120セル)対応: loads は最大 1120*32B+ランヘッダ ≈ 36.5KB。
+   O_LOADS を 0x84..0x9800(約38.8KB) に拡大(MD側と一致必須)。upds=1120*4B。 */
 .equ O_PALW,   SUB_BANK_1M+0x0000
 .equ O_CRAM,   SUB_BANK_1M+0x0002
 .equ O_NLOAD,  SUB_BANK_1M+0x0082
 .equ O_LOADS,  SUB_BANK_1M+0x0084
-.equ O_NUPD,   SUB_BANK_1M+0x7000
-.equ O_UPDS,   SUB_BANK_1M+0x7002
-.equ O_SLIP,   SUB_BANK_1M+0x7F00   /* slip_count(旧0x5F00) */
-.equ O_DBG,    SUB_BANK_1M+0x7F02   /* 22Bデバッグブロック転写先(raw,same,near,coa,flbk,buf,miss,予約4)
+.equ O_NUPD,   SUB_BANK_1M+0x9800
+.equ O_UPDS,   SUB_BANK_1M+0x9802
+.equ O_SLIP,   SUB_BANK_1M+0xAF00   /* slip_count */
+.equ O_DBG,    SUB_BANK_1M+0xAF02   /* 22Bデバッグブロック転写先(raw,same,near,coa,flbk,buf,miss,予約4)
                                        control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
-.equ O_HDR,    SUB_BANK_1M+0x7F80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
+.equ O_HDR,    SUB_BANK_1M+0xAF80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
 
 /* --- RF5C164 PCM (13.3kHz) --- */
 .equ AUDIO_BYTES, 887

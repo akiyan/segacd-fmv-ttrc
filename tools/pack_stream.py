@@ -215,7 +215,7 @@ def run_stats(per):
     # SPのラン形式ロード領域(Word-RAM 0x84..0x7000=28540B)に収まるか:
     # 1ラン = slot(2)+count(2)+count*32B
     loads_bytes = colds_per_frame * PAT + runs_per_frame * 4
-    O_LOADS_CAP = 0x7000 - 0x84
+    O_LOADS_CAP = 0x9800 - 0x84
     if int(loads_bytes.max()) > O_LOADS_CAP:
         print(f"  !! loads領域あふれ: 最大{int(loads_bytes.max())}B > {O_LOADS_CAP}B "
               f"(frame {int(loads_bytes.argmax())})")

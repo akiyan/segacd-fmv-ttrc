@@ -99,7 +99,7 @@ ip_entry:
 
 	/* frame0準備完了=バンクにヘッダ写し(O_HDR)がある。mode/tcols/trows/pool/base を読み
 	   モード依存のVDP設定と実行時変数を確定する(汎用化: H32/H40, mode4は将来) */
-	lea	(PROBE_BANK+0x7F80), a0
+	lea	(PROBE_BANK+0xAF80), a0
 	move.w	8(a0), md_tcols
 	move.w	10(a0), md_trows
 	move.w	14(a0), d1			/* pool */
@@ -198,9 +198,12 @@ bf_stage:
 	lsl.w	#4, d1				/* len words = count*16 */
 	move.w	d1, (a2)+			/* 表: len */
 	move.l	a0, (a2)+			/* 表: src(Word-RAM内パターン先頭) */
-	move.w	d6, d2				/* a0 をパターン分スキップ(count*32B) */
-	lsl.w	#5, d2
-	adda.w	d2, a0
+	moveq	#0, d2				/* a0 をパターン分スキップ(count*32B)。
+					   count>=1024でword演算は符号あふれ(adda.wは
+					   符号拡張)するため必ずlongで行う */
+	move.w	d6, d2
+	lsl.l	#5, d2
+	adda.l	d2, a0
 	addq.w	#1, d4
 	sub.w	d6, d7
 	bne	bf_stage
@@ -209,7 +212,7 @@ bf_none:
 	move.w	d4, n_runs			/* このフレームのDMAラン数(0可) */
 bf_upd:
 	/* シャドウへ反映 shadow[cell]=entry。n_upd @ +0x7000, upds @ +0x7002 */
-	lea	(PROBE_BANK+0x7000), a0
+	lea	(PROBE_BANK+0x9800), a0
 	move.w	(a0)+, d7			/* n_upd */
 	beq	bf_blit
 	subq.w	#1, d7
@@ -318,7 +321,7 @@ bf_doflip:
 	move.w	d0, (VDP_CTRL).l
 	eori.w	#1, back_idx			/* 裏を反転 */
 	/* 滑りインジケータ: SPが検出した滑り回数>0なら枠を赤に */
-	move.w	(PROBE_BANK+0x7F00).l, d0
+	move.w	(PROBE_BANK+0xAF00).l, d0
 	beq	1f
 	move.l	#0xC0000000, (VDP_CTRL).l
 	move.w	#0x000E, (VDP_DATA).l
@@ -580,31 +583,31 @@ render_dbg:
 	bsr	dbg_put_row
 	move.w	#2*128+7*2, d2			/* R raw */
 	move.w	#16, d3
-	move.w	(PROBE_BANK+0x7F02).l, d4
+	move.w	(PROBE_BANK+0xAF02).l, d4
 	bsr	dbg_put_row
 	move.w	#2*128+13*2, d2			/* S same */
 	move.w	#23, d3
-	move.w	(PROBE_BANK+0x7F02+2).l, d4
+	move.w	(PROBE_BANK+0xAF02+2).l, d4
 	bsr	dbg_put_row
 	move.w	#2*128+19*2, d2			/* N near */
 	move.w	#27, d3
-	move.w	(PROBE_BANK+0x7F02+4).l, d4
+	move.w	(PROBE_BANK+0xAF02+4).l, d4
 	bsr	dbg_put_row
 	move.w	#2*128+25*2, d2			/* C coa */
 	move.w	#12, d3
-	move.w	(PROBE_BANK+0x7F02+6).l, d4
+	move.w	(PROBE_BANK+0xAF02+6).l, d4
 	bsr	dbg_put_row
 	move.w	#3*128+1*2, d2			/* L flbk */
 	move.w	#21, d3
-	move.w	(PROBE_BANK+0x7F02+8).l, d4
+	move.w	(PROBE_BANK+0xAF02+8).l, d4
 	bsr	dbg_put_row
 	move.w	#3*128+7*2, d2			/* B buf */
 	move.w	#11, d3
-	move.w	(PROBE_BANK+0x7F02+10).l, d4
+	move.w	(PROBE_BANK+0xAF02+10).l, d4
 	bsr	dbg_put_row
 	move.w	#3*128+13*2, d2			/* M miss */
 	move.w	#18, d3
-	move.w	(PROBE_BANK+0x7F02+12).l, d4
+	move.w	(PROBE_BANK+0xAF02+12).l, d4
 	bsr	dbg_put_row
 	move.w	#3*128+19*2, d2			/* P 区間 */
 	move.w	#19, d3
