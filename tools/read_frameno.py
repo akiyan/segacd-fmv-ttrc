@@ -31,7 +31,7 @@ _HEX = {
 }
 _T = {v: np.array([[1.0 if c == "#" else 0.0 for c in r] for r in rows]) for v, rows in _HEX.items()}
 
-X_F = 8                      # "F" の左端x(実測)
+X_F = 8                      # "F" の左端x(旧H32録画の実測)
 DIGX = [16, 24, 32, 40]      # 直後4桁のx
 _Fg = _T[0xF]
 
@@ -42,13 +42,17 @@ def _ncc(a, b):
     return float((a * b).sum() / d) if d > 1e-6 else -1.0
 
 
-def _calib_y(gray):
-    best, by = -2.0, 10
-    for y in range(4, 16):
-        s = _ncc(gray[y:y + 8, X_F:X_F + 8].astype(float), _Fg)
-        if s > best:
-            best, by = s, y
-    return by, best
+def _calib_origin(gray):
+    best, bx, by = -2.0, X_F, 10
+    h, w = gray.shape[:2]
+    # H32 captures used x=8; native H40 captures put the HUD at x=0. Search a
+    # small top-left window so both layouts work without per-mode constants.
+    for y in range(0, min(17, h - 7)):
+        for x in range(0, min(17, w - 39)):
+            s = _ncc(gray[y:y + 8, x:x + 8].astype(float), _Fg)
+            if s > best:
+                best, bx, by = s, x, y
+    return bx, by, best
 
 
 def read_frameno(img):
@@ -59,10 +63,10 @@ def read_frameno(img):
         gray = np.asarray(img)
         if gray.ndim == 3:
             gray = gray.mean(axis=2)
-    y, fconf = _calib_y(gray)
+    x0, y, fconf = _calib_origin(gray)
     val = 0
     minsc = 2.0
-    for x in DIGX:
+    for x in [x0 + 8, x0 + 16, x0 + 24, x0 + 32]:
         cell = gray[y:y + 8, x:x + 8].astype(float)
         best, bv = -2.0, 0
         for v, t in _T.items():

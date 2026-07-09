@@ -17,7 +17,7 @@ control block: >H total_len >H n_upd >B pal >B dbg [DEBUG if dbg] [128 CRAM if p
                ceil(cells/8) bitmap n_upd*(>H entry) 887 audio [pad偶数]
   dbg=1 のとき諸元ヘッダ直後に固定長DEBUGブロック(前方固定=新プレイヤーは固定offsetで一発読み):
   7×>H カテゴリ数[raw,same,near,coa,flbk,buf,miss] + 4×>H 予約 = 22B(偶数)。
-  既定ON(CBRSIM_PACK_DEBUG=0 で無効=リリース時は載せない)。
+  既定OFF(CBRSIM_PACK_DEBUG=1 で有効=デバッグ時だけ載せる)。
 """
 import argparse
 import os
@@ -229,8 +229,8 @@ def build_control(log, per, n_upd, pal_w, audio_path):
     seg_cram = [pals_to_bytes_128(p) for p in log["seg_pals"]]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
     cats_list = log.get("cats")                     # per-frame [raw,same,near,coa,flbk,buf,miss]
-    # デバッグ欄: 既定ON(catsがあれば)。CBRSIM_PACK_DEBUG=0 でリリース向けに省略(実効Band節約)。
-    dbg_on = bool(cats_list) and os.environ.get("CBRSIM_PACK_DEBUG", "1") != "0"
+    # デバッグ欄: 既定OFF。CBRSIM_PACK_DEBUG=1 でデバッグ向けに載せる。
+    dbg_on = bool(cats_list) and os.environ.get("CBRSIM_PACK_DEBUG", "0") == "1"
     aud = b""
     if audio_path:
         raw = Path(audio_path).read_bytes()

@@ -65,11 +65,11 @@ in its debug HUD:
 - `tools/read_frameno.py` reads the leading `F<hex>` field from the emulator
   frame by template-matching the 8x8 debug font (`gen_debugfont.py` glyphs) with
   normalized cross-correlation.
-- Because playback is steady (constant offset, verified), the renderer does not
-  read every frame; it finds the **head offset** once
-  (`offset = median(k - F)` over confident reads) and uses `F = k - offset`. This
-  advances the right panel and the footer smoothly, one frame at a time (same
-  update cadence as the analysis overlay), with no stutter.
+- `tools/find_comparison_sync.py` finds the real recording frame where the HUD
+  shows `F0000`. The renderer uses that as the exact anchor
+  (`CMP_F0_REAL_FRAME` can override it) and maps `ideal_frame = k - F0000_k`,
+  with confident OCR reads used to follow sampled frames that are held or skipped
+  by the 60fps-to-15fps extraction phase.
 - The footer for output frame `k` is drawn from sim frame `F`, so the picture,
   the category map data, and the meters are all the same movie frame.
 
@@ -109,6 +109,8 @@ sim (tools/sim.py) --> tools/pack_stream.py --> disc --> emulator recording
 - `tools/comparison_preview.py` — dummy-data layout preview (the layout source).
 - `tools/render_comparison.py` — real-data full render + 2-track mux.
 - `tools/read_frameno.py` — reads the movie frame number from the emulator HUD.
+- `tools/find_comparison_sync.py` — reports the `F0000` real-frame anchor for a
+  recording or extracted PNG directory.
 - `tools/export_sim_video.py` — writes a straight sim video (video+audio, no
   overlay); a standalone clean "Encoder ideal output" clip.
 
@@ -120,6 +122,11 @@ side-by-side, `videos/<stem>_sim.mp4` for the straight sim clip,
 
 ## Known limitations / TODO
 
+- **Start marker (planned):** release comparison should not depend on the debug
+  HUD. The player should show an easy-to-detect marker on the last frame before
+  movie playback starts, and `render_comparison.py` should sync from that marker.
+  Once that exists, the debug HUD can remain off by default and streams can be
+  packed without debug blocks by default.
 - **Panel geometry (deferred):** the emulator's display mode / overscan geometry
   differs from the sim, so placing the 256x144 ideal content onto the Sega CD
   screen to match the recording exactly is not yet a clean spec-only calculation.

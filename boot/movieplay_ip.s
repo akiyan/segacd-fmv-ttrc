@@ -41,8 +41,8 @@
 /* デバッグオーバーレイ: フォントは予約VRAM(プール1360の直上 tile1361)。 */
 .equ DBGFONT_N, 28			/* dbgfont.bin のタイル数 */
 /* フォントVRAM位置はヘッダの base+pool 直上を実行時に計算(md_font_vtile/md_font_addr) */
-/* デバッグビルドが既定。make movieplay RELEASE=1 でオーバーレイ一式を除去
-   (ストリーム側は CBRSIM_PACK_DEBUG=0 でデバッグ欄なしを生成=完全リリース) */
+/* リリースビルドが既定。make movieplay DEBUG=1 でオーバーレイ一式を有効化
+   (ストリーム側は CBRSIM_PACK_DEBUG=1 でデバッグ欄ありを生成) */
 .equ DBG_COL, 20			/* 右下オーバーレイの左端セル列 */
 .equ DBG_STAGE, 0x00FFA000		/* フォント色替えのステージ(Main-RAM) */
 /* 1VBLANKで安全に転送できる語数はモード別(md_vbudget)。実測(dmabench)に基づき保守的に。
@@ -129,7 +129,7 @@ ip_entry:
 	lsr.w	#1, d2
 	move.w	d2, md_row0
 	/* デバッグフォントをフォントVRAM位置へCPUロード(pal_write時にB案で色替え) */
-.ifndef RELEASE
+.ifdef DEBUG
 	move.l	md_font_addr, d0
 	bsr	set_vram_write
 	lea	dbgfont, a0
@@ -259,7 +259,7 @@ bf_bw:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
 	addq.w	#1, dbg_seg			/* 区間++ (pal_write=区間境界) */
-.ifndef RELEASE
+.ifdef DEBUG
 	bsr	dbg_setbright			/* B案: 最明色でフォント色替え */
 .endif
 bf_dma:
@@ -301,7 +301,7 @@ bf_chunk:
 	subq.w	#1, d4
 	bne	bf_run_lp
 bf_flip:
-.ifndef RELEASE
+.ifdef DEBUG
 	bsr	render_dbg			/* 上黒帯にデバッグ指標を描画(裏バッファ, flip直前) */
 .endif
 	move.l	d5, d0

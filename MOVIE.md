@@ -138,8 +138,8 @@ by 22) if it does not use it.
 | 14  | 8    | reserved  | 4 x u16 reserved for future 16-bit debug values (zero) |
 
 The seven category counts always sum to the cell count. Whether the block is
-emitted is an encoder setting (`tools/pack_stream.py`: on by default, off with
-`CBRSIM_PACK_DEBUG=0`); a release stream can drop it to save CD bandwidth
+emitted is an encoder setting (`tools/pack_stream.py`: off by default, on with
+`CBRSIM_PACK_DEBUG=1`); release streams omit it to save CD bandwidth
 (22 bytes/frame).
 
 **Update entry** (2 bytes each), one per set bit in the bitmap, in ascending

@@ -15,6 +15,7 @@
   CMP_OUT    出力 mp4 (既定 videos/comparison.mp4)
   CBRSIM_OUT フッター/右パネル用 sim ディレクトリ(既定 videos/<stem>/tmp)
   CBRSIM_MODE フッターの画面モード(既定 mode4)
+  CMP_F0_REAL_FRAME 実機抽出フレーム内の F0000 表示フレーム番号(未指定なら自動検出)
   CMP_FPS    サンプリング/出力 fps (既定 15)
   CMP_EMU    左パネル見出しの emulator 名/ver (既定 "(Genesis Plus GX 1.7.4)")
 
@@ -64,18 +65,48 @@ def extract(mp4, outdir):
     return sorted(glob.glob(str(outdir / "*.png")))
 
 
-def build_fseq(real_pngs):
-    """頭出しのみ: 高信頼な複数フレームから offset を求め F=k-offset で滑らかに割り当てる。
-    実機は本編15fps安定(offset一定を実測確認)なので、毎フレーム読む必要はなく、これで
-    右パネル+フッターが毎フレーム滑らかに進む(analysisと同じ更新頻度・カクつき無し)。"""
-    import numpy as np
-    offs = []
+def read_real_fnums(real_pngs):
+    vals = []
     for k, p in enumerate(real_pngs):
         val, conf = read_frameno(Image.open(p))
-        if conf >= 0.6 and 0 < val < R.NF:
-            offs.append(k - val)                          # この実機フレームの頭出しオフセット
-    off = int(np.median(offs)) if offs else 0
-    return [max(0, min(k - off, R.NF - 1)) for k in range(len(real_pngs))]
+        ok = conf >= 0.6 and 0 <= val < R.NF
+        vals.append((val, conf, ok))
+    return vals
+
+
+def find_f0000_anchor(reads):
+    explicit = os.environ.get("CMP_F0_REAL_FRAME", "").strip()
+    if explicit:
+        return int(explicit)
+    for k, (val, _conf, ok) in enumerate(reads):
+        if not ok or val != 0:
+            continue
+        future = reads[k + 1:k + 8]
+        if any(ok2 and 1 <= val2 <= 2 for val2, _conf2, ok2 in future):
+            return k
+    for k, (val, _conf, ok) in enumerate(reads):
+        if ok and 1 <= val <= 4:
+            return k - val
+    return 0
+
+
+def build_fseq(real_pngs):
+    """Build real->ideal frame mapping from the HUD's F0000 display frame.
+
+    The old median-offset path ignored F0000 and assumed each sampled real frame
+    advanced by exactly one movie frame. Native H40 recordings can skip or hold a
+    movie frame depending on the 60fps->15fps sampling phase, so we anchor on the
+    actual F0000 frame and use confident OCR reads when they are close to the
+    anchored prediction.
+    """
+    reads = read_real_fnums(real_pngs)
+    anchor = find_f0000_anchor(reads)
+    fseq = []
+    for k, (val, _conf, ok) in enumerate(reads):
+        pred = k - anchor
+        use = val if ok and abs(val - pred) <= 2 else pred
+        fseq.append(max(0, min(use, R.NF - 1)))
+    return fseq, anchor
 
 
 REAL = []
@@ -139,10 +170,9 @@ def render_one(k):
 
 def one_pass_range():
     """本編1周ぶんの出力範囲。F が最初に進み始める所〜最終フレーム(NF-1)に達する所まで。"""
-    nf = R.NF - 1
-    ks = next((k for k, v in enumerate(FSEQ) if v > 0), 0)
-    ke = next((k for k, v in enumerate(FSEQ) if v >= nf), len(FSEQ) - 1)
-    return ks, ke + 1
+    ks = max(0, min(F0_REAL_FRAME, len(FSEQ) - 1))
+    ke = min(len(FSEQ), ks + R.NF)
+    return ks, ke
 
 
 def mux(ks, ke):
@@ -171,14 +201,15 @@ def mux(ks, ke):
 if __name__ == "__main__":
     from multiprocessing import Pool
     REAL = extract(REAL_MP4, FR_REAL)
-    FSEQ = build_fseq(REAL)
+    FSEQ, F0_REAL_FRAME = build_fseq(REAL)
     FR_OUT.mkdir(parents=True, exist_ok=True)
     if len(sys.argv) == 3:
         rng = list(range(int(sys.argv[1]), int(sys.argv[2]))); ks = rng[0]; ke = rng[-1] + 1
     else:
         ks, ke = one_pass_range(); rng = list(range(ks, ke))
-    print("compare frames k=[%d,%d) (real=%d, F=%d..%d) fps=%d -> %s" %
-          (ks, ke, len(REAL), FSEQ[ks], FSEQ[min(ke, len(FSEQ)) - 1], FPS_OUT, FR_OUT), flush=True)
+    print("compare frames k=[%d,%d) (real=%d, F=%d..%d, F0000@k=%d) fps=%d -> %s" %
+          (ks, ke, len(REAL), FSEQ[ks], FSEQ[min(ke, len(FSEQ)) - 1], F0_REAL_FRAME, FPS_OUT, FR_OUT),
+          flush=True)
     nw = max(1, (os.cpu_count() or 2) - 2)
     with Pool(nw) as p:
         for n, _ in enumerate(p.imap_unordered(render_one, rng, chunksize=8)):
