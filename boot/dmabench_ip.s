@@ -6,7 +6,7 @@
  * まだ vblank 中なら「その vblank に収まった」。X を二分探索して最大語数を求める。
  * 結果を左上にフォント表示: W=語/vblank F=タイル/コマ(3vblank換算)。
  *
- * モード: --defsym MODE=0(H32,既定) / 1(H40) / 2(mode4=SMS)。Makefile の dmabench-<mode> から。
+ * モード: --defsym MODE=0(H32,既定) / 1(H40) / 2(mode4=SMS表示+VBlank中Mode5 DMA)。
  */
 .equ VDP_DATA, 0x00C00000
 .equ VDP_CTRL, 0x00C00004
@@ -34,6 +34,12 @@
 ip_entry:
 	move.w	#0x2700, sr
 	lea	0x00FFFD00, sp
+	lea	(SRC).l, a0
+	move.w	#HI0-1, d0
+	move.w	#0xFFFF, d1
+1:
+	move.w	d1, (a0)+
+	dbra	d0, 1b
 	jsr	BIOS_LOAD_DEFAULT_VDP_REGS
 	jsr	BIOS_CLEAR_VRAM
 	/* 表示モード。BIOS_VDP_DISP_ENABLE は reg1 を戻し得るので使わない。 */
@@ -56,7 +62,10 @@ ip_entry:
 	/* CRAM: index0=黒, index1=白 */
 	move.l	#0xC0000000, (VDP_CTRL).l
 	move.w	#0x0000, (VDP_DATA).l
+	moveq	#14, d0
+1:
 	move.w	#0x0EEE, (VDP_DATA).l
+	dbra	d0, 1b
 	/* フォントを VRAM tile1 へ */
 	move.l	#(0x40000000|((DBGFONT_VADDR&0x3FFF)<<16)|(((DBGFONT_VADDR>>14)&3))), (VDP_CTRL).l
 	lea	dbgfont, a0
@@ -96,6 +105,30 @@ bs_done:
 	move.w	#0x8C00, (VDP_CTRL).l
 	move.w	#0x9001, (VDP_CTRL).l
 	move.w	#0x8230, (VDP_CTRL).l
+	move.w	#0x8F02, (VDP_CTRL).l
+	move.l	#0x40000000, (VDP_CTRL).l
+	moveq	#15, d0
+1:
+	move.w	#0x0000, (VDP_DATA).l
+	dbra	d0, 1b
+	move.l	#0xC0000000, (VDP_CTRL).l
+	move.w	#0x0000, (VDP_DATA).l
+	moveq	#14, d0
+1:
+	move.w	#0x0EEE, (VDP_DATA).l
+	dbra	d0, 1b
+	move.l	#(0x40000000|((DBGFONT_VADDR&0x3FFF)<<16)|(((DBGFONT_VADDR>>14)&3))), (VDP_CTRL).l
+	lea	dbgfont, a0
+	move.w	#DBGFONT_N*16-1, d1
+1:
+	move.w	(a0)+, (VDP_DATA).l
+	dbra	d1, 1b
+	move.l	#NT, d0
+	bsr	set_vram_write
+	move.w	#64*32-1, d0
+1:
+	move.w	#0x0000, (VDP_DATA).l
+	dbra	d0, 1b
 	/* 結果表示: d4 = 最大語/vblank。行間はプレーン64幅=128バイト。 */
 	move.w	d4, d7				/* W */
 	/* 行2: W xxxx = 語/vblank */
@@ -112,6 +145,13 @@ bs_done:
 	add.w	d1, d4				/* *3 */
 	move.w	#15, d3				/* 'F' */
 	bsr	put_row
+	/* DMA_DST tile preview: a white block here proves the DMA path wrote VRAM. */
+	move.l	#NT+6*128+2*2, d0
+	bsr	set_vram_write
+	moveq	#7, d0
+1:
+	move.w	#(DMA_DST/32), (VDP_DATA).l
+	dbra	d0, 1b
 hlt:
 	bra	hlt
 
@@ -127,8 +167,19 @@ fits:
 	move.w	(VDP_CTRL).l, d0		/* vblank 立ち上がり */
 	btst	#3, d0
 	beq	2b
+.if MODE == 2
+	/* SMS Mode4中はMode5 DMA enableが使えないので、VBlank内だけMode5へ戻す。
+	   これは「mode4表示 + blank中Mode5 DMA」という実用候補経路の予算。 */
+	move.w	#0x8004, (VDP_CTRL).l
+	move.w	#0x8174, (VDP_CTRL).l
+	move.w	#0x8C00, (VDP_CTRL).l
+.endif
 	move.w	d6, d0
 	bsr	dma_words			/* X語DMA(完了待ち) */
+.if MODE == 2
+	move.w	#0x8006, (VDP_CTRL).l
+	move.w	#0x81E0, (VDP_CTRL).l
+.endif
 	move.w	(VDP_CTRL).l, d0
 	btst	#3, d0				/* まだvblank? */
 	bne	3f

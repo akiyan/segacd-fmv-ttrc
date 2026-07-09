@@ -12,11 +12,10 @@ choosing encoder targets. Numbers are estimates for NTSC 60 Hz playback.
 - CD rate: 150 KiB/s = 153,600 bytes/s.
 - Audio: 22.05 kHz mono ADPCM at 4 bits/sample = 11,025 bytes/s.
 - Raw video CD budget after audio: 142,575 bytes/s.
-- DMA bytes per VBlank in the first table are theory estimates from
-  `tools/layout_preview.py`: `bpl * (262 - active_lines)`. The measured table
-  below is the one to use when choosing safe player limits.
-- DMA tile counts below use pattern bytes only: `floor(bytes / 32)`. Name-table
-  DMA still needs to be budgeted separately in a real frame.
+- The theory table uses `tools/layout_preview.py` timing constants converted to
+  pattern tiles.
+- Tile counts below use pattern bytes only. Name-table DMA still needs to be
+  budgeted separately in a real frame.
 - H40's exact full-width 16:9 height is 180 pixels, which is 22.5 tile rows.
   The table uses the tile-aligned fit that stays under that height: 320x176.
 
@@ -28,41 +27,43 @@ choosing encoder targets. Numbers are estimates for NTSC 60 Hz playback.
 | H32 | 256x224 | 32x28 | 896 | 256x144 (32x18) | 576 |
 | mode4 | 256x192 | 32x24 | 768 | 256x144 (32x18) | 576 |
 
-## DMA Per VBlank
+## Theory DMA Per VBlank
 
-| Mode | Active lines | Blanking lines | Bytes/line | DMA bytes/VBlank | Pattern tiles/VBlank |
-|---|---:|---:|---:|---:|---:|
-| H40 | 224 | 38 | 205 | 7,790 | 243 |
-| H32 | 224 | 38 | 167 | 6,346 | 198 |
-| mode4 | 192 | 70 | 167 | 11,690 | 365 |
+| Mode | Active lines | Blanking lines | Pattern tiles/VBlank |
+|---|---:|---:|---:|
+| H40 | 224 | 38 | 243 |
+| H32 | 224 | 38 | 198 |
+| mode4 | 192 | 70 | 365 |
 
-The mode4 row is only a theory estimate for a 192-line SMS-style display. It is
-not a confirmed Main-RAM to VRAM DMA budget. True SMS Mode 4 changes the meaning
-of VDP registers; in particular, the bit used as DMA enable in Mode 5 is a
-height-mode bit in SMS Mode 4.
+The mode4 row is only a theory estimate for a 192-line SMS-style display. True
+SMS Mode 4 changes the meaning of VDP registers; in particular, the bit used as
+DMA enable in Mode 5 is a height-mode bit in SMS Mode 4. The practical measured
+path below uses SMS Mode 4 for display, then switches to Mode 5 only during
+VBlank to issue the DMA.
 
 ## DMA Update Budget Per Video Frame
 
-This is the average DMA capacity available per encoded video frame. At 24 fps,
+This is the average DMA capacity available per encoded video frame, expressed
+as pattern tiles and using the GPGX `dmabench` measured values below. At 24 fps,
 the average is 2.5 VBlanks per video frame, so the real scheduler would
 alternate shorter and longer gaps.
 
-| Mode | 15 fps bytes/frame | 15 fps pattern tiles | 24 fps bytes/frame | 24 fps pattern tiles | 30 fps bytes/frame | 30 fps pattern tiles |
-|---|---:|---:|---:|---:|---:|---:|
-| H40 | 31,160 | 973 | 19,475 | 608 | 15,580 | 486 |
-| H32 | 25,384 | 793 | 15,865 | 495 | 12,692 | 396 |
-| mode4 | 46,760 | 1,461 | 29,225 | 913 | 23,380 | 730 |
+| Mode | 15 fps tiles/frame | 24 fps tiles/frame | 30 fps tiles/frame |
+|---|---:|---:|---:|
+| H40 | 916 | 572 | 458 |
+| H32 | 745 | 465 | 372 |
+| mode4 | 1,405 | 878 | 702 |
 
 ## CD Raw Read Budget Per Video Frame
 
-The raw-read budget is independent of screen mode. It is the CD budget left
-after 22.05 kHz mono ADPCM audio, divided by 34 bytes per raw tile update.
+The raw-read budget is independent of screen mode. This is the CD budget left
+after 22.05 kHz mono ADPCM audio, expressed as raw tile updates.
 
-| Frame rate | CD bytes/frame after audio | Raw tiles/frame |
-|---|---:|---:|
-| 15 fps | 9,505.0 | 279 |
-| 24 fps | 5,940.6 | 174 |
-| 30 fps | 4,752.5 | 139 |
+| Frame rate | Raw tiles/frame |
+|---|---:|
+| 15 fps | 279 |
+| 24 fps | 174 |
+| 30 fps | 139 |
 
 ## Empirical measurement — `dmabench`
 
@@ -79,17 +80,23 @@ is lenient and over-reports.
 
 ### Measured (Genesis Plus GX)
 
-| Mode  | W (words/VBlank) | tiles/VBlank (W/16) | note |
-|-------|------------------|---------------------|------|
-| H32   | 0x0BA6 = 2982    | 186                 | `out/DMABENCH_mode0.cue`, screenshot `tmp/dmabench_h32_sheet.jpg` |
-| H40   | 0x0E50 = 3664    | 229                 | `out/DMABENCH_mode1.cue`, screenshot `tmp/dmabench_h40_seq_sheet.jpg` |
-| mode4 | invalid          | invalid             | `out/DMABENCH_mode2.cue` enters true SMS Mode 4, but the Main-RAM to VRAM DMA/result-display path does not produce a readable result in GPGX. Do not reuse the H32/H40 budget for mode4. |
-| *ares* | TBD             | TBD                 | run the ISO to fill in |
+| Mode  | Pattern tiles/VBlank | note |
+|-------|---------------------:|------|
+| H32   | 186                  | `W 0BA6`; `out/DMABENCH_mode0.cue`, screenshot `tmp/dmabench_h32_clean_sheet.jpg` |
+| H40   | 229                  | `W 0E50`; `out/DMABENCH_mode1.cue`, screenshot `tmp/dmabench_h40_clean_sheet.jpg` |
+| mode4 | 351                  | `W 15F4`; `out/DMABENCH_mode2.cue`, screenshot `tmp/dmabench_mode4_clean_sheet.jpg`; SMS Mode 4 display, VBlank-only Mode 5 DMA, with a white proof block showing the DMA destination tile was written |
+| *ares* | TBD                 | run the ISO to fill in |
 
 The earlier GPGX result `0x0F98` for every mode was invalid. The old harness
 used `reg1 = 0x8144` for mode4: that left Mode 5 selected, did not enable Mode 5
 DMA, and was followed by a BIOS display-enable call that could restore register
 1 anyway. It was measuring a Mode 5-like setup, not true 192-line SMS Mode 4.
+
+A direct "stay in SMS Mode 4 and issue Main-RAM to VRAM DMA" test did not give a
+credible budget in GPGX: the reported value was far above the 192-line theory
+and had to be treated as a no-op/status artifact. The usable path is to keep
+SMS Mode 4 for active display, switch to Mode 5 at VBlank start, issue the DMA,
+then switch back to SMS Mode 4 before active display resumes.
 
 ### The real limit is the pipeline, not raw DMA
 
@@ -123,6 +130,6 @@ overlay `M` (Miss) shows the deferred count in capped sections.
 ceiling of 2982 words/VBlank and below the H40 GPGX ceiling of 3664
 words/VBlank. Re-check against the ares `dmabench` value before raising it.
 
-For future mode4 player work, first decide whether the player is using true SMS
-Mode 4 or a Mode 5 layout shaped like 256x192. If it is true SMS Mode 4, prove
-the VRAM update path separately; do not assume the Mode 5 DMA budget applies.
+For future mode4 player work, use the measured path above: true SMS Mode 4 for
+display, with VBlank-only Mode 5 DMA. Re-prove on ares or hardware before
+raising player limits.
