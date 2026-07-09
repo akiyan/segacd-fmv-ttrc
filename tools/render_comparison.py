@@ -48,9 +48,11 @@ FR_REAL = WORK / "real"; FR_OUT = WORK / "frames"
 SIMDIR = R.SIM                                          # tmp/sim
 SCREEN_W, SCREEN_H = R.SCREEN_W, R.SCREEN_H             # mode4 なら 256x192
 CONTENT_W, CONTENT_H = R.W, R.H                         # 256x144
-# sim preview を実機画面へ載せる縦位置。実機プレイヤーの content 配置(実測: 行14〜157)に
-# 合わせる(単純中央だと数px下にズレて左右のアスペクト/位置が食い違う)。CMP_PADY で調整可。
-PADY = int(os.environ.get("CMP_PADY", "14"))
+# sim preview を実機画面へ載せる縦位置。諸元からの計算値=画面中央配置(既定)。
+# TODO(保留): 実機(エミュ)は画面モード/オーバースキャンのジオメトリが sim と異なり、
+# 実際の content 配置は中央から数px上(実測 PADY≈20)。厳密一致は実機側の表示ジオメトリ
+# (プレイヤー plane_row=5 / HUD行2-3 / overscan crop)を諸元に取り込んでから。CMP_PADY で上書き可。
+PADY = int(os.environ.get("CMP_PADY", str((SCREEN_H - CONTENT_H) // 2)))
 
 
 def extract(mp4, outdir):

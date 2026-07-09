@@ -63,6 +63,9 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
     Updated via the `/analysis` skill together with the layout code.
   - `MOVIE.md` - the `MOVIE.DAT` (TTRC) on-disc stream format. Keep in sync with
     `tools/pack_stream.py` and the `boot/movieplay_*.s` player.
+  - `COMPARISON.md` - the comparison overlay (Real vs Encoder-ideal) layout,
+    frame-sync, and pipeline. Keep in sync with `tools/comparison_preview.py`
+    and `tools/render_comparison.py`.
 - Claude skill files under `.claude/skills/**/SKILL.md` are allowed and should
   remain in place.
 - Do not reintroduce game-specific extraction notes or copyrighted sample
