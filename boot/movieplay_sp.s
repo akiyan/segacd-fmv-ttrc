@@ -50,16 +50,19 @@
 .equ CTRL_SCR,    0x000D0000        /* control block 線形化(<=2246B) */
 .equ PAD_SCR,     0x000D2000        /* pad セクタ捨て場 */
 
-/* --- Word-RAM 出力(MDが読む) --- */
+/* --- Word-RAM 出力(MDが読む) ---
+   H40(最大720セル)対応: loads は最大 720*32B+ランヘッダ ≈ 24.5KB。
+   O_LOADS を 0x84..0x7000(約28.4KB) に拡大し、以降を上へ移動(MD側と一致必須)。 */
 .equ O_PALW,   SUB_BANK_1M+0x0000
 .equ O_CRAM,   SUB_BANK_1M+0x0002
 .equ O_NLOAD,  SUB_BANK_1M+0x0082
 .equ O_LOADS,  SUB_BANK_1M+0x0084
-.equ O_NUPD,   SUB_BANK_1M+0x5000
-.equ O_DBG,    SUB_BANK_1M+0x5F02   /* 22Bデバッグブロック転写先(raw,same,near,coa,flbk,buf,miss,予約4)
+.equ O_NUPD,   SUB_BANK_1M+0x7000
+.equ O_UPDS,   SUB_BANK_1M+0x7002
+.equ O_SLIP,   SUB_BANK_1M+0x7F00   /* slip_count(旧0x5F00) */
+.equ O_DBG,    SUB_BANK_1M+0x7F02   /* 22Bデバッグブロック転写先(raw,same,near,coa,flbk,buf,miss,予約4)
                                        control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
-.equ O_UPDS,   SUB_BANK_1M+0x5002
-.equ O_HDR,    SUB_BANK_1M+0x5F80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
+.equ O_HDR,    SUB_BANK_1M+0x7F80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
 
 /* --- RF5C164 PCM (13.3kHz) --- */
 .equ AUDIO_BYTES, 887
@@ -785,7 +788,7 @@ ef_next:
 1:
 	move.w	d4, (O_NLOAD).l
 	move.w	d5, (O_NUPD).l
-	move.w	slip_count, (SUB_BANK_1M+0x5F00).l	/* 滑り回数をMDへ */
+	move.w	slip_count, (O_SLIP).l	/* 滑り回数をMDへ */
 	move.l	a4, ring_head
 	/* 音声: entries の直後(a0) に 887B */
 	movea.l	a0, a5

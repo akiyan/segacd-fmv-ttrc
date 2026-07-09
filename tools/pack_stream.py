@@ -212,10 +212,10 @@ def run_stats(per):
                 f"平均run数{runs_per_frame[heavy].mean():.1f} "
                 f"平均ラン長{(colds_per_frame[heavy].sum() / max(1, runs_per_frame[heavy].sum())):.1f}")
     print(msg)
-    # SPのラン形式ロード領域(Word-RAM 0x84..0x5000=20348B)に収まるか:
+    # SPのラン形式ロード領域(Word-RAM 0x84..0x7000=28540B)に収まるか:
     # 1ラン = slot(2)+count(2)+count*32B
     loads_bytes = colds_per_frame * PAT + runs_per_frame * 4
-    O_LOADS_CAP = 0x5000 - 0x84
+    O_LOADS_CAP = 0x7000 - 0x84
     if int(loads_bytes.max()) > O_LOADS_CAP:
         print(f"  !! loads領域あふれ: 最大{int(loads_bytes.max())}B > {O_LOADS_CAP}B "
               f"(frame {int(loads_bytes.argmax())})")
