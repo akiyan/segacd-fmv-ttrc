@@ -106,7 +106,8 @@ export CBRSIM_MASTER_VF="[crop=...,]scale=<~2x>:flags=lanczos,hqdn3d=6:6:8:8,gbl
 export CBRSIM_RAW_VF="[crop=...,]scale=<src panel>"
 
 # Output convention (AGENTS.md "Output Paths"): one stem per encode,
-#   <stem> = <input-basename>_<mode>_<audio>   e.g. OP1_ps2_H32_adpcm22
+#   <stem> = <input-basename>_<mode>_<resolution>_<audio>
+#            e.g. OP1_ps2_H32_256x144_adpcm22  (resolution = output WxH px)
 # All artifacts go under videos/ (git-ignored), never tmp/.
 export CBRSIM_OUT=videos/<stem> CBRSIM_TANK_KB=440
 export CBRSIM_DITHER=1 CBRSIM_SEGPAL=1 CBRSIM_NEAR=1 CBRSIM_VBV=1 CBRSIM_COA=1

@@ -52,8 +52,9 @@ Defaults and conventions:
 - Use a realtime preset for synchronized A/V.
 - Output goes under `videos/` (git-ignored), not `tmp/`. When the recording
   corresponds to a sim encode, name it `videos/<stem>_emu.mp4` (same
-  `<stem> = <input-basename>_<mode>_<audio>` as the sim run; see AGENTS.md
-  "Output Paths"). Sidecar files (audio wav/json, raw mkv, logs) land beside it.
+  `<stem> = <input-basename>_<mode>_<resolution>_<audio>` as the sim run; see
+  AGENTS.md "Output Paths"). Sidecar files (audio wav/json, raw mkv, logs) land
+  beside it.
 - Use a tag such as `rec_<disc_name>` (or `<stem>_emu`).
 - Pick an unused X display, for example `--display :236`.
 - Default trim is automatic: the tool scans the recorded WAV and chooses the

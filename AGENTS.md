@@ -99,8 +99,8 @@ they embed source frames). Do not accumulate video output in `tmp/`. Use one
 stem per encode:
 
 ```
-stem = <input-basename>_<display-mode>_<audio-format>
-       e.g. OP1_ps2_H32_adpcm22
+stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
+       e.g. OP1_ps2_H32_256x144_adpcm22
 ```
 
 | Artifact | Path |
@@ -112,6 +112,7 @@ stem = <input-basename>_<display-mode>_<audio-format>
 
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
+- `<resolution>`: the Mega-CD output resolution in pixels, `WxH` (e.g. `256x144`).
 - `<audio-format>`: e.g. `adpcm`, `adpcm22`, `pcm`.
 
 ## Hardware Facts
