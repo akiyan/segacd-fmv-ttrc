@@ -27,7 +27,6 @@
 
 .equ PROBE_BANK, 0x00200000
 
-.equ NUM_FRAMES, 2293
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
 .equ STAT_READY, 0x8003
@@ -40,17 +39,16 @@
 .equ DMA_STAGE, 0x00FF2000		/* タイルステージ(24KB, ~768タイル) */
 .equ RUN_TABLE, 0x00FF8000		/* (dst.w,len.w) ラン表(最大~128ラン) */
 /* デバッグオーバーレイ: フォントは予約VRAM(プール1360の直上 tile1361)。 */
-.equ DBGFONT_VTILE, 1361
-.equ DBGFONT_VADDR, 1361*32		/* 0xAA20 */
 .equ DBGFONT_N, 28			/* dbgfont.bin のタイル数 */
+/* フォントVRAM位置はヘッダの base+pool 直上を実行時に計算(md_font_vtile/md_font_addr) */
 /* デバッグビルドが既定。make movieplay RELEASE=1 でオーバーレイ一式を除去
    (ストリーム側は CBRSIM_PACK_DEBUG=0 でデバッグ欄なしを生成=完全リリース) */
 .equ DBG_COL, 20			/* 右下オーバーレイの左端セル列 */
 .equ DBG_STAGE, 0x00FFA000		/* フォント色替えのステージ(Main-RAM) */
-/* 1VBLANKで安全に転送できる語数(H32 V28 NTSC VRAM DMA ≈ 3150語/vblankより保守的に)。
+/* 1VBLANKで安全に転送できる語数はモード別(md_vbudget)。実測(dmabench)に基づき保守的に。
    これを超える転送はランをまたいで次VBLANKへ分割=active表示中へのはみ出し防止(ares対策)。 */
-.equ VBLANK_DMA_WORDS, 2800	/* H32 V28 NTSC vblank ≈3200語。500タイル/コマ(=8000語)を
-				   4vblank以内に収めるため2400→2800(下: 500タイル区間の音声underrun対策) */
+.equ VB_WORDS_H32, 2800		/* H32 V28 NTSC */
+.equ VB_WORDS_H40, 3400		/* H40 V28 NTSC(理論~3895語より保守的) */
 
 .text
 
@@ -91,25 +89,55 @@ ip_entry:
 	jsr	BIOS_VDP_DISP_ENABLE
 	move.w	#0x8174, (VDP_CTRL).l		/* reg1: 表示on+vint+DMA許可(M1)+mode5 */
 
-	/* デバッグフォントを予約VRAM(プール1360の直上=tile1361)へCPUロード。
-	   pal_write時にB案(最明色index)へ色替えする(初期はindex1のまま)。 */
-	move.l	#DBGFONT_VADDR, d0
-	bsr	set_vram_write
+	clr.w	dbg_seg
+	clr.w	dbg_palattr
+
+	clr.w	back_idx			/* 裏=NT0(0) から構築, 表示=NT1 */
+
+	move.w	#CMD_STREAM, d0
+	bsr	cmd_wait_ready
+
+	/* frame0準備完了=バンクにヘッダ写し(O_HDR)がある。mode/tcols/trows/pool/base を読み
+	   モード依存のVDP設定と実行時変数を確定する(汎用化: H32/H40, mode4は将来) */
+	lea	(PROBE_BANK+0x5F80), a0
+	move.w	8(a0), md_tcols
+	move.w	10(a0), md_trows
+	move.w	14(a0), d1			/* pool */
+	add.w	16(a0), d1			/* +base */
+	move.w	d1, md_font_vtile
+	moveq	#0, d0
+	move.w	d1, d0
+	lsl.l	#5, d0
+	move.l	d0, md_font_addr		/* フォントVRAM = (base+pool)*32 */
+	moveq	#0, d0
+	move.b	38(a0), d0			/* mode: 0=H32 1=H40 (2=mode4将来) */
+	move.w	d0, md_mode
+	move.w	#32, d2				/* screen_cols */
+	move.w	#VB_WORDS_H32, d3
+	tst.w	d0
+	beq	1f
+	move.w	#0x8C81, (VDP_CTRL).l		/* reg12 H40 */
+	move.w	#40, d2
+	move.w	#VB_WORDS_H40, d3
+1:
+	move.w	d3, md_vbudget
+	sub.w	md_tcols, d2			/* col0 = (screen_cols-tcols)/2 */
+	lsr.w	#1, d2
+	move.w	d2, md_col0
+	move.w	#28, d2				/* screen_rows(H32/H40) */
+	sub.w	md_trows, d2			/* row0 = (screen_rows-trows)/2 */
+	lsr.w	#1, d2
+	move.w	d2, md_row0
+	/* デバッグフォントをフォントVRAM位置へCPUロード(pal_write時にB案で色替え) */
 .ifndef RELEASE
+	move.l	md_font_addr, d0
+	bsr	set_vram_write
 	lea	dbgfont, a0
 	move.w	#DBGFONT_N*16-1, d1
 1:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
 .endif
-	clr.w	dbg_seg
-	clr.w	dbg_palattr
-
-	clr.w	back_idx			/* 裏=NT0(0) から構築, 表示=NT1 */
-
-	move.w	#NUM_FRAMES, (GA_COMCMD1).l
-	move.w	#CMD_STREAM, d0
-	bsr	cmd_wait_ready
 
 	clr.w	frame_no
 	clr.w	started
@@ -200,16 +228,20 @@ bf_blit:
 	lsl.l	#5, d5				/* back_idx*0x2000 */
 	add.l	#NT0, d5			/* back_base = 0xC000 or 0xE000 (flipまで保持) */
 	lea	shadow, a1
-	moveq	#5, d4				/* plane_row = 5 */
-	move.w	#18-1, d6			/* 18 rows */
+	move.w	md_row0, d4			/* plane_row = (screen_rows-trows)/2 */
+	move.w	md_trows, d6
+	subq.w	#1, d6
 bf_row:
 	move.w	d4, d1
 	lsl.w	#7, d1				/* plane_row*128 */
+	add.w	md_col0, d1
+	add.w	md_col0, d1			/* +col0*2 (横センタリング) */
 	move.l	d5, d0
 	andi.l	#0xFFFF, d1
 	add.l	d1, d0				/* NT addr */
 	bsr	set_vram_write
-	move.w	#32-1, d1
+	move.w	md_tcols, d1
+	subq.w	#1, d1
 bf_bw:
 	move.w	(a1)+, (VDP_DATA).l
 	dbra	d1, bf_bw
@@ -242,7 +274,7 @@ bf_dma:
 	bne	1f
 	bsr	wait_vb_start
 1:
-	move.w	#VBLANK_DMA_WORDS, d7		/* d7 = 残VBLANK予算(語) */
+	move.w	md_vbudget, d7			/* d7 = 残VBLANK予算(語, モード別) */
 bf_run_lp:
 	move.w	(a2)+, d3			/* dst(VRAMバイト) */
 	move.w	(a2)+, d1			/* len(語, このランの残) */
@@ -251,7 +283,7 @@ bf_chunk:
 	tst.w	d7				/* 予算切れなら次vblank開始まで待って補充 */
 	bgt	1f
 	bsr	wait_vb_start
-	move.w	#VBLANK_DMA_WORDS, d7
+	move.w	md_vbudget, d7
 1:
 	move.w	d1, d6				/* chunk = min(ラン残, 予算) */
 	cmp.w	d7, d6
@@ -504,7 +536,7 @@ dsb_rc:
 	dbra	d7, dsb_rc
 	/* DMA DBG_STAGE → DBGFONT_VADDR (vblank内) */
 	move.w	#DBGFONT_N*16, d6
-	move.w	#DBGFONT_VADDR, d3
+	move.w	md_font_addr+2, d3		/* フォントVRAM(下位word, <64KB) */
 	lea	DBG_STAGE, a3
 	bsr	dma_chunk
 	movem.l	(sp)+, d0-d7/a0-a3
@@ -584,7 +616,7 @@ dbg_put_row:
 	move.l	d1, d0
 	bsr	set_vram_write			/* d0=dst; trashes d0,d2 */
 	move.w	d3, d1				/* ラベル */
-	add.w	#DBGFONT_VTILE, d1
+	add.w	md_font_vtile, d1
 	or.w	d7, d1
 	move.w	d1, (VDP_DATA).l
 	moveq	#3, d2				/* 4 hex桁(上位→下位) */
@@ -592,7 +624,7 @@ dbg_put_row:
 	rol.w	#4, d4
 	move.w	d4, d1
 	andi.w	#0xF, d1
-	add.w	#DBGFONT_VTILE, d1
+	add.w	md_font_vtile, d1
 	or.w	d7, d1
 	move.w	d1, (VDP_DATA).l
 	dbra	d2, 1b
@@ -608,7 +640,23 @@ dbgfont:
 	.bss
 	.align 2
 shadow:
-	.space 576*2
+	.space 1120*2				/* 最大グリッド(H40 40x28)ぶん */
+md_mode:
+	.space 2
+md_tcols:
+	.space 2
+md_trows:
+	.space 2
+md_row0:
+	.space 2
+md_col0:
+	.space 2
+md_vbudget:
+	.space 2
+md_font_vtile:
+	.space 2
+md_font_addr:
+	.space 4
 back_idx:
 	.space 2
 frame_no:

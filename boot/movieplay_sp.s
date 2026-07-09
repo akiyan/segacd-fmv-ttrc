@@ -59,6 +59,7 @@
 .equ O_DBG,    SUB_BANK_1M+0x5F02   /* 22Bデバッグブロック転写先(raw,same,near,coa,flbk,buf,miss,予約4)
                                        control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
 .equ O_UPDS,   SUB_BANK_1M+0x5002
+.equ O_HDR,    SUB_BANK_1M+0x5F80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
 
 /* --- RF5C164 PCM (13.3kHz) --- */
 .equ AUDIO_BYTES, 887
@@ -82,13 +83,9 @@
 .equ SYNC_MIN,  0x0C00
 .equ SYNC_MAX,  0x6800
 
-.equ NUM_FRAMES,      2293
-.equ FRAME_SECTORS,   5
 .equ HEADER_SECTORS,  1
-.equ ROUTING_SECTORS, 3
-.equ PREBUF_SECTORS,  45
-.equ PREBUF_PATTERNS, 2880
-.equ STREAM_TOTAL,    HEADER_SECTORS+ROUTING_SECTORS+PREBUF_SECTORS+NUM_FRAMES*FRAME_SECTORS
+/* frames/tcols/trows/cells/pool/base/frame_sectors/prebuf/routing/mode は
+   MOVIE.DAT ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
@@ -179,8 +176,38 @@ stream_start:
 bad_magic:
 	bra	bad_magic
 1:
+	/* ヘッダ解析(>4sHHHHHHHHH + >LLLL + mode@38)。焼き込み定数を廃し実行時に読む */
+	lea	PAD_SCR, a0
+	move.w	6(a0), h_frames
+	move.w	18(a0), h_fsec
+	move.w	12(a0), d0			/* cells */
+	addq.w	#7, d0
+	lsr.w	#3, d0
+	move.w	d0, h_bmbytes			/* ceil(cells/8) */
+	move.l	26(a0), d0
+	move.w	d0, h_routing_sec
+	move.l	30(a0), d0
+	move.w	d0, h_prebuf_sec
+	move.l	22(a0), h_prebuf_pat
+	/* stream_total = 1 + routing + prebuf + frames*fsec */
+	moveq	#0, d0
+	move.w	h_frames, d0
+	mulu	h_fsec, d0
+	moveq	#0, d1
+	move.w	h_routing_sec, d1
+	add.l	d1, d0
+	move.w	h_prebuf_sec, d1
+	add.l	d1, d0
+	addq.l	#HEADER_SECTORS, d0
+	move.l	d0, h_stream_total
+	/* MDへヘッダ写しを渡す(frame0と同じバンクに書く=swap後にMDが読める) */
+	lea	(O_HDR).l, a1
+	moveq	#32-1, d1			/* 64B */
+1:
+	move.w	(a0)+, (a1)+
+	dbra	d1, 1b
 	/* routing table → STAGE経由で PRG へ */
-	moveq	#ROUTING_SECTORS, d7
+	move.w	h_routing_sec, d7
 	lea	ROUTING, a1
 rt_lp:
 	movem.l	d7/a1, -(sp)
@@ -195,7 +222,7 @@ rt_lp:
 	bne	rt_lp
 	/* prebuffer → STAGE経由でリングへ */
 	move.l	#RING_BASE, ring_tail
-	move.w	#PREBUF_SECTORS, d7
+	move.w	h_prebuf_sec, d7
 pb_lp:
 	movem.l	d7, -(sp)
 	lea	PAD_SCR, a0
@@ -210,7 +237,10 @@ pb_lp:
 	bne	pb_lp
 	/* ポインタ初期化 */
 	move.l	#RING_BASE, ring_head
-	move.l	#RING_BASE+PREBUF_PATTERNS*32, ring_tail   /* 先読み済みパターンの末尾 */
+	move.l	h_prebuf_pat, d0		/* ring_tail = RING_BASE + prebuf_pat*32 */
+	lsl.l	#5, d0
+	add.l	#RING_BASE, d0
+	move.l	d0, ring_tail
 	move.l	#APPLY_BASE, apply_tail
 	move.l	#APPLY_BASE, apply_cur
 	clr.w	frame_idx
@@ -229,7 +259,8 @@ pb_lp:
 .equ ISO_HOLD_N, 0			/* ISO診断: frame N を表示した状態で静止(0=無効) */
 .equ ISO_HOLD_DUMP, 0			/* 0=クリーン静止(全画面=実フレームN) 1=内部状態ダンプ */
 stream_loop:
-	cmp.w	#NUM_FRAMES, frame_idx		/* 全フレーム処理済み=映画終端 */
+	move.w	frame_idx, d0			/* 全フレーム処理済み=映画終端 */
+	cmp.w	h_frames, d0
 	bhs	movie_end
 	bsr	process_frame
 3:
@@ -348,12 +379,12 @@ issue_rom_readn:
 	movem.l	d0-d7/a0-a6, -(sp)
 	lea	bios_packet, a5
 	move.l	stream_lba, (a5)
-	move.l	#STREAM_TOTAL, 4(a5)
+	move.l	h_stream_total, 4(a5)		/* find_fileでファイルサイズから初期化済み */
 	move.l	#SUB_BANK_1M, 8(a5)
 	movea.l	a5, a0
 	BIOSCALL BIOS_CDC_STOP
 	BIOSCALL BIOS_ROM_READN
-	move.l	#STREAM_TOTAL, stream_remaining
+	move.l	h_stream_total, stream_remaining
 	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
@@ -525,7 +556,8 @@ p1_apply:
 	move.l	a0, apply_tail
 p1_adv:
 	addq.w	#1, drain_k
-	cmp.w	#FRAME_SECTORS, drain_k
+	move.w	drain_k, d3
+	cmp.w	h_fsec, d3
 	blo	2f
 	clr.w	drain_k
 	addq.w	#1, drain_frame
@@ -549,7 +581,8 @@ stage_copy:
    MD待ちループから毎回呼ぶ。 */
 pump_poll:
 	movem.l	d0-d7/a0-a6, -(sp)
-	cmp.w	#NUM_FRAMES, drain_frame
+	move.w	drain_frame, d0
+	cmp.w	h_frames, d0
 	bcc	pp_done				/* ストリーム終端 */
 	/* リング余裕: occupied = (tail-head) mod SIZE が SIZE-0x1000 以上なら見送り */
 	move.l	ring_tail, d0
@@ -675,8 +708,9 @@ ef_pal:
 	dbra	d1, 1b
 ef_bm:
 .equ ISO_DUMP_OFF, 0
-	movea.l	a0, a3				/* bitmap(72) */
-	lea	72(a0), a0			/* entries */
+	movea.l	a0, a3				/* bitmap(ceil(cells/8)B) */
+	move.w	h_bmbytes, d0
+	adda.w	d0, a0				/* entries */
 	lea	(O_LOADS).l, a1
 	lea	(O_UPDS).l, a2
 	movea.l	ring_head, a4			/* pop ptr(PRG読み) */
@@ -686,7 +720,8 @@ ef_bm:
 	suba.l	a5, a5				/* a5=開いているランのcountワード位置(0=無し) */
 	movea.w	#-1, a6				/* a6=次に連結できるスロット(無効値で開始) */
 	clr.w	run_cnt
-	move.w	#72-1, d7
+	move.w	h_bmbytes, d7
+	subq.w	#1, d7
 ef_byte:
 	bsr	pump_poll			/* 長い展開中もCDを取りこぼさない */
 	move.b	(a3)+, d0
@@ -843,6 +878,21 @@ get_info:
 	move.b	8(a2), d0
 	lsl.l	#8, d0
 	move.b	9(a2), d0
+	/* ファイルサイズ(BE @14) → 総セクタ数を h_stream_total に初期化。
+	   ROM_READN はヘッダ解析より先に走るため、初回はこの値を使う
+	   (解析後に同値で再計算される)。 */
+	moveq	#0, d1
+	move.b	14(a2), d1
+	lsl.l	#8, d1
+	move.b	15(a2), d1
+	lsl.l	#8, d1
+	move.b	16(a2), d1
+	lsl.l	#8, d1
+	move.b	17(a2), d1
+	add.l	#2047, d1
+	moveq	#11, d2
+	lsr.l	d2, d1
+	move.l	d1, h_stream_total
 	movem.l	(sp)+, a1-a2/a6
 	rts
 
@@ -992,6 +1042,20 @@ frame_idx:
 	.word	0
 drain_frame:
 	.word	0
+h_frames:
+	.space 2
+h_fsec:
+	.space 2
+h_bmbytes:
+	.space 2
+h_routing_sec:
+	.space 2
+h_prebuf_sec:
+	.space 2
+h_prebuf_pat:
+	.space 4
+h_stream_total:
+	.space 4
 drain_k:
 	.word	0
 write_ptr:
