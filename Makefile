@@ -161,8 +161,14 @@ MOVIEPLAY_DISC := $(OUT_DIR)/disc_movieplay
 
 movieplay: check-tools $(OUT_DIR)/MOVIEPLAY.iso $(OUT_DIR)/MOVIEPLAY.cue
 
-$(OUT_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin out/movieplay/palettes.bin | setup
-	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $< -o $@
+# RELEASE=1 でデバッグオーバーレイを除去(既定はデバッグビルド)。
+# ストリーム側のデバッグ欄除去は CBRSIM_PACK_DEBUG=0 で pack する。
+RELEASE ?= 0
+$(OUT_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin out/movieplay/palettes.bin $(BOOT_DIR)/dbgfont.bin | setup
+	$(AS) $(ASFLAGS) $(if $(filter 1,$(RELEASE)),--defsym RELEASE=1) -I$(BOOT_DIR) $< -o $@
+
+$(BOOT_DIR)/dbgfont.bin: tools/gen_debugfont.py
+	python3 tools/gen_debugfont.py
 
 $(OUT_DIR)/movieplay_ip.bin: $(OUT_DIR)/movieplay_ip.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/ip.ld -o $@ $<

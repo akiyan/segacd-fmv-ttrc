@@ -42,7 +42,9 @@
 /* デバッグオーバーレイ: フォントは予約VRAM(プール1360の直上 tile1361)。 */
 .equ DBGFONT_VTILE, 1361
 .equ DBGFONT_VADDR, 1361*32		/* 0xAA20 */
-.equ DBGFONT_N, 27			/* dbgfont.bin のタイル数 */
+.equ DBGFONT_N, 28			/* dbgfont.bin のタイル数 */
+/* デバッグビルドが既定。make movieplay RELEASE=1 でオーバーレイ一式を除去
+   (ストリーム側は CBRSIM_PACK_DEBUG=0 でデバッグ欄なしを生成=完全リリース) */
 .equ DBG_COL, 20			/* 右下オーバーレイの左端セル列 */
 .equ DBG_STAGE, 0x00FFA000		/* フォント色替えのステージ(Main-RAM) */
 /* 1VBLANKで安全に転送できる語数(H32 V28 NTSC VRAM DMA ≈ 3150語/vblankより保守的に)。
@@ -93,11 +95,13 @@ ip_entry:
 	   pal_write時にB案(最明色index)へ色替えする(初期はindex1のまま)。 */
 	move.l	#DBGFONT_VADDR, d0
 	bsr	set_vram_write
+.ifndef RELEASE
 	lea	dbgfont, a0
 	move.w	#DBGFONT_N*16-1, d1
 1:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
+.endif
 	clr.w	dbg_seg
 	clr.w	dbg_palattr
 
@@ -223,7 +227,9 @@ bf_bw:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
 	addq.w	#1, dbg_seg			/* 区間++ (pal_write=区間境界) */
+.ifndef RELEASE
 	bsr	dbg_setbright			/* B案: 最明色でフォント色替え */
+.endif
 bf_dma:
 	/* Pass2: 表を順に Word-RAM 直DMA(src→VRAM dst)。VBLANK予算(d7)でランをまたいで分割。
 	   Word-RAM源DMAは先頭1ワードが化ける(実測/Sega文書)ため、チャンク毎に
@@ -263,7 +269,9 @@ bf_chunk:
 	subq.w	#1, d4
 	bne	bf_run_lp
 bf_flip:
-	bsr	render_dbg			/* 右下にデバッグ指標を描画(裏バッファ, flip直前) */
+.ifndef RELEASE
+	bsr	render_dbg			/* 上黒帯にデバッグ指標を描画(裏バッファ, flip直前) */
+.endif
 	move.l	d5, d0
 	lsr.l	#8, d0
 	lsr.l	#2, d0				/* back_base>>10 */
@@ -520,36 +528,59 @@ dbg_recolor_word:
 	move.w	d1, d0
 	rts
 
-/* 右下(行23-26)に指標を描画。d5=back_base。裏バッファへ書く(flip直前) */
+/* 上黒帯(行3-4)に全指標を横並び2行で描画。d5=back_base。裏バッファへ書く(flip直前)。
+   下黒帯は将来「黒帯走査中のDMA早期開始」に使うため空けておく(ユーザー方針)。
+   行0-2はオーバースキャンで切れうるため行3-4を使用。値は全て hex4桁。
+   行3: F(rame) R(aw+0) S(ame+2) N(ear+4) C(oa+6)
+   行4: L(=flbk+8) B(uf+10) M(iss+12) P(区間) */
 render_dbg:
 	movem.l	d0-d4/d6-d7/a0-a1, -(sp)
 	move.w	dbg_palattr, d7
-	moveq	#23, d2				/* F frame */
+	move.w	#3*128+1*2, d2			/* F frame */
 	move.w	#15, d3
 	move.w	frame_no, d4
 	bsr	dbg_put_row
-	moveq	#24, d2				/* R raw(デバッグブロック+0) */
+	move.w	#3*128+7*2, d2			/* R raw */
 	move.w	#16, d3
 	move.w	(PROBE_BANK+0x5F02).l, d4
 	bsr	dbg_put_row
-	moveq	#25, d2				/* P pal(区間) */
-	move.w	#19, d3
-	move.w	dbg_seg, d4
+	move.w	#3*128+13*2, d2			/* S same */
+	move.w	#23, d3
+	move.w	(PROBE_BANK+0x5F02+2).l, d4
 	bsr	dbg_put_row
-	moveq	#26, d2				/* M miss(デバッグブロック+12) */
+	move.w	#3*128+19*2, d2			/* N near */
+	move.w	#27, d3
+	move.w	(PROBE_BANK+0x5F02+4).l, d4
+	bsr	dbg_put_row
+	move.w	#3*128+25*2, d2			/* C coa */
+	move.w	#12, d3
+	move.w	(PROBE_BANK+0x5F02+6).l, d4
+	bsr	dbg_put_row
+	move.w	#4*128+1*2, d2			/* L flbk */
+	move.w	#21, d3
+	move.w	(PROBE_BANK+0x5F02+8).l, d4
+	bsr	dbg_put_row
+	move.w	#4*128+7*2, d2			/* B buf */
+	move.w	#11, d3
+	move.w	(PROBE_BANK+0x5F02+10).l, d4
+	bsr	dbg_put_row
+	move.w	#4*128+13*2, d2			/* M miss */
 	move.w	#18, d3
 	move.w	(PROBE_BANK+0x5F02+12).l, d4
+	bsr	dbg_put_row
+	move.w	#4*128+19*2, d2			/* P 区間 */
+	move.w	#19, d3
+	move.w	dbg_seg, d4
 	bsr	dbg_put_row
 	movem.l	(sp)+, d0-d4/d6-d7/a0-a1
 	rts
 
-/* 1行: d2=行, d3=ラベルglyph, d4=値(16bit hex4桁), d5=back_base, d7=palattr。trashes d0,d1,d2 */
+/* 1項目: d2=NT内オフセット(row*128+col*2), d3=ラベルglyph, d4=値(hex4桁), d5=back_base,
+   d7=palattr。trashes d0,d1,d2 */
 dbg_put_row:
 	moveq	#0, d1
 	move.w	d2, d1
-	lsl.w	#7, d1				/* row*128 */
 	add.l	d5, d1
-	add.l	#DBG_COL*2, d1
 	move.l	d1, d0
 	bsr	set_vram_write			/* d0=dst; trashes d0,d2 */
 	move.w	d3, d1				/* ラベル */
