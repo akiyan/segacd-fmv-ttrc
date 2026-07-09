@@ -50,11 +50,11 @@ def video_panel(cv, d, rect, title, meta, seed, audio_label, audio_muted):
     cv.paste(L.dummy_image(w, h, seed), (x0, y0))        # 4:3 の動画が枠を埋める
     d.rectangle([x0, y0, x1, y1], outline=L.COL_BORDER)
 
-    # 見出し(枠の上・共通ベースライン)
-    d.text((x0 + 2, LABEL_BASE), title, fill=L.COL_TXT, font=L.f_head, anchor="ls")
+    # 見出し(枠の上・共通ベースライン)。パネル見出しは小さめ(f_lbl)。
+    d.text((x0 + 2, LABEL_BASE), title, fill=L.COL_TXT, font=L.f_lbl, anchor="ls")
     if meta:
-        d.text((x0 + 2 + L._w(L.f_head, title) + 12, LABEL_BASE), meta,
-               fill=L.COL_DIM, font=L.f_meta, anchor="ls")
+        d.text((x0 + 2 + L._w(L.f_lbl, title) + 10, LABEL_BASE), meta,
+               fill=L.COL_DIM, font=L.f_leg, anchor="ls")
 
     # 音声バッジ(枠の左下内側)。既定トラックは明るく、非既定は暗く。
     col = L.COL_DIM if audio_muted else L.COL_TXT
@@ -64,7 +64,7 @@ def video_panel(cv, d, rect, title, meta, seed, audio_label, audio_muted):
 def draw_top_title(d, data):
     """最上部: 見出しタイトル + 諸元 + 右端に同期フレームカウンタ。"""
     hx = SIDE
-    title = "MEGA-CD FMV comparison"
+    title = "SEGA-CD Tile Texture Reuse Codec Encoding Comparison Testing"
     d.text((hx, TITLE_BASE), title, fill=L.COL_TXT, font=L.f_head, anchor="ls")
     specs = " / ".join([data["mode"], data["res"], data["audio"], "%dfps" % data["fps"]])
     d.text((hx + L._w(L.f_head, title) + 14, TITLE_BASE), specs,
@@ -87,7 +87,7 @@ def main():
     d = ImageDraw.Draw(cv)
 
     draw_top_title(d, data)
-    video_panel(cv, d, CMP_L, "MEGA-CD Emulator output", "(Genesis Plus GX 1.7.4)",
+    video_panel(cv, d, CMP_L, "Real output", "(Genesis Plus GX 1.7.4)",
                 seed=31, audio_label="audio 1 · Emulator (default)", audio_muted=False)
     video_panel(cv, d, CMP_R, "Encoder ideal output", None,
                 seed=32, audio_label="audio 2 · Encoder ideal", audio_muted=True)
