@@ -13,7 +13,7 @@ automates: update layout -> update this file -> notify).
 
 ```
 +----------------------------------------------+   +-----------------------------+
-| MEGA-CD output  <meta>          <PL/Time/Fr> |   | Source  <res/fps/audio>     |
+| MEGA-CD sim output  <meta>      <PL/Time/Fr> |   | Source  <res/fps/audio>     |
 | +------------------------------------------+ |   | +-------------------------+ |
 | |                                          | |   | | source frame            | |
 | |   MEGA-CD OUTPUT (centered on the real   | |   | +-------------------------+ |
@@ -39,7 +39,7 @@ Regions (pixel rectangles in `layout_preview.py`): `MAIN_FRAME` left,
 
 ## Headings
 
-- **MEGA-CD output** (top-left): big label + a small meta line:
+- **MEGA-CD sim output** (top-left): big label + a small meta line:
   `mode / WxH (cols x rows) / audio / fps / avg N KiB/sec`.
   - `mode` = screen mode (H32 / H40 / mode4). `WxH` = encoded tile grid in
     pixels; `cols x rows` = tile grid (each tile 8x8).

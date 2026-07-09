@@ -231,9 +231,9 @@ def build_base():
     L.panel(d, L.MAIN_FRAME)
     base_y = L.MAIN_FRAME[1] - 10
     hx = L.MAIN_FRAME[0] + 2
-    d.text((hx, base_y), "MEGA-CD output", fill=L.COL_TXT, font=L.f_head, anchor="ls")
+    d.text((hx, base_y), "MEGA-CD sim output", fill=L.COL_TXT, font=L.f_head, anchor="ls")
     meta = " / ".join([MODE, RES, AUDIO_STR, "%dfps" % FPS, "avg %d KiB/sec" % AVG_KBPS])
-    d.text((hx + L._w(L.f_head, "MEGA-CD output") + 12, base_y), meta,
+    d.text((hx + L._w(L.f_head, "MEGA-CD sim output") + 12, base_y), meta,
            fill=L.COL_DIM, font=L.f_meta, anchor="ls")
     L.panel(d, L.SRC_FRAME)          # 見出しは "Source" + ソース諸元(res/fps/音声)を小フォント併記
     _sby = L.SRC_FRAME[1] - 10; _sx = L.SRC_FRAME[0] + 2

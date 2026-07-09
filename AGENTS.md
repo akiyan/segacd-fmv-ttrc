@@ -36,7 +36,7 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
   2. Output and source specs — the MEGA-CD output (mode, grid WxH, tile count,
      fps, audio, CBR rate, tank) and the Source (resolution, fps, audio).
   3. How to read the analysis layout — what each panel, meter, and timeline
-     shows and how to interpret it (left = MEGA-CD output; right = Source /
+     shows and how to interpret it (left = MEGA-CD sim output; right = Source /
      category map / per-metric flow graph; bottom status = Req / Band / Tank /
      Tank-delta / DMA plus the stacked timelines).
   4. What the encoder does — first a short list of the techniques applied, then
