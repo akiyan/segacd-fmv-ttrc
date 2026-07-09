@@ -4,14 +4,15 @@
 Analysis(layout_preview.py)と同じ流儀で、sim/ffmpeg を回さず秒で反復するためのもの。
 
 構成:
-  上 = 左右に2動画を並べる(下端はフッター開始に合わせる)
-        左  = MEGA-CD Emulator output (エミュレータ名, バージョン) ← 実機/エミュ録画
-        右  = Encoder ideal output                              ← エンコーダの理想出力
-       左右は frame 番号で同期(F00000 起点)。右上に共通 Frame カウンタ。
-       音声は2トラック作る想定(track1=Emulator が既定, track2=Encoder)。
-       どちらの音声かを各パネル左下に小さく表示。
-  下 = Analysis と共通のフッター(layout_preview.draw_footer):
-       status帯(Req/Comp/Buff/DMA + パレット + 3段タイムライン) + カテゴリ合計バー。
+  最上部 = 見出しタイトル + 諸元(mode/res/audio/fps ...) を横に並べる。右端に同期
+           フレームカウンタ(左右はこの frame 番号で同期、F00000 起点)。
+  中段  = 左右に2動画(内容は常に横長なのでパネル自体を 4:3 にして黒帯を出さない):
+            左 = MEGA-CD Emulator output (エミュレータ名, バージョン) ← 実機/エミュ録画
+            右 = Encoder ideal output                              ← エンコーダの理想出力
+          各動画の見出しは枠の上、音声どちらかのバッジは枠の左下内側。
+          音声は2トラック想定(track1=Emulator が既定, track2=Encoder)。
+  下段  = Analysis と共通のフッター(layout_preview.draw_footer):
+          status帯(Req/Comp/Buff/DMA + パレット + 3段タイムライン) + カテゴリ合計バー。
 
 レイアウトを固めたら、実データ版(render_comparison 相当)へこの描画関数を流用する。
 
@@ -22,59 +23,60 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 import layout_preview as L
 
-# 上部2枠。下端はフッター開始(STATUS_XY[1]=982)の直前=Analysis のメイン枠下端(978)に合わせる。
-TOP_Y0, TOP_Y1 = L.MAIN_FRAME[1], L.MAIN_FRAME[3]        # 52, 978
-GAP = 40
-PW = (L.CW - 40 * 2 - GAP) // 2                          # パネル幅(左右均等)
-CMP_L = (40, TOP_Y0, 40 + PW, TOP_Y1)                    # 左: MEGA-CD Emulator output
-CMP_R = (40 + PW + GAP, TOP_Y0, 40 + PW + GAP + PW, TOP_Y1)  # 右: Encoder ideal output
+# --- 最上部タイトル行 ---
+TITLE_BASE = 42                                          # タイトル/諸元/フレームの共通ベースライン
 
-DISP_AR = 4.0 / 3.0                                      # 表示アスペクト(H32 256x224 → 4:3)
+# --- 中段: 左右2枠(4:3固定=黒帯なし) ---
+SIDE = 40                                                # 左右マージン
+GAP = 40                                                 # パネル間
+PANEL_W = (L.CW - SIDE * 2 - GAP) // 2                   # 900
+PANEL_H = PANEL_W * 3 // 4                               # 675 (4:3)
+LABEL_GAP = 12                                           # パネル見出しベースライン↔枠上端
+REGION_TOP = 66                                          # タイトル行の下
+REGION_BOT = L.STATUS_XY[1] - 4                          # フッター開始の直前(978)
+# 見出し+パネルのブロックを上下中央へ
+_block_h = LABEL_GAP + 30 + PANEL_H                      # (見出し行の高さ約30 + 間 + パネル)
+PANEL_TOP = REGION_TOP + (REGION_BOT - REGION_TOP - _block_h) // 2 + (LABEL_GAP + 30)
+LABEL_BASE = PANEL_TOP - LABEL_GAP
+
+CMP_L = (SIDE, PANEL_TOP, SIDE + PANEL_W, PANEL_TOP + PANEL_H)
+CMP_R = (SIDE + PANEL_W + GAP, PANEL_TOP, SIDE + PANEL_W + GAP + PANEL_W, PANEL_TOP + PANEL_H)
 
 
 def video_panel(cv, d, rect, title, meta, seed, audio_label, audio_muted):
-    """1枠: 見出し(+meta) + 表示アスペクトでレターボックスしたダミー動画 + 左下の音声バッジ。"""
-    L.panel(d, rect)
-    by = rect[1] - 10                                    # 見出しベースライン(Analysisと共通の流儀)
-    d.text((rect[0] + 2, by), title, fill=L.COL_TXT, font=L.f_head, anchor="ls")
+    """1枠 = 4:3 の動画(黒帯なし・枠内いっぱい)。上に見出し(+meta)、左下に音声バッジ。"""
+    x0, y0, x1, y1 = rect
+    w, h = x1 - x0, y1 - y0
+    cv.paste(L.dummy_image(w, h, seed), (x0, y0))        # 4:3 の動画が枠を埋める
+    d.rectangle([x0, y0, x1, y1], outline=L.COL_BORDER)
+
+    # 見出し(枠の上・共通ベースライン)
+    d.text((x0 + 2, LABEL_BASE), title, fill=L.COL_TXT, font=L.f_head, anchor="ls")
     if meta:
-        d.text((rect[0] + 2 + L._w(L.f_head, title) + 12, by), meta,
+        d.text((x0 + 2 + L._w(L.f_head, title) + 12, LABEL_BASE), meta,
                fill=L.COL_DIM, font=L.f_meta, anchor="ls")
 
-    # 内側にレターボックス配置(黒地 + 中央にダミー映像)
-    iw = rect[2] - rect[0] - 2 * L.PAD
-    ih = rect[3] - rect[1] - 2 * L.PAD
-    if iw / ih > DISP_AR:
-        vh = ih; vw = int(round(ih * DISP_AR))
-    else:
-        vw = iw; vh = int(round(iw / DISP_AR))
-    ox = rect[0] + L.PAD + (iw - vw) // 2
-    oy = rect[1] + L.PAD + (ih - vh) // 2
-    cv.paste(Image.new("RGB", (iw, ih), (0, 0, 0)), (rect[0] + L.PAD, rect[1] + L.PAD))
-    cv.paste(L.dummy_image(vw, vh, seed), (ox, oy))
-
-    # 音声バッジ(映像の左下角の内側)。既定トラックは明るく、非既定は暗く。
+    # 音声バッジ(枠の左下内側)。既定トラックは明るく、非既定は暗く。
     col = L.COL_DIM if audio_muted else L.COL_TXT
-    d.text((ox + 8, oy + vh - 8), audio_label, fill=col, font=L.f_leg, anchor="ls")
+    d.text((x0 + 8, y1 - 8), audio_label, fill=col, font=L.f_leg, anchor="ls")
 
 
-def draw_top(cv, d, data):
-    """Comparison 上部: 左右2動画 + 同期フレームカウンタ。"""
+def draw_top_title(d, data):
+    """最上部: 見出しタイトル + 諸元 + 右端に同期フレームカウンタ。"""
+    hx = SIDE
+    title = "MEGA-CD FMV comparison"
+    d.text((hx, TITLE_BASE), title, fill=L.COL_TXT, font=L.f_head, anchor="ls")
+    specs = " / ".join([data["mode"], data["res"], data["audio"], "%dfps" % data["fps"]])
+    d.text((hx + L._w(L.f_head, title) + 14, TITLE_BASE), specs,
+           fill=L.COL_DIM, font=L.f_meta, anchor="ls")
+
+    # 右端: 同期フレームカウンタ(左右はこの frame 番号で同期、F00000 起点)
     frame = data["frame"]
-    video_panel(cv, d, CMP_L,
-                "MEGA-CD Emulator output", "(Genesis Plus GX 1.7.4)",
-                seed=31, audio_label="audio 1 · Emulator (default)", audio_muted=False)
-    video_panel(cv, d, CMP_R,
-                "Encoder ideal output", None,
-                seed=32, audio_label="audio 2 · Encoder ideal", audio_muted=True)
-
-    # 右上に共通フレームカウンタ(左右はこの frame 番号で同期。F00000 起点)。右端揃え。
-    by = TOP_Y0 - 10
     lab = "sync Frame:"
     fw = L._w(L.f_meta, lab) + L._w(L.f_meta, str(frame).rjust(5, "0"))
-    fx = CMP_R[2] - fw
-    fy = by - L.f_meta.getmetrics()[0]
-    d.text((fx, by), lab, fill=L.COL_DIM, font=L.f_meta, anchor="ls")
+    fx = L.CW - SIDE - fw
+    fy = TITLE_BASE - L.f_meta.getmetrics()[0]
+    d.text((fx, TITLE_BASE), lab, fill=L.COL_DIM, font=L.f_meta, anchor="ls")
     L.draw_padnum(d, fx + L._w(L.f_meta, lab), fy, frame, 5, L.f_meta, L.COL_TXT)
 
 
@@ -84,7 +86,11 @@ def main():
     cv = Image.new("RGB", (L.CW, L.CH), L.BG)
     d = ImageDraw.Draw(cv)
 
-    draw_top(cv, d, data)
+    draw_top_title(d, data)
+    video_panel(cv, d, CMP_L, "MEGA-CD Emulator output", "(Genesis Plus GX 1.7.4)",
+                seed=31, audio_label="audio 1 · Emulator (default)", audio_muted=False)
+    video_panel(cv, d, CMP_R, "Encoder ideal output", None,
+                seed=32, audio_label="audio 2 · Encoder ideal", audio_muted=True)
     L.draw_footer(cv, data)                              # Analysis と共通フッター
 
     out = Path("tmp/comparison_preview.png")

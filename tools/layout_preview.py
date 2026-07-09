@@ -478,17 +478,14 @@ def draw_cattotals(w, h, data):
         if seg > 0:
             d.rectangle([px, bar_top, px + seg, bar_bottom], fill=col); px += seg
     d.rectangle([bar_l, bar_top, bar_r, bar_bottom], outline=COL_FRAME_IN)
-    uniq = data.get("cat_uniq", {})          # ユニーク数/総数 を併記(ラベルなし)
-    ly = bar_top - 19                        # 1行凡例(四角+数)をバー直上へ寄せる
+    ly = bar_top - 19                        # 1行凡例(四角+合計数)をバー直上へ寄せる
     # 等間隔でなく左から書き連ねる(全編固定値・重なり防止)。数字は四角の下線にベースラインを揃える
     x = 6
     ty = ly + 11 - f_sm.getmetrics()[0]      # 四角(ly..ly+11)の下線にベースラインを合わせる
     for name, col in CATS:
         swatch(d, x, ly, 11, name, col); x += 11 + 5
-        if name in UNIQ_CATS and name in uniq:
-            x = draw_field(d, x, ty, "", uniq[name], 1, f_sm, COL_TXT, tot[name], 1)
-        else:
-            s = str(tot[name]); d.text((x, ty), s, fill=COL_TXT, font=f_sm); x += _w(f_sm, s)
+        s = str(tot[name])                   # 合計値のみ(ユニーク数併記は廃止)
+        d.text((x, ty), s, fill=COL_TXT, font=f_sm); x += _w(f_sm, s)
         x += 14                              # 項目間ギャップ
     GL = (85, 85, 92)                        # 下横ガイドラインのみ(タイムライン下端に合わせる)。
     d.line([(bar_l, bar_bottom), (bar_r, bar_bottom)], fill=GL)   # metric↔バーの縦線は削除
