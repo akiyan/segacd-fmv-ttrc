@@ -67,7 +67,10 @@ Next 16 bytes: `struct ">LLLL"`.
 
 Then:
 
-- bytes 38..63 are zero;
+- byte 38: display mode. `0` = H32, `1` = H40, `2` = mode4 reserved for a
+  future player path. If absent or zero in old streams, the player treats it as
+  H32.
+- bytes 39..63 are zero;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
 - remainder up to 2048 is zero.

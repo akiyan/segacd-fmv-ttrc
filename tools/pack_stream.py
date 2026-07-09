@@ -387,9 +387,15 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     prebuf_bytes = payload[:Bpat * PAT]
     prebuf_sec = -(-len(prebuf_bytes) // SECTOR)
     ring_peak = int(sc["ring_peak"])
+    # Display mode (offset 38): 0=H32 / 1=H40 / 2=mode4. Prefer CBRSIM_MODE;
+    # fall back to tcols (40 columns means H40). Reserved zero remains H32 for
+    # backward compatibility with existing streams.
+    _mode = {"H32": 0, "H40": 1, "mode4": 2}.get(
+        os.environ.get("CBRSIM_MODE", "").strip(), 1 if TCOLS == 40 else 0)
     header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
+    header += bytes([_mode])                       # offset 38: display mode
     header += b"\0" * (64 - len(header)) + seg0
     header += b"\0" * (SECTOR - len(header))
     pc = Bpat * PAT; cc = 0
