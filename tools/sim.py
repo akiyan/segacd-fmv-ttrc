@@ -5,7 +5,7 @@
 - 前処理でディザ除去: 元動画は低解像度+ディザなので、一度拡大してフルカラー化
   しノイズ(ディザ斑点)を除去してから変換する。これに引っ張られて量子化が
   荒れるのを防ぐ。実装は crop→3-4x lanczos→hqdn3d+gblur→256x144 の master。
-- 解像度: MEGA-CD側は H32 の幅 256px。高さ144(=32x18=576セル)。
+- 解像度: SEGA-CD側は H32 の幅 256px。高さ144(=32x18=576セル)。
   表示アスペクトは 256/144 × H32 PAR(7:6) = 2.074 で、元動画 320:144 × Saturn
   PAR(14:15) = 2.074 に一致する(=正しい表示比)。
 - パレット: 4本×15色をクリップ全体から学習し固定・共有(per-frameではない)。
@@ -448,7 +448,7 @@ def main():
         print(f"  per-segment palettes: {len(seg_pals)}区間, 暗転差替 {len(seg_bounds)}点")
     _t = _mark("パレット学習", _t)
 
-    main_dir = OUT / "preview"      # MEGA-CD 実出力(ゴースト有り)
+    main_dir = OUT / "preview"      # SEGA-CD 実出力(ゴースト有り)
     catmap_dir = OUT / "catmap"     # Same/Dedup/Buf を縁取り(Raw/Missは枠なし)
     misscarry_dir = OUT / "misscarry"  # Miss(赤)/MissCarry(amber) を縁取り
     if not NO_PANELS:

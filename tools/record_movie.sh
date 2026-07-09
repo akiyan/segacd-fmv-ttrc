@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# record_movie.sh - record the Mega-CD disc playback to a shareable mp4.
+# record_movie.sh - record the Sega CD disc playback to a shareable mp4.
 #
 # Wraps tools/run_headless.sh --record-realtime (RetroArch + Genesis Plus GX
 # FFmpeg recorder under Xvfb), selects an audible window by default, and

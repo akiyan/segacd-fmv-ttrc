@@ -41,7 +41,7 @@ REAL_MP4 = os.environ.get("CMP_REAL", "videos/machi_op_mode4_256x192_emu.mp4")
 OUT_MP4 = os.environ.get("CMP_OUT", "videos/comparison.mp4")
 FPS_OUT = int(os.environ.get("CMP_FPS", "15"))
 EMU_META = os.environ.get("CMP_EMU", "(Genesis Plus GX 1.7.4)")
-TITLE = "SEGA-CD Tile Texture Reuse Codec Encoding Comparison Testing"
+TITLE = "SEGA-CD Tile Texture Reuse Codec: Real vs Ideal"
 
 WORK = Path(OUT_MP4).with_suffix("")
 FR_REAL = WORK / "real"; FR_OUT = WORK / "frames"

@@ -24,19 +24,19 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 
 - **Language**: English. In descriptions, write English first, then the same
   content in Japanese after it.
-- **Title**: English, fixed format `MEGA-CD FMV of <work> - <specs>`.
+- **Title**: English, fixed format `SEGA-CD FMV of <work> - <specs>`.
   - `<work>`: the work name. For a native/kanji title, give the
     transliteration followed by the native title in parentheses, e.g.
     `Romaji (native)`. A romaji-only work needs no parentheses.
   - `<specs>`: the descriptive spec suffix (mode, resolution/grid, "max
     resolution", etc.). No version numbers.
-  - Example: `MEGA-CD FMV of <Work> - mode4 max resolution 256x176/32x22`.
+  - Example: `SEGA-CD FMV of <Work> - mode4 max resolution 256x176/32x22`.
 - **Description structure** (in both languages, in this order):
   1. Overview — one or two lines on what the video is.
-  2. Output and source specs — the MEGA-CD output (mode, grid WxH, tile count,
+  2. Output and source specs — the SEGA-CD output (mode, grid WxH, tile count,
      fps, audio, CBR rate, tank) and the Source (resolution, fps, audio).
   3. How to read the analysis layout — what each panel, meter, and timeline
-     shows and how to interpret it (left = MEGA-CD sim output; right = Source /
+     shows and how to interpret it (left = SEGA-CD sim output; right = Source /
      category map / per-metric flow graph; bottom status = Req / Band / Tank /
      Tank-delta / DMA plus the stacked timelines).
   4. What the encoder does — first a short list of the techniques applied, then
@@ -83,7 +83,7 @@ tools/sim.py -> tools/pack_stream.py -> boot/movieplay_*.s
 The stream output is `MOVIE.DAT` using the TTRC layout.
 
 Resolution, aspect, frame rate, and audio are **per-source encoder settings**
-within Mega-CD limits, not fixed presets:
+within Sega CD limits, not fixed presets:
 
 - Display mode / resolution / aspect (H32 / H40 / mode4), tile grid sized to the
   per-frame DMA budget.
@@ -116,7 +116,7 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
-- `<resolution>`: the Mega-CD output resolution in pixels, `WxH` (e.g. `256x144`).
+- `<resolution>`: the Sega CD output resolution in pixels, `WxH` (e.g. `256x144`).
 - `<audio-format>`: e.g. `adpcm`, `adpcm22`, `pcm`.
 
 ## Hardware Facts

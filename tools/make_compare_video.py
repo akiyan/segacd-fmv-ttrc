@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""MEGA-CD化 と SSオリジナル を左右に並べた比較動画を生成する。
+"""SEGA-CD化 と SSオリジナル を左右に並べた比較動画を生成する。
 
 レイアウト（静的部分=ラベル/枠線/諸元）を PIL で base.png に焼き、その上に
-左=MEGA-CD録画 / 右=オリジナル(op.mp4) を ffmpeg で overlay 合成する。音声は
-MEGA-CD側を使う。右(オリジナル)は本編しか無いので、MEGA-CD本編の開始に合わせて
+左=SEGA-CD録画 / 右=オリジナル(op.mp4) を ffmpeg で overlay 合成する。音声は
+SEGA-CD側を使う。右(オリジナル)は本編しか無いので、SEGA-CD本編の開始に合わせて
 黒で待機→遅延同期させる。
 
 同期(右の遅延 D と速度係数 k):
   右フレームの出力時刻 = D + op_time * k
-  これを左(MEGA-CD)の同シーン出力時刻に一致させる。既定 D,k は実証済みの値。
+  これを左(SEGA-CD)の同シーン出力時刻に一致させる。既定 D,k は実証済みの値。
   --verify を付けると生成後に左右パネルの輝度を相互相関して残差を測り報告する。
   --auto-sync は既定値から始めて「レンダリング→残差測定→線形フィット補正」を残差が
   1フレーム弱を切るまで繰り返す(最大3反復)。源が同じ録画なら既定値のままで十分。
-  注意: op を MEGA-CD 全長から直接探す相互相関は反復パターンで誤マッチしやすいため、
+  注意: op を SEGA-CD 全長から直接探す相互相関は反復パターンで誤マッチしやすいため、
   ここでは採らず、合成結果の左右残差を実測して詰める方式にしている。
 
 fps: 出力は既定60fps。録画は59.94fps・本編は実質14.985fps、オリジナルは15fps
@@ -50,11 +50,11 @@ LX = ML                    # 左動画の左端
 RX = ML + VW + GAP         # 右動画の左端
 
 # ---- 諸元テキスト -------------------------------------------------------------
-LEFT_LABEL = "MEGA-CD化"
+LEFT_LABEL = "SEGA-CD化"
 RIGHT_LABEL = "SSオリジナル"
 
 LEFT_SPECS = [
-    "Mega-CD (Sega CD)",
+    "Sega CD (Sega CD)",
     "256x144 表示 (H32) / 15fps",
     "per-tile 差分 + dedup + 4パレット",
     "色 毎フレーム最大60色 (4パレット×15)",
@@ -80,7 +80,7 @@ DEFAULT_PALETTE = "out/video/061_160x96_global4/palettes.bin"
 def count_colors(palette_path):
     """global4 palettes.bin から '最大N色 / 実使用M色' の文字列を作る。
 
-    Mega Drive は 4パレット×16エントリ。各パレットの index0 は透過扱いなので
+    Genesis は 4パレット×16エントリ。各パレットの index0 は透過扱いなので
     使用可能は 15*4=60 色。実使用は全パレットの非index0スロットの相異なる色数。
     """
     p = Path(palette_path)
@@ -186,7 +186,7 @@ def verify(out, fps=15):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--left", help="MEGA-CD録画(左)。既定は tmp/v003_final.txt の中身")
+    ap.add_argument("--left", help="SEGA-CD録画(左)。既定は tmp/v003_final.txt の中身")
     ap.add_argument("--right", default="assets/op.mp4", help="オリジナル(右)")
     ap.add_argument("--out", default="tmp/compare60.mp4")
     ap.add_argument("--fps", type=float, default=60)

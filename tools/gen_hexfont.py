@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a 16-glyph hex font (0-F) as Mega Drive 4bpp tiles.
+"""Generate a 16-glyph hex font (0-F) as Genesis 4bpp tiles.
 
 Output: boot/hexfont.bin = 16 tiles * 32 bytes = 512 bytes.
 Glyph N (0..15) is tile N; set pixels use colour index 1, background 0.

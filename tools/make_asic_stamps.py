@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert a 160x80 movie frame (20x10 8x8 tiles) into Mega-CD Graphics-ASIC
+"""Convert a 160x80 movie frame (20x10 8x8 tiles) into Sega CD Graphics-ASIC
 stamp data + stamp map for a 2x upscale to 320x160.
 
 A 16x16 stamp = 2x2 source tiles, so the 20x10 source becomes a 10x5 grid of

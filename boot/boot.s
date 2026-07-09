@@ -1,8 +1,8 @@
 /*
- * Mega-CD boot sector.
+ * Sega CD boot sector.
  *
- * The BIOS loads the IP for the Mega Drive 68000 and the SP for the
- * Mega-CD sub 68000 from the first 16 sectors of the data track.
+ * The BIOS loads the IP for the Genesis 68000 and the SP for the
+ * Sega CD sub 68000 from the first 16 sectors of the data track.
  */
 
 DiscHeader:

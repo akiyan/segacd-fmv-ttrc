@@ -1,5 +1,5 @@
 /*
- * Mega-CD System Program - continuous-stream movie player (Sub side).
+ * Sega CD System Program - continuous-stream movie player (Sub side).
  *
  * Boot:   COMCMD0 = 1 (CMD_LOAD_M_INIT) loads M_INIT.PRG to 2M Word RAM and the
  *         1-sector PROBE.BIN header to PROBE_DATA_2M, records probe_base_lba.

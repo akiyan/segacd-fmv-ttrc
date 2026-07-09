@@ -1,5 +1,5 @@
 /*
- * Mega-CD boot sector for the isolated CDC throughput test.
+ * Sega CD boot sector for the isolated CDC throughput test.
  *
  * Same layout as boot.s / test1m_boot.s but embeds the cdcbench IP/SP.
  */

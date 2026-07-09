@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a small ASCII glyph font as Mega Drive 4bpp tiles for the CD-DA screen.
+"""Generate a small ASCII glyph font as Genesis 4bpp tiles for the CD-DA screen.
 
 Output: boot/opfont.bin = len(ORDER) tiles * 32 bytes.
 Set pixels use colour index 1, background 0. Glyph i is tile i; the Main CPU

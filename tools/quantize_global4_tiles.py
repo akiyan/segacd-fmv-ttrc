@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quantize a movie to 4 fixed global Mega Drive palettes with per-tile palette
+"""Quantize a movie to 4 fixed global Genesis palettes with per-tile palette
 selection, and export uncompressed VDP tile data for the continuous-stream
 player.
 

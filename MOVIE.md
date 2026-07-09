@@ -2,7 +2,7 @@
 
 `MOVIE.DAT` is the on-disc stream of the **Tile Texture Reuse Codec** — the
 current encoder/player path. It is written by `tools/pack_stream.py` from the
-`tools/sim.py` decision log, and read by the Mega-CD player (`boot/movieplay_sp.s`
+`tools/sim.py` decision log, and read by the Sega CD player (`boot/movieplay_sp.s`
 streams it, `boot/movieplay_ip.s` displays it). This document describes the
 on-disc byte layout exactly.
 
@@ -73,7 +73,7 @@ Then:
 - remainder up to 2048 is zero.
 
 A 128-byte CRAM block is 4 palette lines x 16 words; each word is
-`0000BBB0GGG0RRR0` (Mega Drive colour). Only 15 of the 16 entries per line are
+`0000BBB0GGG0RRR0` (Genesis colour). Only 15 of the 16 entries per line are
 usable colour (entry 0 = transparent).
 
 ## Routing table

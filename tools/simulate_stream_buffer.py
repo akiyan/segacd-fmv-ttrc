@@ -57,7 +57,7 @@ def simulate(frame_sizes, duration, audio_bytes, buffer_size, initial_fill, cd_b
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Simulate Mega-CD streaming ring buffer.")
+    parser = argparse.ArgumentParser(description="Simulate Sega CD streaming ring buffer.")
     parser.add_argument("--root", default="out/video/061_full_15fps_288x112_nodither")
     parser.add_argument("--audio", default="out/video/audio_test/061_full_13k3_mono_adpcm.wav")
     parser.add_argument("--format", choices=["huff", "rle_huff"], default="huff")

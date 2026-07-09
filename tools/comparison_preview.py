@@ -7,7 +7,7 @@ Analysis(layout_preview.py)と同じ流儀で、sim/ffmpeg を回さず秒で反
   最上部 = 見出しタイトル + 諸元(mode/res/audio/fps ...) を横に並べる。右端に同期
            フレームカウンタ(左右はこの frame 番号で同期、F00000 起点)。
   中段  = 左右に2動画(内容は常に横長なのでパネル自体を 4:3 にして黒帯を出さない):
-            左 = MEGA-CD Emulator output (エミュレータ名, バージョン) ← 実機/エミュ録画
+            左 = Real output (エミュレータ名, バージョン) ← 実機/エミュ録画
             右 = Encoder ideal output                              ← エンコーダの理想出力
           各動画の見出しは枠の上、音声どちらかのバッジは枠の左下内側。
           音声は2トラック想定(track1=Emulator が既定, track2=Encoder)。
@@ -64,7 +64,7 @@ def video_panel(cv, d, rect, title, meta, seed, audio_label, audio_muted):
 def draw_top_title(d, data):
     """最上部: 見出しタイトル + 諸元 + 右端に同期フレームカウンタ。"""
     hx = SIDE
-    title = "SEGA-CD Tile Texture Reuse Codec Encoding Comparison Testing"
+    title = "SEGA-CD Tile Texture Reuse Codec: Real vs Ideal"
     d.text((hx, TITLE_BASE), title, fill=L.COL_TXT, font=L.f_head, anchor="ls")
     specs = " / ".join([data["mode"], data["res"], data["audio"], "%dfps" % data["fps"]])
     d.text((hx + L._w(L.f_head, title) + 14, TITLE_BASE), specs,

@@ -14,7 +14,7 @@ real-data renderer is `tools/render_comparison.py`. Both reuse
 
 ```
 +----------------------------------------------------------------------+
-| SEGA-CD Tile Texture Reuse Codec Encoding Comparison Testing  <specs> |   <sync Frame:NNNNN>
+| SEGA-CD Tile Texture Reuse Codec: Real vs Ideal  <specs>     <sync Frame:NNNNN>
 +---------------------------------+   +--------------------------------+
 | Real output <emu name/ver>      |   | Encoder ideal output           |
 | +-----------------------------+ |   | +----------------------------+ |
@@ -38,7 +38,7 @@ analysis overlay.
 
 ## Top title
 
-- Big title `SEGA-CD Tile Texture Reuse Codec Encoding Comparison Testing`, plus
+- Big title `SEGA-CD Tile Texture Reuse Codec: Real vs Ideal`, plus
   a small spec line `mode / WxH (cols x rows) / audio / fps` (from the sim
   output, same fields as the analysis heading).
 - Right edge: `sync Frame:NNNNN` — the movie frame both panels are showing.
@@ -50,7 +50,7 @@ analysis overlay.
   black bar) is baked into the recording; the leading `F` field is the movie
   frame number in hex. Small `<emu name/ver>` next to the label.
 - **Encoder ideal output** (right): the offline encoder's decoded frames
-  (`CBRSIM_OUT/preview`, no overlay), placed on the same Mega-CD screen so both
+  (`CBRSIM_OUT/preview`, no overlay), placed on the same Sega CD screen so both
   panels frame the picture identically.
 - Each panel carries a small audio badge in its lower-left: track 1 = Emulator
   (default, bright) on the left, track 2 = Encoder ideal (dim) on the right.
@@ -121,7 +121,7 @@ side-by-side, `videos/<stem>_sim.mp4` for the straight sim clip,
 ## Known limitations / TODO
 
 - **Panel geometry (deferred):** the emulator's display mode / overscan geometry
-  differs from the sim, so placing the 256x144 ideal content onto the Mega-CD
+  differs from the sim, so placing the 256x144 ideal content onto the Sega CD
   screen to match the recording exactly is not yet a clean spec-only calculation.
   The default is the geometric center (`(SCREEN_H - CONTENT_H) / 2`); the measured
   emulator placement is a few pixels higher (`CMP_PADY` overrides). To be

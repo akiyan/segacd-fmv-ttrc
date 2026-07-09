@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# run_headless.sh - headless Mega-CD smoke/capture harness.
+# run_headless.sh - headless Sega CD smoke/capture harness.
 #
 # Boots a built disc image in RetroArch + Genesis Plus GX under Xvfb, presses
-# START a few times to get past the Mega-CD BIOS / CD player, then captures the
+# START a few times to get past the Sega CD BIOS / CD player, then captures the
 # screen at a fixed interval and tiles the frames into a contact sheet. Used to
 # verify boot / video progression / on-screen counters without a display.
 #

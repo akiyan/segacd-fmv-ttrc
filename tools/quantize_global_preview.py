@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Quantize a movie to a single global Mega Drive palette and write a preview mp4.
+"""Quantize a movie to a single global Genesis palette and write a preview mp4.
 
-Colours are snapped to the Mega Drive 512-colour space (3 bits/channel) and then
+Colours are snapped to the Genesis 512-colour space (3 bits/channel) and then
 reduced to one global palette of N colours (weighted k-means over every frame).
 Unlike quantize_md_video.py (per-frame 15-colour CRAM banks) this produces one
 fixed palette for the whole clip - useful for previewing how a small frame looks

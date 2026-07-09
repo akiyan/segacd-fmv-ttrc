@@ -1,5 +1,5 @@
 /*
- * asictest - Sub (SP) side: 2x upscale 160x80 -> 320x160 using the Mega-CD
+ * asictest - Sub (SP) side: 2x upscale 160x80 -> 320x160 using the Sega CD
  * Graphics ASIC (stamp / trace-table scaler), in 2M Word RAM mode.
  *
  * Embedded ASIC.DAT (incbin) layout:

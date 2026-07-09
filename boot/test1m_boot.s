@@ -1,5 +1,5 @@
 /*
- * Mega-CD boot sector for the 1M Word RAM swap self-test.
+ * Sega CD boot sector for the 1M Word RAM swap self-test.
  *
  * Same layout as boot.s but embeds the test IP/SP instead of the movie ones.
  */

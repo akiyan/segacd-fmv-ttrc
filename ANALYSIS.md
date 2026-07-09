@@ -13,10 +13,10 @@ automates: update layout -> update this file -> notify).
 
 ```
 +----------------------------------------------+   +-----------------------------+
-| MEGA-CD sim output  <meta>      <PL/Time/Fr> |   | Source  <res/fps/audio>     |
+| SEGA-CD sim output  <meta>      <PL/Time/Fr> |   | Source  <res/fps/audio>     |
 | +------------------------------------------+ |   | +-------------------------+ |
 | |                                          | |   | | source frame            | |
-| |   MEGA-CD OUTPUT (centered on the real   | |   | +-------------------------+ |
+| |   SEGA-CD OUTPUT (centered on the real   | |   | +-------------------------+ |
 | |   screen; letterboxed to the panel)      | |   +-----------------------------+
 | |                                          | |   | +-------------------------+ |
 | |                                          | |   | | CATEGORY MAP            | |
@@ -39,7 +39,7 @@ Regions (pixel rectangles in `layout_preview.py`): `MAIN_FRAME` left,
 
 ## Headings
 
-- **MEGA-CD sim output** (top-left): big label + a small meta line:
+- **SEGA-CD sim output** (top-left): big label + a small meta line:
   `mode / WxH (cols x rows) / audio / fps / avg N KiB/sec`.
   - `mode` = screen mode (H32 / H40 / mode4). `WxH` = encoded tile grid in
     pixels; `cols x rows` = tile grid (each tile 8x8).
@@ -54,7 +54,7 @@ Regions (pixel rectangles in `layout_preview.py`): `MAIN_FRAME` left,
 
 ## Main panel (left)
 
-The reconstructed MEGA-CD output. It is centered on the *real hardware screen*
+The reconstructed SEGA-CD output. It is centered on the *real hardware screen*
 (e.g. 256x224 for H32) and letterboxed into the panel at 4:3 - it is **not**
 stretched to fill. Low-resolution grids therefore appear at their true on-screen
 size.

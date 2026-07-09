@@ -1,9 +1,9 @@
 ---
 name: record-mcd
-description: Project skill for recording a built Mega-CD disc, such as out/MOVIEPLAY.cue, with RetroArch + Genesis Plus GX in headless mode, trimming the BIOS/CD-player/START lead-in, and producing a shareable MP4. Use for requests like "record it", "capture playback as video", "record the OP", "verify the recording", or "/record-mcd". The implementation is tools/record_movie.sh, tools/run_headless.sh, and tools/verify_recording.sh. out/ and tmp/ are gitignored.
+description: Project skill for recording a built Sega CD disc, such as out/MOVIEPLAY.cue, with RetroArch + Genesis Plus GX in headless mode, trimming the BIOS/CD-player/START lead-in, and producing a shareable MP4. Use for requests like "record it", "capture playback as video", "record the OP", "verify the recording", or "/record-mcd". The implementation is tools/record_movie.sh, tools/run_headless.sh, and tools/verify_recording.sh. out/ and tmp/ are gitignored.
 ---
 
-# record-mcd: Mega-CD Playback Recording Skill
+# record-mcd: Sega CD Playback Recording Skill
 
 Record a built disc with RetroArch + Genesis Plus GX headless mode using
 RetroArch's built-in FFmpeg recorder. Trim the BIOS / CD player / START lead-in
@@ -28,7 +28,7 @@ Required tools:
 - `ffmpeg` / `ffprobe`
 - `python3`
 
-The Mega-CD BIOS must be available in RetroArch's system directory. Environment
+The Sega CD BIOS must be available in RetroArch's system directory. Environment
 overrides:
 
 ```sh

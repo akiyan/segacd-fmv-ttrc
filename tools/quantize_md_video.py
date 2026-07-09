@@ -327,7 +327,7 @@ def write_huffman_outputs(out_dir, frame_tiles, width, height):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Quantize a movie preview to Mega Drive-style 15-color CRAM1 frames.")
+    parser = argparse.ArgumentParser(description="Quantize a movie preview to Genesis-style 15-color CRAM1 frames.")
     parser.add_argument("--input", default="movies/disc1/061.mp4")
     parser.add_argument("--output-dir", default="out/video/061_md15")
     parser.add_argument("--start", default="0")
@@ -457,7 +457,7 @@ def main():
                 f"preview={preview_mp4.name}",
                 "idx_format=packed 4bpp, high nibble first, indices 1..15",
                 f"tile_format=VDP tile order, {huff_stats['tiles_per_frame']} tiles/frame, 32 bytes/tile",
-                "pal_format=16 big-endian words, word0 reserved, words1..15 are Mega Drive 0BGR CRAM words",
+                "pal_format=16 big-endian words, word0 reserved, words1..15 are Genesis 0BGR CRAM words",
                 "huff_codebook=huff/code_lengths.bin, 256 canonical Huffman code lengths",
                 "huff_table=huff/chunks.tbl, entries are u32 offset + u16 byte_count + u16 bit_count",
                 "huff_data=huff/chunks.bin",

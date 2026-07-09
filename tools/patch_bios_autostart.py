@@ -10,7 +10,7 @@ PATCH_ALL_BUTTONS = bytes.fromhex("1e3c00ff")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Patch JP Mega-CD BIOS for headless auto-start checks.")
+    parser = argparse.ArgumentParser(description="Patch JP Sega CD BIOS for headless auto-start checks.")
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument(

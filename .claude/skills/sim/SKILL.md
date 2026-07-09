@@ -5,12 +5,12 @@ description: Project skill for encoding an arbitrary video source with the delta
 
 # /sim: Source Video -> Delta Codec -> Analysis Video
 
-Encode any video with the Mega-CD delta stream codec and produce the usual
+Encode any video with the Sega CD delta stream codec and produce the usual
 1920x1080 analysis video.
 
 The analysis frame contains:
 
-- left: Mega-CD output
+- left: Sega CD output
 - right column: Source, category map, Miss + MissCarry map
 - bottom: status bar and palette state
 
@@ -176,7 +176,7 @@ Important rendering notes:
   - DMA is compared against theoretical `(60/fps)` VBlank budget
   - heading metadata plus small top-right Time / Frame, baseline-aligned
   - palette used-color blocks have no outline
-- The main Mega-CD output is centered exactly like hardware. Do not scale low
+- The main Sega CD output is centered exactly like hardware. Do not scale low
   resolution content to fill the panel. In H32 it is centered inside a 256x224
   screen and then displayed as a 4:3 panel.
 - Source and Category panels should fit with letterboxing when needed.
@@ -193,9 +193,9 @@ Important rendering notes:
 PY=~/.config/youtube/venv/bin/python
 [ -x "$PY" ] || PY=python3
 "$PY" ~/.claude/skills/youtube/youtube.py upload videos/<stem>_analysis.mp4 \
-  --title "<source name> OP MEGA-CD delta codec analysis (WxH/WcxHc/fps/aspect/13.3kHz) YYYYMMDD" \
+  --title "<source name> OP SEGA-CD delta codec analysis (WxH/WcxHc/fps/aspect/13.3kHz) YYYYMMDD" \
   --desc "<specs, four-rule choices, starvation rate>" \
-  --tags "MEGA-CD,SegaCD,FMV,homebrew,codec" \
+  --tags "SEGA-CD,SegaCD,FMV,homebrew,codec" \
   --category 20 --privacy unlisted
 ```
 

@@ -23,7 +23,7 @@
 
 	.incbin "security.bin"
 
-	/* Some Mega-CD security blocks continue at 0x156, while common BIOS
+	/* Some Sega CD security blocks continue at 0x156, while common BIOS
 	   documentation describes post-security execution at 0x584. Keep a
 	   branch stub at 0x156 and put the real program at 0x584 so either
 	   path reaches the same code. */

@@ -3,7 +3,7 @@
 
 For each adjacent pair, insert 4 linearly-blended (crossfade) intermediate
 frames. Originals hold 1.0s; each interpolated frame holds 0.05s. The whole
-sequence is quantised to 4 fixed global Mega Drive palettes (60 colours) with
+sequence is quantised to 4 fixed global Genesis palettes (60 colours) with
 per-8x8-tile palette selection, then encoded to mp4.
 """
 import sys

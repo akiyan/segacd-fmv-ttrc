@@ -4,7 +4,7 @@ sim/ffmpeg を回さず秒で反復するためのもの。ここでレイアウ
 make_base.py / render_statusline.py / sim.py(catmap) / compose に反映する。
 
 新レイアウト(この版):
-  左  = MEGA-CD sim output(4:3枠) + 下に status帯
+  左  = SEGA-CD sim output(4:3枠) + 下に status帯
   右  = Source / Category(Miss赤枠を内包) / [カテゴリ枠の下]凡例(2行) / 流れる線グラフ
         ※ Miss&MissCarryパネルは廃止。凡例の元位置(枠の上)は margin として残す。
   下右 = パレット状態パネル
@@ -524,10 +524,10 @@ def main():
     panel(d, MAIN_FRAME)
     BASE_Y = MAIN_FRAME[1] - 10                    # 上部テキストの共通ベースライン
     hx = MAIN_FRAME[0] + 2
-    d.text((hx, BASE_Y), "MEGA-CD sim output", fill=COL_TXT, font=f_head, anchor="ls")
+    d.text((hx, BASE_Y), "SEGA-CD sim output", fill=COL_TXT, font=f_head, anchor="ls")
     meta = " / ".join([data["mode"], data["res"], data["audio"],
                        "%dfps" % data["fps"], "avg %d KiB/sec" % data["avg_kbps"]])
-    d.text((hx + _w(f_head, "MEGA-CD sim output") + 12, BASE_Y), meta, fill=COL_DIM, font=f_meta, anchor="ls")
+    d.text((hx + _w(f_head, "SEGA-CD sim output") + 12, BASE_Y), meta, fill=COL_DIM, font=f_meta, anchor="ls")
     panel(d, SRC_FRAME)          # 見出しは "Source" + ソース諸元(res/fps/音声)を小フォント併記
     _sby = SRC_FRAME[1] - 10; _sx = SRC_FRAME[0] + 2
     d.text((_sx, _sby), "Source", fill=COL_TXT, font=f_head, anchor="ls")

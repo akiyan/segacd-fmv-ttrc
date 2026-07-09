@@ -1,5 +1,5 @@
 /*
- * Mega-CD boot sector for the continuous-stream self-test.
+ * Sega CD boot sector for the continuous-stream self-test.
  * Same layout as boot.s but embeds the streamtest IP/SP.
  */
 

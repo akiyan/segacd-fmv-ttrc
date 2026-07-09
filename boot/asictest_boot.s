@@ -1,5 +1,5 @@
 /*
- * Mega-CD boot sector for the ASIC 2x-upscale self-test.
+ * Sega CD boot sector for the ASIC 2x-upscale self-test.
  * Same layout as boot.s; embeds the asictest IP/SP (SP carries ASIC.DAT).
  */
 

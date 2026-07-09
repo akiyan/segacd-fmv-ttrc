@@ -2,7 +2,7 @@
 """比較動画の静的背景PNG(base.png)を生成する。高さ1080ネイティブ(文字くっきり)。
 
 2カラム構成:
-  左  = MEGA-CD sim output(実機画面, 4:3黒帯) + status帯 + 1行メタ
+  左  = SEGA-CD sim output(実機画面, 4:3黒帯) + status帯 + 1行メタ
   右  = 3段: Source / カテゴリマップ / Miss+MissCarryマップ(いずれも黒帯なし)
 右パネルの下端はメイン枠の下端(ガイドライン)に合わせる。カテゴリ/Miss段の凡例と
 カウントは render_statusline が per-frame で描く(catleg/missleg)ので base には描かない。
@@ -42,7 +42,7 @@ def main():
         d.rectangle(list(rect), outline=(200, 200, 200))
 
     src_label = os.environ.get("CBRSIM_SRCLABEL", "Source")
-    frame(MAIN_FRAME, "MEGA-CD sim output")
+    frame(MAIN_FRAME, "SEGA-CD sim output")
     frame(SRC_FRAME, src_label)
     frame(CAT_FRAME)     # 見出し=catleg(per-frame)
     frame(MISS_FRAME)    # 見出し=missleg(per-frame)

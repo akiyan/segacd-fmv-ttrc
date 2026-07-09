@@ -231,9 +231,9 @@ def build_base():
     L.panel(d, L.MAIN_FRAME)
     base_y = L.MAIN_FRAME[1] - 10
     hx = L.MAIN_FRAME[0] + 2
-    d.text((hx, base_y), "MEGA-CD sim output", fill=L.COL_TXT, font=L.f_head, anchor="ls")
+    d.text((hx, base_y), "SEGA-CD sim output", fill=L.COL_TXT, font=L.f_head, anchor="ls")
     meta = " / ".join([MODE, RES, AUDIO_STR, "%dfps" % FPS, "avg %d KiB/sec" % AVG_KBPS])
-    d.text((hx + L._w(L.f_head, "MEGA-CD sim output") + 12, base_y), meta,
+    d.text((hx + L._w(L.f_head, "SEGA-CD sim output") + 12, base_y), meta,
            fill=L.COL_DIM, font=L.f_meta, anchor="ls")
     L.panel(d, L.SRC_FRAME)          # 見出しは "Source" + ソース諸元(res/fps/音声)を小フォント併記
     _sby = L.SRC_FRAME[1] - 10; _sx = L.SRC_FRAME[0] + 2
@@ -377,7 +377,7 @@ def frame_data(i):
 def render(i):
     data = frame_data(i)
     cv = BASE.copy()
-    # メイン(MEGA-CD出力): 実機同様、画面いっぱいに拡大せず 実機画面(4:3)へ中央配置。
+    # メイン(SEGA-CD出力): 実機同様、画面いっぱいに拡大せず 実機画面(4:3)へ中央配置。
     mv = Image.open(f"{SIM}/preview/{i:05d}.png").convert("RGB")
     bw = L.MAIN_FRAME[2] - L.MAIN_FRAME[0] - 2 * L.PAD; bh = L.MAIN_FRAME[3] - L.MAIN_FRAME[1] - 2 * L.PAD
     Fw, Fh, ox, oy = fit(SCREEN_A, bw, bh)         # 4:3の実機画面をパネルへ

@@ -1,5 +1,5 @@
 /*
- * Phase A: H32 256x144 静止画レンダラの Mega-CD ブートセクタ。
+ * Phase A: H32 256x144 静止画レンダラの Sega CD ブートセクタ。
  * boot.s / cdcbench_boot.s と同レイアウト。IP=still256(描画Main), SP=cdcbench_sp(待機)。
  */
 

@@ -1,8 +1,8 @@
 # Tile Texture Reuse Codec — a SEGA-CD / Genesis FMV codec
 
-A full-motion-video codec built **specifically for the Sega CD (Mega-CD)**,
+A full-motion-video codec built **specifically for the Sega CD**,
 not a general video codec ported onto it. It targets the exact hardware the
-Mega-CD gives you — the Mega Drive VDP with its CRAM palettes and VRAM tile pool,
+Sega CD gives you — the Genesis VDP with its CRAM palettes and VRAM tile pool,
 a constant-rate CD data stream, PRG-RAM as a buffer, and the RF5C164 PCM chip —
 and squeezes moving pictures through those constraints on real hardware (and on
 Genesis Plus GX).
@@ -12,7 +12,7 @@ Genesis Plus GX).
 
 ## Why this is a SEGA-CD-specific codec
 
-The whole design falls out of one Mega Drive fact: **the screen is built from
+The whole design falls out of one Genesis fact: **the screen is built from
 8x8 tile patterns in VRAM, addressed by a name table.** A tile pattern already
 resident in VRAM can be shown at any cell for the cost of a **2-byte name-table
 entry**, versus **32 bytes** to send a fresh pattern. So the codec's core move —
@@ -21,7 +21,7 @@ across frames**, paying for a fresh pattern only when nothing resident is good
 enough. General codecs think in pixels and macroblocks; this one thinks in
 *"which resident tile is closest, and can I just re-point a name-table entry?"*
 
-Everything else is shaped by Mega-CD hardware, not by video theory:
+Everything else is shaped by Sega CD hardware, not by video theory:
 
 - **CRAM palette budget.** The VDP shows at most 4 lines x 15 colours = 60
   colours at once. The codec trains those 60 colours, splits the movie into
@@ -47,7 +47,7 @@ Everything else is shaped by Mega-CD hardware, not by video theory:
 - **PRG-RAM discipline.** Buffers, queues, and the tank live in PRG-RAM regions
   that stay safe during continuous CD reads (see AGENTS.md hardware notes).
 
-## Configurable within Mega-CD limits
+## Configurable within Sega CD limits
 
 Resolution, aspect, frame rate, and audio are **encoder settings**, chosen per
 source within what the hardware allows — not fixed project constants:
@@ -62,7 +62,7 @@ source within what the hardware allows — not fixed project constants:
 ## Pipeline
 
 Generic, source-side video handling (things any codec might do) lives here; the
-Mega-CD-specific compression is the "Encode" step.
+Sega CD-specific compression is the "Encode" step.
 
 1. **Preprocess** the source: crop black bars, scale, optionally remove the
    source's own dithering. Ordinary video preprocessing.
@@ -70,7 +70,7 @@ Mega-CD-specific compression is the "Encode" step.
 3. **Build palettes** per segment, weighting the k-means so thin high-contrast
    edges (e.g. anime line art) keep palette slots despite tiny area — a general
    image-quality trick, not a hardware one.
-4. **Quantize** each 8x8 tile to the chosen Mega Drive palettes (position-fixed
+4. **Quantize** each 8x8 tile to the chosen Genesis palettes (position-fixed
    Bayer dithering).
 5. **Encode (the codec):** maintain the resident VRAM tile pool; per frame,
    reuse exact / near / coarse / fallback residents where possible, load fresh
@@ -82,7 +82,7 @@ Mega-CD-specific compression is the "Encode" step.
 ## Analysis
 
 Every encode can be rendered as a 1920x1080 analysis overlay (left = decoded
-Mega-CD output, right = source / per-tile category map / metric graphs, bottom =
+Sega CD output, right = source / per-tile category map / metric graphs, bottom =
 bandwidth, tank, and DMA meters). `ANALYSIS.md` is the exact reference for every
 meter and tile category.
 
@@ -96,7 +96,7 @@ meter and tile category.
   including its layout, frame synchronization method, audio tracks, and render
   pipeline.
 - [MOVIE.md](MOVIE.md): the exact `MOVIE.DAT` on-disc stream format written by
-  `tools/pack_stream.py` and read by the Mega-CD player.
+  `tools/pack_stream.py` and read by the Sega CD player.
 - [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
   playback pipeline budgets used when choosing encoder targets.
 - [AGENTS.md](AGENTS.md): agent and maintenance guidance, including hardware
@@ -127,7 +127,7 @@ meter and tile category.
 ## Build
 
 Required tools: Marsdev / `m68k-elf` toolchain, `mkisofs` or `genisoimage`,
-`ffmpeg` / `ffprobe`, `python3` with NumPy and Pillow, and a Mega-CD BIOS for
+`ffmpeg` / `ffprobe`, `python3` with NumPy and Pillow, and a Sega CD BIOS for
 emulator testing.
 
 ## Recording
