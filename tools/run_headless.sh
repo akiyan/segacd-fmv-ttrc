@@ -1,0 +1,333 @@
+#!/usr/bin/env bash
+#
+# run_headless.sh - headless Mega-CD smoke/capture harness.
+#
+# Boots a built disc image in RetroArch + Genesis Plus GX under Xvfb, presses
+# START a few times to get past the Mega-CD BIOS / CD player, then captures the
+# screen at a fixed interval and tiles the frames into a contact sheet. Used to
+# verify boot / video progression / on-screen counters without a display.
+#
+# Usage:
+#   tools/run_headless.sh out/SCFMV_MCD.cue
+#   tools/run_headless.sh out/CDCBENCH.cue --tag cdc --shots 30 --interval 2
+#   tools/run_headless.sh out/TEST1M.cue --tag t1m --shots 4 --interval 1
+#
+# Options (all optional except the disc):
+#   --tag NAME        output prefix under the work dir (default: disc basename)
+#   --shots N         number of screenshots (default 24)
+#   --interval SEC    seconds between screenshots (default 2)
+#   --boot-wait SEC   seconds to wait before the first START (default 4)
+#   --presses N       number of START presses (default 2)
+#   --press-gap SEC   seconds between/after START presses (default 2)
+#   --display :N      X display for Xvfb (default :231)
+#   --record [FILE]   record video+audio with RetroArch's FFmpeg recorder.
+#                     If FILE is omitted, writes $OUTDIR/<tag>.mkv and also
+#                     extracts $OUTDIR/<tag>.wav for quick audio checks.
+#   --recordconfig FILE
+#                     pass an explicit RetroArch FFmpeg recording config.
+#   --record-preset NAME
+#                     generate a recording config. Supported: flac-fast,
+#                     ffv1-flac.
+#   --record-realtime
+#                     shorthand for synced emulator audio recording:
+#                     --record --record-preset flac-fast
+#                     --audio-driver sdl2 --sdl-audio-driver dummy
+#   --audio-driver NAME
+#                     RetroArch audio driver (default: null).
+#   --audio-device NAME
+#                     audio_device value for RetroArch (driver-specific).
+#   --sdl-audio-driver NAME
+#                     SDL_AUDIODRIVER when using SDL audio (default: unset).
+#   --audio-jump-threshold N
+#                     fail recording if extracted WAV has a sample jump >= N
+#                     (default: 12000; use 6000 for stricter local checks).
+#   --no-audio-check
+#                     skip post-recording click/clip detection.
+#   --audio-min-rms N fail recording if extracted WAV RMS is below N
+#                     (default: 0, disabled).
+#
+# Env overrides:
+#   CORE         libretro core .so (default: system genesis_plus_gx)
+#   SYSTEM_DIR   RetroArch system dir holding bios_CD_J.bin
+#   OUTDIR       capture output dir (default: <repo>/tmp)
+#
+# Outputs: $OUTDIR/<tag>_NN.png, $OUTDIR/<tag>_sheet.jpg, plus retroarch/xvfb logs.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+DISC=""
+TAG=""
+SHOTS=24
+INTERVAL=2
+BOOT_WAIT=5
+PRESSES=14
+PRESS_GAP=1.0
+DISPLAY_NUM=":231"
+RECORD=0
+RECORD_PATH=""
+RECORD_CONFIG=""
+RECORD_PRESET=""
+AUDIO_DRIVER="null"
+AUDIO_DEVICE=""
+SDL_AUDIO_DRIVER=""
+REALTIME_RECORD=0
+AUDIO_CHECK=1
+AUDIO_JUMP_THRESHOLD=12000
+AUDIO_MIN_RMS=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tag) TAG="$2"; shift 2;;
+    --shots) SHOTS="$2"; shift 2;;
+    --interval) INTERVAL="$2"; shift 2;;
+    --boot-wait) BOOT_WAIT="$2"; shift 2;;
+    --presses) PRESSES="$2"; shift 2;;
+    --press-gap) PRESS_GAP="$2"; shift 2;;
+    --display) DISPLAY_NUM="$2"; shift 2;;
+    --record)
+      RECORD=1
+      if [ $# -ge 2 ] && [[ "$2" != -* ]]; then
+        RECORD_PATH="$2"
+        shift 2
+      else
+        shift
+      fi
+      ;;
+    --recordconfig) RECORD_CONFIG="$2"; shift 2;;
+    --record-preset) RECORD_PRESET="$2"; shift 2;;
+    --record-realtime) RECORD=1; REALTIME_RECORD=1; shift;;
+    --audio-driver) AUDIO_DRIVER="$2"; shift 2;;
+    --audio-device) AUDIO_DEVICE="$2"; shift 2;;
+    --sdl-audio-driver) SDL_AUDIO_DRIVER="$2"; shift 2;;
+    --audio-jump-threshold) AUDIO_JUMP_THRESHOLD="$2"; shift 2;;
+    --audio-min-rms) AUDIO_MIN_RMS="$2"; shift 2;;
+    --no-audio-check) AUDIO_CHECK=0; shift;;
+    -h|--help) sed -n '2,54p' "$0"; exit 0;;
+    -*) echo "unknown option: $1" >&2; exit 2;;
+    *) DISC="$1"; shift;;
+  esac
+done
+
+[ -n "$DISC" ] || { echo "usage: $0 <disc.cue> [options]" >&2; exit 2; }
+[ -f "$DISC" ] || { echo "disc not found: $DISC" >&2; exit 1; }
+[ -z "$TAG" ] && TAG="$(basename "${DISC%.*}")"
+DISPLAY_ID="${DISPLAY_NUM#:}"
+DISPLAY_ID="${DISPLAY_ID%%.*}"
+if [[ ! "$DISPLAY_ID" =~ ^[0-9]+$ ]]; then
+  DISPLAY_ID=231
+fi
+COMMAND_PORT=$((55355 + DISPLAY_ID % 1000))
+if [ "$REALTIME_RECORD" -eq 1 ]; then
+  [ -z "$RECORD_PRESET" ] && RECORD_PRESET="flac-fast"
+  [ "$AUDIO_DRIVER" = "null" ] && AUDIO_DRIVER="sdl2"
+  [ -z "$SDL_AUDIO_DRIVER" ] && SDL_AUDIO_DRIVER="dummy"
+fi
+
+CORE="${CORE:-/usr/lib/x86_64-linux-gnu/libretro/genesis_plus_gx_libretro.so}"
+SYSTEM_DIR="${SYSTEM_DIR:-$HOME/.config/retroarch/system}"
+OUTDIR="${OUTDIR:-$ROOT/tmp}"
+mkdir -p "$OUTDIR"
+
+for tool in Xvfb retroarch xdotool import montage; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
+done
+if [ "$RECORD" -eq 1 ]; then
+  command -v ffmpeg >/dev/null 2>&1 || { echo "missing required tool for --record: ffmpeg" >&2; exit 1; }
+  if [ "$AUDIO_CHECK" -eq 1 ]; then
+    command -v python3 >/dev/null 2>&1 || { echo "missing required tool for audio check: python3" >&2; exit 1; }
+    [ -f "$ROOT/tools/analyze_recorded_audio.py" ] || { echo "missing audio check tool: $ROOT/tools/analyze_recorded_audio.py" >&2; exit 1; }
+  fi
+fi
+[ -f "$CORE" ] || { echo "core not found: $CORE (set CORE=)" >&2; exit 1; }
+ls "$SYSTEM_DIR"/bios_CD_*.bin >/dev/null 2>&1 || \
+  echo "warning: no bios_CD_*.bin in $SYSTEM_DIR" >&2
+
+# Portable RetroArch config generated at run time (no absolute paths committed).
+CFG="$OUTDIR/retroarch_${TAG}.cfg"
+AUDIO_ENABLE=false
+if [ "$RECORD" -eq 1 ]; then
+  AUDIO_ENABLE=true
+fi
+cat > "$CFG" <<EOF
+video_driver = "gl"
+video_context_driver = "x"
+input_driver = "x"
+joystick_driver = "null"
+audio_driver = "$AUDIO_DRIVER"
+audio_device = "$AUDIO_DEVICE"
+audio_enable = "$AUDIO_ENABLE"
+audio_sync = "true"
+audio_latency = "64"
+audio_rate_control = "true"
+audio_rate_control_delta = "0.005"
+audio_max_timing_skew = "0.05"
+quit_press_twice = "false"
+input_exit_emulator = "escape"
+menu_driver = "rgui"
+config_save_on_exit = "false"
+network_cmd_enable = "true"
+network_cmd_port = "$COMMAND_PORT"
+system_directory = "$SYSTEM_DIR"
+screenshot_directory = "$OUTDIR"
+savestate_directory = "$OUTDIR"
+video_fullscreen = "false"
+video_scale = "2"
+video_smooth = "false"
+input_player1_start = "enter"
+genesis_plus_gx_region_detect = "ntsc-j"
+genesis_plus_gx_bios = "enabled"
+EOF
+
+RA_PID="$OUTDIR/${TAG}_ra.pid"
+XVFB_PID="$OUTDIR/${TAG}_xvfb.pid"
+if [ "$RECORD" -eq 1 ] && [ -z "$RECORD_PATH" ]; then
+  RECORD_PATH="$OUTDIR/${TAG}.mkv"
+fi
+rm -f "$OUTDIR/${TAG}"_*.png "$OUTDIR/${TAG}_sheet.jpg" \
+      "$OUTDIR/retroarch_${TAG}.log" "$OUTDIR/xvfb_${TAG}.log" "$RA_PID" "$XVFB_PID"
+if [ "$RECORD" -eq 1 ]; then
+  rm -f "$RECORD_PATH" "${RECORD_PATH%.*}.wav"
+  rm -f "$OUTDIR/${TAG}_audio.json"
+fi
+if [ -n "$RECORD_CONFIG" ] && [ -n "$RECORD_PRESET" ]; then
+  echo "--recordconfig and --record-preset are mutually exclusive" >&2
+  exit 2
+fi
+if [ -n "$RECORD_CONFIG" ] && [ ! -f "$RECORD_CONFIG" ]; then
+  echo "record config not found: $RECORD_CONFIG" >&2
+  exit 1
+fi
+if [ -n "$RECORD_PRESET" ]; then
+  RECORD_CONFIG="$OUTDIR/record_${TAG}_${RECORD_PRESET}.cfg"
+  case "$RECORD_PRESET" in
+    flac-fast)
+      cat > "$RECORD_CONFIG" <<EOF
+format = matroska
+vcodec = libx264
+acodec = flac
+pix_fmt = yuv420p
+sample_rate = 44100
+threads = 2
+video_crf = 0
+video_preset = ultrafast
+video_tune = zerolatency
+EOF
+      ;;
+    ffv1-flac)
+      cat > "$RECORD_CONFIG" <<EOF
+format = matroska
+vcodec = ffv1
+acodec = flac
+pix_fmt = bgr0
+sample_rate = 44100
+threads = 2
+EOF
+      ;;
+    *)
+      echo "unknown record preset: $RECORD_PRESET (supported: flac-fast, ffv1-flac)" >&2
+      exit 2
+      ;;
+  esac
+fi
+
+cleanup() { kill "$(cat "$RA_PID" 2>/dev/null)" "$(cat "$XVFB_PID" 2>/dev/null)" 2>/dev/null || true; }
+retroarch_window() {
+  DISPLAY="$DISPLAY_NUM" xdotool search --onlyvisible --class retroarch 2>/dev/null | head -n1 || true
+}
+stop_retroarch() {
+  local window
+  retroarch -c "$CFG" --command QUIT >/dev/null 2>&1 || true
+  sleep 0.5
+  if ! kill -0 "$(cat "$RA_PID" 2>/dev/null)" 2>/dev/null; then
+    return
+  fi
+  window="$(retroarch_window)"
+  if [ -n "$window" ]; then
+    DISPLAY="$DISPLAY_NUM" xdotool windowactivate "$window" 2>/dev/null || true
+    DISPLAY="$DISPLAY_NUM" xdotool key --window "$window" Escape 2>/dev/null || true
+  else
+    DISPLAY="$DISPLAY_NUM" xdotool key Escape 2>/dev/null || true
+  fi
+  for _ in $(seq 1 60); do
+    if ! kill -0 "$(cat "$RA_PID" 2>/dev/null)" 2>/dev/null; then
+      return
+    fi
+    sleep 0.25
+  done
+  kill "$(cat "$RA_PID" 2>/dev/null)" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+Xvfb "$DISPLAY_NUM" -screen 0 800x600x24 >"$OUTDIR/xvfb_${TAG}.log" 2>&1 &
+echo $! > "$XVFB_PID"
+sleep 0.5
+
+RA_RECORD_ARGS=()
+if [ "$RECORD" -eq 1 ]; then
+  RA_RECORD_ARGS=(--record "$RECORD_PATH")
+  if [ -n "$RECORD_CONFIG" ]; then
+    RA_RECORD_ARGS+=(--recordconfig "$RECORD_CONFIG")
+  fi
+fi
+RA_ENV=(DISPLAY="$DISPLAY_NUM" LIBGL_ALWAYS_SOFTWARE=1)
+if [ -n "$SDL_AUDIO_DRIVER" ]; then
+  RA_ENV+=(SDL_AUDIODRIVER="$SDL_AUDIO_DRIVER")
+fi
+
+env "${RA_ENV[@]}" retroarch --verbose \
+  -c "$CFG" -L "$CORE" "${RA_RECORD_ARGS[@]}" "$DISC" >"$OUTDIR/retroarch_${TAG}.log" 2>&1 &
+echo $! > "$RA_PID"
+
+sleep "$BOOT_WAIT"
+W="$(retroarch_window)"
+for _ in $(seq 1 "$PRESSES"); do
+  [ -n "$W" ] && DISPLAY="$DISPLAY_NUM" xdotool key --window "$W" Return || true
+  sleep "$PRESS_GAP"
+done
+
+# Capture the RetroArch window itself, not the whole Xvfb desktop: with no window
+# manager the window sits at the desktop top-left, so a root grab pads the frame
+# with empty desktop (black right/bottom) and makes centred content look mis-placed.
+# Re-resolve the window each shot (id can change once the core loads); fall back to
+# root only if it can't be found.
+for i in $(seq 0 $((SHOTS - 1))); do
+  W="$(retroarch_window)"
+  CAP_TARGET="${W:-root}"
+  DISPLAY="$DISPLAY_NUM" import -window "$CAP_TARGET" "$OUTDIR/${TAG}_$(printf '%02d' "$i").png" \
+    || DISPLAY="$DISPLAY_NUM" import -window root "$OUTDIR/${TAG}_$(printf '%02d' "$i").png" || true
+  sleep "$INTERVAL"
+done
+
+stop_retroarch
+wait "$(cat "$RA_PID" 2>/dev/null)" 2>/dev/null || true
+kill "$(cat "$XVFB_PID" 2>/dev/null)" 2>/dev/null || true
+trap - EXIT
+
+montage "$OUTDIR/${TAG}"_*.png -tile 6x -geometry 260x195+2+2 "$OUTDIR/${TAG}_sheet.jpg" 2>/dev/null || true
+echo "done: $OUTDIR/${TAG}_sheet.jpg ($(ls "$OUTDIR/${TAG}"_*.png 2>/dev/null | wc -l) frames)"
+echo "log:  $OUTDIR/retroarch_${TAG}.log"
+if [ "$RECORD" -eq 1 ]; then
+  WAV_PATH="${RECORD_PATH%.*}.wav"
+  AUDIO_REPORT="$OUTDIR/${TAG}_audio.json"
+  [ -s "$RECORD_PATH" ] || { echo "recording not produced: $RECORD_PATH" >&2; exit 1; }
+  RECORD_DURATION="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$RECORD_PATH" 2>/dev/null || true)"
+  if [ -z "$RECORD_DURATION" ] || [ "$RECORD_DURATION" = "N/A" ]; then
+    echo "recording has no valid duration: $RECORD_PATH" >&2
+    exit 1
+  fi
+  ffmpeg -y -hide_banner -loglevel error -i "$RECORD_PATH" -vn -ar 44100 "$WAV_PATH"
+  echo "record: $RECORD_PATH"
+  [ -n "$RECORD_CONFIG" ] && echo "record config: $RECORD_CONFIG"
+  [ -s "$WAV_PATH" ] || { echo "audio extraction failed: $WAV_PATH" >&2; exit 1; }
+  echo "audio:  $WAV_PATH"
+  if [ "$AUDIO_CHECK" -eq 1 ]; then
+    python3 "$ROOT/tools/analyze_recorded_audio.py" "$RECORD_PATH" \
+      --wav "$WAV_PATH" \
+      --seconds 12 \
+      --jump-threshold "$AUDIO_JUMP_THRESHOLD" \
+      --min-rms "$AUDIO_MIN_RMS" \
+      --fail-on-clicks > "$AUDIO_REPORT"
+    echo "audio check: $AUDIO_REPORT (jump_threshold=$AUDIO_JUMP_THRESHOLD min_rms=$AUDIO_MIN_RMS)"
+  fi
+fi

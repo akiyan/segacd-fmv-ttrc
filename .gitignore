@@ -1,0 +1,21 @@
+/out/
+/movies/
+/images/
+/original/
+/work/
+/tmp/
+__pycache__/
+.claude/settings.local.json
+.codex/
+.DS_Store
+._*
+*.o
+*.out
+*.iso
+*.cue
+*.bin
+!boot/sec_*.bin
+
+# Large source videos are kept outside Git.
+/assets/*.mp4
+/assets/*.avi

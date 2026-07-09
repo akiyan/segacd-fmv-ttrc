@@ -1,0 +1,592 @@
+/*
+ * Phase B3: delta stream player - Main (IP) side (ダブルバッファ, tearing除去)。
+ *
+ * タイルプールは単一の永続VRAM領域(両ネームテーブルが共有, B1のLRUで表示中slotは
+ * 上書きされないことが保証済み)。ネームテーブルは2枚(NT0=0xC000, NT1=0xE000)を
+ * 交互に使う。Main RAM に shadow[576](cell->entry) を持ち:
+ *   1. n_load 個のタイルを slot へ書込(共有プール)
+ *   2. n_upd をシャドウに反映 shadow[cell]=entry
+ *   3. シャドウ全体(576)を「裏」ネームテーブルへ blit (裏は非表示なので安全)
+ *   4. VBlank で reg2 を裏へ flip(原子的) → tearing無し
+ * これで「前フレーム差分の追いつき」不要(裏は常に完全な現フレーム)。
+ */
+
+.equ STACK, 0x00FFFD00
+
+.equ BIOS_CLEAR_VRAM,            0x000002A0
+.equ BIOS_LOAD_DEFAULT_VDP_REGS, 0x000002AC
+.equ BIOS_VDP_DISP_ENABLE,       0x000002D8
+.equ BIOS_CLEAR_COMM,            0x00000340
+
+.equ VDP_DATA, 0x00C00000
+.equ VDP_CTRL, 0x00C00004
+
+.equ GA_COMCMD0, 0x00A12010
+.equ GA_COMCMD1, 0x00A12012
+.equ GA_COMSTAT0, 0x00A12020
+
+.equ PROBE_BANK, 0x00200000
+
+.equ NUM_FRAMES, 2293
+.equ CMD_STREAM, 0x50
+.equ CMD_SWAP,   0x51
+.equ STAT_READY, 0x8003
+.equ STAT_END,   0x8004			/* SPからの映画終端通知(15秒待って再ループ) */
+
+.equ NT0, 0xC000
+.equ NT1, 0xE000
+
+/* VDP DMAの源は必ずMain-RAM。1フレームのタイルをここへステージしてからDMA。 */
+.equ DMA_STAGE, 0x00FF2000		/* タイルステージ(24KB, ~768タイル) */
+.equ RUN_TABLE, 0x00FF8000		/* (dst.w,len.w) ラン表(最大~128ラン) */
+/* デバッグオーバーレイ: フォントは予約VRAM(プール1360の直上 tile1361)。 */
+.equ DBGFONT_VTILE, 1361
+.equ DBGFONT_VADDR, 1361*32		/* 0xAA20 */
+.equ DBGFONT_N, 27			/* dbgfont.bin のタイル数 */
+.equ DBG_COL, 20			/* 右下オーバーレイの左端セル列 */
+.equ DBG_STAGE, 0x00FFA000		/* フォント色替えのステージ(Main-RAM) */
+/* 1VBLANKで安全に転送できる語数(H32 V28 NTSC VRAM DMA ≈ 3150語/vblankより保守的に)。
+   これを超える転送はランをまたいで次VBLANKへ分割=active表示中へのはみ出し防止(ares対策)。 */
+.equ VBLANK_DMA_WORDS, 2800	/* H32 V28 NTSC vblank ≈3200語。500タイル/コマ(=8000語)を
+				   4vblank以内に収めるため2400→2800(下: 500タイル区間の音声underrun対策) */
+
+.text
+
+	.incbin "security.bin"
+
+	bra.w	ip_entry
+	.org	0x584
+
+.global ip_entry
+ip_entry:
+	move.w	#0x2700, sr
+	lea	STACK, sp
+
+	jsr	BIOS_LOAD_DEFAULT_VDP_REGS
+	jsr	BIOS_CLEAR_VRAM
+	jsr	BIOS_CLEAR_COMM
+
+	/* VDP: H32, autoinc=2, plane 64x32, VSRAM=0, HScroll/Sprite を安全域へ */
+	move.w	#0x8C00, (VDP_CTRL).l		/* reg12 H32 */
+	move.w	#0x9001, (VDP_CTRL).l		/* reg16 plane 64x32 */
+	move.w	#0x8F02, (VDP_CTRL).l		/* reg15 autoinc 2 */
+	move.w	#0x8B00, (VDP_CTRL).l		/* reg11 scroll full-screen */
+	move.w	#0x8578, (VDP_CTRL).l		/* reg5  sprite table 0xF000 */
+	move.w	#0x8D3F, (VDP_CTRL).l		/* reg13 hscroll 0xFC00 */
+	move.w	#0x8238, (VDP_CTRL).l		/* reg2  表示=NT1(front)。裏はNT0から構築 */
+	move.l	#0x40000010, (VDP_CTRL).l	/* VSRAM=0 */
+	move.w	#0, (VDP_DATA).l
+	move.w	#0, (VDP_DATA).l
+
+	/* palette -> CRAM 0 */
+	move.l	#0xC0000000, (VDP_CTRL).l
+	lea	palettes, a0
+	move.w	#64-1, d0
+1:
+	move.w	(a0)+, (VDP_DATA).l
+	dbra	d0, 1b
+
+	jsr	BIOS_VDP_DISP_ENABLE
+	move.w	#0x8174, (VDP_CTRL).l		/* reg1: 表示on+vint+DMA許可(M1)+mode5 */
+
+	/* デバッグフォントを予約VRAM(プール1360の直上=tile1361)へCPUロード。
+	   pal_write時にB案(最明色index)へ色替えする(初期はindex1のまま)。 */
+	move.l	#DBGFONT_VADDR, d0
+	bsr	set_vram_write
+	lea	dbgfont, a0
+	move.w	#DBGFONT_N*16-1, d1
+1:
+	move.w	(a0)+, (VDP_DATA).l
+	dbra	d1, 1b
+	clr.w	dbg_seg
+	clr.w	dbg_palattr
+
+	clr.w	back_idx			/* 裏=NT0(0) から構築, 表示=NT1 */
+
+	move.w	#NUM_FRAMES, (GA_COMCMD1).l
+	move.w	#CMD_STREAM, d0
+	bsr	cmd_wait_ready
+
+	clr.w	frame_no
+	clr.w	started
+play_loop:
+	tst.w	started
+	beq	1f
+	bsr	swap_or_end			/* CMD_SWAP → READY(継続) or END(映画終端) */
+	cmp.w	#STAT_END, d0
+	beq	movie_end_md
+1:
+	move.w	#1, started
+	bsr	build_frame
+
+	addq.w	#1, frame_no
+	bra	play_loop
+
+/* 映画終端: 最終フレームを表示したまま15秒(900vblank)待ち、先頭からループ再生 */
+movie_end_md:
+	move.w	#900-1, d2
+1:
+	bsr	wait_vblank
+	dbra	d2, 1b
+	move.w	#CMD_STREAM, d0			/* SPを再ストリーム開始させる */
+	bsr	cmd_wait_ready			/* SPのframe0準備完了(STAT_READY)まで待つ */
+	clr.w	frame_no
+	clr.w	started
+	clr.w	dbg_seg
+	bra	play_loop
+
+/* ---- 1フレーム分をデコードし裏へ描画してflip ----
+   タイル転送はDMA(VDPが自走=CPUを空ける)。**VDP DMAの源は必ずMain-RAM**
+   (Word-RAM直DMAは化ける)。手順を2パスに分離:
+     Pass1(active可): 全ランのタイルをWord-RAM→Main-RAMステージへコピー+(dst,len)表を作る
+     Pass2(vblank内): 表を順にDMA。**stageのCPUコピーでvblankを食い潰してDMAがactiveに
+     はみ出すと化ける**ので、コピー(遅い)とDMA発行(vblank厳守)を分ける。 */
+build_frame:
+	movem.l	d0-d7/a0-a3, -(sp)
+	/* Pass1: コピー無し。(dst.w, len.w, src.l)のラン表だけ作る=Main CPUはパターンに触れない。
+	   src は Word-RAM 内のパターン先頭(タイルDMAはWord-RAM直, 先頭1ワード化けはPass2で対処) */
+	lea	(PROBE_BANK+0x82), a0		/* n_load @ +0x82, loads @ +0x84 */
+	move.w	(a0)+, d7			/* n_load 合計タイル数 */
+	lea	RUN_TABLE, a2
+	moveq	#0, d4				/* run count */
+	tst.w	d7
+	beq	bf_none
+bf_stage:
+	move.w	(a0)+, d0			/* slot_start */
+	move.w	(a0)+, d6			/* count */
+	beq	bf_stage_done			/* count=0 打切り */
+	cmp.w	d7, d6				/* count>残り 切詰め */
+	bls	1f
+	move.w	d7, d6
+1:
+	addq.w	#1, d0				/* tile index=1+slot */
+	lsl.w	#5, d0				/* dst=(1+slot)*0x20 */
+	move.w	d0, (a2)+			/* 表: dst */
+	move.w	d6, d1
+	lsl.w	#4, d1				/* len words = count*16 */
+	move.w	d1, (a2)+			/* 表: len */
+	move.l	a0, (a2)+			/* 表: src(Word-RAM内パターン先頭) */
+	move.w	d6, d2				/* a0 をパターン分スキップ(count*32B) */
+	lsl.w	#5, d2
+	adda.w	d2, a0
+	addq.w	#1, d4
+	sub.w	d6, d7
+	bne	bf_stage
+bf_stage_done:
+bf_none:
+	move.w	d4, n_runs			/* このフレームのDMAラン数(0可) */
+bf_upd:
+	/* シャドウへ反映 shadow[cell]=entry。n_upd @ +0x5000, upds @ +0x5002 */
+	lea	(PROBE_BANK+0x5000), a0
+	move.w	(a0)+, d7			/* n_upd */
+	beq	bf_blit
+	subq.w	#1, d7
+	lea	shadow, a1
+bf_uloop:
+	move.w	(a0)+, d0			/* cell */
+	move.w	(a0)+, d3			/* entry */
+	add.w	d0, d0				/* cell*2 */
+	move.w	d3, (a1,d0.w)
+	dbra	d7, bf_uloop
+bf_blit:
+	/* シャドウ全体(18行x32)を裏NTへ blit (裏は非表示=active可) */
+	moveq	#0, d5
+	move.w	back_idx, d5
+	lsl.l	#8, d5
+	lsl.l	#5, d5				/* back_idx*0x2000 */
+	add.l	#NT0, d5			/* back_base = 0xC000 or 0xE000 (flipまで保持) */
+	lea	shadow, a1
+	moveq	#5, d4				/* plane_row = 5 */
+	move.w	#18-1, d6			/* 18 rows */
+bf_row:
+	move.w	d4, d1
+	lsl.w	#7, d1				/* plane_row*128 */
+	move.l	d5, d0
+	andi.l	#0xFFFF, d1
+	add.l	d1, d0				/* NT addr */
+	bsr	set_vram_write
+	move.w	#32-1, d1
+bf_bw:
+	move.w	(a1)+, (VDP_DATA).l
+	dbra	d1, bf_bw
+	addq.w	#1, d4
+	dbra	d6, bf_row
+
+	/* vblank内: (pal_write時)CRAM総入替 → タイルDMA */
+	bsr	wait_vb_in
+	move.w	(PROBE_BANK).l, d0		/* pal_write @ +0 */
+	beq	bf_dma
+	move.l	#0xC0000000, (VDP_CTRL).l	/* CRAM addr 0 */
+	lea	(PROBE_BANK+2), a0
+	move.w	#64-1, d1
+1:
+	move.w	(a0)+, (VDP_DATA).l
+	dbra	d1, 1b
+	addq.w	#1, dbg_seg			/* 区間++ (pal_write=区間境界) */
+	bsr	dbg_setbright			/* B案: 最明色でフォント色替え */
+bf_dma:
+	/* Pass2: 表を順に Word-RAM 直DMA(src→VRAM dst)。VBLANK予算(d7)でランをまたいで分割。
+	   Word-RAM源DMAは先頭1ワードが化ける(実測/Sega文書)ため、チャンク毎に
+	   先頭1ワードをCPU書き→残り(chunk-1)語を src+2→dst+2 でDMA。 */
+	move.w	n_runs, d4
+	beq	bf_flip
+	lea	RUN_TABLE, a2
+	move.w	(VDP_CTRL).l, d0		/* 現vblank内でなければ次vblankへ */
+	btst	#3, d0
+	bne	1f
+	bsr	wait_vb_start
+1:
+	move.w	#VBLANK_DMA_WORDS, d7		/* d7 = 残VBLANK予算(語) */
+bf_run_lp:
+	move.w	(a2)+, d3			/* dst(VRAMバイト) */
+	move.w	(a2)+, d1			/* len(語, このランの残) */
+	movea.l	(a2)+, a3			/* src(Word-RAM) */
+bf_chunk:
+	tst.w	d7				/* 予算切れなら次vblank開始まで待って補充 */
+	bgt	1f
+	bsr	wait_vb_start
+	move.w	#VBLANK_DMA_WORDS, d7
+1:
+	move.w	d1, d6				/* chunk = min(ラン残, 予算) */
+	cmp.w	d7, d6
+	bls	2f
+	move.w	d7, d6
+2:
+	bsr	dma_chunk_wr			/* d6語を a3(Word-RAM)→d3 へ(先頭CPU書き+DMA, 完了待ち) */
+	sub.w	d6, d7				/* 予算 -= chunk */
+	sub.w	d6, d1				/* ラン残 -= chunk */
+	add.w	d6, d6				/* chunk*2 = バイト */
+	adda.w	d6, a3				/* src += バイト */
+	add.w	d6, d3				/* dst += バイト */
+	tst.w	d1
+	bne	bf_chunk
+	subq.w	#1, d4
+	bne	bf_run_lp
+bf_flip:
+	bsr	render_dbg			/* 右下にデバッグ指標を描画(裏バッファ, flip直前) */
+	move.l	d5, d0
+	lsr.l	#8, d0
+	lsr.l	#2, d0				/* back_base>>10 */
+	andi.w	#0xFF, d0
+	ori.w	#0x8200, d0			/* reg2 = 0x82xx */
+	move.w	d0, (VDP_CTRL).l
+	eori.w	#1, back_idx			/* 裏を反転 */
+	/* 滑りインジケータ: SPが検出した滑り回数>0なら枠を赤に */
+	move.w	(PROBE_BANK+0x5F00).l, d0
+	beq	1f
+	move.l	#0xC0000000, (VDP_CTRL).l
+	move.w	#0x000E, (VDP_DATA).l
+1:
+	movem.l	(sp)+, d0-d7/a0-a3
+	rts
+
+/* vblankに入るまで待つ(既に中なら即戻る)。trashes d0 */
+wait_vb_in:
+1:
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	beq	1b
+	rts
+
+/* 次のvblank開始まで待つ(vblank中なら一度activeを抜けてから)。予算補充用。trashes d0 */
+wait_vb_start:
+1:
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	bne	1b				/* active(非vblank)になるまで */
+2:
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	beq	2b				/* vblankに入るまで */
+	rts
+
+/* d6語を Word-RAM(a3) → VRAM(d3) へDMA。完了待ち。trashes d0,d2
+   Word-RAM源はフェッチが1ワード遅延する(最初のフェッチはsrc-2を返す)ため、
+   **源アドレスに+2して全長をそのまま転送**すると全ワードが正しく届く
+   (dst側は据置・CPU書き不要)。 */
+dma_chunk_wr:
+	move.w	#0x8F02, (VDP_CTRL).l		/* autoinc=2 */
+	move.w	d6, d2				/* 長さ = chunk 語 */
+	move.w	#0x9300, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	lsr.w	#8, d2
+	move.w	#0x9400, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	move.l	a3, d2				/* 源 = (src+2)/2 : 1ワード遅延の補正 */
+	addq.l	#2, d2
+	lsr.l	#1, d2
+	move.w	#0x9500, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	lsr.l	#8, d2
+	move.w	#0x9600, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	lsr.l	#8, d2
+	move.w	#0x9700, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	move.l	d3, d0				/* dst コマンド(VRAM書込+CD5起動) */
+	and.l	#0x0000FFFF, d0
+	move.l	d0, d2
+	andi.w	#0x3FFF, d2
+	ori.w	#0x4000, d2
+	move.w	d2, (VDP_CTRL).l
+	move.l	d0, d2
+	lsr.l	#8, d2
+	lsr.l	#6, d2
+	andi.w	#0x0003, d2
+	ori.w	#0x0080, d2
+	move.w	d2, (VDP_CTRL).l
+	bsr	wait_dma_done
+	/* 先頭1ワードはDMA開始ラッチの古い値(ゴミ)が書かれるため、CPUで上書き修復。
+	   (src+2補正で2ワード目以降は正しい。ゴミはチャンク先頭の1ワードのみ) */
+	move.w	d3, d0
+	bsr	set_vram_write
+	move.w	(a3), (VDP_DATA).l
+	rts
+
+/* d6語を Main-RAM(a3) → VRAM(d3=バイトアドレス) へDMA。完了待ち。trashes d0,d2 */
+dma_chunk:
+	move.w	#0x8F02, (VDP_CTRL).l		/* autoinc=2 */
+	move.w	d6, d2				/* 長さ 0x93/94 */
+	move.w	#0x9300, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	lsr.w	#8, d2
+	move.w	#0x9400, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	move.l	a3, d2				/* 源 = a3/2 (Main-RAM) */
+	lsr.l	#1, d2
+	move.w	#0x9500, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	lsr.l	#8, d2
+	move.w	#0x9600, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	lsr.l	#8, d2
+	move.w	#0x9700, d0
+	or.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	move.l	d3, d0				/* dst=d3 コマンド(VRAM書込+CD5起動) */
+	and.l	#0x0000FFFF, d0
+	move.l	d0, d2
+	andi.w	#0x3FFF, d2
+	ori.w	#0x4000, d2
+	move.w	d2, (VDP_CTRL).l
+	move.l	d0, d2
+	lsr.l	#8, d2
+	lsr.l	#6, d2
+	andi.w	#0x0003, d2
+	ori.w	#0x0080, d2
+	move.w	d2, (VDP_CTRL).l
+	bsr	wait_dma_done
+	rts
+
+/* DMA完了待ち(status bit1)。trashes d0 */
+wait_dma_done:
+1:
+	move.w	(VDP_CTRL).l, d0
+	btst	#1, d0
+	bne	1b
+	rts
+
+/* d0 = VRAM addr(<=0xFFFF) -> VDP_CTRL に write コマンド。trashes d0,d2 */
+set_vram_write:
+	move.l	d0, d2
+	andi.l	#0x3FFF, d0
+	swap	d0
+	ori.l	#0x40000000, d0
+	lsr.w	#7, d2
+	lsr.w	#7, d2
+	andi.w	#3, d2
+	or.w	d2, d0
+	move.l	d0, (VDP_CTRL).l
+	rts
+
+cmd_wait_ready:
+	move.w	d0, (GA_COMCMD0).l
+1:
+	cmp.w	#STAT_READY, (GA_COMSTAT0).l
+	bne	1b
+	move.w	#0, (GA_COMCMD0).l
+2:
+	tst.w	(GA_COMSTAT0).l
+	bne	2b
+	rts
+
+/* CMD_SWAP送信 → STAT_READY(通常) か STAT_END(映画終端) を待つ。d0=受けたSTAT */
+swap_or_end:
+	move.w	#CMD_SWAP, (GA_COMCMD0).l
+1:
+	move.w	(GA_COMSTAT0).l, d0
+	cmp.w	#STAT_READY, d0
+	beq	2f
+	cmp.w	#STAT_END, d0
+	bne	1b
+2:
+	move.w	#0, (GA_COMCMD0).l
+3:
+	tst.w	(GA_COMSTAT0).l
+	bne	3b
+	rts
+
+wait_vblank:
+	move.w	d1, -(sp)
+1:
+	move.w	(VDP_CTRL).l, d1
+	btst	#3, d1
+	beq	1b
+2:
+	move.w	(VDP_CTRL).l, d1
+	btst	#3, d1
+	bne	2b
+	move.w	(sp)+, d1
+	rts
+
+/* B案: CRAM(PROBE_BANK+2, 64語)でRGB合計最大の色を探し、そのpalette行を dbg_palattr に、
+   その色index(B)へフォントの画素(index1)を塗り替えて予約VRAMへDMA。pal_write時に呼ぶ(vblank内)。 */
+dbg_setbright:
+	movem.l	d0-d7/a0-a3, -(sp)
+	lea	(PROBE_BANK+2).l, a0
+	moveq	#0, d3				/* best index */
+	moveq	#-1, d4				/* best sum */
+	moveq	#0, d2				/* i */
+dsb_scan:
+	move.w	(a0)+, d0			/* CRAM: 0000 BBB0 GGG0 RRR0 */
+	move.w	d0, d1
+	lsr.w	#1, d1
+	andi.w	#7, d1				/* R */
+	move.w	d0, d5
+	lsr.w	#5, d5
+	andi.w	#7, d5				/* G */
+	add.w	d5, d1
+	move.w	d0, d5
+	lsr.w	#8, d5
+	lsr.w	#1, d5
+	andi.w	#7, d5				/* B */
+	add.w	d5, d1				/* sum */
+	cmp.w	d4, d1
+	ble	1f
+	move.w	d1, d4
+	move.w	d2, d3
+1:
+	addq.w	#1, d2
+	cmp.w	#64, d2
+	blo	dsb_scan
+	move.w	d3, d5				/* palrow = idx/16 */
+	lsr.w	#4, d5
+	lsl.w	#8, d5
+	lsl.w	#5, d5				/* attr = palrow<<13 */
+	move.w	d5, dbg_palattr
+	move.w	d3, d6
+	andi.w	#0xF, d6			/* B = colidx */
+	/* フォント色替え: base(ROM) の nibble==1 を B へ → DBG_STAGE */
+	lea	dbgfont, a0
+	lea	DBG_STAGE, a1
+	move.w	#DBGFONT_N*16-1, d7
+dsb_rc:
+	move.w	(a0)+, d0
+	bsr	dbg_recolor_word
+	move.w	d0, (a1)+
+	dbra	d7, dsb_rc
+	/* DMA DBG_STAGE → DBGFONT_VADDR (vblank内) */
+	move.w	#DBGFONT_N*16, d6
+	move.w	#DBGFONT_VADDR, d3
+	lea	DBG_STAGE, a3
+	bsr	dma_chunk
+	movem.l	(sp)+, d0-d7/a0-a3
+	rts
+
+/* d0=1語(4ニブル)の index1 を d6(B) へ置換して返す。trashes d1,d2,d3 */
+dbg_recolor_word:
+	moveq	#0, d1
+	moveq	#3, d2
+1:
+	rol.w	#4, d0				/* 上位ニブル→下位へ */
+	move.w	d0, d3
+	andi.w	#0xF, d3
+	cmp.w	#1, d3
+	bne	2f
+	move.w	d6, d3
+2:
+	lsl.w	#4, d1
+	or.w	d3, d1
+	dbra	d2, 1b
+	move.w	d1, d0
+	rts
+
+/* 右下(行23-26)に指標を描画。d5=back_base。裏バッファへ書く(flip直前) */
+render_dbg:
+	movem.l	d0-d4/d6-d7/a0-a1, -(sp)
+	move.w	dbg_palattr, d7
+	moveq	#23, d2				/* F frame */
+	move.w	#15, d3
+	move.w	frame_no, d4
+	bsr	dbg_put_row
+	moveq	#24, d2				/* R raw(デバッグブロック+0) */
+	move.w	#16, d3
+	move.w	(PROBE_BANK+0x5F02).l, d4
+	bsr	dbg_put_row
+	moveq	#25, d2				/* P pal(区間) */
+	move.w	#19, d3
+	move.w	dbg_seg, d4
+	bsr	dbg_put_row
+	moveq	#26, d2				/* M miss(デバッグブロック+12) */
+	move.w	#18, d3
+	move.w	(PROBE_BANK+0x5F02+12).l, d4
+	bsr	dbg_put_row
+	movem.l	(sp)+, d0-d4/d6-d7/a0-a1
+	rts
+
+/* 1行: d2=行, d3=ラベルglyph, d4=値(16bit hex4桁), d5=back_base, d7=palattr。trashes d0,d1,d2 */
+dbg_put_row:
+	moveq	#0, d1
+	move.w	d2, d1
+	lsl.w	#7, d1				/* row*128 */
+	add.l	d5, d1
+	add.l	#DBG_COL*2, d1
+	move.l	d1, d0
+	bsr	set_vram_write			/* d0=dst; trashes d0,d2 */
+	move.w	d3, d1				/* ラベル */
+	add.w	#DBGFONT_VTILE, d1
+	or.w	d7, d1
+	move.w	d1, (VDP_DATA).l
+	moveq	#3, d2				/* 4 hex桁(上位→下位) */
+1:
+	rol.w	#4, d4
+	move.w	d4, d1
+	andi.w	#0xF, d1
+	add.w	#DBGFONT_VTILE, d1
+	or.w	d7, d1
+	move.w	d1, (VDP_DATA).l
+	dbra	d2, 1b
+	rts
+
+	.data
+	.align 2
+palettes:
+	.incbin "out/movieplay/palettes.bin"
+dbgfont:
+	.incbin "dbgfont.bin"
+
+	.bss
+	.align 2
+shadow:
+	.space 576*2
+back_idx:
+	.space 2
+frame_no:
+	.space 2
+started:
+	.space 2
+n_runs:
+	.space 2
+dbg_seg:
+	.space 2
+dbg_palattr:
+	.space 2

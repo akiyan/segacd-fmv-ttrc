@@ -1,0 +1,1002 @@
+/*
+ * Phase B5: delta stream player - Sub(SP)側, TTRC = B方式(payload/control分離)。
+ *
+ * 絶対ルール: CD連続読み(ONE ROM_READN, シーク無し)を維持する。
+ *   連続読み中の CPU→PRG バースト書込は Sub-CPU を固めるため(実証済み)、リングへの
+ *   payload 書込を完全 DMA(CDC_TRN)化する。CPU は PRG へ書かない(読みのみ=安全)。
+ *
+ * MOVIE.DAT(TTRC): Header(1sec) + routing(2B/frame) + prebuffer(payload先頭) + frames(5sec)。
+ *   各 frame = [n_pay_sec payloadセクタ][n_ctrl_sec controlセクタ][pad]。
+ * 起動: routing table→PRG, prebuffer→リングへ CDC_TRN。
+ * 毎フレーム: 5セクタを routing 通り CDC_TRN で振分(payload→リング循環, control→apply循環,
+ *   pad→捨て) → control block を apply(PRG循環)から Word-RAM スクラッチへコピー(折返し線形化,
+ *   PRG読み+WordRAM書き=安全) → 旧フラット形式+CRAM を Word-RAM 出力へ展開(cold は
+ *   リングpop=PRG読み安全) + audio→PCM → swap。
+ */
+
+.equ CDBIOS,      0x00005F22
+.equ CDB_STAT,    0x00005E80
+.equ BIOS_DRV_INIT, 0x0010
+.equ BIOS_CDB_STAT, 0x0081
+.equ BIOS_CDC_STOP, 0x0089
+.equ BIOS_CDC_STAT, 0x008A
+.equ BIOS_CDC_READ, 0x008B
+.equ BIOS_CDC_TRN,  0x008C
+.equ BIOS_CDC_ACK,  0x008D
+.equ BIOS_ROM_READN,0x0020
+
+.equ SUB_GA_BASE, 0x00FF8000
+.equ MEMMODE,     SUB_GA_BASE+0x0002
+.equ COMCMD0,     SUB_GA_BASE+0x0010
+.equ COMSTAT0,    SUB_GA_BASE+0x0020
+.equ COMSTAT1,    SUB_GA_BASE+0x0022
+
+.equ SUB_BANK_1M, 0x000C0000
+
+/* --- PRG-RAM レイアウト(program 0x6000〜, <0x1000) --- */
+/* 0x6800-0x8000 は連続読み中にBIOSが踏む(実証)。0x8000以上は安全(マーカー実証)。 */
+.equ ROUTING,     0x00008000        /* routing table(3sec=6KB) 0x8000-0x9800 */
+.equ ISO_BUF,     0x00007000        /* ISO初期化用(streaming前のみ・BIOS領域を一時利用) */
+.equ SP_STACK,    0x0007FF00        /* スタック最上位(apply端0x7F800の上, 1.8KB) */
+/* 0x9800-0xC000は連続読み中にBIOSが踏む(回収を試みたら化けた)。RINGは0xC000から。 */
+.equ RING_BASE,   0x0000C000
+.equ RING_SIZE,   0x00069000        /* 420KB(全機能ON tank414のdecode peak<=410KB向け) */
+.equ RING_END,    RING_BASE+RING_SIZE     /* 0x75000 */
+.equ APPLY_BASE,  0x00075000
+.equ APPLY_SIZE,  0x0000A800        /* 42KB(16KBは頭詰まり→滑りを実測) */
+.equ APPLY_END,   APPLY_BASE+APPLY_SIZE   /* 0x7F800 */
+
+/* --- Word-RAM スクラッチ(SPバンク内, 毎フレーム再利用=スワップ影響なし) --- */
+.equ CTRL_SCR,    0x000D0000        /* control block 線形化(<=2246B) */
+.equ PAD_SCR,     0x000D2000        /* pad セクタ捨て場 */
+
+/* --- Word-RAM 出力(MDが読む) --- */
+.equ O_PALW,   SUB_BANK_1M+0x0000
+.equ O_CRAM,   SUB_BANK_1M+0x0002
+.equ O_NLOAD,  SUB_BANK_1M+0x0082
+.equ O_LOADS,  SUB_BANK_1M+0x0084
+.equ O_NUPD,   SUB_BANK_1M+0x5000
+.equ O_DBG,    SUB_BANK_1M+0x5F02   /* 22Bデバッグブロック転写先(raw,same,near,coa,flbk,buf,miss,予約4)
+                                       control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
+.equ O_UPDS,   SUB_BANK_1M+0x5002
+
+/* --- RF5C164 PCM (13.3kHz) --- */
+.equ AUDIO_BYTES, 887
+.equ PCM_ENV,   0x00FF0001
+.equ PCM_PAN,   0x00FF0003
+.equ PCM_FDL,   0x00FF0005
+.equ PCM_FDH,   0x00FF0007
+.equ PCM_LSL,   0x00FF0009
+.equ PCM_LSH,   0x00FF000B
+.equ PCM_ST,    0x00FF000D
+.equ PCM_CTRL,  0x00FF000F
+.equ PCM_ONOFF, 0x00FF0011
+.equ PCM_WAVE,  0x00FF2001
+.equ PCM_PLAY_H, 0x00FF0023
+.equ WAVE_RING_END, 0x8000
+.equ RING_MASK, WAVE_RING_END-1
+/* 音声リード: リング先頭の無音を SYNC_LEAD ぶん再生してから実音声に到達=起動遅延。
+   0x3000(0.92s)は遅延が目立つ。DMA化でMDが15fpsを保ち音声underrunの心配が減ったので
+   0x1800(0.46s)へ戻して起動遅延を半減(下方向余裕 LEAD-MIN=0xC00≈3.5コマは維持)。 */
+.equ SYNC_LEAD, 0x1800
+.equ SYNC_MIN,  0x0C00
+.equ SYNC_MAX,  0x6800
+
+.equ NUM_FRAMES,      2293
+.equ FRAME_SECTORS,   5
+.equ HEADER_SECTORS,  1
+.equ ROUTING_SECTORS, 3
+.equ PREBUF_SECTORS,  45
+.equ PREBUF_PATTERNS, 2880
+.equ STREAM_TOTAL,    HEADER_SECTORS+ROUTING_SECTORS+PREBUF_SECTORS+NUM_FRAMES*FRAME_SECTORS
+
+.equ CMD_STREAM, 0x50
+.equ CMD_SWAP,   0x51
+.equ STAT_READY, 0x8003
+.equ STAT_END,   0x8004			/* 全フレーム再生完了(MDは15秒待って CMD_STREAM 再送) */
+
+.macro BIOSCALL code
+	move.w	#\code, d0
+	jsr	CDBIOS
+.endm
+
+.text
+
+sp_header:
+	.ascii	"MAIN       "
+	.byte	0
+	.word	0x0100
+	.word	0
+	.long	0
+	.long	sp_end-sp_header
+	.long	sp_jmptbl-sp_header
+	.long	0
+sp_jmptbl:
+	.word	sp_init-sp_jmptbl
+	.word	sp_main-sp_jmptbl
+	.word	sp_int2-sp_jmptbl
+	.word	sp_user-sp_jmptbl
+	.word	0
+
+.global sp_init
+sp_init:
+	move.w	#0x2700, sr
+	andi.w	#0xFFFA, (MEMMODE).l
+	move.w	#0, (COMSTAT0).l
+	move.w	#0, (COMSTAT1).l
+	rts
+
+.global sp_main
+sp_main:
+command_loop:
+	tst.w	(COMCMD0).l
+	bne	1f
+	bra	command_loop
+1:
+	cmp.w	#CMD_STREAM, (COMCMD0).l
+	beq	do_stream
+	move.w	(COMCMD0).l, (COMSTAT0).l
+2:
+	tst.w	(COMCMD0).l
+	bne	2b
+	move.w	#0, (COMSTAT0).l
+	bra	sp_main
+
+do_stream:
+	movea.l	#SP_STACK, sp
+	move.w	#CMD_STREAM, (COMSTAT0).l
+	/* BIOSのCDCセクタ管理は割り込み駆動。IENを立てsrを下げないと、連続読みで
+	   ポーリングの隙間にセクタが化け/欠ける(実証: XOR不一致)。元プレイヤと同じ設定。 */
+	ori.b	#0x04, (SUB_GA_BASE+0x37).l	/* HOCK: enable CDD communication */
+	ori.b	#0x3C, (SUB_GA_BASE+0x33).l	/* IEN: enable INT2-5 (timer/CDD/CDC) */
+	move.w	#0x2000, sr			/* enable ints BEFORE the BIOS calls */
+	andi.b	#0xFA, (MEMMODE+1).l
+	lea	drv_init_tracklist, a0
+	BIOSCALL BIOS_DRV_INIT
+1:
+	BIOSCALL BIOS_CDB_STAT
+	andi.b	#0xF0, (CDB_STAT).w
+	bne	1b
+	bsr	init_iso9660
+	lea	file_stream, a0
+	bsr	find_file		/* d0 = LBA */
+	move.l	d0, stream_lba
+	bset	#2, (MEMMODE+1).l
+stream_start:
+	/* ループ再生の再入口(ここから下は毎ループ実行)。1ループにつきシークは
+	   ここでの ROM_READN 1回だけ=再生中のCD連続読みルールは維持 */
+	clr.l	prev_msf
+	clr.w	slip_count
+	bsr	init_pcm
+	bsr	issue_rom_readn			/* ファイル全体を連続読み(以降シーク無し) */
+	/* ヘッダ1secをSTAGEへ取り込み、マジック "TTRC" を検証(MOVIE.md) */
+	move.w	#HEADER_SECTORS, d0
+	lea	PAD_SCR, a0
+	bsr	drain_lin
+	cmpi.l	#0x54545243, (PAD_SCR).l	/* "TTRC" */
+	beq	1f
+	move.w	#0xBAD0, (COMSTAT1).l		/* 不一致: 診断マーカーを出して停止 */
+bad_magic:
+	bra	bad_magic
+1:
+	/* routing table → STAGE経由で PRG へ */
+	moveq	#ROUTING_SECTORS, d7
+	lea	ROUTING, a1
+rt_lp:
+	movem.l	d7/a1, -(sp)
+	lea	PAD_SCR, a0
+	bsr	drain1
+	movem.l	(sp)+, d7/a1
+	movem.l	d7/a1, -(sp)
+	bsr	stage_copy
+	movem.l	(sp)+, d7/a1
+	lea	0x800(a1), a1
+	subq.w	#1, d7
+	bne	rt_lp
+	/* prebuffer → STAGE経由でリングへ */
+	move.l	#RING_BASE, ring_tail
+	move.w	#PREBUF_SECTORS, d7
+pb_lp:
+	movem.l	d7, -(sp)
+	lea	PAD_SCR, a0
+	bsr	drain1
+	movea.l	ring_tail, a1
+	bsr	stage_copy
+	movem.l	(sp)+, d7
+	movea.l	ring_tail, a0
+	lea	0x800(a0), a0
+	move.l	a0, ring_tail
+	subq.w	#1, d7
+	bne	pb_lp
+	/* ポインタ初期化 */
+	move.l	#RING_BASE, ring_head
+	move.l	#RING_BASE+PREBUF_PATTERNS*32, ring_tail   /* 先読み済みパターンの末尾 */
+	move.l	#APPLY_BASE, apply_tail
+	move.l	#APPLY_BASE, apply_cur
+	clr.w	frame_idx
+	clr.w	drain_frame
+	clr.w	drain_k
+	/* frame 0 */
+	bsr	process_frame
+	bsr	pcm_on
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	move.w	#STAT_READY, (COMSTAT0).l
+2:
+	tst.w	(COMCMD0).l
+	bne	2b
+	move.w	#0, (COMSTAT0).l
+.equ ISO_HOLD_N, 0			/* ISO診断: frame N を表示した状態で静止(0=無効) */
+.equ ISO_HOLD_DUMP, 0			/* 0=クリーン静止(全画面=実フレームN) 1=内部状態ダンプ */
+stream_loop:
+	cmp.w	#NUM_FRAMES, frame_idx		/* 全フレーム処理済み=映画終端 */
+	bhs	movie_end
+	bsr	process_frame
+3:
+	bsr	pump_poll			/* MD待ち中もCDを吸い上げ(溢れ防止) */
+	cmp.w	#CMD_SWAP, (COMCMD0).l
+	bne	3b
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	move.w	#STAT_READY, (COMSTAT0).l
+4:
+	bsr	pump_poll
+	tst.w	(COMCMD0).l
+	bne	4b
+	move.w	#0, (COMSTAT0).l
+.if ISO_HOLD_N
+	cmp.w	#ISO_HOLD_N+1, frame_idx	/* frame N 処理済み=表示中 */
+	bne	stream_loop
+.if ISO_HOLD_DUMP
+	/* ISO診断: ring_head(現pop位置)から576パターンをダンプした擬似フレームを1回出して静止 */
+	bsr	dump_ring_head
+.else
+	/* クリーン静止: 更新0を渡す=MDは現シャドウ(=実フレームN)を再描画し続ける */
+	move.w	#0, (O_NLOAD).l
+	move.w	#0, (O_NUPD).l
+.endif
+1:
+	cmp.w	#CMD_SWAP, (COMCMD0).l
+	bne	1b
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	move.w	#STAT_READY, (COMSTAT0).l
+2:
+	tst.w	(COMCMD0).l
+	bne	2b
+	move.w	#0, (COMSTAT0).l
+hold_n:
+	bra	hold_n
+
+dump_ring_head:
+	/* ISO診断: 内部状態5ロング値を各32bit=32タイル(白=1,黒=0)で表示。
+	   loadsはラン形式: slot 0..159 連番 = 先頭に1ランのヘッダを置く。 */
+	movem.l	d0-d7/a0-a6, -(sp)
+	move.w	#0, (O_PALW).l
+	lea	(O_LOADS).l, a1
+	move.w	#0, (a1)+			/* slot_start = 0 */
+	move.w	#160, (a1)+			/* count = 160 */
+	lea	(O_UPDS).l, a2
+	lea	dsv_vals, a3			/* ISO: 状態5ロング */
+	move.l	ring_head, (a3)
+	move.l	ring_tail, 4(a3)
+	move.l	apply_cur, 8(a3)
+	move.l	apply_tail, 12(a3)
+	moveq	#0, d0
+	move.w	drain_frame, d0
+	swap	d0
+	move.w	frame_idx, d0
+	move.l	d0, 16(a3)
+	moveq	#0, d6
+	moveq	#0, d5
+dsv_val:
+	move.l	(a3)+, d4
+	moveq	#31, d1
+dsv_bit:
+	moveq	#0, d3
+	btst	d1, d4
+	beq	1f
+	move.w	#0xFFFF, d3
+1:
+	move.w	#16-1, d2
+2:
+	move.w	d3, (a1)+
+	dbra	d2, 2b
+	move.w	d6, (a2)+
+	move.w	d6, d0
+	addq.w	#1, d0
+	move.w	d0, (a2)+
+	addq.w	#1, d6
+	subq.w	#1, d1
+	bpl	dsv_bit
+	addq.w	#1, d5
+	cmp.w	#5, d5
+	blo	dsv_val
+	move.w	#160, (O_NLOAD).l
+	move.w	#160, (O_NUPD).l
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+dsv_vals:
+	.long	0,0,0,0,0
+sec_count:
+	.long	0
+xor_acc:
+	.long	0
+.endif
+	bra	stream_loop
+
+/* 映画終端: 最終フレームのswap要求に応えて表示→STAT_ENDをMDへ→PCM停止→
+   CMD_STREAM(再開)を待って stream_start へ(=15秒待ちはMD側が数える) */
+movie_end:
+1:
+	cmp.w	#CMD_SWAP, (COMCMD0).l
+	bne	1b
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	move.w	#STAT_END, (COMSTAT0).l
+2:
+	tst.w	(COMCMD0).l
+	bne	2b
+	move.w	#0, (COMSTAT0).l
+	move.b	#0xFF, (PCM_ONOFF).l		/* 全chオフ(静音) */
+3:
+	cmp.w	#CMD_STREAM, (COMCMD0).l	/* MDの再開指示を待つ */
+	bne	3b
+	bra	stream_start
+
+issue_rom_readn:
+	movem.l	d0-d7/a0-a6, -(sp)
+	lea	bios_packet, a5
+	move.l	stream_lba, (a5)
+	move.l	#STREAM_TOTAL, 4(a5)
+	move.l	#SUB_BANK_1M, 8(a5)
+	movea.l	a5, a0
+	BIOSCALL BIOS_CDC_STOP
+	BIOSCALL BIOS_ROM_READN
+	move.l	#STREAM_TOTAL, stream_remaining
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+/* 1セクタを (a0) へ CDC_TRN。連続読みをドレイン。宛先a0はBIOS呼びで壊れるので保存・再ロード。 */
+drain1:
+	move.l	a0, dr_dest
+	lea	bios_packet, a5
+1:
+	BIOSCALL BIOS_CDC_STAT
+	bcs	1b
+2:
+	BIOSCALL BIOS_CDC_READ
+	bcc	2b
+	move.w	#2000, d6			/* TRN有限リトライ(固着防止) */
+3:
+	movea.l	dr_dest, a0			/* CDC_TRN直前に宛先を再ロード */
+	lea	12(a5), a1
+	BIOSCALL BIOS_CDC_TRN
+	bcs	4f
+	subq.w	#1, d6
+	bne	3b
+	addq.w	#1, slip_count			/* 回復: このセクタは失われた */
+	BIOSCALL BIOS_CDC_ACK
+	movea.l	dr_dest, a0
+	bra	drain1
+4:
+	BIOSCALL BIOS_CDC_ACK
+	subq.l	#1, stream_remaining
+	/* 滑り検出: セクタヘッダ(BCD分秒フレーム)の連番検査。飛び=slip_count++ */
+	movem.l	d0-d2/a0, -(sp)
+	lea	bios_packet+12, a0
+	moveq	#0, d1
+	move.b	(a0)+, d0
+	bsr	bcd2bin
+	move.w	d0, d1
+	mulu	#60, d1
+	move.b	(a0)+, d0
+	bsr	bcd2bin
+	add.w	d0, d1
+	mulu	#75, d1
+	move.b	(a0)+, d0
+	bsr	bcd2bin
+	add.l	d0, d1
+	move.l	prev_msf, d2
+	beq	1f
+	addq.l	#1, d2
+	cmp.l	d1, d2
+	beq	1f
+	addq.w	#1, slip_count
+1:
+	move.l	d1, prev_msf
+	movem.l	(sp)+, d0-d2/a0
+	rts
+
+bcd2bin:
+	move.w	d0, -(sp)
+	lsr.w	#4, d0
+	mulu	#10, d0
+	move.w	d0, d2
+	move.w	(sp)+, d0
+	andi.w	#0x0F, d0
+	add.w	d2, d0
+	rts
+
+/* d0=セクタ数, a0=先頭(線形)。d0 セクタを a0.. へドレイン。 */
+drain_lin:
+	movem.l	d0-d7/a0-a6, -(sp)
+	move.w	d0, d7
+	subq.w	#1, d7
+dl_loop:
+	movem.l	d7/a0, -(sp)
+	bsr	drain1				/* (a0)へ1セクタ */
+	movem.l	(sp)+, d7/a0
+	lea	0x800(a0), a0
+	dbra	d7, dl_loop
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+/* d0=セクタ数。ring_tail へ CDC_TRN(循環)。 */
+drain_ring:
+	movem.l	d0-d7/a0-a6, -(sp)
+	move.w	d0, d7
+	subq.w	#1, d7
+dr_loop:
+	movea.l	ring_tail, a0
+	movem.l	d7, -(sp)
+	bsr	drain1
+	movem.l	(sp)+, d7
+	movea.l	ring_tail, a0
+	lea	0x800(a0), a0
+	cmpa.l	#RING_END, a0
+	blo	1f
+	movea.l	#RING_BASE, a0
+1:
+	move.l	a0, ring_tail
+	dbra	d7, dr_loop
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+/* d0=セクタ数。apply_tail へ CDC_TRN(循環)。 */
+drain_apply:
+	movem.l	d0-d7/a0-a6, -(sp)
+	move.w	d0, d7
+	subq.w	#1, d7
+da_loop:
+	movea.l	apply_tail, a0
+	movem.l	d7, -(sp)
+	bsr	drain1
+	movem.l	(sp)+, d7
+	movea.l	apply_tail, a0
+	lea	0x800(a0), a0
+	cmpa.l	#APPLY_END, a0
+	blo	1f
+	movea.l	#APPLY_BASE, a0
+1:
+	move.l	a0, apply_tail
+	dbra	d7, da_loop
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+/* ---- ポンプ方式ドレイン ----
+   CDは止まらず75セクタ/秒を吐き続けるので、取り込みをフレーム処理のテンポに縛ると
+   MD側が重いフレームでCDC内部バッファが溢れセクタが失われる(以降ずっとズレる)。
+   → セクタ単位カーソル(drain_frame, drain_k)で「届いたら即取り込む」。
+   MD待ちループ中も pump_poll で吸い上げ、受け側(リング/apply)の余裕だけ確認する。 */
+
+/* 1セクタを取り込む(ブロッキング)。CD→常にWord-RAM STAGE(実績ある経路)→
+   CPUコピーで routing に従い PRG(リング/apply)へ振り分け。
+   (CDC_TRN→PRG直行はリトライ中にセクタが滑る事故が起きる: 実測+1/2フレーム) */
+pump1:
+	movem.l	d0-d7/a0-a6, -(sp)
+	lea	PAD_SCR, a0			/* STAGE = Word-RAM */
+	bsr	drain1
+	moveq	#0, d0
+	move.w	drain_frame, d0
+	add.w	d0, d0
+	lea	ROUTING, a0
+	move.b	(a0,d0.w), d1			/* n_pay */
+	andi.w	#0xFF, d1
+	move.b	1(a0,d0.w), d2			/* n_ctrl */
+	andi.w	#0xFF, d2
+	move.w	drain_k, d3
+	cmp.w	d1, d3
+	blo	p1_ring				/* k < n_pay */
+	add.w	d1, d2
+	cmp.w	d2, d3
+	blo	p1_apply			/* k < n_pay+n_ctrl */
+	bra	p1_adv				/* pad → 捨て(STAGEに残すだけ) */
+p1_ring:
+	movea.l	ring_tail, a1
+	bsr	stage_copy			/* STAGE→PRG 2048B CPUコピー */
+	movea.l	ring_tail, a0
+	lea	0x800(a0), a0
+	cmpa.l	#RING_END, a0
+	blo	1f
+	movea.l	#RING_BASE, a0
+1:
+	move.l	a0, ring_tail
+	bra	p1_adv
+p1_apply:
+	movea.l	apply_tail, a1
+	bsr	stage_copy
+	movea.l	apply_tail, a0
+	lea	0x800(a0), a0
+	cmpa.l	#APPLY_END, a0
+	blo	1f
+	movea.l	#APPLY_BASE, a0
+1:
+	move.l	a0, apply_tail
+p1_adv:
+	addq.w	#1, drain_k
+	cmp.w	#FRAME_SECTORS, drain_k
+	blo	2f
+	clr.w	drain_k
+	addq.w	#1, drain_frame
+2:
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+/* STAGE(PAD_SCR)の2048Bを a1 へCPUコピー。trashes d0/a0/a1。 */
+stage_copy:
+	lea	PAD_SCR, a0
+	move.w	#128-1, d0
+1:
+	move.l	(a0)+, (a1)+
+	move.l	(a0)+, (a1)+
+	move.l	(a0)+, (a1)+
+	move.l	(a0)+, (a1)+
+	dbra	d0, 1b
+	rts
+
+/* ノンブロッキング: CDCにセクタが用意できていて、受け側に余裕があれば1セクタ取り込む。
+   MD待ちループから毎回呼ぶ。 */
+pump_poll:
+	movem.l	d0-d7/a0-a6, -(sp)
+	cmp.w	#NUM_FRAMES, drain_frame
+	bcc	pp_done				/* ストリーム終端 */
+	/* リング余裕: occupied = (tail-head) mod SIZE が SIZE-0x1000 以上なら見送り */
+	move.l	ring_tail, d0
+	sub.l	ring_head, d0
+	bpl	1f
+	add.l	#RING_SIZE, d0
+1:
+	cmp.l	#RING_SIZE-0x1000, d0
+	bcc	pp_done
+	/* apply余裕 */
+	move.l	apply_tail, d0
+	sub.l	apply_cur, d0
+	bpl	2f
+	add.l	#APPLY_SIZE, d0
+2:
+	cmp.l	#APPLY_SIZE-0x1000, d0
+	bcc	pp_done
+	/* CDCにセクタ準備できてる? (CDC_STAT: キャリー=未準備) */
+	BIOSCALL BIOS_CDC_STAT
+	bcs	pp_done
+	bsr	pump1
+pp_done:
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+/* 1フレーム: frame_idx のセクタが全部届くまでポンプ → control取り出し → expand → 音声。 */
+process_frame:
+	movem.l	d0-d7/a0-a6, -(sp)
+	move.w	frame_idx, d0
+pf_pump:
+	cmp.w	drain_frame, d0
+	blo	pf_ready			/* drain_frame > frame_idx = このフレーム分完了 */
+	bsr	pump1				/* ブロッキングで取り込む */
+	bra	pf_pump
+pf_ready:
+	addq.w	#1, frame_idx
+	bsr	fetch_control			/* apply循環 → CTRL_SCR 線形化 */
+	bsr	pump_poll
+	bsr	expand_frame			/* CTRL_SCR → Word-RAM 出力 + 音声 */
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+/* apply-buffer(PRG循環, apply_cur) から control block を CTRL_SCR(Word-RAM) へコピー(折返し線形化)。
+   block先頭 >H total_len。apply_cur を total_len 進める。 */
+fetch_control:
+	movem.l	d0-d7/a0-a6, -(sp)
+	movea.l	apply_cur, a0
+	move.w	(a0), d7			/* total_len */
+	/* コピー: total_len バイトを a0(循環) → CTRL_SCR */
+	lea	CTRL_SCR, a1
+	move.w	d7, d6				/* 残バイト */
+	/* first_part = min(total_len, APPLY_END - a0) */
+	move.l	#APPLY_END, d0
+	sub.l	a0, d0				/* d0 = APPLY_END - a0 (bytes) */
+	cmp.w	d6, d0
+	bcc	fc_nowrap			/* d0 >= 残 なら折返し無し */
+	/* 折返し: first=d0 バイト, 残り d6-d0 */
+	move.w	d0, d5				/* first bytes */
+	sub.w	d5, d6				/* 残り */
+	lsr.w	#1, d5				/* words */
+	subq.w	#1, d5
+1:
+	move.w	(a0)+, (a1)+
+	dbra	d5, 1b
+	movea.l	#APPLY_BASE, a0
+fc_nowrap:
+	/* 残 d6 バイトをコピー */
+	tst.w	d6
+	beq	fc_done
+	move.w	d6, d5
+	lsr.w	#1, d5
+	subq.w	#1, d5
+2:
+	move.w	(a0)+, (a1)+
+	dbra	d5, 2b
+fc_done:
+	/* apply_cur += total_len, 折返し */
+	movea.l	apply_cur, a0
+	adda.w	d7, a0
+	cmpa.l	#APPLY_END, a0
+	blo	3f
+	suba.l	#APPLY_SIZE, a0
+3:
+	move.l	a0, apply_cur
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+/* CTRL_SCR(線形 control block) を Word-RAM へ展開。cold は ring pop。
+   block = >H total_len >H n_upd >B pal >B dbg [22B DEBUG if dbg] [128 CRAM if pal]
+           72 bitmap n_upd*(entry) 887 audio [even pad]   (MOVIE.md 準拠)
+   loads はラン形式: [slot_start.w count.w pattern(count*32B)] の列。エンコーダが
+   フレーム内coldを連番スロットに割当てるので、MDは1ランを1回の大DMAで転送できる。 */
+expand_frame:
+	movem.l	d0-d7/a0-a6, -(sp)
+	lea	CTRL_SCR, a0
+	addq.l	#2, a0				/* skip total_len */
+	move.w	(a0)+, d5			/* n_upd (使わないが読み飛ばし用に保持) */
+	move.w	(a0)+, d0			/* pal(hi) dbg(lo) */
+	lea	(O_DBG).l, a1
+	move.w	d0, d4
+	andi.w	#0xFF, d4			/* dbg フラグ */
+	beq	ef_nodbg
+	moveq	#11-1, d1			/* 22B デバッグブロックを MD へ転写 */
+1:
+	move.w	(a0)+, (a1)+
+	dbra	d1, 1b
+	bra	ef_pal
+ef_nodbg:
+	moveq	#11-1, d1			/* デバッグ欄なし: MD表示をゼロで消す */
+1:
+	clr.w	(a1)+
+	dbra	d1, 1b
+ef_pal:
+	move.w	d0, d4
+	lsr.w	#8, d4				/* pal_write */
+	move.w	d4, (O_PALW).l
+	tst.w	d4
+	beq	ef_bm
+	lea	(O_CRAM).l, a1
+	move.w	#64-1, d1
+1:
+	move.w	(a0)+, (a1)+
+	dbra	d1, 1b
+ef_bm:
+.equ ISO_DUMP_OFF, 0
+	movea.l	a0, a3				/* bitmap(72) */
+	lea	72(a0), a0			/* entries */
+	lea	(O_LOADS).l, a1
+	lea	(O_UPDS).l, a2
+	movea.l	ring_head, a4			/* pop ptr(PRG読み) */
+	moveq	#0, d4				/* n_load */
+	moveq	#0, d5				/* n_upd */
+	moveq	#0, d6				/* cell base */
+	suba.l	a5, a5				/* a5=開いているランのcountワード位置(0=無し) */
+	movea.w	#-1, a6				/* a6=次に連結できるスロット(無効値で開始) */
+	clr.w	run_cnt
+	move.w	#72-1, d7
+ef_byte:
+	bsr	pump_poll			/* 長い展開中もCDを取りこぼさない */
+	move.b	(a3)+, d0
+	beq	ef_next
+	moveq	#0, d1
+ef_bit:
+	btst	d1, d0
+	beq	ef_skip
+	move.w	(a0)+, d2			/* entry */
+	move.w	d6, d3
+	add.w	d1, d3				/* cell */
+	move.w	d3, (a2)+
+	move.w	d2, d3
+	andi.w	#0x7FFF, d3			/* ent */
+	move.w	d3, (a2)+
+	addq.w	#1, d5
+	btst	#15, d2
+	beq	ef_skip
+	move.w	d3, d2
+	andi.w	#0x07FF, d2
+	subq.w	#1, d2				/* slot */
+	cmpa.w	d2, a6				/* 直前ランの続き(=期待スロット)か? */
+	beq	ef_cont
+	cmpa.w	#0, a5				/* 前のランを閉じる(countを書き戻す) */
+	beq	1f
+	move.w	run_cnt, (a5)
+1:
+	move.w	d2, (a1)+			/* slot_start */
+	movea.l	a1, a5				/* countワードの位置を覚える */
+	clr.w	(a1)+
+	clr.w	run_cnt
+ef_cont:
+	addq.w	#1, run_cnt
+	movea.w	d2, a6
+	addq.l	#1, a6				/* 期待スロット = slot+1 */
+	/* ring pop 32B: RING/O_LOADSとも4バイト整列・パターンはリング末端を跨がない
+	   (RING_SIZEはセクタ倍数, パターンは32B整列)ので move.l×8 で一括コピー */
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	cmpa.l	#RING_END, a4
+	blo	1f
+	movea.l	#RING_BASE, a4
+1:
+	addq.w	#1, d4
+ef_skip:
+	addq.w	#1, d1
+	cmp.w	#8, d1
+	blo	ef_bit
+ef_next:
+	addq.w	#8, d6
+	dbra	d7, ef_byte
+	cmpa.w	#0, a5				/* 最後のランを閉じる */
+	beq	1f
+	move.w	run_cnt, (a5)
+1:
+	move.w	d4, (O_NLOAD).l
+	move.w	d5, (O_NUPD).l
+	move.w	slip_count, (SUB_BANK_1M+0x5F00).l	/* 滑り回数をMDへ */
+	move.l	a4, ring_head
+	/* 音声: entries の直後(a0) に 887B */
+	movea.l	a0, a5
+	movea.l	a5, a0
+	bsr	write_wave_chunk
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+swap_settle:
+	movem.l	d0, -(sp)
+	move.w	#0x0400, d0
+1:
+	dbra	d0, 1b
+	movem.l	(sp)+, d0
+	rts
+
+read_cd:
+	movem.l	d0-d7/a0-a6, -(sp)
+	lea	bios_packet, a5
+	move.l	d0, (a5)
+	move.l	d1, 4(a5)
+	move.l	a0, 8(a5)
+	movea.l	a5, a0
+	BIOSCALL BIOS_CDC_STOP
+	BIOSCALL BIOS_ROM_READN
+wait_stat:
+	BIOSCALL BIOS_CDC_STAT
+	bcs	wait_stat
+wait_read:
+	BIOSCALL BIOS_CDC_READ
+	bcc	wait_read
+wait_transfer:
+	movea.l	8(a5), a0
+	lea	12(a5), a1
+	BIOSCALL BIOS_CDC_TRN
+	bcc	wait_transfer
+	BIOSCALL BIOS_CDC_ACK
+	addq.l	#1, (a5)
+	addi.l	#0x0800, 8(a5)
+	subq.l	#1, 4(a5)
+	bne	wait_stat
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+init_iso9660:
+	movem.l	d0-d7/a0-a6, -(sp)
+	move.l	#0x10, d0
+	move.l	#2, d1
+	lea	ISO_BUF, a0
+	bsr	read_cd
+	lea	ISO_BUF, a0
+	lea	156(a0), a1
+	moveq	#0, d0
+	move.b	6(a1), d0
+	lsl.l	#8, d0
+	move.b	7(a1), d0
+	lsl.l	#8, d0
+	move.b	8(a1), d0
+	lsl.l	#8, d0
+	move.b	9(a1), d0
+	move.l	#0x20, d1
+	lea	ISO_BUF, a0
+	bsr	read_cd
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+find_file:
+	movem.l	a1-a2/a6, -(sp)
+	lea	ISO_BUF, a1
+read_filename_start:
+	movea.l	a0, a6
+	move.b	(a6)+, d0
+find_first_char:
+	movea.l	a1, a2
+	cmp.b	(a1)+, d0
+	bne	find_first_char
+check_chars:
+	move.b	(a6)+, d0
+	beq	get_info
+	cmp.b	(a1)+, d0
+	bne	read_filename_start
+	bra	check_chars
+get_info:
+	sub.l	#33, a2
+	moveq	#0, d0
+	move.b	6(a2), d0
+	lsl.l	#8, d0
+	move.b	7(a2), d0
+	lsl.l	#8, d0
+	move.b	8(a2), d0
+	lsl.l	#8, d0
+	move.b	9(a2), d0
+	movem.l	(sp)+, a1-a2/a6
+	rts
+
+/* ---- RF5C164 PCM ---- */
+init_pcm:
+	movem.l	d0-d2/a0, -(sp)
+	moveq	#0, d2
+ip_loop:
+	move.w	d2, d1
+	andi.w	#0x0FFF, d1
+	bne	1f
+	move.w	d2, d0
+	lsr.w	#8, d0
+	lsr.w	#4, d0
+	ori.b	#0x80, d0
+	move.b	d0, (PCM_CTRL).l
+1:
+	lea	(PCM_WAVE).l, a0
+	add.w	d1, d1
+	adda.w	d1, a0
+	move.b	#0x00, (a0)
+	addq.w	#1, d2
+	cmp.w	#WAVE_RING_END, d2
+	blo	ip_loop
+	move.b	#0x88, (PCM_CTRL).l
+	move.b	#0xFF, (PCM_WAVE).l
+	move.b	#0xC0, (PCM_CTRL).l
+	move.b	#0xFF, (PCM_ENV).l
+	nop
+	nop
+	move.b	#0xFF, (PCM_PAN).l
+	nop
+	nop
+	move.b	#0x45, (PCM_FDL).l
+	nop
+	nop
+	move.b	#0x03, (PCM_FDH).l
+	nop
+	nop
+	move.b	#0x00, (PCM_LSL).l
+	nop
+	nop
+	move.b	#0x00, (PCM_LSH).l
+	nop
+	nop
+	move.b	#0x00, (PCM_ST).l
+	nop
+	nop
+	move.w	#0, write_ptr
+	movem.l	(sp)+, d0-d2/a0
+	rts
+
+pcm_on:
+	move.b	#0xFE, (PCM_ONOFF).l
+	rts
+
+write_wave_chunk:
+	movem.l	d0-d5/a0-a1, -(sp)
+	moveq	#0, d5
+	move.b	(PCM_PLAY_H).l, d5
+	lsl.w	#8, d5
+	move.w	write_ptr, d2
+	move.w	d2, d0
+	sub.w	d5, d0
+	andi.w	#RING_MASK, d0
+	cmp.w	#SYNC_MIN, d0
+	blo	1f
+	cmp.w	#SYNC_MAX, d0
+	bls	2f
+1:
+	move.w	d5, d2
+	add.w	#SYNC_LEAD, d2
+	andi.w	#RING_MASK, d2
+2:
+	move.w	#AUDIO_BYTES-1, d3
+	move.w	d2, d0
+	lsr.w	#8, d0
+	lsr.w	#4, d0
+	ori.b	#0x80, d0
+	move.b	d0, (PCM_CTRL).l
+wwc_loop:
+	move.w	d2, d0
+	andi.w	#0x3F, d0
+	bne	3f
+	bsr	pump_poll			/* 音声書込中もCDを取りこぼさない */
+3:
+	move.w	d2, d4
+	andi.w	#0x0FFF, d4
+	bne	1f
+	move.w	d2, d0
+	lsr.w	#8, d0
+	lsr.w	#4, d0
+	ori.b	#0x80, d0
+	move.b	d0, (PCM_CTRL).l
+1:
+	lea	(PCM_WAVE).l, a1
+	add.w	d4, d4
+	adda.w	d4, a1
+	move.b	(a0)+, (a1)
+	addq.w	#1, d2
+	cmp.w	#WAVE_RING_END, d2
+	blo	2f
+	moveq	#0, d2
+	move.b	#0x80, (PCM_CTRL).l
+2:
+	dbra	d3, wwc_loop
+	move.w	d2, write_ptr
+	move.b	#0xC0, (PCM_CTRL).l
+	movem.l	(sp)+, d0-d5/a0-a1
+	rts
+
+.global sp_int2
+sp_int2:
+	rts
+.global sp_user
+sp_user:
+	rts
+
+drv_init_tracklist:
+	.byte	1, 0xFF
+file_stream:
+	.asciz	"MOVIE.DAT"
+	.align	2
+
+bios_packet:
+	.long	0, 0, 0, 0, 0
+stream_lba:
+	.long	0
+stream_remaining:
+	.long	0
+dr_dest:
+	.long	0
+prev_msf:
+	.long	0
+slip_count:
+	.word	0
+	.word	0
+ring_head:
+	.long	0
+ring_tail:
+	.long	0
+apply_tail:
+	.long	0
+apply_cur:
+	.long	0
+frame_idx:
+	.word	0
+drain_frame:
+	.word	0
+drain_k:
+	.word	0
+write_ptr:
+	.word	0
+run_cnt:
+	.word	0
+
+sp_end:
