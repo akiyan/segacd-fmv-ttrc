@@ -28,6 +28,7 @@
 #   --record-preset NAME
 #                     generate a recording config. Supported: flac-fast,
 #                     ffv1-flac.
+#   --record-size WxH pass RetroArch --size for recording output geometry.
 #   --record-realtime
 #                     shorthand for synced emulator audio recording:
 #                     --record --record-preset flac-fast
@@ -68,6 +69,7 @@ RECORD=0
 RECORD_PATH=""
 RECORD_CONFIG=""
 RECORD_PRESET=""
+RECORD_SIZE=""
 AUDIO_DRIVER="null"
 AUDIO_DEVICE=""
 SDL_AUDIO_DRIVER=""
@@ -96,6 +98,7 @@ while [ $# -gt 0 ]; do
       ;;
     --recordconfig) RECORD_CONFIG="$2"; shift 2;;
     --record-preset) RECORD_PRESET="$2"; shift 2;;
+    --record-size) RECORD_SIZE="$2"; shift 2;;
     --record-realtime) RECORD=1; REALTIME_RECORD=1; shift;;
     --audio-driver) AUDIO_DRIVER="$2"; shift 2;;
     --audio-device) AUDIO_DEVICE="$2"; shift 2;;
@@ -268,6 +271,9 @@ if [ "$RECORD" -eq 1 ]; then
   RA_RECORD_ARGS=(--record "$RECORD_PATH")
   if [ -n "$RECORD_CONFIG" ]; then
     RA_RECORD_ARGS+=(--recordconfig "$RECORD_CONFIG")
+  fi
+  if [ -n "$RECORD_SIZE" ]; then
+    RA_RECORD_ARGS+=(--size "$RECORD_SIZE")
   fi
 fi
 RA_ENV=(DISPLAY="$DISPLAY_NUM" LIBGL_ALWAYS_SOFTWARE=1)
