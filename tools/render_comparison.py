@@ -105,6 +105,11 @@ def build_fseq(real_pngs):
     for k, (val, _conf, ok) in enumerate(reads):
         pred = k - anchor
         use = val if ok and abs(val - pred) <= 2 else pred
+        # 単調非減少を強制: OCRの±1-2の揺れが右(ideal)パネルの巻き戻り
+        # (ガクガク戻る見え方)になるのを禁止。保持/前進スキップは実機側の
+        # 実挙動なので許容(predが線形に進むので誤差は±2コマで自然回復)。
+        if fseq:
+            use = max(use, fseq[-1])
         fseq.append(max(0, min(use, R.NF - 1)))
     return fseq, anchor
 

@@ -155,6 +155,9 @@ TANK_CAP_BYTES = TANK_KB * 1024
 # 格上げパス(既定ON): 余ったCD + タンクの余剰で、近似(Near/Coa/Flbk)や持ち越しをRaw/Bufに格上げ。
 # 0で無効(=従来の帯域余し挙動に戻せる, 比較用)。
 UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
+# cold(=新規パターン転送: Raw+Buf)の1コマ上限。実機MDの実時間デコード天井対策
+# (BUDGETS.md 'Encoder cap')。超過セルは Flbk近似 or Miss繰越。0=無効。
+MAX_COLD = int(os.environ.get("CBRSIM_MAX_COLD", "0"))
 # タンク(Buff)の温存率。Coa〜Miss(劣化の重い格上げ)にはこの割合を最低残す=将来の劣化タイル需要用に予約。
 # Nearの格上げは「余裕があるとき」だけ=より高い割合を残す(NEAR_RESERVE)まで温存。終盤はrampで両方0へ。
 UPGRADE_RESERVE = float(os.environ.get("CBRSIM_UPGRADE_RESERVE", "0.4"))       # Coa〜Miss用に最低4割予約
@@ -612,6 +615,9 @@ def main():
         prg_hits = 0
         coa_hits = 0
         spent_tiles = 0
+        cold_spent = 0             # このコマのcold数(Raw+Buf=実機のパターンDMA数)
+        # frame0はSTAT_READY前の構築で実時間締切が無い(全面初期ロードが正当)のため上限を免除
+        frame_max_cold = MAX_COLD if i > 0 else 0
 
         def find_approx(c):
             """平坦なコールドタイルcに、見た目(2×2低周波)が近い常駐パターンを探す。無ければNone。"""
@@ -636,7 +642,7 @@ def main():
         def commit_plain(c):
             # メインパス: まず安く全部埋める。cold平坦タイルは Coa(NAMEのみ) を優先=飢餓を出さない。
             # (タンク満杯時の余りCDでの Raw 格上げは後段の格上げパスで行う)
-            nonlocal tile_recs, name_recs, dedup_saved, l3_hits, prg_hits, coa_hits, spent_tiles
+            nonlocal tile_recs, name_recs, dedup_saved, l3_hits, prg_hits, coa_hits, spent_tiles, cold_spent
             key = plain_keys[c]
             in_vram = key in resident or key in loaded_keys      # L1/L2: VRAM常駐(転送ゼロ)
             approx_key = find_approx(c) if (COA_ON and not in_vram) else None
@@ -654,10 +660,16 @@ def main():
                 rep_key = approx_key; rep_pal = pat_pal[approx_key]; rep_rgb = pat_rgb[approx_key]
                 loaded_keys.add(approx_key)
             elif in_prg:
+                if frame_max_cold and cold_spent >= frame_max_cold:
+                    return False                                  # cold上限: 今コマは見送り(Miss繰越)
+                cold_spent += 1
                 prg_hits += 1; prg_mask[c] = True; loaded_keys.add(key)
             elif in_l3:
                 l3_hits += 1; loaded_keys.add(key); l3.pop(key, None)
             else:                                                # cold: パターンをVRAMへ(自CD=Raw or 貯水池=Buf)
+                if frame_max_cold and cold_spent >= frame_max_cold:
+                    return False                                  # cold上限: 今コマは見送り(Miss繰越)
+                cold_spent += 1
                 loaded_keys.add(key)
                 if VBV_ON and spent_tiles >= frame_cd:
                     prg_hits += 1; prg_mask[c] = True
@@ -709,7 +721,7 @@ def main():
                 return -1
 
             def commit_unified(c):
-                nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, flbk_hits, spent_tiles
+                nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, flbk_hits, spent_tiles, cold_spent
                 key = plain_keys[c]
                 # 1. 現在表示がほぼ同一 → Near維持(0B, 更新なし・Missでもない)=帯域優先
                 if near_keep[c]:
@@ -733,9 +745,11 @@ def main():
                     loaded_keys.add(rk); name_recs += 1; spent_tiles += NAME_BYTES
                     repoint(c, rk, rp, rr, i); committed_plain[c] = key; updated[c] = True
                     return
-                # 3. 中途半端(flbk/none) → まず正確ロード(自CD=Raw / 貯水池=Buf)
+                # 3. 中途半端(flbk/none) → まず正確ロード(自CD=Raw / 貯水池=Buf)。
+                #    cold上限到達時はロードせず 4.のFlbk近似へ(Missより良い穴埋め)
                 cost = NAME_BYTES + PATTERN_BYTES
-                if spent_tiles + cost <= tile_budget:
+                if spent_tiles + cost <= tile_budget and not (frame_max_cold and cold_spent >= frame_max_cold):
+                    cold_spent += 1
                     loaded_keys.add(key)
                     if VBV_ON and spent_tiles >= frame_cd:
                         prg_hits += 1; prg_mask[c] = True
@@ -781,18 +795,21 @@ def main():
                 budget_hi = spent_tiles + int(max(0, budget_hi - spent_tiles) * keep)
             if spent_tiles < budget_lo:
                 def raw_upgrade(c, lim):
-                    nonlocal tile_recs, name_recs, dedup_saved, coa_hits, spent_tiles, upgraded
+                    nonlocal tile_recs, name_recs, dedup_saved, coa_hits, spent_tiles, upgraded, cold_spent
                     key = plain_keys[c]
                     in_vram = key in resident or key in loaded_keys
                     cost = NAME_BYTES if in_vram else NAME_BYTES + PATTERN_BYTES
                     if spent_tiles + cost > lim:
                         return
+                    if (not in_vram) and frame_max_cold and cold_spent >= frame_max_cold:
+                        return                                   # cold上限: 格上げ見送り(近似のまま)
                     if coa_mask[c]:
                         coa_mask[c] = False; coa_hits -= 1
                     near_mask[c] = False; flbk_mask[c] = False   # 近似を取消
                     if in_vram:
                         dedup_saved += 1; dedup_mask[c] = True
                     else:
+                        cold_spent += 1
                         loaded_keys.add(key); tile_recs += 1; raw_mask[c] = True
                         pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c])
                         coa_bucket[(int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))].append(key)
