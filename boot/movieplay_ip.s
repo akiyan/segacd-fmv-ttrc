@@ -248,20 +248,9 @@ bf_bw:
 	addq.w	#1, d4
 	dbra	d6, bf_row
 
-	/* vblank内: (pal_write時)CRAM総入替 → タイルDMA */
-	bsr	wait_vb_in
-	move.w	(PROBE_BANK).l, d0		/* pal_write @ +0 */
-	beq	bf_dma
-	move.l	#0xC0000000, (VDP_CTRL).l	/* CRAM addr 0 */
-	lea	(PROBE_BANK+2), a0
-	move.w	#64-1, d1
-1:
-	move.w	(a0)+, (VDP_DATA).l
-	dbra	d1, 1b
-	addq.w	#1, dbg_seg			/* 区間++ (pal_write=区間境界) */
-.ifdef DEBUG
-	bsr	dbg_setbright			/* B案: 最明色でフォント色替え */
-.endif
+	/* CRAM総入替は flip と同一VBLANKで行う(bf_flip側)。ここで先に書くと、
+	   タイルDMAが複数vblankに渡る間「旧フレーム表示×新パレット」が見える
+	   (パレット区間切替の瞬間に実機側だけ明るいゴミタイルが出る実バグ)。 */
 bf_dma:
 	/* Pass2: 表を順に Word-RAM 直DMA(src→VRAM dst)。VBLANK予算(d7)でランをまたいで分割。
 	   Word-RAM源DMAは先頭1ワードが化ける(実測/Sega文書)ため、チャンク毎に
@@ -304,6 +293,23 @@ bf_flip:
 .ifdef DEBUG
 	bsr	render_dbg			/* 上黒帯にデバッグ指標を描画(裏バッファ, flip直前) */
 .endif
+	/* パレット区間切替: CRAM総入替+flip を同一VBLANK内で原子的に行う。
+	   タイルDMA完了後に新しいvblank頭を取り、CRAM(64語)→フォント色替え→flip。
+	   これで「新パレット×旧フレーム」「旧パレット×新フレーム」の混在が出ない。 */
+	move.w	(PROBE_BANK).l, d0		/* pal_write @ +0 */
+	beq	bf_doflip
+	bsr	wait_vb_start			/* 頭から使える新しいvblank(CRAM+flipが確実に収まる) */
+	move.l	#0xC0000000, (VDP_CTRL).l	/* CRAM addr 0 */
+	lea	(PROBE_BANK+2), a0
+	move.w	#64-1, d1
+1:
+	move.w	(a0)+, (VDP_DATA).l
+	dbra	d1, 1b
+	addq.w	#1, dbg_seg			/* 区間++ (pal_write=区間境界) */
+.ifdef DEBUG
+	bsr	dbg_setbright			/* B案: 最明色でフォント色替え(小DMA, 同vblank内) */
+.endif
+bf_doflip:
 	move.l	d5, d0
 	lsr.l	#8, d0
 	lsr.l	#2, d0				/* back_base>>10 */
