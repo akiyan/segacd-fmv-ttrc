@@ -530,45 +530,45 @@ dbg_recolor_word:
 
 /* 上黒帯(行3-4)に全指標を横並び2行で描画。d5=back_base。裏バッファへ書く(flip直前)。
    下黒帯は将来「黒帯走査中のDMA早期開始」に使うため空けておく(ユーザー方針)。
-   行0-2はオーバースキャンで切れうるため行3-4を使用。値は全て hex4桁。
-   行3: F(rame) R(aw+0) S(ame+2) N(ear+4) C(oa+6)
-   行4: L(=flbk+8) B(uf+10) M(iss+12) P(区間) */
+   映像(行5〜)との間に1行空ける(行4=空行)。行0-1はオーバースキャンで切れうるため行2-3を使用。
+   行2: F(rame) R(aw+0) S(ame+2) N(ear+4) C(oa+6)
+   行3: L(=flbk+8) B(uf+10) M(iss+12) P(区間) */
 render_dbg:
 	movem.l	d0-d4/d6-d7/a0-a1, -(sp)
 	move.w	dbg_palattr, d7
-	move.w	#3*128+1*2, d2			/* F frame */
+	move.w	#2*128+1*2, d2			/* F frame */
 	move.w	#15, d3
 	move.w	frame_no, d4
 	bsr	dbg_put_row
-	move.w	#3*128+7*2, d2			/* R raw */
+	move.w	#2*128+7*2, d2			/* R raw */
 	move.w	#16, d3
 	move.w	(PROBE_BANK+0x5F02).l, d4
 	bsr	dbg_put_row
-	move.w	#3*128+13*2, d2			/* S same */
+	move.w	#2*128+13*2, d2			/* S same */
 	move.w	#23, d3
 	move.w	(PROBE_BANK+0x5F02+2).l, d4
 	bsr	dbg_put_row
-	move.w	#3*128+19*2, d2			/* N near */
+	move.w	#2*128+19*2, d2			/* N near */
 	move.w	#27, d3
 	move.w	(PROBE_BANK+0x5F02+4).l, d4
 	bsr	dbg_put_row
-	move.w	#3*128+25*2, d2			/* C coa */
+	move.w	#2*128+25*2, d2			/* C coa */
 	move.w	#12, d3
 	move.w	(PROBE_BANK+0x5F02+6).l, d4
 	bsr	dbg_put_row
-	move.w	#4*128+1*2, d2			/* L flbk */
+	move.w	#3*128+1*2, d2			/* L flbk */
 	move.w	#21, d3
 	move.w	(PROBE_BANK+0x5F02+8).l, d4
 	bsr	dbg_put_row
-	move.w	#4*128+7*2, d2			/* B buf */
+	move.w	#3*128+7*2, d2			/* B buf */
 	move.w	#11, d3
 	move.w	(PROBE_BANK+0x5F02+10).l, d4
 	bsr	dbg_put_row
-	move.w	#4*128+13*2, d2			/* M miss */
+	move.w	#3*128+13*2, d2			/* M miss */
 	move.w	#18, d3
 	move.w	(PROBE_BANK+0x5F02+12).l, d4
 	bsr	dbg_put_row
-	move.w	#4*128+19*2, d2			/* P 区間 */
+	move.w	#3*128+19*2, d2			/* P 区間 */
 	move.w	#19, d3
 	move.w	dbg_seg, d4
 	bsr	dbg_put_row
