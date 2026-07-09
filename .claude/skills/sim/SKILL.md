@@ -100,6 +100,14 @@ This can take about 10-13 minutes for 2700-3100 frames.
 export CBRSIM_SRC=SRC
 export CBRSIM_W=<W> CBRSIM_H=<H> CBRSIM_FPS=<fps> CBRSIM_DURATION=<sec>
 
+# Display mode & audio format (defaults H32 + 22.05kHz ADPCM):
+#   CBRSIM_MODE = H32 (256 wide, default) / H40 (320 wide → set CBRSIM_W=320, 40 cols)
+#                 / mode4 (256x192 — RESERVED: packer tile format not ready, do not ship)
+#   CBRSIM_AUDIO = adpcm22 (default, offline) / pcm13 (13.3kHz mono 8bit PCM, RF5C164 —
+#                  the on-hardware-verified path; use this for real-build + record runs)
+# CBRSIM_MODE flows into the analysis overlay AND the MOVIE.DAT header mode byte (via pack).
+export CBRSIM_MODE=H32 CBRSIM_AUDIO=adpcm22
+
 # If there is crop, put it at the start of MASTER_VF / RAW_VF.
 # The final scale in the dedither chain must match W:H exactly.
 export CBRSIM_MASTER_VF="[crop=...,]scale=<~2x>:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=<W>:<H>:flags=lanczos"

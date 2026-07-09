@@ -120,6 +120,56 @@ Follows AGENTS.md "Output Paths": `videos/<stem>_comparison.mp4` for the
 side-by-side, `videos/<stem>_sim.mp4` for the straight sim clip,
 `videos/<stem>_emu.mp4` for the emulator recording.
 
+## Full pipeline runbook (sim → disc → record → comparison → upload)
+
+Set the **encode identity** env once. Every tool derives the same working dir
+(`videos/<stem>/tmp`) and artifact names (`videos/<stem>_*.mp4`) from it via
+`tools/cbr_paths.py` — so do NOT set `CBRSIM_OUT` (let it auto-derive), and use
+the same env for every step. `stem = <src>_<mode>_<WxH>_<audio-tag>`.
+
+Example: **machi_op, H40, PCM 13.3 kHz** (adjust `CBRSIM_W/H`, duration, seconds
+per source; each tool's docstring lists its full env):
+
+```sh
+# 0) encode identity (H40 → 320 wide / 40 cols; PCM → audio-verified path)
+export CBRSIM_SRC=assets/machi_op.mp4 CBRSIM_FPS=15
+export CBRSIM_MODE=H40 CBRSIM_W=320 CBRSIM_H=176        # H per /sim aspect+DMA rules
+export CBRSIM_AUDIO=pcm13
+# stem = machi_op_H40_320x176_pcm ; sim dir = videos/machi_op_H40_320x176_pcm/tmp
+
+# 1) encode — also emit the decision log the packer replays
+CBRSIM_EMIT_DEC=1 python3 tools/sim.py
+
+# 2) analysis overlay video (optional upload)   -> videos/<stem>_analysis.mp4
+python3 tools/render_analysis.py
+
+# 3) straight ideal clip (optional)             -> videos/<stem>_sim.mp4
+python3 tools/export_sim_video.py
+
+# 4) pack the on-disc stream (mode byte from CBRSIM_MODE) -> out/movieplay/MOVIE.DAT
+python3 tools/pack_stream.py --output out/movieplay/MOVIE.DAT
+
+# 5) build the disc                             -> out/MOVIEPLAY.cue
+make disc
+
+# 6) record the emulator LOSSLESS (crisp dither)  -> tmp/<tag>.mkv
+tools/record_movie.sh --disc out/MOVIEPLAY.cue --no-build --seconds 175 \
+  --preset ffv1-flac --tag comp_emu --out videos/machi_op_H40_320x176_pcm_emu.mp4
+
+# 7) (optional) report the F0000 sync anchor
+python3 tools/find_comparison_sync.py tmp/comp_emu.mkv
+
+# 8) render the comparison (left = lossless mkv, right = sim preview[F])
+CMP_REAL=tmp/comp_emu.mkv CMP_OUT=videos/machi_op_H40_320x176_pcm_comparison.mp4 \
+  python3 tools/render_comparison.py
+
+# 9) upload analysis and/or comparison (unlisted, category 20) — see AGENTS.md
+```
+
+Shared-machine rule: steps 1-3, 8 (sim/render, CPU-heavy) and step 6 (emulator,
+timing-sensitive) MUST NOT overlap — run one at a time, and never kill another
+session's runs (see AGENTS.md "Shared-Machine Exclusion").
+
 ## Known limitations / TODO
 
 - **Start marker (planned):** release comparison should not depend on the debug
