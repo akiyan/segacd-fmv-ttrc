@@ -41,6 +41,9 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
      Tank-delta / DMA plus the stacked timelines).
   4. What the encoder does — first a short list of the techniques applied, then
      the details for each.
+  5. Project link — always include the source repository URL:
+     `https://github.com/akiyan/segacd-fmv-ttrc` . Put it in every description
+     (both the English and the Japanese section).
 - Do not show bitrate in the Source spec line.
 - Uploads are unlisted, category 20 (Gaming). Descriptive titles, not vNNN.
 - **"Upload" always means the latest version.** Before uploading, rebuild the
