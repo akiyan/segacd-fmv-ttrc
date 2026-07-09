@@ -48,7 +48,9 @@ FR_REAL = WORK / "real"; FR_OUT = WORK / "frames"
 SIMDIR = R.SIM                                          # tmp/sim
 SCREEN_W, SCREEN_H = R.SCREEN_W, R.SCREEN_H             # mode4 なら 256x192
 CONTENT_W, CONTENT_H = R.W, R.H                         # 256x144
-PADY = (SCREEN_H - CONTENT_H) // 2                      # sim preview を実機画面へ中央配置
+# sim preview を実機画面へ載せる縦位置。実機プレイヤーの content 配置(実測: 行14〜157)に
+# 合わせる(単純中央だと数px下にズレて左右のアスペクト/位置が食い違う)。CMP_PADY で調整可。
+PADY = int(os.environ.get("CMP_PADY", "14"))
 
 
 def extract(mp4, outdir):
@@ -60,15 +62,17 @@ def extract(mp4, outdir):
 
 
 def build_fseq(real_pngs):
-    """各実機フレームの movie フレーム番号 F を読み、信頼度+単調性で補正した列を返す。"""
-    seq = []; last = 0
-    for p in real_pngs:
+    """頭出しのみ: 高信頼な複数フレームから offset を求め F=k-offset で滑らかに割り当てる。
+    実機は本編15fps安定(offset一定を実測確認)なので、毎フレーム読む必要はなく、これで
+    右パネル+フッターが毎フレーム滑らかに進む(analysisと同じ更新頻度・カクつき無し)。"""
+    import numpy as np
+    offs = []
+    for k, p in enumerate(real_pngs):
         val, conf = read_frameno(Image.open(p))
-        if conf < 0.45 or val < last or val > last + 30:   # 低信頼/後退/大ジャンプ=読み損ない→直前保持
-            seq.append(last)
-        else:
-            seq.append(val); last = val
-    return [min(v, R.NF - 1) for v in seq]
+        if conf >= 0.6 and 0 < val < R.NF:
+            offs.append(k - val)                          # この実機フレームの頭出しオフセット
+    off = int(np.median(offs)) if offs else 0
+    return [max(0, min(k - off, R.NF - 1)) for k in range(len(real_pngs))]
 
 
 REAL = []
