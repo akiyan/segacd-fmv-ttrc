@@ -1,6 +1,6 @@
 # Tile Texture Reuse Codec — a SEGA-CD / Genesis FMV codec
 
-A full-motion-video codec built **specifically for the Sega Mega-CD / Sega CD**,
+A full-motion-video codec built **specifically for the Sega CD (Mega-CD)**,
 not a general video codec ported onto it. It targets the exact hardware the
 Mega-CD gives you — the Mega Drive VDP with its CRAM palettes and VRAM tile pool,
 a constant-rate CD data stream, PRG-RAM as a buffer, and the RF5C164 PCM chip —
@@ -85,6 +85,24 @@ Every encode can be rendered as a 1920x1080 analysis overlay (left = decoded
 Mega-CD output, right = source / per-tile category map / metric graphs, bottom =
 bandwidth, tank, and DMA meters). `ANALYSIS.md` is the exact reference for every
 meter and tile category.
+
+## Documentation
+
+- [README.md](README.md): this overview of the codec concept, pipeline, build
+  targets, and repository layout.
+- [ANALYSIS.md](ANALYSIS.md): the analysis-overlay reference, covering every
+  panel, meter, timeline, and tile category drawn by `tools/render_analysis.py`.
+- [COMPARISON.md](COMPARISON.md): the Real-vs-Encoder-ideal comparison overlay,
+  including its layout, frame synchronization method, audio tracks, and render
+  pipeline.
+- [MOVIE.md](MOVIE.md): the exact `MOVIE.DAT` on-disc stream format written by
+  `tools/pack_stream.py` and read by the Mega-CD player.
+- [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
+  playback pipeline budgets used when choosing encoder targets.
+- [AGENTS.md](AGENTS.md): agent and maintenance guidance, including hardware
+  facts, recording rules, output paths, and documentation policy.
+- [CLAUDE.md](CLAUDE.md): compatibility entry point for Claude-based agents; it
+  points to the shared project guidance in `AGENTS.md`.
 
 ## Implementation
 
