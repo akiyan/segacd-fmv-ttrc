@@ -106,9 +106,10 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 | Artifact | Path |
 |---|---|
 | Analysis-frame video (from `sim`) | `videos/<stem>_analysis.mp4` |
+| Straight sim output, video+audio, no overlay (`export_sim_video.py`) | `videos/<stem>_sim.mp4` |
 | PNGs, logs, stats for that encode  | `videos/<stem>/` (the sim working dir) |
 | Emulator recording (`record-mcd`)  | `videos/<stem>_emu.mp4` |
-| Analysis + emu side-by-side compare | `videos/<stem>_comparison.mp4` |
+| Real (emu) + Encoder ideal (sim) side-by-side compare (`render_comparison.py`) | `videos/<stem>_comparison.mp4` |
 
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
