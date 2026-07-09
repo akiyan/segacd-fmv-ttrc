@@ -89,10 +89,30 @@ within Mega-CD limits, not fixed presets:
   simulator currently uses ADPCM; on-hardware ADPCM support is planned, and PCM
   is the already-verified on-hardware path.
 
-The old `OP.STR` / RLE encoder path has been removed. The default `make disc`
-still builds a legacy `PROBE.BIN` disc played by `boot/sp.s`; this is being
-migrated to the `MOVIE.DAT` / `boot/movieplay_*.s` path (side owns the player
-work) and its build wiring will be removed once the new player lands.
+The old `OP.STR` / RLE and `PROBE.BIN` bring-up paths have been removed.
+`make disc` builds the `MOVIE.DAT` disc played by `boot/movieplay_*.s`.
+
+## Output Paths (videos/)
+
+All generated video artifacts go under `videos/` (git-ignored, never committed —
+they embed source frames). Do not accumulate video output in `tmp/`. Use one
+stem per encode:
+
+```
+stem = <input-basename>_<display-mode>_<audio-format>
+       e.g. OP1_ps2_H32_adpcm22
+```
+
+| Artifact | Path |
+|---|---|
+| Analysis-frame video (from `sim`) | `videos/<stem>_analysis.mp4` |
+| PNGs, logs, stats for that encode  | `videos/<stem>/` (the sim working dir) |
+| Emulator recording (`record-mcd`)  | `videos/<stem>_emu.mp4` |
+| Analysis + emu side-by-side compare | `videos/<stem>_comparison.mp4` |
+
+- `<input-basename>`: the source file name without extension.
+- `<display-mode>`: `H32` / `H40` / `mode4`.
+- `<audio-format>`: e.g. `adpcm`, `adpcm22`, `pcm`.
 
 ## Hardware Facts
 

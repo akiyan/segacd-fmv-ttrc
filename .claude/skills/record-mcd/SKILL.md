@@ -34,7 +34,7 @@ overrides:
 ```sh
 CORE=/path/to/genesis_plus_gx_libretro.so
 SYSTEM_DIR=/path/to/retroarch/system
-OUTDIR=/home/akiyan/segacd-novel/tmp
+OUTDIR=/home/akiyan/segacd-novel/videos
 ```
 
 ## Standard Recording Procedure for Agents
@@ -50,8 +50,11 @@ Defaults and conventions:
 - Older scripts may default to `out/SCFMV_MCD.cue`; override the disc when
   recording the current player.
 - Use a realtime preset for synchronized A/V.
-- Output usually goes to `tmp/<tag>_movie.mp4`.
-- Use a tag such as `rec_<disc_name>`.
+- Output goes under `videos/` (git-ignored), not `tmp/`. When the recording
+  corresponds to a sim encode, name it `videos/<stem>_emu.mp4` (same
+  `<stem> = <input-basename>_<mode>_<audio>` as the sim run; see AGENTS.md
+  "Output Paths"). Sidecar files (audio wav/json, raw mkv, logs) land beside it.
+- Use a tag such as `rec_<disc_name>` (or `<stem>_emu`).
 - Pick an unused X display, for example `--display :236`.
 - Default trim is automatic: the tool scans the recorded WAV and chooses the
   loudest requested window, which avoids producing a silent MP4 from a quiet
@@ -69,22 +72,22 @@ Examples:
 
 ```sh
 tools/record_movie.sh --disc out/MOVIEPLAY.cue --no-build --seconds 30 \
-  --tag rec_check --display :269 --out tmp/rec_check_movie.mp4
+  --tag rec_check --display :269 --out videos/<stem>_emu.mp4
 
 tools/record_movie.sh --disc out/MOVIEPLAY.cue --seconds 180 \
-  --out tmp/delta_capture.mp4
+  --out videos/<stem>_emu.mp4
 ```
 
 ## Artifacts for `--tag rec_check`
 
-- `tmp/rec_check_movie.mp4`: shareable MP4.
-- `tmp/rec_check_movie_audio.wav`: audio extracted after MP4 transcode.
-- `tmp/rec_check_movie_audio.json`: post-transcode audio analysis.
-- `tmp/rec_check.mkv`: raw RetroArch recording.
-- `tmp/rec_check.wav`: raw recording audio.
-- `tmp/rec_check_audio.json`: raw audio analysis.
-- `tmp/retroarch_rec_check.log`: RetroArch log.
-- `tmp/xvfb_rec_check.log`: Xvfb log.
+- `videos/rec_check_movie.mp4`: shareable MP4.
+- `videos/rec_check_movie_audio.wav`: audio extracted after MP4 transcode.
+- `videos/rec_check_movie_audio.json`: post-transcode audio analysis.
+- `videos/rec_check.mkv`: raw RetroArch recording.
+- `videos/rec_check.wav`: raw recording audio.
+- `videos/rec_check_audio.json`: raw audio analysis.
+- `videos/retroarch_rec_check.log`: RetroArch log.
+- `videos/xvfb_rec_check.log`: Xvfb log.
 
 ## Verify an Existing Recording Without Re-recording
 

@@ -105,12 +105,16 @@ export CBRSIM_W=<W> CBRSIM_H=<H> CBRSIM_FPS=<fps> CBRSIM_DURATION=<sec>
 export CBRSIM_MASTER_VF="[crop=...,]scale=<~2x>:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=<W>:<H>:flags=lanczos"
 export CBRSIM_RAW_VF="[crop=...,]scale=<src panel>"
 
-export CBRSIM_OUT=tmp/<name>_sim CBRSIM_TANK_KB=440
+# Output convention (AGENTS.md "Output Paths"): one stem per encode,
+#   <stem> = <input-basename>_<mode>_<audio>   e.g. OP1_ps2_H32_adpcm22
+# All artifacts go under videos/ (git-ignored), never tmp/.
+export CBRSIM_OUT=videos/<stem> CBRSIM_TANK_KB=440
 export CBRSIM_DITHER=1 CBRSIM_SEGPAL=1 CBRSIM_NEAR=1 CBRSIM_VBV=1 CBRSIM_COA=1
 
 PY=~/.config/cbrsim-gpu/venv/bin/python
 [ -x "$PY" ] || PY=python3
-nohup "$PY" tools/sim.py >/tmp/<name>_sim.log 2>&1 &
+mkdir -p videos/<stem>
+nohup "$PY" tools/sim.py >videos/<stem>/sim.log 2>&1 &
 ```
 
 After completion:
@@ -118,7 +122,7 @@ After completion:
 - Check the completion line: `starved_frames=N (X%)`.
 - Check `avg_bps`, which should stay within CD 1x budget, about `<=153600`.
 - Starvation is allowed, but report it.
-- Output appears under `tmp/<name>_sim/`:
+- Output appears under `videos/<stem>/`:
   - `preview/`
   - `catmap/`
   - `misscarry/`
@@ -138,10 +142,10 @@ must change, change it there first. `render_analysis.py` uses the same drawing
 function on real data.
 
 ```sh
-CBRSIM_OUT=tmp/<name>_sim \
+CBRSIM_OUT=videos/<stem> \
 CBRSIM_SRCLABEL="Source (<source name>, <platform/year>)" \
 CBRSIM_MODE=H32 \
-ANALYSIS_OUT=tmp/op_<name>_analysis.mp4 \
+ANALYSIS_OUT=videos/<stem>_analysis.mp4 \
 "$PY" tools/render_analysis.py
 ```
 
@@ -187,7 +191,7 @@ Important rendering notes:
 ```sh
 PY=~/.config/youtube/venv/bin/python
 [ -x "$PY" ] || PY=python3
-"$PY" ~/.claude/skills/youtube/youtube.py upload tmp/op_<name>_analysis.mp4 \
+"$PY" ~/.claude/skills/youtube/youtube.py upload videos/<stem>_analysis.mp4 \
   --title "<source name> OP MEGA-CD delta codec analysis (WxH/WcxHc/fps/aspect/13.3kHz) YYYYMMDD" \
   --desc "<specs, four-rule choices, starvation rate>" \
   --tags "MEGA-CD,SegaCD,FMV,homebrew,codec" \
