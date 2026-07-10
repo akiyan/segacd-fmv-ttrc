@@ -477,6 +477,11 @@ def main():
     pat_rgb = {}                        # 近似dedup: pattern key -> 代表rgb(8,8,3) uint8
     pat_sig = {}                        # pattern key -> 2×2低周波(12,) float32
     pat_pal = {}                        # pattern key -> 表示パレット(assign)
+    pat_seg = {}                        # pattern key -> このタイルの index列を量子化した区間(パレットエポック)。
+                                        # 区間跨ぎのNear/Coa/near_keep流用は、旧区間の index列を新CRAMで
+                                        # 引くと虹色ゴミになる(harness/palette_flashで実証)。cur_segと一致
+                                        # するタイルだけ流用可。dedup(fresh keyが常駐keyと一致)は index列が
+                                        # そのまま新区間の量子化なので安全=対象外。
     coa_bucket = defaultdict(list)      # 平均色バケツ -> [key,...] (末尾=最新)
 
     def touch(key, fi):
@@ -561,6 +566,7 @@ def main():
         if pal_swap:
             cur_pal[:] = -1                                     # CRAM総入替→全セルを再評価(暗転中で安価)
         cur_pals = seg_pals[int(frame_seg[i])]
+        cur_seg = int(frame_seg[i])                            # 現フレームのパレットエポック
         detail = Q_detail[i]; assign = Q_assign[i]; plain_idx = Q_pidx[i]  # 前計算済み(並列)
         plain_rgb = render_cells(plain_idx, assign, cur_pals)  # 軽いので逐次(IPC回避)
         plain_keys = [plain_idx[c].tobytes() for c in range(C_CELLS)]
@@ -628,6 +634,8 @@ def main():
             for ck in reversed(coa_bucket[b]):
                 if ck not in resident and ck not in loaded_keys:
                     continue                                     # もう常駐に無い(退避済み)
+                if pat_seg.get(ck) != cur_seg:                   # 区間跨ぎ近似流用の禁止
+                    continue
                 cs = pat_sig.get(ck)
                 if cs is None:
                     continue
@@ -654,7 +662,7 @@ def main():
                 return False
             rep_key = key; rep_pal = int(assign[c]); rep_rgb = plain_rgb[c]
             if in_vram:
-                dedup_saved += 1; dedup_mask[c] = True
+                dedup_saved += 1; dedup_mask[c] = True; pat_seg[key] = cur_seg
             elif approx_key is not None:                          # 粗い近似dedup: 常駐の見た目を流用
                 coa_hits += 1; coa_mask[c] = True
                 rep_key = approx_key; rep_pal = pat_pal[approx_key]; rep_rgb = pat_rgb[approx_key]
@@ -675,7 +683,7 @@ def main():
                     prg_hits += 1; prg_mask[c] = True
                 else:
                     tile_recs += 1; raw_mask[c] = True
-                pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c])
+                pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c]); pat_seg[key] = cur_seg
                 coa_bucket[(int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))].append(key)
             name_recs += 1; spent_tiles += cost
             repoint(c, rep_key, rep_pal, rep_rgb, i)
@@ -690,6 +698,12 @@ def main():
             near_keep = near_mask_eval(cur_rgb, plain_rgb, changed)   # 現在表示がほぼ同一=0Bで維持可
             if NEAR_KEEP_ACCURATE_ONLY:
                 near_keep = near_keep & (cell_tier == 9)
+            # 区間跨ぎ維持の禁止: 現在表示タイルが別区間(パレットエポック)由来なら、その index列を
+            # 現CRAMで引くとゴミ化する。維持不可=強制更新にする(harness/palette_flashで実証)。
+            for c in np.where(near_keep)[0]:
+                ck = cur_key[c]
+                if ck is None or pat_seg.get(ck) != cur_seg:
+                    near_keep[int(c)] = False
             p_lum = plain_rgb @ _LWv; p_cb = plain_rgb @ _CBv; p_cr = plain_rgb @ _CRv  # (C,8,8)
 
             def best_resident(c):
@@ -701,6 +715,8 @@ def main():
                 cnt = 0
                 for ck in reversed(coa_bucket[b]):
                     if (ck not in resident and ck not in loaded_keys) or ck not in pat_rgb:
+                        continue
+                    if pat_seg.get(ck) != cur_seg:       # 区間跨ぎ近似流用の禁止(index列が新CRAMでゴミ化)
                         continue
                     cand.append(ck); cnt += 1
                     if cnt >= COA_K:
@@ -738,6 +754,7 @@ def main():
                     if exact:
                         dedup_saved += 1; dedup_mask[c] = True                # Same(完全一致流用=Sameへ畳む)
                         rk, rp, rr = key, int(assign[c]), plain_rgb[c]
+                        pat_seg[key] = cur_seg                                # fresh keyは現区間の量子化=有効化
                     elif tier == 0:
                         near_mask[c] = True; rk, rp, rr = bk, pat_pal[bk], pat_rgb[bk]
                     else:
@@ -755,7 +772,7 @@ def main():
                         prg_hits += 1; prg_mask[c] = True
                     else:
                         tile_recs += 1; raw_mask[c] = True
-                    pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c])
+                    pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c]); pat_seg[key] = cur_seg
                     coa_bucket[(int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))].append(key)
                     name_recs += 1; spent_tiles += cost
                     repoint(c, key, int(assign[c]), plain_rgb[c], i); committed_plain[c] = key; updated[c] = True
@@ -811,7 +828,7 @@ def main():
                     else:
                         cold_spent += 1
                         loaded_keys.add(key); tile_recs += 1; raw_mask[c] = True
-                        pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c])
+                        pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c]); pat_seg[key] = cur_seg
                         coa_bucket[(int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))].append(key)
                     name_recs += 1; spent_tiles += cost
                     repoint(c, key, int(assign[c]), plain_rgb[c], i)

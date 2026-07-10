@@ -65,3 +65,30 @@ quantized under the new palette. Options under consideration:
 
 Also: the **sim preview should render through palette indices** (not stored RGB)
 so this class of bug shows up in the analysis video, not just on hardware.
+
+## Correction (same day, after deeper trace)
+
+Two earlier mis-steps corrected here for the record:
+- `detect.py`'s linear-time window drifts and false-positived on f1362/f1622
+  while missing f829/f987. **Always F-sync each capture frame by its HUD counter
+  and eyeball the dumps** — do not trust the score-only verdict.
+- `seg_pals` in the decision log store colors in **0-7 MD-native units, not
+  0-255**. A quick "decision-log render" that used them as 0-255 came out
+  near-black and looked "clean", which briefly suggested pack was corrupting the
+  stream. It is not: MOVIE.DAT's patterns, palrows, and CRAM at f829 all match
+  the decision log exactly (0 mismatch), and segment interiors (e.g. f500 = a
+  crisp "渋谷駅" sign) decode perfectly.
+
+**Confirmed root cause:** at f829, **573 / 720 cells display an index-pattern
+that originated in an earlier segment** (441 updated cells re-emit an
+earlier-segment key + 132 kept cells hold an old tile). Those indices were
+quantized under the previous segment's palette; under the new CRAM they are
+garbage. The encoder's decision log itself is garbage here — the sim preview
+only looks clean because it renders each tile's stored RGB, never re-looking-up
+indices through the new palette.
+
+**Fix:** tag every loaded tile with its load-segment and forbid reuse
+(dedup / Near / Coa / Flbk / near_keep) of any tile whose segment != the current
+frame's segment. Then every cell at a boundary loads a fresh tile quantized under
+the new palette. Verify with `detect.py` (F-synced) that all boundaries show the
+`new` candidate, never garbage, and re-record to confirm on the emulator.
