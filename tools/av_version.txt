@@ -20,8 +20,14 @@
 #        threshold (416KB) via CBRSIM_RING_CAP_KB=300 so pump never stalls (no
 #        CDC sector drop). Plus per-frame cold cap CBRSIM_PACK_MAXCOLD. Full ED
 #        now completes clean on hardware (GPGX).
+#   e4 : full-screen H40 quality+stability — RING_CAP raised to 350KB (still below
+#        the 416KB back-pressure threshold) so the ring holds a larger jitter
+#        buffer, letting the per-frame cold cap rise to 260 (from 192). Verified:
+#        the deterministic ring model can NOT predict the collapse (collapse
+#        frames show full occ); RING_CAP is the empirical jitter-margin lever.
+#        Much higher tile-update density; full ED completes clean on hardware.
 #   p1 : baseline PCM player.
 #   p2 : graceful ring underrun (drained scene shows stale/residual, not garbage).
 date=20260710
-e=3
+e=4
 p=2
