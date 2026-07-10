@@ -45,7 +45,7 @@ Everything else is shaped by Sega CD hardware, not by video theory:
 - **RF5C164 PCM audio, interleaved.** Audio is packed into the same CD stream at
   a fixed byte rate and played on the PCM chip, kept in sync with video.
 - **PRG-RAM discipline.** Buffers, queues, and the tank live in PRG-RAM regions
-  that stay safe during continuous CD reads (see AGENTS.md hardware notes).
+  that stay safe during continuous CD reads (see [AGENTS.md](AGENTS.md) hardware notes).
 
 ## Configurable within Sega CD limits
 
@@ -55,9 +55,9 @@ source within what the hardware allows — not fixed project constants:
 - **Display mode / resolution / aspect:** H32, H40, or mode4, with the tile grid
   sized to the per-frame DMA budget and the source's display aspect.
 - **Frame rate:** the source's native rate is kept (15 / 24 / 30 fps, etc.).
-- **Audio format:** within the RF5C164 PCM chip's limits, either **PCM** or
-  **ADPCM**. The offline simulator currently uses ADPCM; on-hardware ADPCM
-  support is planned (PCM is the already-verified on-hardware path).
+- **Audio format:** **PCM** (RF5C164), 13.3 kHz mono 8-bit — the verified
+  on-hardware path. ADPCM was investigated for higher sampling but shelved
+  (structural limit); see [ADPCM.md](ADPCM.md).
 
 ## Pipeline
 
@@ -76,14 +76,14 @@ Sega CD-specific compression is the "Encode" step.
    reuse exact / near / coarse / fallback residents where possible, load fresh
    patterns only where needed, spend the CBR budget by priority, and bank/spend
    the VBV tank.
-6. **Pack** video control, tile payload, palettes, and PCM/ADPCM audio into the
+6. **Pack** video control, tile payload, palettes, and PCM audio into the
    constant-rate CD stream.
 
 ## Analysis
 
 Every encode can be rendered as a 1920x1080 analysis overlay (left = decoded
 Sega CD output, right = source / per-tile category map / metric graphs, bottom =
-bandwidth, tank, and DMA meters). `ANALYSIS.md` is the exact reference for every
+bandwidth, tank, and DMA meters). [`ANALYSIS.md`](ANALYSIS.md) is the exact reference for every
 meter and tile category.
 
 ## Documentation
@@ -99,10 +99,12 @@ meter and tile category.
   `tools/pack_stream.py` and read by the Sega CD player.
 - [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
   playback pipeline budgets used when choosing encoder targets.
+- [ADPCM.md](ADPCM.md): the 22.05 kHz ADPCM real-time-decode investigation and
+  why it was shelved (PCM remains the shipping audio path).
 - [AGENTS.md](AGENTS.md): agent and maintenance guidance, including hardware
   facts, recording rules, output paths, and documentation policy.
 - [CLAUDE.md](CLAUDE.md): compatibility entry point for Claude-based agents; it
-  points to the shared project guidance in `AGENTS.md`.
+  points to the shared project guidance in [`AGENTS.md`](AGENTS.md).
 
 ## Implementation
 

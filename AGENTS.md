@@ -34,13 +34,20 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 
 - **Language**: English. In descriptions, write English first, then the same
   content in Japanese after it.
-- **Title**: English, fixed format `SEGA-CD FMV of <work> - <specs>`.
+- **Title**: English, fixed format `SEGA-CD FMV of <work> - <specs> <ver>`.
   - `<work>`: the work name. For a native/kanji title, give the
     transliteration followed by the native title in parentheses, e.g.
     `Romaji (native)`. A romaji-only work needs no parentheses.
   - `<specs>`: the descriptive spec suffix (mode, resolution/grid, "max
-    resolution", etc.). No version numbers.
-  - Example: `SEGA-CD FMV of <Work> - mode4 max resolution 256x176/32x22`.
+    resolution", etc.). No **sequence** version numbers (no `vNNN`).
+  - `<ver>`: the encoder/player build version `YYYYMMDD.eN.pM` (from
+    `tools/av_version.txt`). `e` = encoder (sim.py / pack_stream.py params or
+    code), `p` = player (`boot/movieplay_*.s`). Bump `e` and/or `p` whenever
+    that side's output-affecting params or code change; never decrease either.
+    When bumping, set the date to today if it differs. This is the title build
+    version only — the `MOVIE.DAT` header version field is separate and must NOT
+    be touched. Update `tools/av_version.txt` whenever you bump.
+  - Example: `SEGA-CD FMV of <Work> - mode4 max resolution 256x176/32x22 20260710.e1.p1`.
 - **Description structure** (in both languages, in this order):
   1. Overview — one or two lines on what the video is.
   2. Output and source specs — the SEGA-CD output (mode, grid WxH, tile count,
@@ -65,20 +72,20 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 
 ## Documentation Policy
 
-- Keep public documentation in `README.md`.
+- Keep public documentation in [`README.md`](README.md).
 - Keep agent and maintenance instructions in `AGENTS.md`.
 - Do not add new scattered Markdown documents for project notes at the repo root.
 - **Harness / diagnostic docs are allowed under `harness/`.** When a debugging
   effort needs its own tooling and notes (detectors, repro scripts, findings),
-  put both the scripts and their `README.md` under `harness/<topic>/`. This is
+  put both the scripts and their [`README.md`](README.md) under `harness/<topic>/`. This is
   the sanctioned place for build-your-own-detector work; keep each topic's doc
   next to its code so the harness stays reproducible.
 - These dedicated reference docs are sanctioned and must be kept current:
-  - `ANALYSIS.md` - the analysis-overlay reference (every meter/category/metric).
+  - [`ANALYSIS.md`](ANALYSIS.md) - the analysis-overlay reference (every meter/category/metric).
     Updated via the `/analysis` skill together with the layout code.
-  - `MOVIE.md` - the `MOVIE.DAT` (TTRC) on-disc stream format. Keep in sync with
+  - [`MOVIE.md`](MOVIE.md) - the `MOVIE.DAT` (TTRC) on-disc stream format. Keep in sync with
     `tools/pack_stream.py` and the `boot/movieplay_*.s` player.
-  - `COMPARISON.md` - the comparison overlay (Real vs Encoder-ideal) layout,
+  - [`COMPARISON.md`](COMPARISON.md) - the comparison overlay (Real vs Encoder-ideal) layout,
     frame-sync, and pipeline. Keep in sync with `tools/comparison_preview.py`
     and `tools/render_comparison.py`.
 - Claude skill files under `.claude/skills/**/SKILL.md` are allowed and should
@@ -103,9 +110,9 @@ within Sega CD limits, not fixed presets:
 - Display mode / resolution / aspect (H32 / H40 / mode4), tile grid sized to the
   per-frame DMA budget.
 - Frame rate = the source's native rate.
-- Audio = **PCM or ADPCM**, within the RF5C164 PCM chip's limits. The offline
-  simulator currently uses ADPCM; on-hardware ADPCM support is planned, and PCM
-  is the already-verified on-hardware path.
+- Audio = **PCM** (RF5C164), 13.3 kHz mono 8-bit — the verified on-hardware
+  path. ADPCM was investigated for higher sampling but shelved (structural
+  limit); see [ADPCM.md](ADPCM.md).
 
 The old `OP.STR` / RLE and `PROBE.BIN` bring-up paths have been removed.
 `make disc` builds the `MOVIE.DAT` disc played by `boot/movieplay_*.s`.
@@ -118,7 +125,7 @@ stem per encode:
 
 ```
 stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
-       e.g. OP1_ps2_H32_256x144_adpcm22
+       e.g. OP1_ps2_H32_256x144_pcm
 ```
 
 | Artifact | Path |
@@ -132,7 +139,7 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
 - `<resolution>`: the Sega CD output resolution in pixels, `WxH` (e.g. `256x144`).
-- `<audio-format>`: e.g. `adpcm`, `adpcm22`, `pcm`.
+- `<audio-format>`: `pcm` (ADPCM was shelved — see [ADPCM.md](ADPCM.md)).
 
 ## Hardware Facts
 

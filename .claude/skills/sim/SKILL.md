@@ -100,13 +100,14 @@ This can take about 10-13 minutes for 2700-3100 frames.
 export CBRSIM_SRC=SRC
 export CBRSIM_W=<W> CBRSIM_H=<H> CBRSIM_FPS=<fps> CBRSIM_DURATION=<sec>
 
-# Display mode & audio format (defaults H32 + 22.05kHz ADPCM):
+# Display mode & audio format:
 #   CBRSIM_MODE = H32 (256 wide, default) / H40 (320 wide → set CBRSIM_W=320, 40 cols)
 #                 / mode4 (256x192 — RESERVED: packer tile format not ready, do not ship)
-#   CBRSIM_AUDIO = adpcm22 (default, offline) / pcm13 (13.3kHz mono 8bit PCM, RF5C164 —
-#                  the on-hardware-verified path; use this for real-build + record runs)
+#   CBRSIM_AUDIO = pcm13 (13.3kHz mono 8bit PCM, RF5C164 — the shipping audio path).
+#                  ADPCM (adpcm22) was investigated but shelved; see ADPCM.md.
+#                  (sim.py's code default is still adpcm22 — always pass CBRSIM_AUDIO=pcm13.)
 # CBRSIM_MODE flows into the analysis overlay AND the MOVIE.DAT header mode byte (via pack).
-export CBRSIM_MODE=H32 CBRSIM_AUDIO=adpcm22
+export CBRSIM_MODE=H32 CBRSIM_AUDIO=pcm13
 
 # If there is crop, put it at the start of MASTER_VF / RAW_VF.
 # The final scale in the dedither chain must match W:H exactly.
@@ -115,7 +116,7 @@ export CBRSIM_RAW_VF="[crop=...,]scale=<src panel>"
 
 # Output convention (AGENTS.md "Output Paths"): one stem per encode,
 #   <stem> = <input-basename>_<mode>_<resolution>_<audio>
-#            e.g. OP1_ps2_H32_256x144_adpcm22  (resolution = output WxH px)
+#            e.g. OP1_ps2_H32_256x144_pcm  (resolution = output WxH px)
 # All artifacts go under videos/ (git-ignored), never tmp/.
 export CBRSIM_OUT=videos/<stem> CBRSIM_TANK_KB=440
 export CBRSIM_DITHER=1 CBRSIM_SEGPAL=1 CBRSIM_NEAR=1 CBRSIM_VBV=1 CBRSIM_COA=1

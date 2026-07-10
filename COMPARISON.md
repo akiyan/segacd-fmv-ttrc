@@ -3,7 +3,7 @@
 The comparison video plays the **Real output** (an emulator/hardware recording of
 the built disc) next to the **Encoder ideal output** (the offline encoder's clean
 decoded frames) side by side, locked to the same movie frame, over the same
-shared footer used by the analysis overlay (see `ANALYSIS.md`).
+shared footer used by the analysis overlay (see [`ANALYSIS.md`](ANALYSIS.md)).
 
 The canonical dummy-data layout is `tools/comparison_preview.py`
 (`python3 tools/comparison_preview.py` → `tmp/comparison_preview.png`). The
@@ -77,7 +77,7 @@ in its debug HUD:
 
 Identical to the analysis overlay's bottom strip, drawn by
 `layout_preview.draw_footer` (status bar `draw_status_real` + category totals
-`draw_cattotals`) with the same per-frame sim data. See `ANALYSIS.md` for every
+`draw_cattotals`) with the same per-frame sim data. See [`ANALYSIS.md`](ANALYSIS.md) for every
 meter, timeline, and the category totals bar.
 
 ## Audio
@@ -116,7 +116,7 @@ sim (tools/sim.py) --> tools/pack_stream.py --> disc --> emulator recording
 
 ## Output paths
 
-Follows AGENTS.md "Output Paths": `videos/<stem>_comparison.mp4` for the
+Follows [AGENTS.md](AGENTS.md) "Output Paths": `videos/<stem>_comparison.mp4` for the
 side-by-side, `videos/<stem>_sim.mp4` for the straight sim clip,
 `videos/<stem>_emu.mp4` for the emulator recording.
 
@@ -168,7 +168,7 @@ CMP_REAL=tmp/comp_emu.mkv CMP_OUT=videos/machi_op_H40_320x176_pcm_comparison.mp4
 
 Shared-machine rule: steps 1-3, 8 (sim/render, CPU-heavy) and step 6 (emulator,
 timing-sensitive) MUST NOT overlap — run one at a time, and never kill another
-session's runs (see AGENTS.md "Shared-Machine Exclusion").
+session's runs (see [AGENTS.md](AGENTS.md) "Shared-Machine Exclusion").
 
 ## Known limitations / TODO
 

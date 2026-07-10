@@ -10,8 +10,8 @@ choosing encoder targets. Numbers are estimates for NTSC 60 Hz playback.
 - Raw tile update from CD: 34 bytes per tile, counted as 32 bytes pattern plus
   2 bytes name-table entry.
 - CD rate: 150 KiB/s = 153,600 bytes/s.
-- Audio: 22.05 kHz mono ADPCM at 4 bits/sample = 11,025 bytes/s.
-- Raw video CD budget after audio: 142,575 bytes/s.
+- Audio: 13.3 kHz mono 8-bit PCM = 13,305 bytes/s (887 B/frame at 15 fps).
+- Raw video CD budget after audio: 140,295 bytes/s.
 - The theory table uses `tools/layout_preview.py` timing constants converted to
   pattern tiles.
 - Tile counts below use pattern bytes only. Name-table DMA still needs to be
@@ -57,13 +57,13 @@ alternate shorter and longer gaps.
 ## CD Raw Read Budget Per Video Frame
 
 The raw-read budget is independent of screen mode. This is the CD budget left
-after 22.05 kHz mono ADPCM audio, expressed as raw tile updates.
+after 13.3 kHz mono 8-bit PCM audio, expressed as raw tile updates.
 
 | Frame rate | Raw tiles/frame |
 |---|---:|
-| 15 fps | 279 |
-| 24 fps | 174 |
-| 30 fps | 139 |
+| 15 fps | 275 |
+| 24 fps | 171 |
+| 30 fps | 137 |
 
 ## Empirical measurement — `dmabench`
 
