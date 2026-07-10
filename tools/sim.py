@@ -508,6 +508,12 @@ def main():
             demote_to_l3(victim, resident.pop(victim))
             pat_rgb.pop(victim, None); pat_sig.pop(victim, None); pat_pal.pop(victim, None)
 
+    # CRAMエミュレーション: 表示中タイルは「インデックス列(disp_idx)」と「パレット行(disp_pal)」で
+    # 保持し、cur_rgb は現区間パレットで毎フレーム引き直す(=実機の挙動)。これにより区間跨ぎで
+    # 旧インデックス列が新CRAMでゴミ化する現象がプレビュー/near判定にそのまま現れる。
+    disp_idx = np.zeros((C_CELLS, TILE * TILE), np.uint8)   # 表示中タイルのindex列(0=bg,1..15)
+    disp_pal = np.zeros(C_CELLS, np.int32)                  # 表示中タイルのパレット行
+
     def repoint(c, key, pal, rgb, fi):
         old = cur_key[c]
         if old is not None:
@@ -517,7 +523,9 @@ def main():
         cur_key[c] = key
         ref_count[key] = ref_count.get(key, 0) + 1
         cur_pal[c] = pal
-        cur_rgb[c] = rgb
+        disp_idx[c] = np.frombuffer(key, np.uint8)
+        disp_pal[c] = pal
+        cur_rgb[c] = rgb                                     # 暫定(このフレーム末に引き直す)
         touch(key, fi)
 
     wait = np.zeros(C_CELLS, np.int32)         # 未更新のdirtyが継続したフレーム数(エージング/滞留)
@@ -567,6 +575,10 @@ def main():
             cur_pal[:] = -1                                     # CRAM総入替→全セルを再評価(暗転中で安価)
         cur_pals = seg_pals[int(frame_seg[i])]
         cur_seg = int(frame_seg[i])                            # 現フレームのパレットエポック
+        # CRAMエミュ: 表示中タイルを現区間パレットで引き直す(pal_swap時は全セルが新CRAMで再色付け
+        # =区間跨ぎの旧タイルはここでゴミ色になる)。near/near_keep判定はこの実表示色に対して行う。
+        if i > 0:
+            cur_rgb[:] = render_cells(disp_idx, disp_pal, cur_pals)
         detail = Q_detail[i]; assign = Q_assign[i]; plain_idx = Q_pidx[i]  # 前計算済み(並列)
         plain_rgb = render_cells(plain_idx, assign, cur_pals)  # 軽いので逐次(IPC回避)
         plain_keys = [plain_idx[c].tobytes() for c in range(C_CELLS)]
@@ -859,6 +871,10 @@ def main():
             tank_tiles_log.append(tank // PATTERN_BYTES)
 
         ensure_capacity(i)
+
+        # CRAMエミュ: このフレームの全更新を反映した最終表示を、現区間パレットで引き直す。
+        # プレビュー/カテゴリマップ/miss繰越は全てこの実表示色(=実機と同じ)で描く。
+        cur_rgb[:] = render_cells(disp_idx, disp_pal, cur_pals)
 
         # 実機決定ログ: このフレームで実際に書き換えたセルの (cell, パレット, 表示パターンkey)。
         # keyは64バイト(idx 1..15)を内包=pack_streamがそこから32Bパターンを復元できる。
