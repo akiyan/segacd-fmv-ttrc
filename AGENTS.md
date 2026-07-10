@@ -57,7 +57,12 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 
 - Keep public documentation in `README.md`.
 - Keep agent and maintenance instructions in `AGENTS.md`.
-- Do not add new scattered Markdown documents for project notes.
+- Do not add new scattered Markdown documents for project notes at the repo root.
+- **Harness / diagnostic docs are allowed under `harness/`.** When a debugging
+  effort needs its own tooling and notes (detectors, repro scripts, findings),
+  put both the scripts and their `README.md` under `harness/<topic>/`. This is
+  the sanctioned place for build-your-own-detector work; keep each topic's doc
+  next to its code so the harness stays reproducible.
 - These dedicated reference docs are sanctioned and must be kept current:
   - `ANALYSIS.md` - the analysis-overlay reference (every meter/category/metric).
     Updated via the `/analysis` skill together with the layout code.

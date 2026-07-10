@@ -20,3 +20,4 @@ __pycache__/
 # Large source videos are kept outside Git.
 /assets/*.mp4
 /assets/*.avi
+harness/**/out/
