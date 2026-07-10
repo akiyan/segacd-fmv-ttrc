@@ -15,8 +15,13 @@
 #   e2 : streaming ring fixes — TANK below RING_SIZE (jitter margin), pack
 #        forward-fill (use all 5 sectors, prefetch the ring reserve), RING_CAP
 #        tied to the player's real RING_SIZE. Enables full-screen H40 (1120-cell).
+#   e3 : full-screen H40 desync fix — root cause = back-pressure ratchet. pack
+#        RING_CAP lowered well below the player's pump_poll back-pressure
+#        threshold (416KB) via CBRSIM_RING_CAP_KB=300 so pump never stalls (no
+#        CDC sector drop). Plus per-frame cold cap CBRSIM_PACK_MAXCOLD. Full ED
+#        now completes clean on hardware (GPGX).
 #   p1 : baseline PCM player.
 #   p2 : graceful ring underrun (drained scene shows stale/residual, not garbage).
 date=20260710
-e=2
+e=3
 p=2
