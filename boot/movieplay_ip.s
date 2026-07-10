@@ -296,9 +296,10 @@ bf_flip:
 .ifdef DEBUG
 	bsr	render_dbg			/* 上黒帯にデバッグ指標を描画(裏バッファ, flip直前) */
 .endif
-	/* パレット区間切替: CRAM総入替+flip を同一VBLANK内で原子的に行う。
-	   タイルDMA完了後に新しいvblank頭を取り、CRAM(64語)→フォント色替え→flip。
-	   これで「新パレット×旧フレーム」「旧パレット×新フレーム」の混在が出ない。 */
+	/* パレット区間切替: CRAM総入替(64語≈0.1ms)→flip を新しいvblank頭で連続実行=
+	   同一VBLANK内で原子的。フォント色替え(CPU再着色~1.7ms+DMA)はvblankを
+	   食い潰してflipをactiveへ押し出す(=新パレット×旧フレームが上部に露出する
+	   再発バグ)ため、**flip後**に回し、そのDMAは次vblankで行う。 */
 	move.w	(PROBE_BANK).l, d0		/* pal_write @ +0 */
 	beq	bf_doflip
 	bsr	wait_vb_start			/* 頭から使える新しいvblank(CRAM+flipが確実に収まる) */
@@ -308,18 +309,15 @@ bf_flip:
 1:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
+	bsr	do_flip				/* CRAM直後・同vblank内にflip */
 	addq.w	#1, dbg_seg			/* 区間++ (pal_write=区間境界) */
 .ifdef DEBUG
-	bsr	dbg_setbright			/* B案: 最明色でフォント色替え(小DMA, 同vblank内) */
+	bsr	dbg_setbright			/* フォント色替え(CPU=active可, DMAは内部で次vblank) */
 .endif
+	bra	bf_after_flip
 bf_doflip:
-	move.l	d5, d0
-	lsr.l	#8, d0
-	lsr.l	#2, d0				/* back_base>>10 */
-	andi.w	#0xFF, d0
-	ori.w	#0x8200, d0			/* reg2 = 0x82xx */
-	move.w	d0, (VDP_CTRL).l
-	eori.w	#1, back_idx			/* 裏を反転 */
+	bsr	do_flip
+bf_after_flip:
 	/* 滑りインジケータ: SPが検出した滑り回数>0なら枠を赤に */
 	move.w	(PROBE_BANK+0xAF00).l, d0
 	beq	1f
@@ -347,6 +345,17 @@ wait_vb_start:
 	move.w	(VDP_CTRL).l, d0
 	btst	#3, d0
 	beq	2b				/* vblankに入るまで */
+	rts
+
+/* NT flip: reg2をback_baseへ(1ワード書き=原子的)。d5=back_base。trashes d0 */
+do_flip:
+	move.l	d5, d0
+	lsr.l	#8, d0
+	lsr.l	#2, d0				/* back_base>>10 */
+	andi.w	#0xFF, d0
+	ori.w	#0x8200, d0			/* reg2 = 0x82xx */
+	move.w	d0, (VDP_CTRL).l
+	eori.w	#1, back_idx			/* 裏を反転 */
 	rts
 
 /* d6語を Word-RAM(a3) → VRAM(d3) へDMA。完了待ち。trashes d0,d2
@@ -543,7 +552,9 @@ dsb_rc:
 	bsr	dbg_recolor_word
 	move.w	d0, (a1)+
 	dbra	d7, dsb_rc
-	/* DMA DBG_STAGE → DBGFONT_VADDR (vblank内) */
+	/* DMA DBG_STAGE → フォントVRAM。CPU再着色でvblankを跨いでいるため、
+	   activeへのDMAはみ出しを避けて次のvblank頭で転送する(HUD色が1コマ遅れるだけ) */
+	bsr	wait_vb_start
 	move.w	#DBGFONT_N*16, d6
 	move.w	md_font_addr+2, d3		/* フォントVRAM(下位word, <64KB) */
 	lea	DBG_STAGE, a3
@@ -569,47 +580,18 @@ dbg_recolor_word:
 	move.w	d1, d0
 	rts
 
-/* 上黒帯(行3-4)に全指標を横並び2行で描画。d5=back_base。裏バッファへ書く(flip直前)。
-   下黒帯は将来「黒帯走査中のDMA早期開始」に使うため空けておく(ユーザー方針)。
-   映像(行5〜)との間に1行空ける(行4=空行)。行0-1はオーバースキャンで切れうるため行2-3を使用。
-   行2: F(rame) R(aw+0) S(ame+2) N(ear+4) C(oa+6)
-   行3: L(=flbk+8) B(uf+10) M(iss+12) P(区間) */
+/* 上黒帯(行2)にデバッグ表示。d5=back_base。裏バッファへ書く(flip直前)。
+   表示は F(rame) と P(区間) のみ・左上寄せ・スペース区切りの横並び(ユーザー指定)。
+   行0-1はオーバースキャンで切れうるため行2を使用。下黒帯は将来の
+   「黒帯走査中のDMA早期開始」用に空けておく。 */
 render_dbg:
 	movem.l	d0-d4/d6-d7/a0-a1, -(sp)
 	move.w	dbg_palattr, d7
-	move.w	#2*128+1*2, d2			/* F frame */
+	move.w	#2*128+1*2, d2			/* F frame (col1-5) */
 	move.w	#15, d3
 	move.w	frame_no, d4
 	bsr	dbg_put_row
-	move.w	#2*128+7*2, d2			/* R raw */
-	move.w	#16, d3
-	move.w	(PROBE_BANK+0xAF02).l, d4
-	bsr	dbg_put_row
-	move.w	#2*128+13*2, d2			/* S same */
-	move.w	#23, d3
-	move.w	(PROBE_BANK+0xAF02+2).l, d4
-	bsr	dbg_put_row
-	move.w	#2*128+19*2, d2			/* N near */
-	move.w	#27, d3
-	move.w	(PROBE_BANK+0xAF02+4).l, d4
-	bsr	dbg_put_row
-	move.w	#2*128+25*2, d2			/* C coa */
-	move.w	#12, d3
-	move.w	(PROBE_BANK+0xAF02+6).l, d4
-	bsr	dbg_put_row
-	move.w	#3*128+1*2, d2			/* L flbk */
-	move.w	#21, d3
-	move.w	(PROBE_BANK+0xAF02+8).l, d4
-	bsr	dbg_put_row
-	move.w	#3*128+7*2, d2			/* B buf */
-	move.w	#11, d3
-	move.w	(PROBE_BANK+0xAF02+10).l, d4
-	bsr	dbg_put_row
-	move.w	#3*128+13*2, d2			/* M miss */
-	move.w	#18, d3
-	move.w	(PROBE_BANK+0xAF02+12).l, d4
-	bsr	dbg_put_row
-	move.w	#3*128+19*2, d2			/* P 区間 */
+	move.w	#2*128+8*2, d2			/* P 区間 (col8-12, 2セル空け) */
 	move.w	#19, d3
 	move.w	dbg_seg, d4
 	bsr	dbg_put_row
