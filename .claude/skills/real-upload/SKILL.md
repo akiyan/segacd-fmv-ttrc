@@ -69,13 +69,18 @@ comparison ではなく **実機パス再生の単体映像** を、ドット無
 
    ```sh
    "$PY" ~/.claude/skills/youtube/youtube.py upload videos/<stem>_emu.mp4 \
-     --title "SEGA-CD FMV of <work> - <mode> <WxH>/<grid> <audio>, hardware playback 60fps" \
+     --title "SEGA-CD FMV of <work> - <mode> <WxH>/<grid> <audio>, playback (<エミュ名>)" \
      --privacy unlisted --category 20 --desc "<下記構成>"
    ```
 
+   タイトル規約: **fpsをタイトルに入れない**(60fpsはキャプチャの内部fpsで
+   コンテンツfpsではない)。**"hardware"を名乗らない**(エミュ録画のため)。
+   代わりにエミュレータ名を括弧で明記: 例 `playback (Genesis Plus GX)`。
+
    説明文（英→日の順、`<`/`>` 文字は使わない）:
-   1. 概要: 実機パス再生のロスレスキャプチャ、Nxニアレスト無劣化拡大、
-      PARはメタデータ保持、60fps。
+   1. 概要: プレイヤ実装パスの再生をエミュレータでロスレスキャプチャ、
+      Nxニアレスト無劣化拡大、PARはメタデータ保持。動画fps(60fps)と
+      コンテンツfps(例15fps)は**諸元側に**書く。
    2. デバッグHUDの読み方: F/R/S/N/C/L/B/M/P、カテゴリ合計=セル数。
    3. 出力/ソース諸元（modeバイト、グリッド、fps、PCM、CBR、tank、cold cap、
       CD連続読み、15秒静止ループ）。ビットレートはソース行に書かない。
