@@ -45,7 +45,12 @@ AUDIO = 887                  # 13.3kHz/15fps ≒ 886.7 -> 887固定
 # リング上限はプレイヤの実 RING_SIZE(boot/movieplay_sp.s: 0x69000=420KB)に一致させる。
 # さらに back-pressure(RING_SIZE-0x1000=416KB)と実時間ジッタのため 20KB の安全余裕を引く。
 # ※ TANK_KB(sim)はこの値以下でなければならない(タンクの貯め込みがリングを溢れさせる)。
-RING_CAP_KB = 400            # = 実リング420KB - 20KB安全余裕(旧464は誤り: apply/routing過小評価)
+RING_CAP_KB = int(os.environ.get("CBRSIM_RING_CAP_KB", "400"))
+# = 実リング420KB - 20KB安全余裕(旧464は誤り: apply/routing過小評価)。
+# ※ さらに重要: プレイヤの pump_poll back-pressure 閾値は RING_SIZE-0x1000=416KB。
+# forward-fill がここに近づくと pump が止まり CDC FIFO がセクタを落とす(=恒久desync,
+# AGENTS.md「back-pressureラチェット」)。差(416-RING_CAP)が小さいと重配信中に触れて崩壊
+# するので、CBRSIM_RING_CAP_KB を下げて back-pressure から十分離すと pump が止まらない。
 RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
 
 # per-frame コールド上限(既定OFF=0)。>0 のとき、1コマで pop(CD読み)する cold パターン数を
