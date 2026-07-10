@@ -48,6 +48,13 @@ AUDIO = 887                  # 13.3kHz/15fps ≒ 886.7 -> 887固定
 RING_CAP_KB = 400            # = 実リング420KB - 20KB安全余裕(旧464は誤り: apply/routing過小評価)
 RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
 
+# per-frame コールド上限(既定OFF=0)。>0 のとき、1コマで pop(CD読み)する cold パターン数を
+# この値までに制限する。上限到達後の cold セルは「更新しない=前コマ維持(残像)」とし、payload と
+# control の両方から外す(=リング収支は保たれ、desync しない)。CBR予算(budget_tiles≈262)以下に
+# 置けば配信<=予算となりタンク/リングは減らない=実機で完走。simの MAX_COLD が使えない場合の
+# pack段での honest cap(最小価値でなく cell 昇順で打ち切るため画質は sim版に劣るが完走優先)。
+PACK_MAXCOLD = int(os.environ.get("CBRSIM_PACK_MAXCOLD", "0"))
+
 # --- デバッグブロック(control先頭ヘッダ直後・固定長) ---
 DBG_NCAT = 7                 # カテゴリ数 [raw,same,near,coa,flbk,buf,miss]
 DBG_RESERVED = 4             # 予約u16スロット(将来の16bitデバッグ値用)
@@ -162,6 +169,8 @@ def resolve(log, POOL, mode="lru"):
         cells, entries, colds = [], [], []
         for (cell, pal, key) in sorted(frames[i], key=lambda t: t[0]):
             cold = key not in key_slot
+            if cold and PACK_MAXCOLD and n_load[i] >= PACK_MAXCOLD:
+                continue                 # cap: この cold は打ち切り(セルは前コマ維持=残像)
             if cold:
                 slot = alloc_slot()
                 key_slot[key] = slot
