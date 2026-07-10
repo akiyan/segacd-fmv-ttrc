@@ -745,6 +745,24 @@ ef_bit:
 	addq.w	#1, d5
 	btst	#15, d2
 	beq	ef_skip
+	/* graceful underrun: cold は ring pop(32B)が要る。リングが枯渇(available<32B)なら、
+	   ゴミを読まず「このコマの以降の更新を打ち切る」=残り全セルは前コマ維持(stale/残像)。
+	   持続重シーンがCD帯域を超えても崩壊でなく軽い残像に化ける。全レジスタ使用中なので
+	   occ計算はd0退避で。 */
+	move.l	d0, -(sp)
+	move.l	ring_tail, d0
+	sub.l	a4, d0				/* occ = ring_tail - a4 (mod RING_SIZE) */
+	bge	1f
+	add.l	#RING_SIZE, d0
+1:
+	cmp.l	#32, d0
+	bhs	2f				/* >=32B: 1パターン分ある→pop可 */
+	move.l	(sp)+, d0			/* 枯渇: このセルのupdを取消(stale維持) */
+	subq.l	#4, a2
+	subq.w	#1, d5
+	bra	ef_finalize			/* 開いているランを閉じてコマ確定(残りは stale) */
+2:
+	move.l	(sp)+, d0
 	move.w	d3, d2
 	andi.w	#0x07FF, d2
 	subq.w	#1, d2				/* slot */
@@ -784,6 +802,7 @@ ef_skip:
 ef_next:
 	addq.w	#8, d6
 	dbra	d7, ef_byte
+ef_finalize:					/* 通常終了 or リング枯渇での打ち切り合流点 */
 	cmpa.w	#0, a5				/* 最後のランを閉じる */
 	beq	1f
 	move.w	run_cnt, (a5)

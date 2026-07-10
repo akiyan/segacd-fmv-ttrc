@@ -42,7 +42,10 @@ FRAME_SECTORS = 5
 PAT = 32
 PAT_PER_SEC = SECTOR // PAT  # 64
 AUDIO = 887                  # 13.3kHz/15fps ≒ 886.7 -> 887固定
-RING_CAP_KB = 464            # PRGに収める上限(usable~480 - apply/routing/program)
+# リング上限はプレイヤの実 RING_SIZE(boot/movieplay_sp.s: 0x69000=420KB)に一致させる。
+# さらに back-pressure(RING_SIZE-0x1000=416KB)と実時間ジッタのため 20KB の安全余裕を引く。
+# ※ TANK_KB(sim)はこの値以下でなければならない(タンクの貯め込みがリングを溢れさせる)。
+RING_CAP_KB = 400            # = 実リング420KB - 20KB安全余裕(旧464は誤り: apply/routing過小評価)
 RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
 
 # --- デバッグブロック(control先頭ヘッダ直後・固定長) ---
@@ -282,20 +285,37 @@ def schedule(per, n_load, blocks):
     M = int(d[-1])
     d_sec = -(-d // PAT_PER_SEC)
     M_sec = int(-(-M // PAT_PER_SEC))
-    cumcap = np.cumsum(cap_sec)
-    Bsec = int(max(0, np.max(d_sec - cumcap)))
     A = np.zeros(nfr, np.int64)
-    A[-1] = M_sec
-    for i in range(nfr - 1, 0, -1):
-        A[i - 1] = max(int(d_sec[i - 1]), int(A[i] - cap_sec[i]))
+    # PACK_FILL(既定ON): 「5セクタを使い切る」= 余った payload 帯域(pad)を軽いコマのうちに
+    #   先読みしてリング予備を満たす(occ を RING_CAP まで積む)。重いシーンのパターンを前倒し
+    #   供給し、リング枯渇(=ゴミ化)を防ぐ。旧= 最小配信(backward, 遅く届ける=pad浪費)。
+    if os.environ.get("CBRSIM_PACK_FILL", "1") != "0":
+        ring_sec = RING_CAP_PAT // PAT_PER_SEC             # リング上限(セクタ)
+        Bsec = int(min(ring_sec, M_sec))                  # 起動時に予備を満タン(<=総量)
+        prev = Bsec
+        for i in range(nfr):
+            hi_ring = (int(d[i]) + RING_CAP_PAT) // PAT_PER_SEC   # occ<=RING_CAP 制約
+            a = min(prev + int(cap_sec[i]), M_sec, int(hi_ring))
+            if a < prev:
+                a = prev                                  # 単調(未配信に戻さない)
+            A[i] = a
+            prev = a
+    else:
+        cumcap = np.cumsum(cap_sec)
+        Bsec = int(max(0, np.max(d_sec - cumcap)))
+        A[-1] = M_sec
+        for i in range(nfr - 1, 0, -1):
+            A[i - 1] = max(int(d_sec[i - 1]), int(A[i] - cap_sec[i]))
     n_pay_sec = np.empty(nfr, np.int64)
     n_pay_sec[0] = A[0] - Bsec
     n_pay_sec[1:] = A[1:] - A[:-1]
     occ = A * PAT_PER_SEC - d
+    under = int((occ < 0).sum())                          # リング枯渇(飢餓)コマ数
     over = int((n_pay_sec + nc > FRAME_SECTORS).sum())
-    feasible = (n_pay_sec >= 0).all() and over == 0
-    return dict(n_pay_sec=n_pay_sec, n_ctrl_sec=nc, feasible=feasible, over=over,
-                prebuf_pat=Bsec * PAT_PER_SEC, ring_peak=int(occ.max()), blk_len=blk_len, M=M)
+    feasible = (n_pay_sec >= 0).all() and over == 0 and under == 0
+    return dict(n_pay_sec=n_pay_sec, n_ctrl_sec=nc, feasible=feasible, over=over, under=under,
+                prebuf_pat=Bsec * PAT_PER_SEC, ring_peak=int(occ.max()), ring_min=int(occ.min()),
+                blk_len=blk_len, M=M)
 
 
 def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None):
@@ -439,10 +459,12 @@ def main():
     run_stats(per)
     blocks = build_control(log, per, n_upd, pal_w, args.audio)
     sc = schedule(per, n_load, blocks)
-    st = "OK" if sc["feasible"] else f"INFEASIBLE(over {sc['over']})"
+    st = "OK" if sc["feasible"] else f"INFEASIBLE(over {sc['over']} under {sc.get('under',0)})"
     Pb = sum(len(b) for b in blocks)
+    under = sc.get("under", 0)
     print(f"schedule[{st}] prebuf {sc['prebuf_pat']*PAT/1024:.0f}KB ring_peak {sc['ring_peak']*PAT/1024:.0f}KB "
-          f"(cap {RING_CAP_KB}KB)  control {Pb/1024:.0f}KB  n_pay_sec avg {sc['n_pay_sec'].mean():.2f}")
+          f"ring_min {sc.get('ring_min',0)*PAT/1024:.0f}KB (cap {RING_CAP_KB}KB)  under(枯渇) {under} "
+          f"({100.0*under/max(1,len(per)):.1f}%)  n_pay_sec avg {sc['n_pay_sec'].mean():.2f}")
     if sc["ring_peak"] > RING_CAP_PAT:
         print(f"  !! ring_peak {sc['ring_peak']*PAT/1024:.0f}KB > cap {RING_CAP_KB}KB (PRG収容不可の恐れ)")
     if args.verify:

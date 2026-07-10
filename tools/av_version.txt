@@ -1,0 +1,22 @@
+# Encoder/Player build version for YouTube titles: format YYYYMMDD.eN.pM
+#
+# - e = encoder version. Bump when the encode pipeline (sim.py params/code OR
+#   pack_stream.py params/code) changes in a way that alters the output.
+# - p = player version. Bump when the on-disc player (boot/movieplay_*.s) changes.
+# - Bump one or both as appropriate; never decrease either.
+# - When bumping, if today's date differs from `date` below, set `date` to today.
+# - This is the YouTube-title build version only. The MOVIE.DAT header version
+#   field is separate and must NOT be touched.
+#
+# The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
+#
+# History:
+#   e1 : Flbk improve-mode default; baseline encoder.
+#   e2 : streaming ring fixes — TANK below RING_SIZE (jitter margin), pack
+#        forward-fill (use all 5 sectors, prefetch the ring reserve), RING_CAP
+#        tied to the player's real RING_SIZE. Enables full-screen H40 (1120-cell).
+#   p1 : baseline PCM player.
+#   p2 : graceful ring underrun (drained scene shows stale/residual, not garbage).
+date=20260710
+e=2
+p=2

@@ -257,6 +257,24 @@ ffmpeg -i tmp/<tag>.mkv \
   sampling shift flips half the dither pixels). Verify pixel-level issues via
   integer paths only (lossless mkv at native res, or emulator-side dumps), and
   treat cell-mean correlation as alignment-tolerant but detail-blind.
+- **The sim is a MODEL of the hardware — when the two disagree, suspect the sim,
+  not just the encoder tuning.** The hardware's job is to reproduce the sim
+  faithfully (the sim's Miss/residual is expected and fine; extra garbage or a
+  freeze on top of it is a divergence). When the hardware cannot reproduce the
+  sim *no matter how you tune*, STOP and question whether the sim mis-models the
+  hardware's real limit — do not keep shaving the encoder to fit a symptom.
+  Precedents: the CRAM emulation had a sim-side bug; 22.05 kHz ADPCM decode was
+  simply infeasible on hardware (structural — see `ADPCM.md`); and the streaming
+  ring: the sim's VBV tank was set equal to the player's ring
+  (`RING_SIZE`=420 KB, TANK=440→400), i.e. it assumed the *entire* ring is usable
+  for banking. Real CD-delivery jitter makes the usable ring smaller, so a
+  schedule the pack calls feasible (`under`=0, `ring_min`≈1–2 KB) still underruns
+  live. The fix is a sim-side correction — TANK a jitter margin *below* the ring
+  (e.g. 350 KB) so the sim only decides loads the hardware can actually deliver —
+  not a per-frame cold cap papering over it. Keep `pack_stream.py`'s
+  `RING_CAP_KB` tied to the player's real `RING_SIZE` minus that margin, and the
+  full-screen "use all 5 sectors" forward-fill (bank the pad into the ring
+  reserve) so bursts are pre-buffered rather than starved.
 
 ## Recording Rules
 

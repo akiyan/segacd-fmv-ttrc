@@ -117,6 +117,12 @@ _SC1 = (.01 * 255) ** 2; _SC2 = (.03 * 255) ** 2
 # --- 統合探索(Same/Near/Coa/Flbk/Miss) + 中央tie-break。既定OFF(実機用simへ影響させない) ---
 CENTERTIE_ON = os.environ.get("CBRSIM_CENTERTIE", "1") != "0"   # 既定ON。同点は画面中央に近いセルを優先
 MIDFAR_ON = os.environ.get("CBRSIM_MIDFAR", "1") != "0"    # 既定ON。Near/Coa/Flbk を1つのVRAM最良一致探索に統合
+# Flbk 判定モード。既定ON=「改善モード」: 絶対しきい(flbk tier)でなく「現在表示より
+# 少しでも target に近づく(=改善する)候補なら採る」。どの動画でもFlbkが反応しやすい。
+# CBRSIM_FLBK_IMPROVE_ONLY=0 で旧・絶対しきいモード(flbk tier内の候補のみ)。
+FLBK_IMPROVE_ONLY = os.environ.get("CBRSIM_FLBK_IMPROVE_ONLY", "1") != "0"
+# 改善モードで要求する最小改善量(score差)。既定0=「ちょっとでも改善するなら採る」。
+FLBK_MIN_IMPROVE = float(os.environ.get("CBRSIM_FLBK_MIN_IMPROVE", "0"))
 # 段階しきい(F3: Ym=画素輝度差平均, Yp=画素輝度差最大, C=画素色差平均)。tight→loose。
 # 探索は2×2低周波でバケツ前絞り→最良候補を採り、その候補を下記F3で分類。
 # Flbk = Miss のフォールバック。旧Mid/Farを統合し、しきいを広くして「Missを出すくらいなら荒くても穴埋め」。
@@ -789,8 +795,22 @@ def main():
                     name_recs += 1; spent_tiles += cost
                     repoint(c, key, int(assign[c]), plain_rgb[c], i); committed_plain[c] = key; updated[c] = True
                     return
-                # 4. ロード不可(予算/貯水池尽き) → Flbk 近似流用(2B)で穴埋め(Missのフォールバック)
-                if bk is not None and tier == 2 and spent_tiles + NAME_BYTES <= tile_budget:
+                # 4. ロード不可(予算/貯水池尽き) → Flbk 近似流用(2B)で穴埋め(Missのフォールバック)。
+                #    改善モード(既定): 絶対しきいに縛らず、現在表示より少しでも target に近づく候補なら採る。
+                #    絶対モード(CBRSIM_FLBK_IMPROVE_ONLY=0): flbk tier(絶対しきい)内の候補のみ。
+                if bk is not None and not exact and spent_tiles + NAME_BYTES <= tile_budget:
+                    if FLBK_IMPROVE_ONLY:
+                        cur = cur_rgb[c].astype(np.float64)
+                        tgt = plain_rgb[c].astype(np.float64)
+                        dY0 = np.abs(cur @ _LWv - tgt @ _LWv)
+                        dC0 = np.sqrt((cur @ _CBv - tgt @ _CBv) ** 2 +
+                                     (cur @ _CRv - tgt @ _CRv) ** 2)
+                        old_score = float(dY0.mean() + 0.3 * dY0.max() + 0.5 * dC0.mean())
+                        new_score = dYm + 0.3 * dYp + 0.5 * dCm
+                        if new_score >= old_score - FLBK_MIN_IMPROVE:
+                            return          # 改善しない(僅少含む) → Miss
+                    elif tier != 2:
+                        return              # 絶対しきいモード: flbk tier外はMiss
                     flbk_hits += 1; flbk_mask[c] = True
                     loaded_keys.add(bk); name_recs += 1; spent_tiles += NAME_BYTES
                     repoint(c, bk, pat_pal[bk], pat_rgb[bk], i); committed_plain[c] = key; updated[c] = True
