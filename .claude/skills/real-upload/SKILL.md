@@ -69,13 +69,14 @@ comparison ではなく **実機パス再生の単体映像** を、ドット無
 
    ```sh
    "$PY" ~/.claude/skills/youtube/youtube.py upload videos/<stem>_emu.mp4 \
-     --title "SEGA-CD FMV of <work> - <mode> <WxH>/<grid> <audio>, playback (<エミュ名>)" \
+     --title "SEGA-CD FMV of <work> - <mode> <WxH>/<grid> <content-fps> <audio>, <video-fps> playback (<エミュ名>)" \
      --privacy unlisted --category 20 --desc "<下記構成>"
    ```
 
-   タイトル規約: **fpsをタイトルに入れない**(60fpsはキャプチャの内部fpsで
-   コンテンツfpsではない)。**"hardware"を名乗らない**(エミュ録画のため)。
-   代わりにエミュレータ名を括弧で明記: 例 `playback (Genesis Plus GX)`。
+   タイトル規約(fpsは2つとも明記): 諸元部に**コンテンツfps**(例 15fps)、末尾に
+   **動画fps**(=キャプチャfps, 例 60fps)を入れる。**"hardware"を名乗らない**
+   (エミュ録画のため)エミュレータ名を括弧で明記。
+   例: `... 40x18 15fps PCM, 60fps playback (Genesis Plus GX)`。
 
    説明文（英→日の順、`<`/`>` 文字は使わない）:
    1. 概要: プレイヤ実装パスの再生をエミュレータでロスレスキャプチャ、
