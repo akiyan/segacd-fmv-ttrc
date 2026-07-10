@@ -18,6 +18,16 @@ back toward the old game-specific port unless the user explicitly asks for it.
   and general project text.
 - Use Japanese for commit messages, GitHub issues, and pull request comments.
 
+## Commit Attribution (all agents — Claude, Codex, etc.)
+
+- Do NOT add `Co-Authored-By: Claude ...`, `Co-Authored-By:` any AI, or
+  `Claude-Session:` / `Codex-Session:` trailers to commit messages. The public
+  repo's Contributors must not list an AI assistant.
+- Author and committer are the human owner only (`akiyan`); never an
+  `@anthropic.com`/AI address.
+- This repo is public and its history was rewritten once to strip such trailers.
+  Every agent working here must follow this so it does not reappear.
+
 ## YouTube Upload Style (codec analysis videos)
 
 Titles and descriptions for the codec analysis videos follow this fixed style.
