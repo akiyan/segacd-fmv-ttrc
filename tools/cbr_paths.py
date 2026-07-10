@@ -11,7 +11,7 @@ def _clean_part(value):
 
 
 def audio_tag(kind=None):
-    kind = (kind or os.environ.get("CBRSIM_AUDIO", "adpcm22")).strip()
+    kind = (kind or os.environ.get("CBRSIM_AUDIO", "pcm13")).strip()
     return {"pcm13": "pcm", "pcm": "pcm", "adpcm22": "adpcm22", "adpcm": "adpcm"}.get(
         kind, _clean_part(kind))
 

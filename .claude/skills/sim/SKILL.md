@@ -103,9 +103,8 @@ export CBRSIM_W=<W> CBRSIM_H=<H> CBRSIM_FPS=<fps> CBRSIM_DURATION=<sec>
 # Display mode & audio format:
 #   CBRSIM_MODE = H32 (256 wide, default) / H40 (320 wide → set CBRSIM_W=320, 40 cols)
 #                 / mode4 (256x192 — RESERVED: packer tile format not ready, do not ship)
-#   CBRSIM_AUDIO = pcm13 (13.3kHz mono 8bit PCM, RF5C164 — the shipping audio path).
-#                  ADPCM (adpcm22) was investigated but shelved; see ADPCM.md.
-#                  (sim.py's code default is still adpcm22 — always pass CBRSIM_AUDIO=pcm13.)
+#   CBRSIM_AUDIO = pcm13 (13.3kHz mono 8bit PCM, RF5C164 — the shipping audio path, and
+#                  the code default). ADPCM (adpcm22) was investigated but shelved; see ADPCM.md.
 # CBRSIM_MODE flows into the analysis overlay AND the MOVIE.DAT header mode byte (via pack).
 export CBRSIM_MODE=H32 CBRSIM_AUDIO=pcm13
 
