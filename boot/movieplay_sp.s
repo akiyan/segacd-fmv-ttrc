@@ -194,14 +194,23 @@ bad_magic:
 	move.l	30(a0), d0
 	move.w	d0, h_prebuf_sec
 	move.l	22(a0), h_prebuf_pat
-	/* stream_total = 1 + routing + prebuf + frames*fsec */
-	moveq	#0, d0
+	move.l	40(a0), d0			/* v2: frame0 control sectors @offset40 */
+	move.w	d0, h_f0_ctrl_sec
+	move.l	44(a0), d0			/* v2: frame0 pattern sectors @offset44 */
+	move.w	d0, h_f0_pat_sec
+	/* stream_total(v2) = 1 + f0_ctrl + f0_pat + routing + prebuf + (frames-1)*fsec
+	   (frame0 はヘッダ側=FRAMESに無いので frames-1) */
 	move.w	h_frames, d0
+	subq.w	#1, d0
 	mulu	h_fsec, d0
 	moveq	#0, d1
 	move.w	h_routing_sec, d1
 	add.l	d1, d0
 	move.w	h_prebuf_sec, d1
+	add.l	d1, d0
+	move.w	h_f0_ctrl_sec, d1
+	add.l	d1, d0
+	move.w	h_f0_pat_sec, d1
 	add.l	d1, d0
 	addq.l	#HEADER_SECTORS, d0
 	move.l	d0, h_stream_total
@@ -211,6 +220,28 @@ bad_magic:
 1:
 	move.w	(a0)+, (a1)+
 	dbra	d1, 1b
+	/* === v2: frame0 は DAT冒頭の専用ヘッダブロック(control+patterns)。boot中に別ロード
+	   してVRAMへ展開・表示する。ストリーミングのリングは一切経由しない(=boot時リングが
+	   RING_CAP以下=back-pressure非接触)。frame0の大バーストによる後続枯渇(崩壊)を根絶。 */
+	/* frame0 control(f0_ctrl_sec) を CTRL_SCR へ直読み(連続=線形化不要) */
+	moveq	#0, d0
+	move.w	h_f0_ctrl_sec, d0
+	lea	CTRL_SCR, a0
+	bsr	drain_lin
+	/* frame0 patterns を「リング上部」(RING_BASE+prebuf_pat*32)へ。ここは PREBUF1(下部)の上、
+	   RING_END未満(=350KB+32KB<420KB)。pb_lpが下部を上書きしても frame0 は壊れない。frame0
+	   展開後は streaming がこの上部へ配信して上書きする(frame0は展開済みなので問題なし)。 */
+	move.l	h_prebuf_pat, d0
+	lsl.l	#5, d0
+	add.l	#RING_BASE, d0
+	move.l	d0, f0_pat_addr
+	moveq	#0, d0
+	move.w	h_f0_pat_sec, d0
+	movea.l	f0_pat_addr, a0
+	bsr	drain_lin
+	/* === ストリーム状態(routing/PREBUF1)を frame0"表示"より前に用意。ここまで連続drainなので
+	   CDCにgapが無い。frame0表示の待ちループでは pump_poll で CDC を吸い続ける(AGENTS.md:
+	   Main作業中もpumpしないとCDCがセクタを落とし desync する)。 === */
 	/* routing table → STAGE経由で PRG へ */
 	move.w	h_routing_sec, d7
 	lea	ROUTING, a1
@@ -225,7 +256,7 @@ rt_lp:
 	lea	0x800(a1), a1
 	subq.w	#1, d7
 	bne	rt_lp
-	/* prebuffer → STAGE経由でリングへ */
+	/* prebuffer(PREBUF1=frame1満タン) → STAGE経由でリング下部(RING_BASE)へ */
 	move.l	#RING_BASE, ring_tail
 	move.w	h_prebuf_sec, d7
 pb_lp:
@@ -240,7 +271,18 @@ pb_lp:
 	move.l	a0, ring_tail
 	subq.w	#1, d7
 	bne	pb_lp
-	/* ポインタ初期化 */
+	/* frame0 展開: coldはリング上部(f0_pat_addr)からpop。ring_tailはf0末尾(guard誤発火防止)。 */
+	move.l	f0_pat_addr, ring_head
+	moveq	#0, d0
+	move.w	h_f0_pat_sec, d0
+	lsl.l	#8, d0				/* *2048 = <<11 (<<8 then <<3) */
+	lsl.l	#3, d0
+	add.l	f0_pat_addr, d0
+	move.l	d0, ring_tail
+	move.w	#1, frame_idx			/* frame0処理済み(旧playerと同じframe_idx=1) */
+	bsr	expand_frame
+	bsr	pcm_on
+	/* streaming(frames1..N-1)のポインタ初期化: リング下部=PREBUF1(満タン)から frame1 開始 */
 	move.l	#RING_BASE, ring_head
 	move.l	h_prebuf_pat, d0		/* ring_tail = RING_BASE + prebuf_pat*32 */
 	lsl.l	#5, d0
@@ -248,16 +290,16 @@ pb_lp:
 	move.l	d0, ring_tail
 	move.l	#APPLY_BASE, apply_tail
 	move.l	#APPLY_BASE, apply_cur
-	clr.w	frame_idx
-	clr.w	drain_frame
+	move.w	#1, frame_idx
+	move.w	#1, drain_frame			/* FRAMES先頭=frame1(routing[0]=0,0でスキップ) */
 	clr.w	drain_k
-	/* frame 0 */
-	bsr	process_frame
-	bsr	pcm_on
+	/* frame0 を表示(swap)。ストリーム状態は準備済みなので、待ちループ中も pump_poll で
+	   Main の frame0 DMA 中も CDC を吸い続ける(desync防止)。 */
 	bchg	#0, (MEMMODE+1).l
 	bsr	swap_settle
 	move.w	#STAT_READY, (COMSTAT0).l
 2:
+	bsr	pump_poll
 	tst.w	(COMCMD0).l
 	bne	2b
 	move.w	#0, (COMSTAT0).l
@@ -1077,6 +1119,12 @@ h_routing_sec:
 h_prebuf_sec:
 	.space 2
 h_prebuf_pat:
+	.space 4
+h_f0_ctrl_sec:
+	.space 2
+h_f0_pat_sec:
+	.space 2
+f0_pat_addr:
 	.space 4
 h_stream_total:
 	.space 4

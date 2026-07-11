@@ -45,6 +45,9 @@ AUDIO = 887                  # 13.3kHz/15fps ≒ 886.7 -> 887固定
 # リング上限はプレイヤの実 RING_SIZE(boot/movieplay_sp.s: 0x69000=420KB)に一致させる。
 # さらに back-pressure(RING_SIZE-0x1000=416KB)と実時間ジッタのため 20KB の安全余裕を引く。
 # ※ TANK_KB(sim)はこの値以下でなければならない(タンクの貯め込みがリングを溢れさせる)。
+# プレイヤの実リング容量(boot/movieplay_sp.s: RING_SIZE=0x69000=420KB)。プリバッファが
+# これを超えると ring_tail が実リングをはみ出すのでクランプに使う。
+RING_SIZE_KB = 420
 RING_CAP_KB = int(os.environ.get("CBRSIM_RING_CAP_KB", "400"))
 # = 実リング420KB - 20KB安全余裕(旧464は誤り: apply/routing過小評価)。
 # ※ さらに重要: プレイヤの pump_poll back-pressure 閾値は RING_SIZE-0x1000=416KB。
@@ -285,17 +288,25 @@ def schedule(per, n_load, blocks):
     """control JIT(前向き)で nc[i] を決め、payload は cap=(5-nc)*64 でセクタ単位の後ろ向き最小占有。"""
     nfr = len(per)
     blk_len = np.array([len(b) for b in blocks], np.int64)
+    # frame0はDAT冒頭の専用ヘッダブロック(control+patterns)としてboot中に別ロードする。
+    # よってストリーム(routing/prebuf/frames)からは frame0 のcontrolもpatternsも除外する。
+    F0_HEADER = os.environ.get("CBRSIM_F0_HEADER", "1") != "0"
     nc = np.zeros(nfr, np.int64)
     ctrl_deliv = 0
     ctrl_cur = 0
     for i in range(nfr):
+        if F0_HEADER and i == 0:
+            continue                                      # frame0 control はヘッダ側(ストリーム外)
         deficit = (ctrl_cur + int(blk_len[i])) - ctrl_deliv
         k = max(0, -(-deficit // SECTOR)) if deficit > 0 else 0
         nc[i] = k
         ctrl_deliv += k * SECTOR
         ctrl_cur += int(blk_len[i])
     cap_sec = np.maximum(FRAME_SECTORS - nc, 0)
-    d = np.cumsum(n_load)
+    n_load_s = np.array(n_load, np.int64)
+    if F0_HEADER:
+        n_load_s[0] = 0                                   # frame0 patterns はヘッダ側(ストリーム外)
+    d = np.cumsum(n_load_s)
     M = int(d[-1])
     d_sec = -(-d // PAT_PER_SEC)
     M_sec = int(-(-M // PAT_PER_SEC))
@@ -305,10 +316,19 @@ def schedule(per, n_load, blocks):
     #   供給し、リング枯渇(=ゴミ化)を防ぐ。旧= 最小配信(backward, 遅く届ける=pad浪費)。
     if os.environ.get("CBRSIM_PACK_FILL", "1") != "0":
         ring_sec = RING_CAP_PAT // PAT_PER_SEC             # リング上限(セクタ)
-        Bsec = int(min(ring_sec, M_sec))                  # 起動時に予備を満タン(<=総量)
+        # frame0はDAT冒頭の専用ヘッダブロックとしてboot中にVRAM直ロードする(=ストリーミングの
+        # リングを一切経由しない)。よってframe0のcoldはストリームの累積d(=リングpop)から除外し、
+        # プリバッファは frame1用の満タンリング(RING_CAP)だけにする。frame0の配信は0。
+        # これでboot時リングは常にRING_CAP以下=back-pressure(416KB)に触れず、かつframe1以降が
+        # 満タンリングで始まる。frame0の大バーストによる後続枯渇(崩壊)を根絶。
+        Bsec = int(min(ring_sec, M_sec))                  # frame1用プリバッファ=満タン(<=総量)
         prev = Bsec
         for i in range(nfr):
-            hi_ring = (int(d[i]) + RING_CAP_PAT) // PAT_PER_SEC   # occ<=RING_CAP 制約
+            if i == 0:
+                A[0] = Bsec                               # frame0はストリーム配信0(ヘッダで別ロード)
+                prev = Bsec
+                continue
+            hi_ring = (int(d[i]) + RING_CAP_PAT) // PAT_PER_SEC   # occ<=RING_CAP 制約(frame1+)
             a = min(prev + int(cap_sec[i]), M_sec, int(hi_ring))
             if a < prev:
                 a = prev                                  # 単調(未配信に戻さない)
@@ -329,7 +349,8 @@ def schedule(per, n_load, blocks):
     feasible = (n_pay_sec >= 0).all() and over == 0 and under == 0
     return dict(n_pay_sec=n_pay_sec, n_ctrl_sec=nc, feasible=feasible, over=over, under=under,
                 prebuf_pat=Bsec * PAT_PER_SEC, ring_peak=int(occ.max()), ring_min=int(occ.min()),
-                blk_len=blk_len, M=M)
+                blk_len=blk_len, M=M,
+                f0_header=F0_HEADER, f0_cold=int(n_load[0]), f0_ctrl_len=int(blk_len[0]))
 
 
 def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None):
@@ -407,49 +428,78 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
 
 
 def write_stream(path, log, per, blocks, Plist, sc, POOL):
-    """TTRC MOVIE.DAT を書き出す。"""
+    """TTRC MOVIE.DAT を書き出す。
+    F0_HEADER(既定)レイアウト(VERSION 2):
+      Header(1sec) | FRAME0(control+patterns) | ROUTING(0..N-1,[0]=0,0)
+                   | PREBUF1(frame1用RING_CAP) | FRAMES(1..N-1)
+    frame0 はストリーミングのリングを経由せず boot 中に VRAM 直ロードするので、リングは
+    常に RING_CAP 以下=back-pressure非接触。frame1以降が満タンリングで始まる。"""
     n_pay_sec = sc["n_pay_sec"]; n_ctrl_sec = sc["n_ctrl_sec"]
     Bpat = int(sc["prebuf_pat"])
     frame_seg = np.asarray(log["frame_seg"], np.int64)
     seg0 = pals_to_bytes_128(log["seg_pals"][int(frame_seg[0])])
     nfr = len(per)
+    f0_header = bool(sc.get("f0_header", False))
+    nl0 = int(sc.get("f0_cold", 0))
+    f0_ctrl_len = int(sc.get("f0_ctrl_len", 0))
     payload = b"".join(Plist)
     control = b"".join(blocks)
+    # frame0の control/patterns をストリームから切り出す(ヘッダ側へ)
+    if f0_header:
+        f0_ctrl = control[:f0_ctrl_len]
+        f0_pat = payload[:nl0 * PAT]
+        stream_ctrl = control[f0_ctrl_len:]          # frames1+ の control連結
+        stream_pay = payload[nl0 * PAT:]             # frames1+ の payload連結
+        f0_ctrl_sec = -(-len(f0_ctrl) // SECTOR)
+        f0_pat_sec = -(-len(f0_pat) // SECTOR)
+    else:
+        f0_ctrl = f0_pat = b""
+        stream_ctrl = control
+        stream_pay = payload
+        f0_ctrl_sec = f0_pat_sec = 0
     routing = bytearray()
     for i in range(nfr):
         routing += bytes([int(n_pay_sec[i]) & 0xFF, int(n_ctrl_sec[i]) & 0xFF])
     routing_sec = -(-len(routing) // SECTOR)
-    prebuf_bytes = payload[:Bpat * PAT]
+    prebuf_bytes = stream_pay[:Bpat * PAT]           # frame1用プリバッファ(RING_CAP)
     prebuf_sec = -(-len(prebuf_bytes) // SECTOR)
     ring_peak = int(sc["ring_peak"])
-    # Display mode (offset 38): 0=H32 / 1=H40 / 2=mode4. Prefer CBRSIM_MODE;
-    # fall back to tcols (40 columns means H40). Reserved zero remains H32 for
-    # backward compatibility with existing streams.
     _mode = {"H32": 0, "H40": 1, "mode4": 2}.get(
         os.environ.get("CBRSIM_MODE", "").strip(), 1 if TCOLS == 40 else 0)
-    header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,
+    _ver = 2 if f0_header else VERSION
+    header = struct.pack(">4sHHHHHHHHH", MAGIC, _ver, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
-    header += bytes([_mode])                       # offset 38: display mode
+    header += bytes([_mode])                          # offset 38: display mode
+    header += b"\0"                                   # offset 39: pad
+    header += struct.pack(">LL", f0_ctrl_sec, f0_pat_sec)  # offset 40,44: frame0ブロック
     header += b"\0" * (64 - len(header)) + seg0
     header += b"\0" * (SECTOR - len(header))
+    frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
+                  + f0_pat.ljust(f0_pat_sec * SECTOR, b"\0"))
     pc = Bpat * PAT; cc = 0
     with Path(path).open("wb") as f:
         f.write(header)
+        if f0_header:
+            f.write(frame0_blk)                       # FRAME0(control+patterns)
         f.write(bytes(routing).ljust(routing_sec * SECTOR, b"\0"))
         f.write(prebuf_bytes.ljust(prebuf_sec * SECTOR, b"\0"))
         for i in range(nfr):
+            if f0_header and i == 0:
+                continue                              # frame0 は FRAMES に出さない(ヘッダ側)
             npb = int(n_pay_sec[i]) * SECTOR
             ncb = int(n_ctrl_sec[i]) * SECTOR
-            fr = payload[pc:pc + npb].ljust(npb, b"\0"); pc += npb
-            fr += control[cc:cc + ncb].ljust(ncb, b"\0"); cc += ncb
+            fr = stream_pay[pc:pc + npb].ljust(npb, b"\0"); pc += npb
+            fr += stream_ctrl[cc:cc + ncb].ljust(ncb, b"\0"); cc += ncb
             fr = fr.ljust(FRAME_SECTORS * SECTOR, b"\0")
             f.write(fr)
-    total = 1 + routing_sec + prebuf_sec + nfr * FRAME_SECTORS
-    print(f"wrote {path}  {total}sec (routing {routing_sec} prebuf {prebuf_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB")
-    print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS} ROUTING_SEC={routing_sec} "
-          f"PREBUF_SEC={prebuf_sec} PREBUF_PAT={Bpat} RING_PEAK_PAT={ring_peak}")
+    nfr_stream = (nfr - 1) if f0_header else nfr
+    total = 1 + f0_ctrl_sec + f0_pat_sec + routing_sec + prebuf_sec + nfr_stream * FRAME_SECTORS
+    print(f"wrote {path}  {total}sec (frame0 {f0_ctrl_sec}+{f0_pat_sec} routing {routing_sec} "
+          f"prebuf {prebuf_sec}) ring_peak {ring_peak*PAT/1024:.0f}KB")
+    print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS} F0_CTRL_SEC={f0_ctrl_sec} "
+          f"F0_PAT_SEC={f0_pat_sec} ROUTING_SEC={routing_sec} PREBUF_SEC={prebuf_sec} "
+          f"PREBUF_PAT={Bpat} RING_PEAK_PAT={ring_peak}")
 
 
 def main():

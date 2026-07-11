@@ -620,7 +620,11 @@ def main():
         # パレット差替フレームはCRAM書換分だけ予算を引く(暗転中なので影響は小)。
         budget = max(FRAME_BYTES - audio_due - NAME_BYTES - (PAL_WRITE_BYTES if pal_swap else 0), 0)
         frame_cd = budget                             # このフレーム自身のCDタイル予算
-        tile_budget = frame_cd + (tank if VBV_ON else 0)   # + 貯水池残量(VBV)
+        # frame0はDAT冒頭の専用ヘッダとしてboot中に時間無制限でVRAMへロードする(=ストリーミング
+        # リング/Tankを一切消費しない)。よってframe0は予算無制限で全面フルロードし、Tankは
+        # 満タンのままframe1へ渡す(下のtank更新もスキップ)。実機の崩壊はframe0の大バーストが
+        # リングを削っていたのが原因で、ヘッダ化で根絶する。
+        tile_budget = (1 << 30) if i == 0 else frame_cd + (tank if VBV_ON else 0)
         frame_patch = frozenset() if VBV_ON else prg_patch.get(i, frozenset())   # VBVは全編先読み割当を使わない
 
         updated = np.zeros(C_CELLS, bool)
@@ -640,7 +644,7 @@ def main():
         coa_hits = 0
         spent_tiles = 0
         cold_spent = 0             # このコマのcold数(Raw+Buf=実機のパターンDMA数)
-        # frame0はSTAT_READY前の構築で実時間締切が無い(全面初期ロードが正当)のため上限を免除
+        # frame0はDAT冒頭ヘッダで別ロード(リング非消費)なので常にcold上限を免除=全面フルロード。
         frame_max_cold = MAX_COLD if i > 0 else 0
 
         def find_approx(c):
@@ -887,7 +891,10 @@ def main():
             # FRAME_BYTES を読み、内訳は 音声+ネーム+CRAM+フラグ等の固定分 + 映像書込 + 貯蓄。捨てた分だけが無効。
             over = max(0, tank + frame_cd - spent_tiles - TANK_CAP_BYTES)
             cd_used_log.append(FRAME_BYTES - over)
-            tank = min(TANK_CAP_BYTES, max(0, tank + frame_cd - spent_tiles))
+            if i == 0:
+                tank = TANK_CAP_BYTES        # header: frame0はリング/Tankを消費せず満タン維持
+            else:
+                tank = min(TANK_CAP_BYTES, max(0, tank + frame_cd - spent_tiles))
             tank_tiles_log.append(tank // PATTERN_BYTES)
 
         ensure_capacity(i)
