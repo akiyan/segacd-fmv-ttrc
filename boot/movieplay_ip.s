@@ -595,6 +595,22 @@ render_dbg:
 	move.w	#19, d3
 	move.w	dbg_seg, d4
 	bsr	dbg_put_row
+	move.w	#2*128+15*2, d2			/* S 滑り=再シーク回復回数(グリッチマーカー, col15-19) */
+	move.w	#23, d3				/* glyph 'S' */
+	move.w	(PROBE_BANK+0xAF00).l, d4
+	bsr	dbg_put_row
+	move.w	#2*128+22*2, d2			/* D desync検知回数(通常0, col22-26) */
+	move.w	#13, d3				/* glyph hex 'D' */
+	move.w	(PROBE_BANK+0xAF7E).l, d4
+	bsr	dbg_put_row
+	move.w	#3*128+1*2, d2			/* R 音声re-sync回数(計測, row3 col1-5) */
+	move.w	#16, d3				/* glyph 'R' */
+	move.w	(PROBE_BANK+0xAF20).l, d4
+	bsr	dbg_put_row
+	move.w	#3*128+8*2, d2			/* L 現コマの音声リード(計測, row3 col8-12) */
+	move.w	#21, d3				/* glyph 'L' */
+	move.w	(PROBE_BANK+0xAF22).l, d4
+	bsr	dbg_put_row
 	movem.l	(sp)+, d0-d4/d6-d7/a0-a1
 	rts
 

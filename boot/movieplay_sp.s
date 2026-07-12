@@ -51,6 +51,8 @@
 /* --- Word-RAM スクラッチ(SPバンク内, 毎フレーム再利用=スワップ影響なし) --- */
 .equ CTRL_SCR,    0x000D0000        /* control block 線形化(<=2246B) */
 .equ PAD_SCR,     0x000D2000        /* pad セクタ捨て場 */
+.equ F0PAT_SCR,   0x000D4000        /* frame0 patterns 一時置場(32KB, リング外=streamingと非干渉)。
+                                       frame0展開のcold popはここから(f0_expand=1でring wrap/occ迂回)。 */
 
 /* --- Word-RAM 出力(MDが読む) ---
    フル画面H40(最大1120セル)対応: loads は最大 1120*32B+ランヘッダ ≈ 36.5KB。
@@ -61,9 +63,12 @@
 .equ O_LOADS,  SUB_BANK_1M+0x0084
 .equ O_NUPD,   SUB_BANK_1M+0x9800
 .equ O_UPDS,   SUB_BANK_1M+0x9802
-.equ O_SLIP,   SUB_BANK_1M+0xAF00   /* slip_count */
+.equ O_SLIP,   SUB_BANK_1M+0xAF00   /* slip_count(=再シーク回復回数=グリッチ) */
+.equ O_DSY,    SUB_BANK_1M+0xAF7E   /* desync_count(同期マーカー不一致=フォールバック) */
 .equ O_DBG,    SUB_BANK_1M+0xAF02   /* 22Bデバッグブロック転写先(raw,same,near,coa,flbk,buf,miss,予約4)
                                        control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
+.equ O_RESYNC, SUB_BANK_1M+0xAF20   /* 計測: 音声re-sync回数(リード下限/上限逸脱で書込ジャンプ=乱れの元) */
+.equ O_LEAD,   SUB_BANK_1M+0xAF22   /* 計測: 現コマの音声リード(write-play, バイト)。SYNC_MINに近づく=枯渇 */
 .equ O_HDR,    SUB_BANK_1M+0xAF80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
 
 /* --- RF5C164 PCM (13.3kHz) --- */
@@ -82,10 +87,13 @@
 .equ WAVE_RING_END, 0x8000
 .equ RING_MASK, WAVE_RING_END-1
 /* 音声リード: リング先頭の無音を SYNC_LEAD ぶん再生してから実音声に到達=起動遅延。
-   0x3000(0.92s)は遅延が目立つ。DMA化でMDが15fpsを保ち音声underrunの心配が減ったので
-   0x1800(0.46s)へ戻して起動遅延を半減(下方向余裕 LEAD-MIN=0xC00≈3.5コマは維持)。 */
+   タイトル同期優先(遅延を出さない)。大バッファ/FD追従は使わず素直なリード 0x1800(0.46s)。
+   SYNC_MIN(リード下限)を割ると書込を play+SYNC_LEAD へジャンプ=re-sync(古い音をまたぐ乱れ)。
+   重いシーン転換クラスタで映像が数コマ遅れリードが一瞬凹むが、O_LEAD計測で底≈0x5BB(machi_op
+   F1056)と実測。SYNC_MIN=0x400(≈1.6コマ)はその底より下・追い越し(0)より十分上に置き、
+   安全な一瞬の凹みでは re-sync させない(=乱れゼロ・無劣化)。真に枯渇した時だけ最後の砦として発火。 */
 .equ SYNC_LEAD, 0x1800
-.equ SYNC_MIN,  0x0C00
+.equ SYNC_MIN,  0x0400
 .equ SYNC_MAX,  0x6800
 
 .equ HEADER_SECTORS,  1
@@ -223,25 +231,18 @@ bad_magic:
 	/* === v2: frame0 は DAT冒頭の専用ヘッダブロック(control+patterns)。boot中に別ロード
 	   してVRAMへ展開・表示する。ストリーミングのリングは一切経由しない(=boot時リングが
 	   RING_CAP以下=back-pressure非接触)。frame0の大バーストによる後続枯渇(崩壊)を根絶。 */
-	/* frame0 control(f0_ctrl_sec) を CTRL_SCR へ直読み(連続=線形化不要) */
+	/* frame0 control(f0_ctrl_sec) を CTRL_SCR へ。CDC_TRN直行を避け STAGE経由(スリップ防止) */
 	moveq	#0, d0
 	move.w	h_f0_ctrl_sec, d0
 	lea	CTRL_SCR, a0
-	bsr	drain_lin
-	/* frame0 patterns を「リング上部」(RING_BASE+prebuf_pat*32)へ。ここは PREBUF1(下部)の上、
-	   RING_END未満(=350KB+32KB<420KB)。pb_lpが下部を上書きしても frame0 は壊れない。frame0
-	   展開後は streaming がこの上部へ配信して上書きする(frame0は展開済みなので問題なし)。 */
-	move.l	h_prebuf_pat, d0
-	lsl.l	#5, d0
-	add.l	#RING_BASE, d0
-	move.l	d0, f0_pat_addr
+	bsr	drain_lin_staged
+	/* frame0 patterns を Word-RAM 一時置場(F0PAT_SCR)へ。リング外なので streaming と一切
+	   干渉しない(リングは PREBUF1 0xC000-0x63800 + streamed 0x63800↑ の連続=穴なし)。 */
+	move.l	#F0PAT_SCR, f0_pat_addr
 	moveq	#0, d0
 	move.w	h_f0_pat_sec, d0
 	movea.l	f0_pat_addr, a0
-	bsr	drain_lin
-	/* === ストリーム状態(routing/PREBUF1)を frame0"表示"より前に用意。ここまで連続drainなので
-	   CDCにgapが無い。frame0表示の待ちループでは pump_poll で CDC を吸い続ける(AGENTS.md:
-	   Main作業中もpumpしないとCDCがセクタを落とし desync する)。 === */
+	bsr	drain_lin_staged		/* CDC_TRN直行を避け STAGE経由(PRG直行スリップ防止) */
 	/* routing table → STAGE経由で PRG へ */
 	move.w	h_routing_sec, d7
 	lea	ROUTING, a1
@@ -271,30 +272,32 @@ pb_lp:
 	move.l	a0, ring_tail
 	subq.w	#1, d7
 	bne	pb_lp
-	/* frame0 展開: coldはリング上部(f0_pat_addr)からpop。ring_tailはf0末尾(guard誤発火防止)。 */
-	move.l	f0_pat_addr, ring_head
-	moveq	#0, d0
-	move.w	h_f0_pat_sec, d0
-	lsl.l	#8, d0				/* *2048 = <<11 (<<8 then <<3) */
-	lsl.l	#3, d0
-	add.l	f0_pat_addr, d0
-	move.l	d0, ring_tail
-	move.w	#1, frame_idx			/* frame0処理済み(旧playerと同じframe_idx=1) */
-	bsr	expand_frame
 	bsr	pcm_on
-	/* streaming(frames1..N-1)のポインタ初期化: リング下部=PREBUF1(満タン)から frame1 開始 */
-	move.l	#RING_BASE, ring_head
-	move.l	h_prebuf_pat, d0		/* ring_tail = RING_BASE + prebuf_pat*32 */
-	lsl.l	#5, d0
-	add.l	#RING_BASE, d0
-	move.l	d0, ring_tail
+	/* === streaming状態を frame0展開の「前」に確立する。frame0展開は数ms要り、その間CDを
+	   吸わないとCDCが溢れて数セクタを落とす(実測: +3セクタ desync → frame1のcontrolがズレて
+	   全面化け)。展開中も expand_frame 内の pump_poll が drain_frame=1 で frame1+ を正しく
+	   リング/applyへバッファするので溢れない。frame0のpop域(f0pat 0x63800-0x6B800)と pump の
+	   書込先(ring_tail=0x6B800 以上=f0patの上)は重ならない=競合なし。 === */
 	move.l	#APPLY_BASE, apply_tail
 	move.l	#APPLY_BASE, apply_cur
-	move.w	#1, frame_idx
-	move.w	#1, drain_frame			/* FRAMES先頭=frame1(routing[0]=0,0でスキップ) */
+	move.w	#1, drain_frame			/* FRAMES先頭=frame1(routing[0]=0,0はスキップ) */
 	clr.w	drain_k
-	/* frame0 を表示(swap)。ストリーム状態は準備済みなので、待ちループ中も pump_poll で
-	   Main の frame0 DMA 中も CDC を吸い続ける(desync防止)。 */
+	/* frame0展開: coldは Word-RAM の f0pat(F0PAT_SCR)から pop(f0_expand=1でwrap/occ迂回)。
+	   ring_tail=PREBUF1末尾(0x63800)=streamingの書込開始点。展開中 pump_poll が frame1+ を
+	   0x63800↑へ連続バッファ(CDC溢れ=desync防止)。f0patはリング外なので競合なし・穴なし。 */
+	move.l	#RING_BASE, ring_head		/* pump_pollのocc計算用(0xC000)。frame0のpopはf0_pat_addr */
+	move.l	h_prebuf_pat, d0
+	lsl.l	#5, d0
+	add.l	#RING_BASE, d0
+	move.l	d0, ring_tail			/* 0x63800 = PREBUF1末尾 = streaming tail */
+	move.w	#1, f0_expand
+	move.w	#1, frame_idx			/* frame0処理済み(旧playerと同じframe_idx=1) */
+	bsr	expand_frame
+	clr.w	f0_expand
+	/* frame1用: ring_head=PREBUF1先頭。ring_tail/drain_frame/drain_k/apply は pump が
+	   進めた値をそのまま維持(連続=正しいストリーム位置、穴なし)。 */
+	move.l	#RING_BASE, ring_head
+	/* frame0 を表示(swap)。 */
 	bchg	#0, (MEMMODE+1).l
 	bsr	swap_settle
 	move.w	#STAT_READY, (COMSTAT0).l
@@ -303,6 +306,22 @@ pb_lp:
 	tst.w	(COMCMD0).l
 	bne	2b
 	move.w	#0, (COMSTAT0).l
+.equ ISO_HOLD_F0, 0			/* ISO診断: frame0 表示直後に静止(frame0単体の健全性確認) */
+.if ISO_HOLD_F0
+f0h1:
+	bsr	dump_pats			/* 毎周 PREBUF1[0..] を O_LOADS へ(pumpしない=0xC000 pristine維持) */
+f0hw:
+	cmp.w	#CMD_SWAP, (COMCMD0).l
+	bne	f0hw
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	move.w	#STAT_READY, (COMSTAT0).l
+f0h2:
+	tst.w	(COMCMD0).l
+	bne	f0h2
+	move.w	#0, (COMSTAT0).l
+	bra	f0h1
+.endif
 .equ ISO_HOLD_N, 0			/* ISO診断: frame N を表示した状態で静止(0=無効) */
 .equ ISO_HOLD_DUMP, 0			/* 0=クリーン静止(全画面=実フレームN) 1=内部状態ダンプ */
 stream_loop:
@@ -350,48 +369,123 @@ dump_ring_head:
 	/* ISO診断: 内部状態5ロング値を各32bit=32タイル(白=1,黒=0)で表示。
 	   loadsはラン形式: slot 0..159 連番 = 先頭に1ランのヘッダを置く。 */
 	movem.l	d0-d7/a0-a6, -(sp)
-	move.w	#0, (O_PALW).l
-	lea	(O_LOADS).l, a1
-	move.w	#0, (a1)+			/* slot_start = 0 */
-	move.w	#160, (a1)+			/* count = 160 */
-	lea	(O_UPDS).l, a2
-	lea	dsv_vals, a3			/* ISO: 状態5ロング */
-	move.l	ring_head, (a3)
-	move.l	ring_tail, 4(a3)
-	move.l	apply_cur, 8(a3)
-	move.l	apply_tail, 12(a3)
+	lea	dsv_vals, a3
+	moveq	#0, d0
+	move.w	frame_idx, d0
+	move.l	d0, (a3)			/* [0]=frame_idx(=desyncしたコマ) */
+	moveq	#0, d0
+	move.w	(CTRL_SCR+2).l, d0
+	move.l	d0, 4(a3)			/* [1]=読んだ frame_seq(実測) */
+	move.l	apply_cur, 8(a3)		/* [2]=apply_cur */
+	moveq	#0, d0
+	move.w	slip_count, d0
+	move.l	d0, 12(a3)			/* [3]=slip_count(CDCスリップ=グリッチ検出数) */
 	moveq	#0, d0
 	move.w	drain_frame, d0
 	swap	d0
-	move.w	frame_idx, d0
-	move.l	d0, 16(a3)
-	moveq	#0, d6
-	moveq	#0, d5
-dsv_val:
-	move.l	(a3)+, d4
-	moveq	#31, d1
-dsv_bit:
-	moveq	#0, d3
-	btst	d1, d4
-	beq	1f
-	move.w	#0xFFFF, d3
+	move.w	desync_count, d0
+	move.l	d0, 16(a3)			/* [4]=drain_frame|desync_count */
+	/* パレット: pal0[0]=黒, pal0[15]=白(2色でクリア表示) */
+	move.w	#1, (O_PALW).l
+	lea	(O_CRAM).l, a1
+	move.w	#64-1, d0
 1:
-	move.w	#16-1, d2
-2:
-	move.w	d3, (a1)+
-	dbra	d2, 2b
-	move.w	d6, (a2)+
+	clr.w	(a1)+
+	dbra	d0, 1b
+	move.w	#0x0EEE, (O_CRAM+30).l		/* pal0 index15 = 白 */
+	/* O_LOADS: slot0=黒(0x0000), slot1=白(0xFFFF) */
+	lea	(O_LOADS).l, a1
+	move.w	#0, (a1)+			/* slot_start=0 */
+	move.w	#2, (a1)+			/* count=2 */
+	move.w	#16-1, d0
+1:
+	clr.w	(a1)+
+	dbra	d0, 1b
+	move.w	#16-1, d0
+1:
+	move.w	#0xFFFF, (a1)+
+	dbra	d0, 1b
+	/* O_UPDS: 全1120セル。row v(0..4)のcol b(0..31)= value[v] bit(31-b)。他は黒。 */
+	lea	(O_UPDS).l, a2
+	moveq	#0, d6				/* cell c */
+uh_lp:
+	moveq	#0, d0
 	move.w	d6, d0
-	addq.w	#1, d0
+	divu	#40, d0				/* lo=v, hi=b */
+	move.w	d0, d1				/* v */
+	swap	d0
+	move.w	d0, d2				/* b */
+	moveq	#1, d3				/* 既定 ent=1 (slot0=黒) */
+	cmp.w	#5, d1
+	bhs	uh_put
+	cmp.w	#32, d2
+	bhs	uh_put
+	lsl.w	#2, d1				/* v*4 */
+	move.l	(a3,d1.w), d4
+	moveq	#31, d5
+	sub.w	d2, d5				/* bit = 31-b */
+	btst	d5, d4
+	beq	uh_put
+	moveq	#2, d3				/* 白 slot1, ent=2 */
+uh_put:
+	move.w	d6, (a2)+
+	move.w	d3, (a2)+
+	addq.w	#1, d6
+	cmp.w	#1120, d6
+	blo	uh_lp
+	move.w	#2, (O_NLOAD).l
+	move.w	#1120, (O_NUPD).l
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+/* ISO診断: ring_head から 1120 パターンを VRAM slot 0.. へ生ロードし、cell c→slot c で
+   そのまま並べて表示。PREBUF1 が正しくロードされていれば(scrambleでも)実タイル片が見える。
+   全面ノイズなら 0xC000 のリング内容が壊れている。 */
+dump_pats:
+	movem.l	d0-d7/a0-a6, -(sp)
+	/* グレースケール ramp を CRAM pal0 に(色ではなく生インデックス構造を見るため) */
+	move.w	#1, (O_PALW).l
+	lea	(O_CRAM).l, a1
+	moveq	#0, d1
+gp_lp:
+	move.w	d1, d2
+	lsr.w	#1, d2				/* L = i>>1 (0..7) */
+	move.w	d2, d3
+	add.w	d3, d3				/* L<<1 (R) */
+	move.w	d2, d4
+	lsl.w	#5, d4				/* L<<5 (G) */
+	or.w	d4, d3
+	move.w	d2, d4
+	lsl.w	#8, d4
+	add.w	d4, d4				/* L<<9 (B) */
+	or.w	d4, d3
+	move.w	d3, (a1)+
+	addq.w	#1, d1
+	cmp.w	#64, d1
+	blo	gp_lp
+	lea	(O_LOADS).l, a1
+	move.w	#0, (a1)+			/* slot_start=0 */
+	move.w	#1120, (a1)+			/* count=1120 */
+	movea.l	#RING_BASE, a4			/* PREBUF1先頭(frame1 cold)を固定で見る */
+	move.w	#1120*8-1, d0			/* 1120*32B = 8960 long */
+1:
+	move.l	(a4)+, (a1)+
+	cmpa.l	#RING_END, a4
+	blo	2f
+	movea.l	#RING_BASE, a4
+2:
+	dbra	d0, 1b
+	lea	(O_UPDS).l, a2
+	moveq	#0, d6
+3:
+	move.w	d6, (a2)+			/* cell */
+	move.w	d6, d0
+	addq.w	#1, d0				/* ent = slot+base(=1), pal0 */
 	move.w	d0, (a2)+
 	addq.w	#1, d6
-	subq.w	#1, d1
-	bpl	dsv_bit
-	addq.w	#1, d5
-	cmp.w	#5, d5
-	blo	dsv_val
-	move.w	#160, (O_NLOAD).l
-	move.w	#160, (O_NUPD).l
+	cmp.w	#1120, d6
+	blo	3b
+	move.w	#1, (O_NLOAD).l
+	move.w	#1120, (O_NUPD).l
 	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 dsv_vals:
@@ -435,6 +529,22 @@ issue_rom_readn:
 	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
+/* 滑り回復用の再シーク: d0=絶対LBA, d1=残セクタ数 で CDC_STOP+ROM_READN 再発行。
+   連続読みの原則は破るが、滑り(MSFギャップ)は稀なので、失われたセクタを読み直して
+   ストリームを厳密に継続する(=品質無劣化の回復)。 */
+reseek_readn:
+	movem.l	d0-d7/a0-a6, -(sp)
+	lea	bios_packet, a5
+	move.l	d0, (a5)
+	move.l	d1, 4(a5)
+	move.l	#SUB_BANK_1M, 8(a5)
+	movea.l	a5, a0
+	BIOSCALL BIOS_CDC_STOP
+	BIOSCALL BIOS_ROM_READN
+	move.l	d1, stream_remaining
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
 /* 1セクタを (a0) へ CDC_TRN。連続読みをドレイン。宛先a0はBIOS呼びで壊れるので保存・再ロード。 */
 drain1:
 	move.l	a0, dr_dest
@@ -445,7 +555,9 @@ drain1:
 2:
 	BIOSCALL BIOS_CDC_READ
 	bcc	2b
-	move.w	#2000, d6			/* TRN有限リトライ(固着防止) */
+	move.w	#20000, d6			/* TRN有限リトライ(固着防止)。重フレームのバス競合で
+						   2000では尽きてセクタ滑り→desyncしていた。転送は本来数回で
+						   成功するので、上限を大きくしても正常時のコストは増えない。 */
 3:
 	movea.l	dr_dest, a0			/* CDC_TRN直前に宛先を再ロード */
 	lea	12(a5), a1
@@ -476,12 +588,29 @@ drain1:
 	bsr	bcd2bin
 	add.l	d0, d1
 	move.l	prev_msf, d2
-	beq	1f
-	addq.l	#1, d2
+	bne	d1_check
+	move.l	d1, base_msf			/* 初回セクタ: ファイル先頭MSFを基準に記録 */
+	bra	d1_ok
+d1_check:
+	addq.l	#1, d2				/* 期待 = prev_msf+1 */
 	cmp.l	d1, d2
-	beq	1f
+	beq	d1_ok				/* 連番=OK */
+	/* MSFギャップ=滑り: 失われたセクタ(prev_msf+1=d2)へ再シークして読み直す(厳密回復)。
+	   apply は total_len 前置きの可変長ストリームで、payloadだけ「穴」を空けても control が
+	   落ちると parse がズレて永久desync(F273フリーズ実測)。かつ再シークの CDC_STOP は CDC を
+	   リセットして後続の連鎖滑りを抑える(全payload-skipにすると滑り数が 38→59 に増える実測)。
+	   絶対LBA = stream_lba + (d2 - base_msf), 残 = h_stream_total - (d2 - base_msf)。 */
 	addq.w	#1, slip_count
-1:
+	move.l	d2, d0
+	sub.l	base_msf, d0			/* ファイル相対セクタ */
+	move.l	h_stream_total, d1
+	sub.l	d0, d1				/* 残セクタ数 */
+	add.l	stream_lba, d0			/* 絶対LBA */
+	bsr	reseek_readn
+	movem.l	(sp)+, d0-d2/a0			/* 保存レジスタ復帰 */
+	movea.l	dr_dest, a0			/* drain1再入用に宛先を復元 */
+	bra	drain1				/* 再読み: CDCは今度 d2 を返す→連番に戻る */
+d1_ok:
 	move.l	d1, prev_msf
 	movem.l	(sp)+, d0-d2/a0
 	rts
@@ -507,6 +636,27 @@ dl_loop:
 	movem.l	(sp)+, d7/a0
 	lea	0x800(a0), a0
 	dbra	d7, dl_loop
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+/* d0=セクタ数, a0=先頭(線形)。CDC_TRNをPRG直行させず STAGE(PAD_SCR=Word-RAM)経由で
+   CPUコピー。AGENTS.md: CDC_TRN→PRG直行はリトライ中にセクタが滑る(frame0ヘッダの
+   直読みで frame0 全面ノイズ化の実証)。boot のヘッダブロック読みはこの安全経路を使う。 */
+drain_lin_staged:
+	movem.l	d0-d7/a0-a6, -(sp)
+	move.w	d0, d7
+	subq.w	#1, d7
+dls_loop:
+	movem.l	d7/a0, -(sp)
+	lea	PAD_SCR, a0
+	bsr	drain1				/* CD→PAD_SCR(Word-RAM STAGE) */
+	movem.l	(sp)+, d7/a0
+	movem.l	d7/a0, -(sp)
+	movea.l	a0, a1				/* stage_copy: PAD_SCR→a1(dest) */
+	bsr	stage_copy
+	movem.l	(sp)+, d7/a0
+	lea	0x800(a0), a0
+	dbra	d7, dls_loop
 	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
@@ -629,6 +779,10 @@ stage_copy:
 pump_poll:
 	movem.l	d0-d7/a0-a6, -(sp)
 	move.w	drain_frame, d0
+	beq	pp_done				/* v2: frame0展開中は drain_frame=0。ここで pump すると
+						   routing[0]=(0,0) によりframe1の実セクタをpad扱いで捨て、
+						   CD位置とdrain_k/frameが N セクタ desync → frame1が化ける。
+						   streaming state(drain_frame>=1)確立まで pump しない。 */
 	cmp.w	h_frames, d0
 	bcc	pp_done				/* ストリーム終端 */
 	/* リング余裕: occupied = (tail-head) mod SIZE が SIZE-0x1000 以上なら見送り */
@@ -667,8 +821,42 @@ pf_pump:
 pf_ready:
 	addq.w	#1, frame_idx
 	bsr	fetch_control			/* apply循環 → CTRL_SCR 線形化 */
+	/* 同期チェック: control先頭の frame_seq(CTRL_SCR+2) が 期待値(frame_idx-1) と一致するか。
+	   ズレ=desync(CDCセクタ落ち等)。破棄して前コマ維持(0更新)し、診断カウントを出す。
+	   持続desyncは前コマ静止に化ける(=青赤崩壊より軽い)。 */
+	move.w	(CTRL_SCR+2).l, d0		/* 実 frame_seq */
+	move.w	frame_idx, d1
+	subq.w	#1, d1				/* 期待 seq */
+	cmp.w	d1, d0
+	bne	pf_desync
 	bsr	pump_poll
 	bsr	expand_frame			/* CTRL_SCR → Word-RAM 出力 + 音声 */
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+pf_desync:
+	addq.w	#1, desync_count
+	move.w	desync_count, (COMSTAT1).l	/* 診断: desync回数 */
+.equ DESYNC_DUMP, 0				/* 1: 初回desyncで[frame_idx,seq,apply_cur,apply_tail,drainF|cnt]を表示して静止 */
+.if DESYNC_DUMP
+	cmp.w	#1, desync_count
+	bne	1f
+	bsr	dump_ring_head
+dsd_lp:
+	cmp.w	#CMD_SWAP, (COMCMD0).l
+	bne	dsd_lp
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	move.w	#STAT_READY, (COMSTAT0).l
+dsd_w:
+	tst.w	(COMCMD0).l
+	bne	dsd_w
+	move.w	#0, (COMSTAT0).l
+	bra	dsd_lp
+1:
+.endif
+	move.w	#0, (O_NLOAD).l			/* このコマは更新破棄=前コマ維持 */
+	move.w	#0, (O_NUPD).l
+	bsr	pump_poll
 	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
@@ -725,7 +913,7 @@ fc_done:
 expand_frame:
 	movem.l	d0-d7/a0-a6, -(sp)
 	lea	CTRL_SCR, a0
-	addq.l	#2, a0				/* skip total_len */
+	addq.l	#4, a0				/* skip total_len(2) + frame_seq(2) */
 	move.w	(a0)+, d5			/* n_upd (使わないが読み飛ばし用に保持) */
 	move.w	(a0)+, d0			/* pal(hi) dbg(lo) */
 	lea	(O_DBG).l, a1
@@ -761,6 +949,10 @@ ef_bm:
 	lea	(O_LOADS).l, a1
 	lea	(O_UPDS).l, a2
 	movea.l	ring_head, a4			/* pop ptr(PRG読み) */
+	tst.w	f0_expand
+	beq	1f
+	movea.l	f0_pat_addr, a4			/* frame0: popは Word RAM f0pat から(ring_headはpump occ用に0xC000維持) */
+1:
 	moveq	#0, d4				/* n_load */
 	moveq	#0, d5				/* n_upd */
 	moveq	#0, d6				/* cell base */
@@ -787,6 +979,8 @@ ef_bit:
 	addq.w	#1, d5
 	btst	#15, d2
 	beq	ef_skip
+	tst.w	f0_expand
+	bne	ef_no_occ			/* frame0(Word RAM f0pat): occ迂回(1008<=1024で十分) */
 	/* graceful underrun: cold は ring pop(32B)が要る。リングが枯渇(available<32B)なら、
 	   ゴミを読まず「このコマの以降の更新を打ち切る」=残り全セルは前コマ維持(stale/残像)。
 	   持続重シーンがCD帯域を超えても崩壊でなく軽い残像に化ける。全レジスタ使用中なので
@@ -805,6 +999,7 @@ ef_bit:
 	bra	ef_finalize			/* 開いているランを閉じてコマ確定(残りは stale) */
 2:
 	move.l	(sp)+, d0
+ef_no_occ:
 	move.w	d3, d2
 	andi.w	#0x07FF, d2
 	subq.w	#1, d2				/* slot */
@@ -832,6 +1027,8 @@ ef_cont:
 	move.l	(a4)+, (a1)+
 	move.l	(a4)+, (a1)+
 	move.l	(a4)+, (a1)+
+	tst.w	f0_expand
+	bne	1f				/* frame0: Word RAM連続=wrap不要 */
 	cmpa.l	#RING_END, a4
 	blo	1f
 	movea.l	#RING_BASE, a4
@@ -851,8 +1048,14 @@ ef_finalize:					/* 通常終了 or リング枯渇での打ち切り合流点 *
 1:
 	move.w	d4, (O_NLOAD).l
 	move.w	d5, (O_NUPD).l
-	move.w	slip_count, (O_SLIP).l	/* 滑り回数をMDへ */
-	move.l	a4, ring_head
+	move.w	slip_count, (O_SLIP).l	/* 滑り(=再シーク回復)回数をMDへ=グリッチマーカー */
+	move.w	desync_count, (O_DSY).l	/* desync検知回数をMDへ(再シーク回復が効けば0のまま) */
+	move.w	resync_count, (O_RESYNC).l	/* 計測: 音声re-sync回数をMDへ */
+	move.w	cur_lead, (O_LEAD).l		/* 計測: 現コマの音声リードをMDへ */
+	tst.w	f0_expand
+	bne	1f
+	move.l	a4, ring_head			/* frame0はring_head書き戻さない(0xC000維持=frame1がPREBUF1から) */
+1:
 	/* 音声: entries の直後(a0) に 887B */
 	movea.l	a0, a5
 	movea.l	a5, a0
@@ -1023,12 +1226,14 @@ write_wave_chunk:
 	move.w	write_ptr, d2
 	move.w	d2, d0
 	sub.w	d5, d0
-	andi.w	#RING_MASK, d0
+	andi.w	#RING_MASK, d0			/* d0 = lead(書込-再生) */
+	move.w	d0, cur_lead			/* 計測: 現リードを記録(HUD表示) */
 	cmp.w	#SYNC_MIN, d0
 	blo	1f
 	cmp.w	#SYNC_MAX, d0
 	bls	2f
 1:
+	addq.w	#1, resync_count		/* 計測: re-sync発生(リード逸脱で書込ジャンプ=乱れ) */
 	move.w	d5, d2
 	add.w	#SYNC_LEAD, d2
 	andi.w	#RING_MASK, d2
@@ -1093,6 +1298,8 @@ dr_dest:
 	.long	0
 prev_msf:
 	.long	0
+base_msf:
+	.long	0				/* ファイル先頭セクタのMSF-linear(=stream_lba相当)。滑り時の再シーク基準 */
 slip_count:
 	.word	0
 	.word	0
@@ -1134,5 +1341,13 @@ write_ptr:
 	.word	0
 run_cnt:
 	.word	0
+f0_expand:
+	.word	0				/* !=0: expand_frameでcold popのring wrap/occ迂回(frame0=Word RAM) */
+desync_count:
+	.word	0				/* control同期マーカー不一致の累積(診断) */
+resync_count:
+	.word	0				/* 計測: 音声re-sync累積(リード逸脱=書込ジャンプ=乱れ) */
+cur_lead:
+	.word	0				/* 計測: 現コマの音声リード(write-play) */
 
 sp_end:

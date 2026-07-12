@@ -41,10 +41,15 @@
 #        hole); per-frame frame_seq check (detect desync); CD-slip recovery = on
 #        MSF gap, re-seek and re-read the lost sector (exact, no quality loss);
 #        debug HUD S=slip/re-seek count, D=desync count.
-#   p4 : audio A/V-sync — RF5C164 playback frequency (FD) now follows the
-#        write/play lead so the fixed-rate PCM tracks the video's effective
-#        speed (slight dips at re-seeks) instead of skipping. Bigger audio lead
-#        buffer (0x4000). Eliminates the audio "rewind" glitches.
+#   p4 : audio glitch fix (the earlier FD-follow / big-lead attempt was REVERTED —
+#        it added growing audio lag — so p4 never shipped until now). Shipped p4 =
+#        SYNC_MIN lowered (0xC00->0x400): the audio write/play lead may dip briefly
+#        at a heavy scene-cut cluster WITHOUT triggering a re-sync. The old re-sync
+#        jumped the write ahead and replayed stale loud data = an audible glitch
+#        (machi_op F1056). Root-caused with an on-HUD instrument (R=audio re-sync
+#        count, L=current lead): the lead troughs ~1467, staying above SYNC_MIN
+#        (1024) and overtake (0), so R stays 1 (no re-sync) and no play-overtake.
+#        Glitch gone at FULL quality (uncapped) with no A/V lag.
 #   e7 : streaming jitter margin — pack RING_CAP raised 350->380 (more prebuffer
 #        for the heavy scene-cut cluster; still below the 416KB back-pressure
 #        threshold, under=0). Fewer CD-sector drops (38->32) with no quality
@@ -63,6 +68,6 @@
 #        was drifted 420/380/440) and the drop-safe realized-cold ceiling; the
 #        pack ASSERTS realized cold <= ceiling and refuses a pack-side cap; the
 #        build asserts the player RING_SIZE matches. Result: S=0, analysis==disc.
-date=20260711
+date=20260712
 e=9
-p=3
+p=4
