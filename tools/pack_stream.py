@@ -544,6 +544,18 @@ def main():
     POOL = args.pool_slots or int(log["vram_tiles"])
     per, n_load, n_upd, pal_w, Plist, tearing = resolve(log, POOL, mode=args.alloc)
     print(f"resolve[{args.alloc}]: tearing={tearing} M(payload)={len(Plist)} frames={len(per)}")
+    # 不変条件(単一真実源 av_config): 実配信(pack)の1コマ cold が drop-safe 上限を超えたら失敗。
+    # sim のモデル cap が pack の連続スロット割当に対して高すぎる兆候(=解析は合うが実機で滑る)。
+    # frame0(完全ロードのヘッダ)は除外。
+    realized_max = max([int(x) for x in n_load[1:]], default=0)
+    if realized_max > av_config.COLD_CAP_REALIZED:
+        raise SystemExit(
+            f"pack: realized per-frame cold max={realized_max} exceeds drop-safe "
+            f"COLD_CAP_REALIZED={av_config.COLD_CAP_REALIZED} (av_config.py). The sim's "
+            f"model cap is too high for the pack's contiguous-slot allocation; the disc "
+            f"would slip. Lower CBRSIM_MAX_COLD in the sim and re-sim.")
+    print(f"  realized cold: max={realized_max} <= COLD_CAP_REALIZED"
+          f"={av_config.COLD_CAP_REALIZED} OK")
     run_stats(per)
     blocks = build_control(log, per, n_upd, pal_w, args.audio)
     sc = schedule(per, n_load, blocks)

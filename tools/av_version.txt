@@ -26,8 +26,43 @@
 #        the deterministic ring model can NOT predict the collapse (collapse
 #        frames show full occ); RING_CAP is the empirical jitter-margin lever.
 #        Much higher tile-update density; full ED completes clean on hardware.
+#   e5 : per-frame sync marker (frame_seq at the head of each control block) so
+#        the player can detect stream desync. Enables robust slip recovery.
+#   e6 : audio fix — the PCM WAV is pcm_u8 (unsigned, center 128) but the pack
+#        had converted it as signed 8-bit AND fed the WAV header in as samples,
+#        scrambling the waveform (~15% of samples flipped). Now strips the header
+#        (wave module) and converts u8(center 128) -> RF5C164 sign-magnitude
+#        correctly (silence 128 -> 0x00). Audio garble gone.
 #   p1 : baseline PCM player.
 #   p2 : graceful ring underrun (drained scene shows stale/residual, not garbage).
-date=20260710
-e=4
-p=2
+#   p3 : full-screen H40 completes clean. Fixes: frame0 header loaded via staged
+#        CD->Word-RAM->copy (direct CDC_TRN slips); pump during frame0 decode
+#        (CDC-overflow drop desynced frame1+); f0pat in Word-RAM scratch (no ring
+#        hole); per-frame frame_seq check (detect desync); CD-slip recovery = on
+#        MSF gap, re-seek and re-read the lost sector (exact, no quality loss);
+#        debug HUD S=slip/re-seek count, D=desync count.
+#   p4 : audio A/V-sync — RF5C164 playback frequency (FD) now follows the
+#        write/play lead so the fixed-rate PCM tracks the video's effective
+#        speed (slight dips at re-seeks) instead of skipping. Bigger audio lead
+#        buffer (0x4000). Eliminates the audio "rewind" glitches.
+#   e7 : streaming jitter margin — pack RING_CAP raised 350->380 (more prebuffer
+#        for the heavy scene-cut cluster; still below the 416KB back-pressure
+#        threshold, under=0). Fewer CD-sector drops (38->32) with no quality
+#        change (same decisions/cold cap).
+#   e8 : clean stream (zero CD-sector drops) — pack per-frame cold cap
+#        (CBRSIM_PACK_MAXCOLD=200, frame0 excluded so it stays a full load) caps
+#        new-tile load at heavy scene-cut frames so the Sub never overruns the
+#        CDC. S(slip)=0 all the way, steady 15fps, so the fixed-rate PCM stays
+#        A/V-synced (no re-seek pauses, no rewind, no lag). Capped cells hold the
+#        previous frame 1 frame (residual). Resolution/audio unchanged.
+#   e9 : cap moved into the encoder + one source of truth. The cold cap now
+#        lives only in the sim (CBRSIM_MAX_COLD=185, smart reuse), NOT the pack,
+#        so the analysis (from the sim) matches the disc exactly (frame-aligned
+#        corr 1.000; the old pack cap dropped bottom cells stale, corr 0.814).
+#        av_config.py is the single source for ring (RING_SIZE->RING_CAP/TANK,
+#        was drifted 420/380/440) and the drop-safe realized-cold ceiling; the
+#        pack ASSERTS realized cold <= ceiling and refuses a pack-side cap; the
+#        build asserts the player RING_SIZE matches. Result: S=0, analysis==disc.
+date=20260711
+e=9
+p=3

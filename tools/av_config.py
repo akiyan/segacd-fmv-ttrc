@@ -40,3 +40,16 @@ BACKPRESSURE_KB = RING_SIZE_KB - 4
 
 assert RING_CAP_KB <= BACKPRESSURE_KB, (
     f"RING_CAP_KB={RING_CAP_KB} must be <= back-pressure {BACKPRESSURE_KB}")
+
+# --- Drop-safe realized per-frame cold ceiling ---
+# The player overruns the CD (a sector slip) when a streaming frame's ACTUAL new-tile
+# loads exceed this (measured: <=200 -> S=0; ~206-219 -> a few stochastic slips).
+# Subtlety: the encoder (sim) models residency with LRU, but the packer allocates
+# slots contiguously (for efficient DMA runs), so the pack RE-LOADS a few tiles the
+# sim kept resident -> the pack's realized cold runs a few above the sim's model cap.
+# So the sim's model cap (CBRSIM_MAX_COLD) must sit below this ceiling, and the pack
+# ASSERTS the realized cold actually obeys it (a too-high sim cap fails loudly here
+# instead of silently shipping a disc that slips). frame0 (the full-load header) is
+# exempt. This is the same "single source of truth + pack-time verification" pattern
+# as the ring above — the encoder is made to model the hardware's real limit.
+COLD_CAP_REALIZED = 200
