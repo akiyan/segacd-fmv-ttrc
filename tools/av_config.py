@@ -52,4 +52,12 @@ assert RING_CAP_KB <= BACKPRESSURE_KB, (
 # instead of silently shipping a disc that slips). frame0 (the full-load header) is
 # exempt. This is the same "single source of truth + pack-time verification" pattern
 # as the ring above — the encoder is made to model the hardware's real limit.
+#
+# PER-SOURCE: this ceiling is NOT universal — it is the *full-screen* (H40 320x224,
+# 1120-cell) limit, whose sustained heavy scene-cut montage is what overruns the Sub.
+# Lighter sources tolerate much more: measured, H40-letterbox machi_op (320x144,
+# 720-cell) plays S=0 fully *uncapped* (realized cold up to 714), because its frames
+# are lighter and its scene-cuts are isolated (the Sub recovers between them). So the
+# pack accepts `CBRSIM_COLD_CAP_REALIZED` to raise this per source to its own measured
+# drop-safe limit (machi_op ships uncapped), recovering full quality; machi_ed keeps 200.
 COLD_CAP_REALIZED = 200

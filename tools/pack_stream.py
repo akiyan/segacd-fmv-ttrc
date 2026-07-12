@@ -547,15 +547,18 @@ def main():
     # 不変条件(単一真実源 av_config): 実配信(pack)の1コマ cold が drop-safe 上限を超えたら失敗。
     # sim のモデル cap が pack の連続スロット割当に対して高すぎる兆候(=解析は合うが実機で滑る)。
     # frame0(完全ロードのヘッダ)は除外。
+    # 上限は作品(解像度)ごとに実機で滑らないラインが違う(軽い黒帯ほど高い)。既定は
+    # av_config(全画面基準200)。env `CBRSIM_COLD_CAP_REALIZED` で作品ごとに実測値へ上書き可。
+    cold_ceiling = int(os.environ.get("CBRSIM_COLD_CAP_REALIZED", str(av_config.COLD_CAP_REALIZED)))
     realized_max = max([int(x) for x in n_load[1:]], default=0)
-    if realized_max > av_config.COLD_CAP_REALIZED:
+    if realized_max > cold_ceiling:
         raise SystemExit(
             f"pack: realized per-frame cold max={realized_max} exceeds drop-safe "
-            f"COLD_CAP_REALIZED={av_config.COLD_CAP_REALIZED} (av_config.py). The sim's "
-            f"model cap is too high for the pack's contiguous-slot allocation; the disc "
-            f"would slip. Lower CBRSIM_MAX_COLD in the sim and re-sim.")
-    print(f"  realized cold: max={realized_max} <= COLD_CAP_REALIZED"
-          f"={av_config.COLD_CAP_REALIZED} OK")
+            f"COLD_CAP_REALIZED={cold_ceiling}. The sim's model cap is too high for the "
+            f"pack's contiguous-slot allocation; the disc would slip. Lower CBRSIM_MAX_COLD "
+            f"and re-sim, or raise CBRSIM_COLD_CAP_REALIZED if this source's measured "
+            f"drop-safe limit is higher (lighter frames tolerate more cold).")
+    print(f"  realized cold: max={realized_max} <= COLD_CAP_REALIZED={cold_ceiling} OK")
     run_stats(per)
     blocks = build_control(log, per, n_upd, pal_w, args.audio)
     sc = schedule(per, n_load, blocks)
