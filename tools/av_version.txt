@@ -68,6 +68,15 @@
 #        was drifted 420/380/440) and the drop-safe realized-cold ceiling; the
 #        pack ASSERTS realized cold <= ceiling and refuses a pack-side cap; the
 #        build asserts the player RING_SIZE matches. Result: S=0, analysis==disc.
+#   p5 : Sub-CPU throughput -> higher cold ceiling (better quality). The expand loop
+#        called pump_poll every bitmap byte (~140x/frame on full-screen), each a 15-reg
+#        save + BIOS_CDC_STAT; that fixed overhead made heavy scene-cut frames overrun
+#        the CD (sector slip) above realized cold ~200, forcing a low cap (quality loss).
+#        Now pump_poll runs every 8 bytes (~18x/frame, still ample: 1 CD sector per ~166k
+#        cycles). Measured on full-screen machi_ed: slips vanish up to realized 429 (S=0),
+#        so the cap rises from 195 to 362 (sim cap 350), lifting mean cold 167->230 (+37%)
+#        = the Tank/CD-bandwidth is now spent on fresh tiles instead of wasted. Verified
+#        S=0, R=1, D=0. Also improves machi_op (faster Sub = shallower audio-lead dips).
 date=20260712
 e=9
-p=4
+p=5

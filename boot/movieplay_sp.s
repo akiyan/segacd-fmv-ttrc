@@ -962,7 +962,14 @@ ef_bm:
 	move.w	h_bmbytes, d7
 	subq.w	#1, d7
 ef_byte:
-	bsr	pump_poll			/* 長い展開中もCDを取りこぼさない */
+	/* pump_poll は重い(15レジ退避+BIOS_CDC_STAT)。CDは166kサイクルに1セクタしか来ないので
+	   毎バイト(全画面140回/コマ)は過剰。8バイト毎(~18回/コマ)でも十分取りこぼさない。
+	   空振りpollを削り Sub時間を空ける=重コマのfps落ちを詰めて滑り天井を上げる狙い。 */
+	move.w	d7, d0
+	andi.w	#7, d0
+	bne	ef_nopump
+	bsr	pump_poll			/* 長い展開中もCDを取りこぼさない(頻度は落としても間に合う) */
+ef_nopump:
 	move.b	(a3)+, d0
 	beq	ef_next
 	moveq	#0, d1
