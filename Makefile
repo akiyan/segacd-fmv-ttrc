@@ -9,14 +9,16 @@ MARSDEV ?= $(HOME)/toolchains/mars
 M68K_PREFIX ?= $(MARSDEV)/m68k-elf/bin/m68k-elf-
 
 AS := $(M68K_PREFIX)as
+CC := $(M68K_PREFIX)gcc
 LD := $(M68K_PREFIX)ld
 OBJCOPY := $(M68K_PREFIX)objcopy
 MKISOFS := $(shell command -v mkisofs 2>/dev/null || command -v genisoimage 2>/dev/null || true)
 
 ASFLAGS := -m68000 --register-prefix-optional --bitwise-or
+CFLAGS_M68K := -m68000 -ffreestanding -fno-builtin -fomit-frame-pointer -O2 -Wall -Wextra
 LDFLAGS := -nostdlib --oformat binary
 
-.PHONY: all disc setup clean check-tools test1m cdcbench still256 movieplay dmabench streamtest pcmtest upscaletest asictest prgtest
+.PHONY: all disc setup clean check-tools test1m cdcbench still256 movieplay dmabench streamtest pcmtest adpcmtest upscaletest asictest prgtest
 
 all: disc
 
@@ -28,6 +30,7 @@ disc: movieplay
 
 check-tools:
 	@test -x "$(AS)" || (echo "missing assembler: $(AS). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
+	@test -x "$(CC)" || (echo "missing compiler: $(CC). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
 	@test -x "$(LD)" || (echo "missing linker: $(LD). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
 	@test -x "$(OBJCOPY)" || (echo "missing objcopy: $(OBJCOPY). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
 	@test -n "$(MKISOFS)" || (echo "missing mkisofs/genisoimage" && exit 1)
@@ -177,7 +180,8 @@ $(BOOT_DIR)/dbgfont.bin: tools/gen_debugfont.py
 $(OUT_DIR)/movieplay_ip.bin: $(OUT_DIR)/movieplay_ip.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/ip.ld -o $@ $<
 
-$(OUT_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s | setup
+$(OUT_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s tools/av_config.py tools/check_player_ring.py | setup
+	python3 tools/check_player_ring.py
 	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $< -o $@
 
 $(OUT_DIR)/movieplay_sp.bin: $(OUT_DIR)/movieplay_sp.o
@@ -264,6 +268,49 @@ $(OUT_DIR)/PCMTEST.iso: $(OUT_DIR)/pcmtest_boot.bin
 $(OUT_DIR)/PCMTEST.cue: $(OUT_DIR)/PCMTEST.iso
 	@rm -f $@
 	@printf 'FILE "PCMTEST.iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
+
+# --- ADPCM decoder smoke test (standalone, IP+SP only, embedded IMA stream) ---
+ADPCMTEST_DISC := $(OUT_DIR)/disc_adpcmtest
+
+adpcmtest: check-tools $(OUT_DIR)/ADPCMTEST.iso $(OUT_DIR)/ADPCMTEST.cue
+
+$(BOOT_DIR)/adpcmtest_font.bin: tools/gen_adpcmtest_font.py
+	python3 tools/gen_adpcmtest_font.py
+
+$(OUT_DIR)/adpcmtest_ip.o: $(BOOT_DIR)/adpcmtest_ip.s $(BOOT_DIR)/security.bin $(BOOT_DIR)/adpcmtest_font.bin | setup
+	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $< -o $@
+
+$(OUT_DIR)/adpcmtest_ip.bin: $(OUT_DIR)/adpcmtest_ip.o
+	$(LD) $(LDFLAGS) -T $(CFG_DIR)/ip.ld -o $@ $<
+
+$(OUT_DIR)/adpcmtest_sp_shell.o: $(BOOT_DIR)/adpcmtest_sp.s | setup
+	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $< -o $@
+
+$(OUT_DIR)/adpcmtest_adpcm.o: $(BOOT_DIR)/adpcmtest_adpcm.c | setup
+	$(CC) $(CFLAGS_M68K) -c $< -o $@
+
+$(OUT_DIR)/adpcmtest_tone_ima.bin: tools/gen_adpcmtest_audio.py | setup
+	python3 tools/gen_adpcmtest_audio.py --pattern --out $@ --rate 22050 --samples 8192
+
+$(OUT_DIR)/adpcmtest_audio.o: $(BOOT_DIR)/adpcmtest_audio.s $(OUT_DIR)/adpcmtest_tone_ima.bin | setup
+	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $< -o $@
+
+$(OUT_DIR)/adpcmtest_sp.bin: $(OUT_DIR)/adpcmtest_sp_shell.o $(OUT_DIR)/adpcmtest_adpcm.o $(OUT_DIR)/adpcmtest_audio.o
+	$(LD) $(LDFLAGS) -T $(CFG_DIR)/sp.ld -o $@ $^
+
+$(OUT_DIR)/adpcmtest_boot.bin: $(OUT_DIR)/adpcmtest_ip.bin $(OUT_DIR)/adpcmtest_sp.bin $(BOOT_DIR)/adpcmtest_boot.s
+	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $(BOOT_DIR)/adpcmtest_boot.s -o $(OUT_DIR)/adpcmtest_boot.out
+	$(OBJCOPY) -O binary $(OUT_DIR)/adpcmtest_boot.out $@
+
+$(OUT_DIR)/ADPCMTEST.iso: $(OUT_DIR)/adpcmtest_boot.bin
+	@mkdir -p $(ADPCMTEST_DISC)
+	@printf "ADPCM decoder smoke test\n" > $(ADPCMTEST_DISC)/README.TXT
+	@rm -f $@ $(OUT_DIR)/ADPCMTEST.cue
+	$(MKISOFS) -iso-level 1 -G $< -pad -V "SCFMV_ADPCM" -o $@ $(ADPCMTEST_DISC)
+
+$(OUT_DIR)/ADPCMTEST.cue: $(OUT_DIR)/ADPCMTEST.iso
+	@rm -f $@
+	@printf 'FILE "ADPCMTEST.iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
 
 # --- 2x CPU-upscale 320x160 / 4-VBlank DMA verification (reuses boot.bin, SP,
 #     and the movie PROBE.BIN; only M_INIT.PRG is the upscale Main) ---

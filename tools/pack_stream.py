@@ -42,26 +42,28 @@ FRAME_SECTORS = 5
 PAT = 32
 PAT_PER_SEC = SECTOR // PAT  # 64
 AUDIO = 887                  # 13.3kHz/15fps ≒ 886.7 -> 887固定
-# リング上限はプレイヤの実 RING_SIZE(boot/movieplay_sp.s: 0x69000=420KB)に一致させる。
-# さらに back-pressure(RING_SIZE-0x1000=416KB)と実時間ジッタのため 20KB の安全余裕を引く。
-# ※ TANK_KB(sim)はこの値以下でなければならない(タンクの貯め込みがリングを溢れさせる)。
-# プレイヤの実リング容量(boot/movieplay_sp.s: RING_SIZE=0x69000=420KB)。プリバッファが
-# これを超えると ring_tail が実リングをはみ出すのでクランプに使う。
-RING_SIZE_KB = 420
-RING_CAP_KB = int(os.environ.get("CBRSIM_RING_CAP_KB", "400"))
-# = 実リング420KB - 20KB安全余裕(旧464は誤り: apply/routing過小評価)。
-# ※ さらに重要: プレイヤの pump_poll back-pressure 閾値は RING_SIZE-0x1000=416KB。
-# forward-fill がここに近づくと pump が止まり CDC FIFO がセクタを落とす(=恒久desync,
-# AGENTS.md「back-pressureラチェット」)。差(416-RING_CAP)が小さいと重配信中に触れて崩壊
-# するので、CBRSIM_RING_CAP_KB を下げて back-pressure から十分離すと pump が止まらない。
+# リング諸元は tools/av_config.py の単一真実源から取る(sim/pack/playerで二重管理しない)。
+# RING_SIZE はプレイヤの実 .equ RING_SIZE と一致(ビルド時 check_player_ring.py が検証)。
+# RING_CAP(スケジュール上限)と sim の TANK は RING_SIZE から導出され必ず一致する。
+import av_config
+RING_SIZE_KB = av_config.RING_SIZE_KB
+RING_CAP_KB = int(os.environ.get("CBRSIM_RING_CAP_KB", str(av_config.RING_CAP_KB)))
+if RING_CAP_KB > av_config.BACKPRESSURE_KB:
+    raise SystemExit(
+        f"CBRSIM_RING_CAP_KB={RING_CAP_KB} exceeds player back-pressure "
+        f"{av_config.BACKPRESSURE_KB}KB — the pump would stall and drop sectors. "
+        f"Lower it (default {av_config.RING_CAP_KB} from av_config.py).")
 RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
 
-# per-frame コールド上限(既定OFF=0)。>0 のとき、1コマで pop(CD読み)する cold パターン数を
-# この値までに制限する。上限到達後の cold セルは「更新しない=前コマ維持(残像)」とし、payload と
-# control の両方から外す(=リング収支は保たれ、desync しない)。CBR予算(budget_tiles≈262)以下に
-# 置けば配信<=予算となりタンク/リングは減らない=実機で完走。simの MAX_COLD が使えない場合の
-# pack段での honest cap(最小価値でなく cell 昇順で打ち切るため画質は sim版に劣るが完走優先)。
-PACK_MAXCOLD = int(os.environ.get("CBRSIM_PACK_MAXCOLD", "0"))
+# コールド上限(=1コマの新規タイル数の上限)は「エンコーダ=sim」だけの責務。
+# ここ(pack段)で cap すると、(1)simが出す解析の絵とディスクの絵が食い違い、(2)cell昇順で
+# 下段を打ち切り前コマ保持(stale)になって sim の賢い流用(reuse)より画質が劣る。
+# よって pack では絶対に cap しない。指定されたら「simへ移せ」と明示エラーにする。
+if os.environ.get("CBRSIM_PACK_MAXCOLD"):
+    raise SystemExit(
+        "CBRSIM_PACK_MAXCOLD is removed: the cold cap belongs to the encoder. "
+        "Set CBRSIM_MAX_COLD in the sim and re-sim, so the analysis matches the "
+        "disc and capped cells reuse (not go stale). See tools/av_config.py.")
 
 # --- デバッグブロック(control先頭ヘッダ直後・固定長) ---
 DBG_NCAT = 7                 # カテゴリ数 [raw,same,near,coa,flbk,buf,miss]
@@ -177,8 +179,7 @@ def resolve(log, POOL, mode="lru"):
         cells, entries, colds = [], [], []
         for (cell, pal, key) in sorted(frames[i], key=lambda t: t[0]):
             cold = key not in key_slot
-            if cold and PACK_MAXCOLD and n_load[i] >= PACK_MAXCOLD:
-                continue                 # cap: この cold は打ち切り(セルは前コマ維持=残像)
+            # NOTE: no cold cap here — capping is the encoder's job (sim CBRSIM_MAX_COLD).
             if cold:
                 slot = alloc_slot()
                 key_slot[key] = slot
@@ -253,16 +254,29 @@ def build_control(log, per, n_upd, pal_w, audio_path):
     dbg_on = bool(cats_list) and os.environ.get("CBRSIM_PACK_DEBUG", "0") == "1"
     aud = b""
     if audio_path:
-        raw = Path(audio_path).read_bytes()
+        # WAV(pcm_u8, 中心=128)を読む。wave で data チャンクだけ取り出す(ヘッダを
+        # サンプルに混ぜない)。生ファイルなら read_bytes にフォールバック。
+        try:
+            import wave as _wave
+            _w = _wave.open(str(audio_path), "rb")
+            raw = _w.readframes(_w.getnframes())        # u8 サンプル列(ヘッダ無し)
+            _w.close()
+        except Exception:
+            raw = Path(audio_path).read_bytes()
         sm = bytearray(len(raw))
-        for j, b in enumerate(raw):                     # s8 -> RF5C164 sign-magnitude
-            s = b - 256 if b >= 128 else b
-            sm[j] = min(s, 0x7F) if s >= 0 else (0x80 | min(-s, 0x7E))
+        for j, b in enumerate(raw):                     # u8(中心128) -> RF5C164 符号+絶対値
+            s = b - 128                                 # 符号付き -128..127 (128=無音=0)
+            if s > 0x7F:
+                s = 0x7F
+            sm[j] = s if s >= 0 else (0x80 | min(-s, 0x7E))   # 0xFF(ストップ印)を避ける
         aud = bytes(sm)
     blocks = []
     for i in range(len(per)):
         cells, entries, colds = per[i]
         body = bytearray()
+        # 同期マーカー: frame_seq(下位16bit)。実機は control 読み出し時に期待フレーム番号と
+        # 照合し、ズレたら desync 検知(CDCセクタ落ち等)して復帰できる。total_len に含む。
+        body += struct.pack(">H", i & 0xFFFF)
         body += struct.pack(">H", int(n_upd[i]))
         body += struct.pack(">BB", int(pal_w[i]), 1 if dbg_on else 0)
         if dbg_on:
@@ -377,6 +391,7 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
         ring_peak = max(ring_peak, len(ring))
         blk = ctrl[cc:cc + int(blk_len[i])]; cc += int(blk_len[i])
         p = 2                                         # skip total_len
+        p += 2                                        # skip frame_seq(同期マーカー)
         nupd = struct.unpack(">H", blk[p:p + 2])[0]; p += 2
         palw = blk[p]; dbg = blk[p + 1]; p += 2
         if dbg:
@@ -517,6 +532,15 @@ def main():
     args = ap.parse_args()
 
     log = load_log(args.dec_log)
+    # 単一真実源チェック: sim が焼いた tank と、この pack の RING_CAP は同じ実機リングを
+    # モデルするので一致すべき。ズレていたら二重管理の兆候なので警告。
+    sim_tank = log.get("tank_kb")
+    sim_cold = log.get("max_cold")
+    if sim_tank is not None and sim_tank != RING_CAP_KB:
+        print(f"  [warn] sim tank_kb={sim_tank} != pack RING_CAP_KB={RING_CAP_KB} "
+              f"(should match: both model the usable ring, av_config.py)")
+    print(f"  encode params from sim: max_cold={sim_cold} tank_kb={sim_tank}  "
+          f"pack RING_CAP_KB={RING_CAP_KB} (RING_SIZE {RING_SIZE_KB})")
     POOL = args.pool_slots or int(log["vram_tiles"])
     per, n_load, n_upd, pal_w, Plist, tearing = resolve(log, POOL, mode=args.alloc)
     print(f"resolve[{args.alloc}]: tearing={tearing} M(payload)={len(Plist)} frames={len(per)}")

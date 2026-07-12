@@ -156,7 +156,11 @@ PRG_PRELOAD_PATH = os.environ.get("CBRSIM_PRG_PRELOAD", "")
 # Miss を埋める。空になった時だけ Miss。開始時は満タン(B0=CAP)。タンク容量 CAP=TANK_KB。
 # 実機はVBV必須なので sim は VBV専用(env CBRSIM_VBV は無視して常にON)。非VBVパスは未使用。
 VBV_ON = True
-TANK_KB = int(os.environ.get("CBRSIM_TANK_KB", "414"))
+# タンク容量は tools/av_config.py の単一真実源(=実機の使えるリング RING_CAP)から取る。
+# 旧既定414や実行時440はリング物理420KBを超えており、simが実機より広いバッファを仮定して
+# 実機で枯渇していた。envで上書き可(実験用)だが、既定はconfigから導出=pack/playerと一致。
+import av_config
+TANK_KB = int(os.environ.get("CBRSIM_TANK_KB", str(av_config.TANK_KB)))
 TANK_CAP_BYTES = TANK_KB * 1024
 # 格上げパス(既定ON): 余ったCD + タンクの余剰で、近似(Near/Coa/Flbk)や持ち越しをRaw/Bufに格上げ。
 # 0で無効(=従来の帯域余し挙動に戻せる, 比較用)。
@@ -1081,6 +1085,8 @@ def main():
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]
             "frame_bytes": int(FRAME_BYTES), "audio_rate": int(AUDIO_RATE), "fps": int(FPS),
             "vram_tiles": int(VRAM_TILES),
+            # エンコード時の実効パラメータを焼き込む(pack/解析が同一値を使い二重管理を防ぐ)。
+            "max_cold": int(MAX_COLD), "tank_kb": int(TANK_KB),
         }, open(EMIT_DEC, "wb"), protocol=4)
         print(f"  実機決定ログ: {EMIT_DEC} ({len(dec_frames)} frames)")
 

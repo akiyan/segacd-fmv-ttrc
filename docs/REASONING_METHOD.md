@@ -109,6 +109,38 @@ else. Silent degradation is a betrayal; a named trade-off is a decision.
 - **The recording is not pixel-exact:** verify pixel-level claims only through
   integer paths (native-resolution lossless capture), not scaled screenshots.
 
+## 12. Verify the output against reality, frame-aligned （実機とフレーム突き合わせ）
+
+An encoder's *analysis* view is what the encoder *believes* it produced. The
+disc is what *actually* plays. They can silently diverge. Put them side by side,
+**aligned by frame number**, and diff — the sim's frame N against the real
+capture's frame N — and look at *where* they differ, not just whether.
+
+> *H40:* the uploaded analysis looked great, but the disc did not match it. A
+> frame-aligned diff (sim preview[1409] vs real[1409]) showed the differences
+> were concentrated in the **bottom rows** — the fingerprint of a cap that drops
+> cells in ascending index order. That one comparison turned "it feels off" into
+> a located, explained defect. Confirm with a *light* frame too: if the
+> un-stressed frames match and only the stressed ones differ, you have isolated
+> the single cause.
+
+## 13. One source of truth — no double-managed knobs （二重管理を作らない）
+
+The worst bugs are not wrong values — they are the *same* value defined in two
+places that quietly drift apart. If a parameter describes one physical thing,
+define it **once**, derive everything else from it, and **assert** the copies
+agree (at build time, loudly). A knob that can be set independently on two sides
+*will* eventually be set inconsistently.
+
+> *H40:* the ring was described three times — player `RING_SIZE`=420 KB, pack
+> `RING_CAP`=380 KB, sim `TANK`=**440 KB** (larger than the physical ring!). And
+> the cold cap lived in *both* the sim and the pack. The pack cap then diverged
+> from the sim, so the analysis (from the sim) stopped matching the disc (from
+> the pack). The fix was structural, not a value tweak: one `av_config.py`
+> defines the ring; cap/tank derive from it; the player's `RING_SIZE` is
+> build-asserted equal; and the pack now *refuses* a cold cap with a message
+> pointing you back to the encoder. The bug class is designed out, not patched.
+
 ---
 
 ## The one sentence to keep
