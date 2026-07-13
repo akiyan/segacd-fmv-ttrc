@@ -50,11 +50,9 @@ Defaults and conventions:
 - Older scripts may default to `out/SCFMV_MCD.cue`; override the disc when
   recording the current player.
 - Use a realtime preset for synchronized A/V.
-- **For a comparison video's Real panel, record LOSSLESS** so the dither stays
-  dot-by-dot: `--preset ffv1-flac` (writes an FFV1 mkv at `tmp/<tag>.mkv`).
-  Feed that mkv to `render_comparison.py` (`CMP_REAL=tmp/<tag>.mkv`), not the
-  transcoded h264 mp4 — a lossy recording blurs the dither and the Real panel
-  looks worse than the ideal. See `COMPARISON.md`.
+- **When pixel-exact dither matters, record LOSSLESS**: `--preset ffv1-flac`
+  (writes an FFV1 mkv at `tmp/<tag>.mkv`) and analyze that mkv, not the
+  transcoded h264 mp4 — a lossy recording blurs the dither.
 - Output goes under `videos/` (git-ignored), not `tmp/`. When the recording
   corresponds to a sim encode, name it `videos/<stem>_emu.mp4` (same
   `<stem> = <input-basename>_<mode>_<resolution>_<audio>` as the sim run; see

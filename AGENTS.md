@@ -85,9 +85,6 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
     Updated via the `/analysis` skill together with the layout code.
   - [`MOVIE.md`](MOVIE.md) - the `MOVIE.DAT` (TTRC) on-disc stream format. Keep in sync with
     `tools/pack_stream.py` and the `boot/movieplay_*.s` player.
-  - [`COMPARISON.md`](COMPARISON.md) - the comparison overlay (Real vs Encoder-ideal) layout,
-    frame-sync, and pipeline. Keep in sync with `tools/comparison_preview.py`
-    and `tools/render_comparison.py`.
   - [`CONFIG.md`](CONFIG.md) - the tunable settings, throttles and buffers (ring/tank,
     cold cap, audio sync, CD pump, DMA budget, encoder knobs, per-source env). Keep in
     sync with `tools/av_config.py`, `tools/sim.py`, `tools/pack_stream.py` and the
@@ -140,7 +137,6 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 | Straight sim output, video+audio, no overlay (`export_sim_video.py`) | `videos/<stem>_sim.mp4` |
 | PNGs, logs, stats for that encode  | `videos/<stem>/tmp/` (the sim working dir) |
 | Emulator recording (`record-mcd`)  | `videos/<stem>_emu.mp4` |
-| Real (emu) + Encoder ideal (sim) side-by-side compare (`render_comparison.py`) | `videos/<stem>_comparison.mp4` |
 
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.

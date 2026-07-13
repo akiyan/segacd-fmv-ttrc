@@ -93,9 +93,6 @@ meter and tile category.
   targets, and repository layout.
 - [ANALYSIS.md](ANALYSIS.md): the analysis-overlay reference, covering every
   panel, meter, timeline, and tile category drawn by `tools/render_analysis.py`.
-- [COMPARISON.md](COMPARISON.md): the Real-vs-Encoder-ideal comparison overlay,
-  including its layout, frame synchronization method, audio tracks, and render
-  pipeline.
 - [MOVIE.md](MOVIE.md): the exact `MOVIE.DAT` on-disc stream format written by
   `tools/pack_stream.py` and read by the Sega CD player.
 - [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
