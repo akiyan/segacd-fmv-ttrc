@@ -54,12 +54,15 @@ W = int(os.environ.get("CBRSIM_W", "256"))
 H = int(os.environ.get("CBRSIM_H", "144"))
 TCOLS, TROWS = W // TILE, H // TILE     # 既定 32 x 18 = 576 cells
 C_CELLS = TCOLS * TROWS
-FPS = int(os.environ.get("CBRSIM_FPS", "15"))
+# CBRSIM_FPS は整数 "15" でも分数 "30000/1001"(=59.94/2=29.97, NTSCソース準拠) でも受ける。
+# FPS_STR は ffmpeg にそのまま渡す(分数を厳密に間引く)。FPS は計算用の float。
+FPS_STR = os.environ.get("CBRSIM_FPS", "15").strip()
+FPS = (float(FPS_STR.split("/")[0]) / float(FPS_STR.split("/")[1])) if "/" in FPS_STR else float(FPS_STR)
 DURATION = os.environ.get("CBRSIM_DURATION", "152.866667")
 
 CD_RATE = 153_600               # CD 1x, B/s (= 150 KiB/s, 絶対上限)
 TARGET_RATE = int(os.environ.get("CBRSIM_RATE_KIB", "144")) * 1024  # CBRレート(既定144 KiB/s)。env で調整可
-FRAME_BYTES = TARGET_RATE // FPS   # 純CBR: 1フレームで転送できる固定バイト = 10171
+FRAME_BYTES = int(TARGET_RATE / FPS)   # 純CBR: 1フレームで転送できる固定バイト
                                     # 実機1M/1Mダブルバッファ相当。フレーム間の繰り越し無し。
 # 音声: 既定 13.3kHz mono 8bit PCM(RF5C164, 出荷経路)。CBRSIM_AUDIO=adpcm22 で 22.05kHz
 # mono ADPCM(4bit, 棚上げの調査用=ADPCM.md参照)。CD予算(audio_due)はバイト率で引く。
@@ -449,11 +452,11 @@ def main():
         print("extracting de-dithered master (256x144) ...")
         run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-ss", "0", "-t", DURATION, "-i", SRC,
-             "-vf", f"{DEDITHER_VF},fps={FPS}", str(master_dir / "%05d.png")])
+             "-vf", f"{DEDITHER_VF},fps={FPS_STR}", str(master_dir / "%05d.png")])
         print("extracting raw original (320x144) ...")
         run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-ss", "0", "-t", DURATION, "-i", SRC,
-             "-vf", f"{RAW_VF},fps={FPS}", str(raw_dir / "%05d.png")])
+             "-vf", f"{RAW_VF},fps={FPS_STR}", str(raw_dir / "%05d.png")])
         print(f"extracting audio ({AUDIO_LABEL}) ...")
         for old in OUT.glob("audio_*.wav"):     # 別形式の残骸を除去(REUSE時の取り違え防止)
             old.unlink()
@@ -1107,7 +1110,7 @@ def main():
             "frames": dec_frames,                                     # [[(cell,pal,key),...], ...]
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]
-            "frame_bytes": int(FRAME_BYTES), "audio_rate": int(AUDIO_RATE), "fps": int(FPS),
+            "frame_bytes": int(FRAME_BYTES), "audio_rate": int(AUDIO_RATE), "fps": float(FPS),
             "vram_tiles": int(VRAM_TILES),
             # エンコード時の実効パラメータを焼き込む(pack/解析が同一値を使い二重管理を防ぐ)。
             "max_cold": int(MAX_COLD), "tank_kb": int(TANK_KB),

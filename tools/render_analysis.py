@@ -81,7 +81,7 @@ L.f_pal = ImageFont.truetype(L.FONT, 14)
 z = np.load(f"{SIM}/stats.npz", allow_pickle=True)
 S = z["stats"]
 idx = {k: i for i, k in enumerate(str(z["cols"]).split())}
-FPS = int(z["fps"]); C = int(z["cells"]); BUDGET = int(z["budget_tiles"])
+FPS = float(z["fps"]); C = int(z["cells"]); BUDGET = int(z["budget_tiles"])
 NF = len(S)
 if "audio_label" in z:
     AUDIO_STR = str(z["audio_label"])        # sim側の音声形式(13.3kHz PCM / 22.05kHz ADPCM 等)
@@ -133,7 +133,7 @@ Flbk_u = col("flbk_u") + col("mid_u") + col("far_u")
 DMA = (Raw + Buf) * 32 + C * 2                 # 毎コマVRAM転送量(パターン+ネームテーブル)
 FULL = {"Raw": Raw, "Same": Same, "Near": Near, "Coa": Coa,
         "Flbk": Flbk, "Buf": Buf, "Miss": Miss}
-WIN = 4; HALF = FPS * WIN                       # 線グラフ ±4秒
+WIN = 4; HALF = int(round(FPS * WIN))                       # 線グラフ ±4秒
 
 # ---- palettes.bin(MDワード 0000BBB0GGG0RRR0) -> RGB(使用色枠なし) ----
 pb = np.frombuffer(Path(f"{SIM}/palettes.bin").read_bytes(), ">u2").reshape(4, 16)
@@ -203,7 +203,7 @@ BUF_BYTES = np.maximum(0, TANK_DELTA) * 32            # タンクに貯めたバ
 # 無い旧simは 映像+貯蓄 で近似(音声等は含まれない)。
 _cd_used = CD_USED if CD_USED is not None else np.minimum(RAW_BYTES + BUF_BYTES, FRAME_CD)
 OVH_BYTES = np.maximum(0, _cd_used - RAW_BYTES - BUF_BYTES)   # 音声+その他ヘッダ(Bandバーの dim色)
-BAND = _cd_used * FPS // 1024                          # 有効Band(全部込み=FRAME_BYTES-パディング)
+BAND = (_cd_used * FPS // 1024).astype(np.int64)                          # 有効Band(全部込み=FRAME_BYTES-パディング)
 EFF = FB                                              # (互換)
 AVG_KBPS = int(round(float(BAND.mean())))            # 平均も有効Band基準(全部込み)
 CD1X_BPF = int(153600 / FPS)                         # CD1xのコマあたりバイト(有効転送メーターのフル)
@@ -251,7 +251,7 @@ def build_base():
     base_y = L.MAIN_FRAME[1] - 10
     hx = L.MAIN_FRAME[0] + 2
     d.text((hx, base_y), "SEGA-CD sim output", fill=L.COL_TXT, font=L.f_head, anchor="ls")
-    meta = " / ".join([MODE, RES, AUDIO_STR, "%dfps" % FPS, "avg %d KiB/sec" % AVG_KBPS])
+    meta = " / ".join([MODE, RES, AUDIO_STR, "%gfps" % round(FPS, 2), "avg %d KiB/sec" % AVG_KBPS])
     d.text((hx + L._w(L.f_head, "SEGA-CD sim output") + 12, base_y), meta,
            fill=L.COL_DIM, font=L.f_meta, anchor="ls")
     L.panel(d, L.SRC_FRAME)          # 見出しは "Source" + ソース諸元(res/fps/音声)を小フォント併記
