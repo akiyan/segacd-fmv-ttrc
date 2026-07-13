@@ -92,3 +92,6 @@ indices through the new palette.
 frame's segment. Then every cell at a boundary loads a fresh tile quantized under
 the new palette. Verify with `detect.py` (F-synced) that all boundaries show the
 `new` candidate, never garbage, and re-record to confirm on the emulator.
+
+> Status: implemented in `tools/sim.py` (`pat_seg` load-segment tags;
+> cross-segment approximate reuse is forbidden at boundaries).

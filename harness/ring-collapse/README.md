@@ -68,6 +68,12 @@ behavior was once added to the sim), not a finer occupancy metric.
 - `under=0` from the pack is necessary but NOT sufficient; it does not model
   jitter. Always confirm on hardware.
 
+> Historical note (e9): `CBRSIM_PACK_MAXCOLD` was later removed — the cold cap
+> now lives in the encoder (`CBRSIM_MAX_COLD`), with the realized ceiling
+> asserted at pack time via `tools/av_config.py` (`COLD_CAP_REALIZED`). The
+> pack's default `RING_CAP_KB` is now derived there too (420 KB ring − 40 KB
+> jitter margin = 380 KB).
+
 ## Scripts
 
 - `ring_analyze.py` — occ trajectory, frames-below-threshold, longest low run,

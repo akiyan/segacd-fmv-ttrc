@@ -109,26 +109,36 @@ is the whole per-frame pipeline:
 - Sub-CPU `expand_frame`: 562 cold pops × 16 words (PRG→Word-RAM) + interleaved
   `pump_poll` CD drain.
 - Main-CPU: Word-RAM→Main-RAM stage copy, shadow blit, VBlank-split tile DMA
-  (a full-frame wait each time `VBLANK_DMA_WORDS` is exhausted), flip.
+  (a full-frame wait each time the per-VBlank word budget `md_vbudget` is
+  exhausted), flip.
 - The two CPUs serialize at the swap handshake.
 
-Observed (GPGX, current build):
+Observed (GPGX, older player — `pump_poll` ran every bitmap byte):
 
 | cold tiles/frame | playback       |
 |------------------|----------------|
 | ≤ ~350           | OK             |
 | 562 (f108–125)   | audio 巻き戻し |
 
-### Encoder cap (recommended)
+The pump-optimized player (p5, `pump_poll` every 8 bytes) moved this ceiling
+up: on the full-screen H40 (1120-cell) stream, realized cold up to ~429/frame
+plays with zero CD slips, and the practical limit became audio-lead dips, not
+the Sub-CPU pipeline.
 
-Cap cold tiles/frame in the sim; excess cells stay stale (Miss, carried to a
-later frame). Conservative start pending ares testing: **~400 cold tiles/frame**
-(below the observed glitch threshold, above the common ~260 load). The debug
-overlay `M` (Miss) shows the deferred count in capped sections.
+### Encoder cap (current)
 
-`boot/movieplay_ip.s` `VBLANK_DMA_WORDS` = 2800. This is below the H32 GPGX
-ceiling of 2982 words/VBlank and below the H40 GPGX ceiling of 3664
-words/VBlank. Re-check against the ares `dmabench` value before raising it.
+Cap cold tiles/frame in the sim (`CBRSIM_MAX_COLD`); excess cells stay stale
+(Miss, carried to a later frame). The shipped ceiling is defined once in
+`tools/av_config.py`: the pack asserts each streaming frame's realized new-tile
+loads stay <= `COLD_CAP_REALIZED` (380 with the p5 player; per-source override
+via `CBRSIM_COLD_CAP_REALIZED`). The pack itself never re-caps
+(`CBRSIM_PACK_MAXCOLD` was removed). Capped cells show as Miss in the analysis
+overlay's category map.
+
+`boot/movieplay_ip.s` sets a per-mode VBlank word budget (`md_vbudget`):
+`VB_WORDS_H32` = 2800 and `VB_WORDS_H40` = 3400. Both are below the GPGX
+ceilings (H32 2982 words/VBlank, H40 3664 words/VBlank). Re-check against the
+ares `dmabench` value before raising them.
 
 For future mode4 player work, use the measured path above: true SMS Mode 4 for
 display, with VBlank-only Mode 5 DMA. Re-prove on ares or hardware before

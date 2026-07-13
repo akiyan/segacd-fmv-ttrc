@@ -15,27 +15,27 @@ automates: update layout -> update this file -> notify).
 +----------------------------------------------+   +-----------------------------+
 | SEGA-CD sim output  <meta>      <PL/Time/Fr> |   | Source  <res/fps/audio>     |
 | +------------------------------------------+ |   | +-------------------------+ |
-| |                                          | |   | | source frame            | |
+| |                                          | |   | | source frame (4:3)      | |
 | |   SEGA-CD OUTPUT (centered on the real   | |   | +-------------------------+ |
-| |   screen; letterboxed to the panel)      | |   +-----------------------------+
+| |   screen; letterboxed to the panel)      | |   | LEGEND (2 rows, 7 classes)  |
 | |                                          | |   | +-------------------------+ |
-| |                                          | |   | | CATEGORY MAP            | |
-| |                                          | |   | | (per-tile fill colour;  | |
+| |                                          | |   | | CATEGORY MAP (4:3)      | |
+| |                                          | |   | | (tile content + border; | |
 | |                                          | |   | |  Miss = red-filled hole)| |
 | +------------------------------------------+ |   | +-------------------------+ |
-+----------------------------------------------+   | LEGEND (2 rows, 7 classes)  |
-+----------------------------------------------+   +-----------------------------+
-| STATUS BAR                                   |   | +-------------------------+ |
-|  [Req meter]  [Band] [Tank] [Buff] [DMA]     |   | | PER-METRIC FLOW GRAPH   | |
-|  Prev/Current/Next palette strip             |   | | (+/-4s, now = centre)   | |
-|  3 stacked timelines (Req / Tank / transfer) |   | +-------------------------+ |
 +----------------------------------------------+   | CATEGORY TOTALS (whole clip)|
-                                                   +-----------------------------+
++----------------------------------------------+   | +-------------------------+ |
+| STATUS BAR                                   |   | | AUDIO WAVEFORM          | |
+|  [Req] [Cold] [Band] [Tank] [Buff] [DMA]     |   | | (+/-2s, now = centre)   | |
+|  Prev/Current/Next palette strip             |   | +-------------------------+ |
+|  3 stacked timelines (Req / Tank / transfer) |   +-----------------------------+
++----------------------------------------------+
 ```
 
 Regions (pixel rectangles in `layout_preview.py`): `MAIN_FRAME` left,
-`SRC_FRAME` / `CAT_FRAME` / `CATLEG_XY` / `GRAPH_FRAME` right column,
-`STATUS_XY` bottom-left, `PAL_XY` bottom-right.
+`SRC_FRAME` / `CATLEG_XY` / `CAT_FRAME` / `CATTOT_XY` / `WAVE_FRAME` right
+column (top to bottom), `STATUS_XY` bottom-left. The former per-metric flow
+graph (`GRAPH_FRAME`) and its bottom-right totals slot (`PAL_XY`) are gone.
 
 ## Headings
 
@@ -45,9 +45,10 @@ Regions (pixel rectangles in `layout_preview.py`): `MAIN_FRAME` left,
     pixels; `cols x rows` = tile grid (each tile 8x8).
   - `avg N KiB/sec` = average of the effective Band over the whole clip
     (see Band below).
-- **PL/Time/Frame** (top-right, small): `PL:cur/total Time:MM:SS.ss Frame:NNNNN`.
-  `PL` = current palette-segment index / highest index. `Time`, `Frame` =
-  playback position.
+- **PL/Time/Frame** (top-right, small): `PL:cur/total Time:MM:SS.ss Frame:XXXX`.
+  `PL` = current palette-segment index / highest index (zero-padded to the
+  total's digit count, min 2). `Time`, `Frame` = playback position; `Frame` is
+  **4-digit hex** (`%04X`), matching the on-hardware debug HUD's F number.
 - **Source** (top of right column): big label + a small spec line with the
   *source video* `resolution / fps / audio codec+rate+channels`
   (from `ffprobe`; bitrate intentionally omitted).
@@ -55,23 +56,36 @@ Regions (pixel rectangles in `layout_preview.py`): `MAIN_FRAME` left,
 ## Main panel (left)
 
 The reconstructed SEGA-CD output. It is centered on the *real hardware screen*
-(e.g. 256x224 for H32) and letterboxed into the panel at 4:3 - it is **not**
-stretched to fill. Low-resolution grids therefore appear at their true on-screen
-size.
+(e.g. 256x224 for H32) and letterboxed into the panel at the mode's display
+aspect (4:3 for H32/H40, ~14:9 for mode4) - it is **not** stretched to fill.
+Low-resolution grids therefore appear at their true on-screen size.
 
 ## Right column
 
-- **Source** (top): the source frame after crop, scaled into the panel.
-- **Category map** (middle): the tile grid, each 8x8 tile filled with the
-  colour of its category for this frame (see Tile Categories). A `Miss` tile is
+- **Source** (top): the source frame after crop, scaled into the panel (4:3
+  panel, same footprint as the category map).
+- **Legend** (between Source and the category map): two rows of four, seven
+  classes. Each shows the swatch and the name; the resident-reuse classes
+  (`Same/Near/Coa/Flbk`) show `unique/used` counts for the frame (how many
+  distinct resident tiles served how many cells), the others a single count.
+  Swatch styles mirror the map: `Raw` = black/white checker, `Same` = grey
+  checker (both meaning "content fill, no border"), `Miss` = red fill,
+  `Near`/`Coa` = thin frame, `Flbk`/`Buf` = thick frame.
+- **Category map** (middle): the tile grid. Each 8x8 tile shows its
+  **reconstructed content**; the category (see Tile Categories) is indicated by
+  the border: `Raw`/`Same` = no border, `Near`/`Coa` = thin 1px border,
+  `Flbk`/`Buf` = thick 3px border, in the category colours. A `Miss` tile is
   drawn as a **red-filled hole** (its content is not updated this frame).
-- **Legend** (below the category map): two rows, seven classes. Each shows the
-  swatch, the name, and `used/unique` counts for the frame where meaningful.
-- **Per-metric flow graph** (bottom): each category's per-frame count as a line,
-  scrolling. Window is +/-4 seconds with **now = centre**; older is to the left.
-  Line colours match the category swatches.
-- **Category totals** (bottom-right, `PAL_XY`): a stacked horizontal bar of the
-  whole-clip totals per category, with a compact count legend above it.
+- **Category totals** (directly below the category map, `CATTOT_XY`): a thin
+  stacked horizontal bar of the whole-clip totals per category, with a compact
+  swatch+count legend above it (totals only, no unique counts). Static for the
+  whole clip.
+- **Audio waveform** (bottom, `WAVE_FRAME`): scrolling envelope of the sim's
+  output audio (the wav muxed into the video). Window is +/-2 seconds with
+  **now = centre** (white line), scrolling left; the past (left half) is drawn
+  bright green, the future (right half) dim green, around a zero-amplitude
+  centre line. Heading (outside the frame): `Audio` + the audio spec.
+- The former **per-metric flow graph** panel was removed.
 
 ## Tile Categories (READ THIS CAREFULLY)
 
@@ -117,7 +131,7 @@ find *some* resident rather than leave a hole.
 | **Same** | checker grey | 2 (name only) | The target tile's exact pattern is **already resident** in VRAM; the cell just points to it (lossless dedup). No pattern transfer. |
 | **Near** | blue | 2 (name) | No exact match, but a resident pattern passes the **Near** thresholds; the cell points to it. Near-perfect reuse. Also covers "keep the current display" when the currently shown tile is already accurate and still within Near of the new target. |
 | **Coa**  | green | 2 (name) | Best resident passes **Coa** (a bit rougher than Near). Used for flat/low-detail tiles where a close-enough resident exists. |
-| **Flbk** | orange (thick border) | 2 (name) | **Fallback** (merged Mid+Far). Only used when the byte budget is exhausted and no Raw/Buf load is possible; the best resident passes the wide **Flbk** threshold. Visibly approximate, but "better than a Miss". This is the last resort before Miss. |
+| **Flbk** | orange (thick border) | 2 (name) | **Fallback** (merged Mid+Far). Only used when no Raw/Buf load is possible (budget/tank exhausted or the per-frame cold cap reached). Default is **improve mode**: the best resident is taken if it gets closer to the target than the current display (`CBRSIM_FLBK_IMPROVE_ONLY=0` reverts to the absolute wide **Flbk** threshold). Visibly approximate, but "better than a Miss". This is the last resort before Miss. |
 | **Buf**  | violet (thick border) | 34 (32 from tank + 2 name) | An accurate pattern load whose 32-byte pattern came from the **VBV tank** (pre-read/banked data in PRG-RAM) rather than fresh CD this frame. Same accuracy as Raw; different funding source. |
 | **Miss** | red (filled) | 0 | The tile was **not updated**; it still shows whatever was there before. A red-filled hole in the category map. |
 
@@ -128,10 +142,12 @@ find *some* resident rather than leave a hole.
 2. Else if the exact target pattern is resident -> `Same` (2 B).
 3. Else find the best resident. If it passes `Near`(tier 0) or `Coa`(tier 1) and
    the budget allows the 2 B name -> `Near` / `Coa`.
-4. Else load the exact pattern (34 B): from fresh CD -> `Raw`, or from the tank
-   -> `Buf`.
-5. Else (budget/tank exhausted) if the best resident passes `Flbk`(2)
-   -> `Flbk` (2 B fallback).
+4. Else load the exact pattern (34 B), unless the per-frame **cold cap**
+   (`COLD_CAP_REALIZED`, `av_config.py`) is already reached: from fresh CD ->
+   `Raw`, or from the tank -> `Buf`.
+5. Else (budget/tank/cold-cap exhausted) if the best resident improves on the
+   current display (default improve mode; see Flbk above) -> `Flbk`
+   (2 B fallback).
 6. Else -> `Miss`.
 
 Notes: `Same/Near/Coa/Flbk` cost only a 2-byte name-table entry (they reuse
@@ -142,15 +158,23 @@ Miss-priority so it gets an accurate reload when budget allows.
 
 ## Status bar (bottom-left)
 
-Left to right: one wide **Req** meter, then **Band**, **Tank**, **Buff**, **DMA**
-meters (each bar is as wide as its own label). Below the meters is the palette
-strip; to the right are three stacked timelines.
+Left to right: one wide **Req** meter, then **Cold**, **Band**, **Tank**,
+**Buff**, **DMA** meters (each bar is as wide as its own label). Below the
+meters is the palette strip; to the right are three stacked timelines.
 
 ### Req meter
 All categories stacked into one bar (full width = total tile count `C`), with a
 yellow vertical **budget line** marking the per-frame update budget. Labels:
 `Req:NNN` (changed tiles requested this frame), `Raw:NNN` (fresh loads),
-`Comp:NNN` (tiles satisfied by reuse = everything except fresh Raw).
+`Comp:NNN` (tiles satisfied by resident reuse = `Same+Near+Coa+Flbk`).
+
+### Cold meter
+`Cold:NNN` = this frame's **new tile loads** (`Raw + Buf`, i.e. every 32-byte
+pattern that had to be delivered, whether fresh CD or tank). The bar stacks a
+Raw-coloured and a Buf-coloured segment; full-scale = `COLD_CAP_REALIZED`
+(`av_config.py`, the drop-safe per-frame cold ceiling, default 380; raise per
+source with `CBRSIM_COLD_CAP_REALIZED`). This visualises the value the
+hardware slip investigations were fought over.
 
 ### Band meter (effective CD usage) - KiB/sec
 `Band` is the **effective** bandwidth: how much of the constant CD read was put
@@ -168,7 +192,9 @@ that could not be banked because the tank was already full. So Band sits at the
 CBR ceiling (~144 KiB/sec) almost always, dipping only when the tank is full and
 there is nothing useful to send. The value comes from the encoder's own
 `cd_used` log, so it includes bytes the renderer does not otherwise model.
-`avg N KiB/sec` in the top meta is the mean of this Band.
+`avg N KiB/sec` in the top meta is the mean of this Band. The bar's full-scale
+(like the effective-transfer timeline's) is the CD 1x per-frame byte count
+(`153600 / fps`).
 
 ### Tank meter
 `Tank:NNNNN` = current VBV tank level (in tile-equivalents). The violet bar fills
@@ -182,19 +208,22 @@ filled. Label `Buff:-NNN / +NNN / +/-000`. Full-scale = `C - per-frame Raw
 budget` (the largest plausible one-frame swing).
 
 ### DMA meter
-`DMA:NNNNN/NNNNN mode` = VRAM bytes transferred this frame / the per-frame
-theoretical VDP transfer ceiling for the screen mode and fps. Green fill; if the
-transfer exceeds the ceiling it turns orange with a red overflow tail.
+`DMA:NNNNN` = VRAM bytes transferred this frame (current value only; no max or
+mode suffix in the label). The bar is still scaled to the per-frame theoretical
+VDP transfer ceiling for the screen mode and fps. Green fill; if the transfer
+exceeds the ceiling it turns orange with a red overflow tail.
 
 ### Palette strip
-`Prev` / `Current` / `Next` palette sets (each 4 lines x 15 colours, drawn as
-square tiles). Heading per set: `Prev PL:NNN Frame:NNNNN` etc. At a segment edge
+`Prev` / `Current` / `Next` palette sets (each 4 palettes x 15 colours, drawn
+as square tiles in 2 rows of 30 = 2 palettes per row; the `Current` set gets a
+border). Heading per set: `Prev PL:NNN Frame:NNNNN` etc. At a segment edge
 (no previous or no next palette segment) that slot is **blank** (`Prev -`).
 
 ### Three stacked timelines (right of the meters, full remaining width)
 Ratio 2:1:1 top to bottom, sharing the whole clip on the x-axis with a white
 playhead:
-1. **Req heatmap** - all categories stacked per frame (same colours).
+1. **Req heatmap** - `Raw / Coa / Flbk / Buf / Miss` stacked per frame (same
+   colours; `Same` and `Near` are omitted so the interesting load shows).
 2. **Tank level** - the VBV reservoir curve (violet).
 3. **Effective transfer** - Raw (video) plus Buf (banked) per frame.
 

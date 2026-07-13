@@ -72,7 +72,7 @@ The CD never stops (75 sectors/s), so the Sub must drain the CDC continuously.
 | pump_poll frequency | **every 8 bitmap bytes** (`d7 & 7`) | sp `ef_byte` | **The p5 fix.** How often to poll during tile expansion. Old = every byte (~140x/frame, mostly empty polls). CD delivers 1 sector per ~166k cycles, so 8x is ample and frees the Sub -> higher cold ceiling. |
 | ring-full skip | occ >= 416 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
-| `FRAME_SECTORS` | 5 | pack / sp | Sectors the CD delivers per frame (= CD 1x). Routing splits each into payload / control / pad. |
+| `FRAME_SECTORS` | 5 | pack -> sp (`h_fsec`) | Sectors the CD delivers per frame (= CD 1x). Defined in pack; the player reads it from the MOVIE.DAT header at boot. Routing splits each into payload / control / pad. |
 | `HEADER_SECTORS` | 1 | sp / pack | The 1-second TTRC header block at the start of MOVIE.DAT. |
 
 ## E. VDP DMA budget (Main CPU)
@@ -93,7 +93,7 @@ The CD never stops (75 sectors/s), so the Sub must drain the CDC continuously.
 | `FRAME_BYTES` | `TARGET_RATE / FPS` (~10 KB) | sim | Fixed per-frame CBR byte budget. |
 | `SECTOR` / `PAT` / `PAT_PER_SEC` | 2048 / 32 / 64 | pack | Sector = 2 KB, one tile pattern = 32 B, so 64 tiles per sector. |
 
-## G. Encoder quality knobs (sim decisions, env-overridable)
+## G. Encoder quality knobs (sim decisions; the `CBRSIM_*` ones are env-overridable)
 
 Per-cell the sim picks: Raw (fresh CD load), Same, Near/Coa/Flbk (reuse a
 resident tile), Buf (prefetched), or Miss. These thresholds steer that choice.

@@ -8,7 +8,9 @@ shared footer used by the analysis overlay (see [`ANALYSIS.md`](ANALYSIS.md)).
 The canonical dummy-data layout is `tools/comparison_preview.py`
 (`python3 tools/comparison_preview.py` → `tmp/comparison_preview.png`). The
 real-data renderer is `tools/render_comparison.py`. Both reuse
-`tools/layout_preview.py` for the shared footer (`draw_footer`) and fonts.
+`tools/layout_preview.py` for the shared footer geometry and fonts (the preview
+via `draw_footer`, the renderer via `render_analysis.draw_status_real` +
+`layout_preview.draw_cattotals`).
 
 ## Layout map
 
@@ -20,21 +22,21 @@ real-data renderer is `tools/render_comparison.py`. Both reuse
 | +-----------------------------+ |   | +----------------------------+ |
 | |  emulator recording (4:3),  | |   | |  sim decoded output (4:3), | |
 | |  on-screen debug HUD baked  | |   | |  clean, no overlay         | |
-| |  in (top black bar)         | |   | |                            | |
+| |  in (top-left line)         | |   | |                            | |
 | | audio 1 . Emulator (default)| |   | | audio 2 . Encoder ideal    | |
 | +-----------------------------+ |   | +----------------------------+ |
 +---------------------------------+   +--------------------------------+
 +----------------------------------------------------------------------+
 | SHARED FOOTER (identical to the analysis overlay, see ANALYSIS.md)    |
-|  status bar: Req / Band / Tank / Buff / DMA + palette + 3 timelines   |
+|  status bar: Req / Cold / Band / Tank / Buff / DMA + palette + 3 TLs  |
 |  category totals (whole clip)                                         |
 +----------------------------------------------------------------------+
 ```
 
 Regions live in `tools/comparison_preview.py`: `CMP_L` / `CMP_R` are the two
 4:3 video panels (each `PANEL_W`x`PANEL_H`, side by side); `TITLE_BASE` is the
-top title/spec baseline; the footer uses the same `STATUS_XY` / `PAL_XY` as the
-analysis overlay.
+top title/spec baseline; the footer uses the same `STATUS_XY` / `CATTOT_XY` as
+the analysis overlay.
 
 ## Top title
 
@@ -46,9 +48,10 @@ analysis overlay.
 ## Panels
 
 - **Real output** (left): a recording of the emulator/hardware playing the built
-  disc, shown 4:3. The player's on-screen debug HUD (`FXXXX RXXXX ...`, the top
-  black bar) is baked into the recording; the leading `F` field is the movie
-  frame number in hex. Small `<emu name/ver>` next to the label.
+  disc, shown 4:3. The player's on-screen debug HUD (one line at the top-left:
+  `FXXXX PXXXX SXXXX DXXXX RXXXX LXXXX`) is baked into the recording; the
+  leading `F` field is the movie frame number in hex. Small `<emu name/ver>`
+  next to the label.
 - **Encoder ideal output** (right): the offline encoder's decoded frames
   (`CBRSIM_OUT/preview`, no overlay), placed on the same Sega CD screen so both
   panels frame the picture identically.
@@ -65,20 +68,23 @@ in its debug HUD:
 - `tools/read_frameno.py` reads the leading `F<hex>` field from the emulator
   frame by template-matching the 8x8 debug font (`gen_debugfont.py` glyphs) with
   normalized cross-correlation.
-- `tools/find_comparison_sync.py` finds the real recording frame where the HUD
-  shows `F0000`. The renderer uses that as the exact anchor
-  (`CMP_F0_REAL_FRAME` can override it) and maps `ideal_frame = k - F0000_k`,
-  with confident OCR reads used to follow sampled frames that are held or skipped
-  by the 60fps-to-15fps extraction phase.
+- The renderer auto-detects the real recording frame where the HUD shows
+  `F0000` and uses that as the exact anchor (`CMP_F0_REAL_FRAME` overrides it;
+  `tools/find_comparison_sync.py` reports the same anchor standalone). It maps
+  `ideal_frame = k - F0000_k`; confident OCR reads within 2 frames of that
+  prediction follow sampled frames that are held or skipped by the
+  60fps-to-15fps extraction phase, and the sequence is clamped monotonic
+  non-decreasing so the ideal panel never jumps backward.
 - The footer for output frame `k` is drawn from sim frame `F`, so the picture,
   the category map data, and the meters are all the same movie frame.
 
 ## Shared footer
 
-Identical to the analysis overlay's bottom strip, drawn by
-`layout_preview.draw_footer` (status bar `draw_status_real` + category totals
-`draw_cattotals`) with the same per-frame sim data. See [`ANALYSIS.md`](ANALYSIS.md) for every
-meter, timeline, and the category totals bar.
+Identical to the analysis overlay's bottom strip, drawn with the same per-frame
+sim data: the dummy preview via `layout_preview.draw_footer`, the real renderer
+via `render_analysis.draw_status_real` (status bar) plus
+`layout_preview.draw_cattotals` (category totals). See [`ANALYSIS.md`](ANALYSIS.md) for every
+meter, the palette strip, the timelines, and the category totals bar.
 
 ## Audio
 
@@ -178,8 +184,9 @@ session's runs (see [AGENTS.md](AGENTS.md) "Shared-Machine Exclusion").
   Once that exists, the debug HUD can remain off by default and streams can be
   packed without debug blocks by default.
 - **Panel geometry (deferred):** the emulator's display mode / overscan geometry
-  differs from the sim, so placing the 256x144 ideal content onto the Sega CD
-  screen to match the recording exactly is not yet a clean spec-only calculation.
+  differs from the sim, so placing the ideal content (e.g. 256x144) onto the
+  Sega CD screen to match the recording exactly is not yet a clean spec-only
+  calculation.
   The default is the geometric center (`(SCREEN_H - CONTENT_H) / 2`); the measured
   emulator placement is a few pixels higher (`CMP_PADY` overrides). To be
   finalized by folding the real display geometry (player `plane_row`, HUD rows,
