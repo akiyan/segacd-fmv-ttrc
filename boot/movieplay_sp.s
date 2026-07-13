@@ -57,8 +57,8 @@
 /* --- Word-RAM 出力(MDが読む) ---
    フル画面H40(最大1120セル)対応: loads は最大 1120*32B+ランヘッダ ≈ 36.5KB。
    O_LOADS を 0x84..0x9800(約38.8KB) に拡大(MD側と一致必須)。upds=1120*4B。 */
-.equ O_PALW,   SUB_BANK_1M+0x0000
-.equ O_CRAM,   SUB_BANK_1M+0x0002
+.equ O_PALW,   SUB_BANK_1M+0x0000   /* v3: 区間番号+1(0=切替なし)。MDはMain-RAMのPALTAB表を引く */
+.equ O_CRAM,   SUB_BANK_1M+0x0002   /* 予約(v3でin-stream CRAM廃止。offsetは互換のため空けたまま) */
 .equ O_NLOAD,  SUB_BANK_1M+0x0082
 .equ O_LOADS,  SUB_BANK_1M+0x0084
 .equ O_NUPD,   SUB_BANK_1M+0x9800
@@ -70,6 +70,11 @@
 .equ O_RESYNC, SUB_BANK_1M+0xAF20   /* 計測: 音声re-sync回数(リード下限/上限逸脱で書込ジャンプ=乱れの元) */
 .equ O_LEAD,   SUB_BANK_1M+0xAF22   /* 計測: 現コマの音声リード(write-play, バイト)。SYNC_MINに近づく=枯渇 */
 .equ O_HDR,    SUB_BANK_1M+0xAF80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
+.equ PALTAB_OFF, 0xB000             /* PALTAB(全区間パレット)のWord-RAMステージ位置。boot時に
+                                       frame0と同じバンクへ置き、MDがMain-RAM表へ一度だけコピー。
+                                       0xB000..0x10000(CTRL_SCR手前)=20KB=160区間が物理上限。
+                                       ip.s の PALTAB_OFF と一致必須(check_player_ring.pyが検証) */
+.equ O_PALTAB, SUB_BANK_1M+PALTAB_OFF
 
 /* --- RF5C164 PCM (13.3kHz) --- */
 .equ AUDIO_BYTES, 887
@@ -206,7 +211,13 @@ bad_magic:
 	move.w	d0, h_f0_ctrl_sec
 	move.l	44(a0), d0			/* v2: frame0 pattern sectors @offset44 */
 	move.w	d0, h_f0_pat_sec
-	/* stream_total(v2) = 1 + f0_ctrl + f0_pat + routing + prebuf + (frames-1)*fsec
+	move.l	48(a0), d0			/* v3: PALTAB sectors @offset48 (v2ディスクは0) */
+	cmpi.w	#10, d0				/* 壊れたヘッダ対策: ステージ上限20KB=10secにクランプ */
+	bls	1f
+	moveq	#10, d0
+1:
+	move.w	d0, h_paltab_sec
+	/* stream_total(v3) = 1 + paltab + f0_ctrl + f0_pat + routing + prebuf + (frames-1)*fsec
 	   (frame0 はヘッダ側=FRAMESに無いので frames-1) */
 	move.w	h_frames, d0
 	subq.w	#1, d0
@@ -220,6 +231,8 @@ bad_magic:
 	add.l	d1, d0
 	move.w	h_f0_pat_sec, d1
 	add.l	d1, d0
+	move.w	h_paltab_sec, d1
+	add.l	d1, d0
 	addq.l	#HEADER_SECTORS, d0
 	move.l	d0, h_stream_total
 	/* MDへヘッダ写しを渡す(frame0と同じバンクに書く=swap後にMDが読める) */
@@ -228,6 +241,14 @@ bad_magic:
 1:
 	move.w	(a0)+, (a1)+
 	dbra	d1, 1b
+	/* PALTAB(ヘッダ直後, paltab_sec) → Word-RAM O_PALTAB へ(frame0と同じバンク)。
+	   MDはSTAT_READY後に一度だけMain-RAM表へコピーする(以降palバイトは表参照のみ)。 */
+	moveq	#0, d0
+	move.w	h_paltab_sec, d0
+	beq	1f
+	lea	(O_PALTAB).l, a0
+	bsr	drain_lin_staged		/* CDC_TRN直行を避けSTAGE経由(スリップ防止) */
+1:
 	/* === v2: frame0 は DAT冒頭の専用ヘッダブロック(control+patterns)。boot中に別ロード
 	   してVRAMへ展開・表示する。ストリーミングのリングは一切経由しない(=boot時リングが
 	   RING_CAP以下=back-pressure非接触)。frame0の大バーストによる後続枯渇(崩壊)を根絶。 */
@@ -906,8 +927,9 @@ fc_done:
 	rts
 
 /* CTRL_SCR(線形 control block) を Word-RAM へ展開。cold は ring pop。
-   block = >H total_len >H n_upd >B pal >B dbg [22B DEBUG if dbg] [128 CRAM if pal]
+   block = >H total_len >H frame_seq >H n_upd >B pal >B dbg [22B DEBUG if dbg]
            72 bitmap n_upd*(entry) 887 audio [even pad]   (MOVIE.md 準拠)
+   v3: pal = 区間番号+1(0=切替なし)。CRAM本体はboot時にMain-RAM表へ渡し済み(PALTAB)。
    loads はラン形式: [slot_start.w count.w pattern(count*32B)] の列。エンコーダが
    フレーム内coldを連番スロットに割当てるので、MDは1ランを1回の大DMAで転送できる。 */
 expand_frame:
@@ -932,15 +954,8 @@ ef_nodbg:
 	dbra	d1, 1b
 ef_pal:
 	move.w	d0, d4
-	lsr.w	#8, d4				/* pal_write */
+	lsr.w	#8, d4				/* pal = 区間番号+1(0=切替なし) — MDはMain-RAM表を引く */
 	move.w	d4, (O_PALW).l
-	tst.w	d4
-	beq	ef_bm
-	lea	(O_CRAM).l, a1
-	move.w	#64-1, d1
-1:
-	move.w	(a0)+, (a1)+
-	dbra	d1, 1b
 ef_bm:
 .equ ISO_DUMP_OFF, 0
 	movea.l	a0, a3				/* bitmap(ceil(cells/8)B) */
@@ -1337,6 +1352,8 @@ h_prebuf_pat:
 h_f0_ctrl_sec:
 	.space 2
 h_f0_pat_sec:
+	.space 2
+h_paltab_sec:
 	.space 2
 f0_pat_addr:
 	.space 4

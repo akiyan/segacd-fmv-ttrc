@@ -192,7 +192,9 @@ NEAR_KEEP_ACCURATE_ONLY = os.environ.get("CBRSIM_NEAR_ACCURATE_ONLY", "1") != "0
 DITHER_ON = os.environ.get("CBRSIM_DITHER", "1") != "0"   # 既定ON。OFFは CBRSIM_DITHER=0（例外時のみ）
 # 深い暗転で区切り、暗転の瞬間に区間別60色パレットへ差し替える(CRAM総入替)。
 SEGPAL_ON = os.environ.get("CBRSIM_SEGPAL", "1") != "0"   # 既定ON。OFFは CBRSIM_SEGPAL=0（例外時のみ）
-PAL_WRITE_BYTES = 128           # パレット差替時のCRAM書換(60色, 暗転フレームで消費)
+PAL_WRITE_BYTES = 0             # CRAM pre-load(PALTAB): 全区間パレットはヘッダ直後のPALTAB領域で
+                                # 一括配送しMain-RAM表から引くので、切替フレームの予算控除は無し
+                                # (ストリームには1Bの区間参照だけ。旧: in-stream 128B/切替)
 _BAYER8 = np.array([
     [0, 32, 8, 40, 2, 34, 10, 42], [48, 16, 56, 24, 50, 18, 58, 26],
     [12, 44, 4, 36, 14, 46, 6, 38], [60, 28, 52, 20, 62, 30, 54, 22],

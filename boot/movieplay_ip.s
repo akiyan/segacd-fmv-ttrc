@@ -45,6 +45,12 @@
    (ストリーム側は CBRSIM_PACK_DEBUG=1 でデバッグ欄ありを生成) */
 .equ DBG_COL, 20			/* 右下オーバーレイの左端セル列 */
 .equ DBG_STAGE, 0x00FFA000		/* フォント色替えのステージ(Main-RAM) */
+/* CRAM pre-load: 全区間パレット表。boot時にWord-RAM(PALTAB_OFF, frame0バンク)から一度だけ
+   コピーし、以降の区間切替はO_PALWの区間番号+1でこの表を引く(ストリーム到着に依存しない)。
+   容量はav_config.PALTAB_MAX_SEGと一致必須(check_player_ring.pyがビルド時検証)。 */
+.equ PALTAB_OFF, 0xB000			/* Word-RAM内ステージ位置(sp.sと一致必須) */
+.equ PALTAB_MAX_SEG, 64			/* Main-RAM表の容量(区間数)。64*128B=8KB */
+.equ PALTAB_RAM, 0x00FFB000		/* 表本体 0xFFB000..0xFFD000(スタックまで11KB余裕) */
 /* 1VBLANKで安全に転送できる語数はモード別(md_vbudget)。実測(dmabench)に基づき保守的に。
    これを超える転送はランをまたいで次VBLANKへ分割=active表示中へのはみ出し防止(ares対策)。 */
 .equ VB_WORDS_H32, 2800		/* H32 V28 NTSC */
@@ -128,6 +134,25 @@ ip_entry:
 	sub.w	md_trows, d2			/* row0 = (screen_rows-trows)/2 */
 	lsr.w	#1, d2
 	move.w	d2, md_row0
+	/* CRAM pre-load: PALTAB(全区間パレット)をWord-RAM(frame0バンク)からMain-RAM表へ
+	   一度だけコピー。n_seg=O_HDR+20。以降の区間切替はこの表を引くだけ(bf_flip)。 */
+	move.w	20(a0), d1			/* n_seg (a0=O_HDR) */
+	cmp.w	#PALTAB_MAX_SEG, d1		/* 壊れたヘッダ対策: 表容量にクランプ */
+	bls	1f
+	move.w	#PALTAB_MAX_SEG, d1
+1:
+	move.w	d1, md_nseg
+	lsl.w	#6, d1				/* n_seg*64語(=128B) */
+	beq	2f
+	subq.w	#1, d1
+	lea	(PROBE_BANK+PALTAB_OFF).l, a1
+	lea	PALTAB_RAM, a2
+1:
+	move.w	(a1)+, (a2)+
+	dbra	d1, 1b
+2:
+	lea	palettes, a0			/* pal_write前のHUD色替え用の安全な初期値 */
+	move.l	a0, cur_pal_src
 	/* デバッグフォントをフォントVRAM位置へCPUロード(pal_write時にB案で色替え) */
 .ifdef DEBUG
 	move.l	md_font_addr, d0
@@ -299,18 +324,26 @@ bf_flip:
 	/* パレット区間切替: CRAM総入替(64語≈0.1ms)→flip を新しいvblank頭で連続実行=
 	   同一VBLANK内で原子的。フォント色替え(CPU再着色~1.7ms+DMA)はvblankを
 	   食い潰してflipをactiveへ押し出す(=新パレット×旧フレームが上部に露出する
-	   再発バグ)ため、**flip後**に回し、そのDMAは次vblankで行う。 */
-	move.w	(PROBE_BANK).l, d0		/* pal_write @ +0 */
+	   再発バグ)ため、**flip後**に回し、そのDMAは次vblankで行う。
+	   v3: pal = 区間番号+1。CRAM本体はboot時に積んだMain-RAMのPALTAB表から引く
+	   (ストリーム到着タイミング非依存=スリップ回復でも色が壊れない)。 */
+	move.w	(PROBE_BANK).l, d0		/* pal(=区間番号+1) @ +0 */
 	beq	bf_doflip
+	cmp.w	md_nseg, d0			/* 壊れた参照対策: 表の範囲外は切替しない */
+	bhi	bf_doflip
+	subq.w	#1, d0				/* 区間番号 */
+	move.w	d0, dbg_seg			/* 絶対値で更新(増分でなく自己修復) */
+	lsl.w	#7, d0				/* *128B */
+	lea	PALTAB_RAM, a0
+	adda.w	d0, a0				/* src = 表[区間] (最大63*128=8064<32767でadda.w可) */
+	move.l	a0, cur_pal_src			/* HUD色替え(dbg_setbright)も同じ源を読む */
 	bsr	wait_vb_start			/* 頭から使える新しいvblank(CRAM+flipが確実に収まる) */
 	move.l	#0xC0000000, (VDP_CTRL).l	/* CRAM addr 0 */
-	lea	(PROBE_BANK+2), a0
 	move.w	#64-1, d1
 1:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
 	bsr	do_flip				/* CRAM直後・同vblank内にflip */
-	addq.w	#1, dbg_seg			/* 区間++ (pal_write=区間境界) */
 .ifdef DEBUG
 	bsr	dbg_setbright			/* フォント色替え(CPU=active可, DMAは内部で次vblank) */
 .endif
@@ -506,11 +539,12 @@ wait_vblank:
 	move.w	(sp)+, d1
 	rts
 
-/* B案: CRAM(PROBE_BANK+2, 64語)でRGB合計最大の色を探し、そのpalette行を dbg_palattr に、
-   その色index(B)へフォントの画素(index1)を塗り替えて予約VRAMへDMA。pal_write時に呼ぶ(vblank内)。 */
+/* B案: 現区間CRAM(cur_pal_src, 64語=Main-RAMのPALTAB表)でRGB合計最大の色を探し、その
+   palette行を dbg_palattr に、その色index(B)へフォントの画素(index1)を塗り替えて予約VRAMへ
+   DMA。pal_write時に呼ぶ(vblank内)。 */
 dbg_setbright:
 	movem.l	d0-d7/a0-a3, -(sp)
-	lea	(PROBE_BANK+2).l, a0
+	movea.l	cur_pal_src, a0
 	moveq	#0, d3				/* best index */
 	moveq	#-1, d4				/* best sum */
 	moveq	#0, d2				/* i */
@@ -689,3 +723,7 @@ dbg_seg:
 	.space 2
 dbg_palattr:
 	.space 2
+md_nseg:
+	.space 2				/* PALTAB区間数(表コピー時にクランプ済み) */
+cur_pal_src:
+	.space 4				/* 現区間パレットのMain-RAM位置(HUD色替えが読む) */

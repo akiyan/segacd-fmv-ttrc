@@ -33,6 +33,21 @@ models the same usable buffer so a schedule it calls feasible actually is.
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | prebuffer | fills ring to `RING_CAP` | pack | Boot-time burst that fills the ring before frame 1 so bursts are pre-buffered. |
 
+## A2. CRAM pre-load (PALTAB) — palette table, off the stream
+
+All segment palettes are shipped once in a **PALTAB** region right after the
+header (see [`MOVIE.md`](MOVIE.md)) and copied at boot into a Main-RAM table. The
+per-frame stream then carries only a 1-byte segment reference (`pal = seg + 1`,
+0 = no switch) instead of a 128-byte in-stream CRAM payload. So palettes no
+longer depend on stream-delivery timing (a CD slip or re-seek can't corrupt a
+segment's colours), and the palette-switch frame's byte budget is freed.
+
+| Name | Value | Where | Meaning |
+|---|---|---|---|
+| `PALTAB_MAX_SEG` | 64 | cfg | Palette-table capacity (segments). Main-RAM table = `PALTAB_MAX_SEG * 128 B` (8 KB at `PALTAB_RAM` 0xFFB000). Build-asserted equal to the player's `.equ PALTAB_MAX_SEG`. |
+| `PALTAB_OFF` | 0xB000 | sp / ip | Word-RAM staging offset for the table at boot (must agree between the two CPUs; build-checked). Staging room caps the hard limit at 160 segments; the 1-byte `pal` ref caps it at 255. |
+| PALTAB sectors | `ceil(n_seg * 128 / 2048)` | pack | Region size; 16 segments per sector (op/ed both fit in 1). |
+
 ## B. Cold cap (quality vs. sector slip) — the main quality lever
 
 "Cold" = fresh 32-byte tile patterns loaded from CD this frame (vs. reuse of a

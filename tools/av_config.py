@@ -41,6 +41,24 @@ BACKPRESSURE_KB = RING_SIZE_KB - 4
 assert RING_CAP_KB <= BACKPRESSURE_KB, (
     f"RING_CAP_KB={RING_CAP_KB} must be <= back-pressure {BACKPRESSURE_KB}")
 
+# --- CRAM pre-load table (PALTAB) capacity ---
+# All segment palettes ship once in a PALTAB region right after the header and
+# are copied at boot into a Main-RAM table (player `.equ PALTAB_MAX_SEG` in
+# boot/movieplay_ip.s, asserted equal at build time by
+# tools/check_player_ring.py). The per-frame stream then carries only a 1-byte
+# segment reference (pal = seg+1, 0 = no switch) instead of a 128-byte CRAM
+# payload, so palettes are independent of stream timing (slip/recovery safe)
+# and the switch frame's budget is freed.
+# Capacity = Main-RAM table size = PALTAB_MAX_SEG * 128 bytes (64 -> 8 KB at
+# PALTAB_RAM 0xFFB000..0xFFD000). Raising it needs only this constant and the
+# player equ (build-checked), within these hard limits:
+#   * Word-RAM staging (O_PALTAB 0xB000..0x10000 = 20 KB) -> 160 segments max
+#   * pal byte = seg+1 in one byte                        -> 255 segments max
+PALTAB_MAX_SEG = 64
+
+assert PALTAB_MAX_SEG <= 160, "PALTAB staging (Word-RAM O_PALTAB) holds 160 segments max"
+assert PALTAB_MAX_SEG <= 255, "pal byte = seg+1 addresses at most 255 segments"
+
 # --- Clean-playback realized per-frame cold ceiling ---
 # The pack ASSERTS each streaming frame's ACTUAL new-tile loads stay <= this, so a
 # too-high sim cap fails loudly here instead of silently shipping a disc that glitches.

@@ -11,10 +11,12 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト: Header(1sec) + routing(2B/frame: n_pay_sec,n_ctrl_sec) + prebuffer(payload先頭Bpat)
-              + frames(各5sec = [n_pay_sec payload][n_ctrl_sec control][pad])
-control block: >H total_len >H n_upd >B pal >B dbg [DEBUG if dbg] [128 CRAM if pal]
+TTRCレイアウト(v3): Header(1sec) + PALTAB(全区間パレット n_seg×128B, boot時Main-RAM表へ)
+              + frame0(control+patterns) + routing(2B/frame: n_pay_sec,n_ctrl_sec)
+              + prebuffer(payload先頭Bpat) + frames(各5sec = [payload][control][pad])
+control block: >H total_len >H frame_seq >H n_upd >B pal >B dbg [DEBUG if dbg]
                ceil(cells/8) bitmap n_upd*(>H entry) 887 audio [pad偶数]
+  pal = 区間番号+1(0=切替なし)。実機はMain-RAMのPALTAB表を引く(in-stream CRAM廃止)。
   dbg=1 のとき諸元ヘッダ直後に固定長DEBUGブロック(前方固定=新プレイヤーは固定offsetで一発読み):
   7×>H カテゴリ数[raw,same,near,coa,flbk,buf,miss] + 4×>H 予約 = 22B(偶数)。
   既定OFF(CBRSIM_PACK_DEBUG=1 で有効=デバッグ時だけ載せる)。
@@ -270,6 +272,16 @@ def build_control(log, per, n_upd, pal_w, audio_path):
                 s = 0x7F
             sm[j] = s if s >= 0 else (0x80 | min(-s, 0x7E))   # 0xFF(ストップ印)を避ける
         aud = bytes(sm)
+    # CRAM pre-load(PALTAB): パレット本体はヘッダ直後のPALTAB領域で一括配送し、実機は
+    # boot時にMain-RAM表へコピー済み。ストリームのpalバイトは「区間番号+1」(0=切替なし)の
+    # 参照だけにし、in-streamの128B CRAM payloadは廃止(切替コマの予算が空く+到着タイミング
+    # 非依存=スリップ回復に強い)。区間数は av_config.PALTAB_MAX_SEG が上限(実機表の容量)。
+    n_seg = len(seg_cram)
+    cap_seg = min(int(av_config.PALTAB_MAX_SEG), 255)
+    if n_seg > cap_seg:
+        raise SystemExit(
+            f"palette segments {n_seg} > PALTAB capacity {cap_seg} "
+            f"(av_config.PALTAB_MAX_SEG — raise it and the player equ together)")
     blocks = []
     for i in range(len(per)):
         cells, entries, colds = per[i]
@@ -278,11 +290,10 @@ def build_control(log, per, n_upd, pal_w, audio_path):
         # 照合し、ズレたら desync 検知(CDCセクタ落ち等)して復帰できる。total_len に含む。
         body += struct.pack(">H", i & 0xFFFF)
         body += struct.pack(">H", int(n_upd[i]))
-        body += struct.pack(">BB", int(pal_w[i]), 1 if dbg_on else 0)
+        pal_ref = (int(frame_seg[i]) + 1) if pal_w[i] else 0
+        body += struct.pack(">BB", pal_ref, 1 if dbg_on else 0)
         if dbg_on:
             body += debug_block(cats_list[i])       # 固定長DEBUGブロック(Miss含む7カテゴリ+予約)
-        if pal_w[i]:
-            body += seg_cram[int(frame_seg[i])]
         body += build_bitmap(cells)
         for e, cold in zip(entries, colds):
             body += struct.pack(">H", (0x8000 if cold else 0) | e)
@@ -379,7 +390,14 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
     if sample_dir:
         sample_dir = Path(sample_dir); sample_dir.mkdir(parents=True, exist_ok=True)
     samples = set(range(0, len(per), max(1, len(per) // 6)))
-    ring = deque(Plist[:B]); pc = B; cc = 0
+    # v2 frame0ヘッダ: frame0のパターンはストリーミングのリングではなくヘッダのF0PATブロック
+    # から供給される(実機の boot ロード)。よって decode_verify も frame0 は別deque(f0_ring)から
+    # popし、リングは prebuffer(Plist[nl0:nl0+B])で種蒔く。ストリーム payload カーソルは nl0+B から。
+    # (これを分けないと frame0 のパターンをリングから食い、末尾で nl0 個ぶん枯渇して見える。)
+    f0h = bool(sc.get("f0_header", False))
+    nl0 = int(sc.get("f0_cold", 0)) if f0h else 0
+    f0_ring = deque(Plist[:nl0])
+    ring = deque(Plist[nl0:nl0 + B]); pc = nl0 + B; cc = 0
     tile = [None] * (POOL + BASE + 2)
     nt_slot = np.zeros(C_CELLS, np.int64); nt_pal = np.zeros(C_CELLS, np.int64)
     diffs = []; ring_peak = len(ring); bad = 0
@@ -389,6 +407,7 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
             ring.append(Plist[k])
         pc += add
         ring_peak = max(ring_peak, len(ring))
+        src = f0_ring if (f0h and i == 0) else ring   # frame0はヘッダのf0patから, 以降はリング
         blk = ctrl[cc:cc + int(blk_len[i])]; cc += int(blk_len[i])
         p = 2                                         # skip total_len
         p += 2                                        # skip frame_seq(同期マーカー)
@@ -396,9 +415,12 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
         palw = blk[p]; dbg = blk[p + 1]; p += 2
         if dbg:
             p += DBG_LEN                              # skip debug block
-        if palw:
-            p += 128
-        bm = blk[p:p + 72]; p += 72
+        # v3: palw = 区間番号+1 の参照のみ(in-stream CRAMは無い)。PALTAB表と一致するか検証。
+        if palw and (palw - 1) != int(frame_seg[i]):
+            print(f"  !! palref mismatch frame {i}: pal={palw - 1} != seg={int(frame_seg[i])}")
+            bad += 1
+        bmbytes = (C_CELLS + 7) // 8                   # bitmap = ceil(cells/8)(H32=72, H40full=140)
+        bm = blk[p:p + bmbytes]; p += bmbytes
         cells = [c for c in range(C_CELLS) if bm[c >> 3] & (1 << (c & 7))]
         for c in cells:
             e = struct.unpack(">H", blk[p:p + 2])[0]; p += 2
@@ -406,10 +428,10 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
             nt_pal[c] = (ent >> 13) & 3
             nt_slot[c] = (ent & 0x07FF) - BASE
             if cold:
-                if not ring:
+                if not src:
                     bad += 1
                 else:
-                    tile[int(nt_slot[c]) + BASE] = ring.popleft()
+                    tile[int(nt_slot[c]) + BASE] = src.popleft()
         need_img = (cmp is not None) or (sample_dir is not None and i in samples)
         if not need_img:
             continue
@@ -423,13 +445,14 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
             a = np.frombuffer(pat, np.uint8); idx = np.zeros(64, np.uint8)
             idx[0::2] = a >> 4; idx[1::2] = a & 0xF
             img[c] = sim.rgb333_to_rgb888(full16[nt_pal[c], idx].reshape(8, 8, 3))
-        fr = img.reshape(TROWS, TCOLS, TILE, TILE, 3).transpose(0, 2, 1, 3, 4).reshape(144, 256, 3)
+        fr = img.reshape(TROWS, TCOLS, TILE, TILE, 3).transpose(0, 2, 1, 3, 4).reshape(
+            TROWS * TILE, TCOLS * TILE, 3)
         if sample_dir is not None and i in samples:
             Image.fromarray(fr, "RGB").save(sample_dir / f"decoded_{i:05d}.png")
         if cmp is not None:
             ref_p = cmp / f"{i:05d}.png"
             if ref_p.exists():
-                ref = np.asarray(Image.open(ref_p).convert("RGB"))[:144, :256]
+                ref = np.asarray(Image.open(ref_p).convert("RGB"))[:TROWS * TILE, :TCOLS * TILE]
                 diffs.append((i, int(np.abs(fr.astype(np.int32) - ref.astype(np.int32)).max())))
         if (i + 1) % 400 == 0:
             print(f"  decode {i+1}/{len(per)}", flush=True)
@@ -444,11 +467,13 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
 
 def write_stream(path, log, per, blocks, Plist, sc, POOL):
     """TTRC MOVIE.DAT を書き出す。
-    F0_HEADER(既定)レイアウト(VERSION 2):
-      Header(1sec) | FRAME0(control+patterns) | ROUTING(0..N-1,[0]=0,0)
-                   | PREBUF1(frame1用RING_CAP) | FRAMES(1..N-1)
+    F0_HEADER(既定)レイアウト(VERSION 3):
+      Header(1sec) | PALTAB(paltab_sec) | FRAME0(control+patterns)
+                   | ROUTING(0..N-1,[0]=0,0) | PREBUF1(frame1用RING_CAP) | FRAMES(1..N-1)
     frame0 はストリーミングのリングを経由せず boot 中に VRAM 直ロードするので、リングは
-    常に RING_CAP 以下=back-pressure非接触。frame1以降が満タンリングで始まる。"""
+    常に RING_CAP 以下=back-pressure非接触。frame1以降が満タンリングで始まる。
+    PALTAB = 全区間パレット(n_seg×128B, セクタ整列)。実機はboot時にWord-RAM経由で
+    Main-RAM表へコピーし、以降のpalバイト(区間番号+1)で表を引く(in-stream CRAM廃止)。"""
     n_pay_sec = sc["n_pay_sec"]; n_ctrl_sec = sc["n_ctrl_sec"]
     Bpat = int(sc["prebuf_pat"])
     frame_seg = np.asarray(log["frame_seg"], np.int64)
@@ -481,13 +506,17 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     ring_peak = int(sc["ring_peak"])
     _mode = {"H32": 0, "H40": 1, "mode4": 2}.get(
         os.environ.get("CBRSIM_MODE", "").strip(), 1 if TCOLS == 40 else 0)
-    _ver = 2 if f0_header else VERSION
+    # PALTAB: 全区間パレットをヘッダ直後に一括配置(セクタ整列)。boot時にMain-RAM表へ。
+    paltab = b"".join(pals_to_bytes_128(p) for p in log["seg_pals"])
+    paltab_sec = -(-len(paltab) // SECTOR)
+    _ver = 3 if f0_header else VERSION
     header = struct.pack(">4sHHHHHHHHH", MAGIC, _ver, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
     header += bytes([_mode])                          # offset 38: display mode
     header += b"\0"                                   # offset 39: pad
     header += struct.pack(">LL", f0_ctrl_sec, f0_pat_sec)  # offset 40,44: frame0ブロック
+    header += struct.pack(">L", paltab_sec)          # offset 48: PALTABセクタ数(v3)
     header += b"\0" * (64 - len(header)) + seg0
     header += b"\0" * (SECTOR - len(header))
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
@@ -495,6 +524,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     pc = Bpat * PAT; cc = 0
     with Path(path).open("wb") as f:
         f.write(header)
+        f.write(paltab.ljust(paltab_sec * SECTOR, b"\0"))  # PALTAB(v3)
         if f0_header:
             f.write(frame0_blk)                       # FRAME0(control+patterns)
         f.write(bytes(routing).ljust(routing_sec * SECTOR, b"\0"))
@@ -509,12 +539,13 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
             fr = fr.ljust(FRAME_SECTORS * SECTOR, b"\0")
             f.write(fr)
     nfr_stream = (nfr - 1) if f0_header else nfr
-    total = 1 + f0_ctrl_sec + f0_pat_sec + routing_sec + prebuf_sec + nfr_stream * FRAME_SECTORS
-    print(f"wrote {path}  {total}sec (frame0 {f0_ctrl_sec}+{f0_pat_sec} routing {routing_sec} "
-          f"prebuf {prebuf_sec}) ring_peak {ring_peak*PAT/1024:.0f}KB")
-    print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS} F0_CTRL_SEC={f0_ctrl_sec} "
-          f"F0_PAT_SEC={f0_pat_sec} ROUTING_SEC={routing_sec} PREBUF_SEC={prebuf_sec} "
-          f"PREBUF_PAT={Bpat} RING_PEAK_PAT={ring_peak}")
+    total = (1 + paltab_sec + f0_ctrl_sec + f0_pat_sec + routing_sec + prebuf_sec
+             + nfr_stream * FRAME_SECTORS)
+    print(f"wrote {path}  {total}sec (paltab {paltab_sec} frame0 {f0_ctrl_sec}+{f0_pat_sec} "
+          f"routing {routing_sec} prebuf {prebuf_sec}) ring_peak {ring_peak*PAT/1024:.0f}KB")
+    print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS} PALTAB_SEC={paltab_sec} "
+          f"F0_CTRL_SEC={f0_ctrl_sec} F0_PAT_SEC={f0_pat_sec} ROUTING_SEC={routing_sec} "
+          f"PREBUF_SEC={prebuf_sec} PREBUF_PAT={Bpat} RING_PEAK_PAT={ring_peak}")
 
 
 def main():

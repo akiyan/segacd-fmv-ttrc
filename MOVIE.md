@@ -13,15 +13,17 @@ header.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 2               (2 = frame-0-in-header layout, the default and the
-                                  only layout the current player supports; 1 = the
-                                  legacy layout without the FRAME0 block, written
-                                  only with CBRSIM_F0_HEADER=0)
+VERSION        = 3               (bump when the header or a block layout changes)
 FRAME_SECTORS  = 5               (each frame occupies exactly 5 sectors)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = 887             (PCM bytes per frame; 13.3 kHz / 15 fps)
 BASE           = 1               (POOL_TILE_BASE: VRAM tile index = BASE + slot)
 ```
+
+Version history: **v2** moved frame 0 out of the frame stream into a dedicated
+block right after the header (loaded during boot, bypassing the streaming
+ring). **v3** added the **PALTAB** (all segment palettes pre-loaded at boot
+into a Main-RAM table) and dropped the per-frame in-stream CRAM payload.
 
 ## File layout
 
@@ -29,28 +31,24 @@ BASE           = 1               (POOL_TILE_BASE: VRAM tile index = BASE + slot)
 +--------------------------------------------------+  sector 0
 | HEADER (1 sector, zero-padded)                   |
 +--------------------------------------------------+  sector 1
-| FRAME0 (f0_ctrl_sec + f0_pat_sec sectors)        |  frame 0 control + patterns
+| PALTAB (paltab_sec sectors)                      |  all n_seg palettes, 128 B each
++--------------------------------------------------+
+| FRAME 0 (f0_ctrl_sec + f0_pat_sec sectors)       |  control, then patterns
 +--------------------------------------------------+
 | ROUTING (routing_sec sectors)                    |  2 bytes per frame
 +--------------------------------------------------+
-| PREBUFFER (prebuf_sec sectors)                   |  first Bpat cold patterns
+| PREBUFFER (prebuf_sec sectors)                   |  frame-1 ring prefill (Bpat patterns)
 +--------------------------------------------------+
 | FRAME 1  (FRAME_SECTORS = 5 sectors)             |
-| FRAME 2  (5 sectors)                             |
 | ...                                              |
 | FRAME nfr-1 (5 sectors)                          |
 +--------------------------------------------------+
 ```
 
-**Frame 0 is not in the FRAMES region** (version 2). It lives in the dedicated
-FRAME0 block right after the header: first its control block, zero-padded to
-`f0_ctrl_sec` sectors, then its cold patterns (32 bytes each), zero-padded to
-`f0_pat_sec` sectors. The player loads and displays it during boot, *without*
-going through the streaming ring — so the ring never exceeds its cap at boot
-and frame 1 starts with a full ring (this killed the frame-0 burst collapse).
-
-The whole thing is one contiguous CD read; the player never re-seeks mid-movie
-(except the rare slip-recovery re-seek described below).
+The whole thing is one contiguous CD read; the player never re-seeks mid-movie.
+Frame 0 lives in the header region (not the 5-sector stream): it is a full-screen
+load, so it is expanded during boot with no time budget and without touching the
+streaming ring (the ring then starts frame 1 pre-filled to `RING_CAP`).
 
 ## Header (1 sector = 2048 bytes)
 
@@ -59,7 +57,7 @@ First 22 bytes: `struct ">4sHHHHHHHHH"`.
 | Off | Size | Field          | Meaning |
 |-----|------|----------------|---------|
 | 0   | 4    | magic          | `"TTRC"` |
-| 4   | 2    | version        | format version (currently 2; see VERSION above) |
+| 4   | 2    | version        | format version (currently 3) |
 | 6   | 2    | frames         | total frame count (`nfr`) |
 | 8   | 2    | tcols          | tile grid columns |
 | 10  | 2    | trows          | tile grid rows |
@@ -84,11 +82,10 @@ Then:
   future player path. If absent or zero in old streams, the player treats it as
   H32.
 - byte 39: zero (pad);
-- offset 40: `u32` **f0_ctrl_sec** — sectors of frame 0's control block in the
-  FRAME0 region (version 2);
-- offset 44: `u32` **f0_pat_sec** — sectors of frame 0's patterns in the FRAME0
-  region (version 2);
-- bytes 48..63 are zero;
+- offset 40: `u32 f0_ctrl_sec` — sectors of frame 0's control block (v2+);
+- offset 44: `u32 f0_pat_sec` — sectors of frame 0's cold patterns (v2+);
+- offset 48: `u32 paltab_sec` — sectors of the PALTAB region (v3; 0 = none);
+- bytes 52..63 are zero;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
 - remainder up to 2048 is zero.
@@ -96,6 +93,17 @@ Then:
 A 128-byte CRAM block is 4 palette lines x 16 words; each word is
 `0000BBB0GGG0RRR0` (Genesis colour). Only 15 of the 16 entries per line are
 usable colour (entry 0 = transparent).
+
+## PALTAB (v3)
+
+`paltab_sec` sectors right after the header: all `n_seg` segment palettes,
+128 bytes each, back to back (16 per sector), zero-padded to a sector boundary.
+At boot the Sub CPU stages this region into Word-RAM (same bank as frame 0) and
+the Main CPU copies it **once** into a Main-RAM table (8 KB, capacity
+`PALTAB_MAX_SEG` = 64 segments — see `tools/av_config.py`, asserted against the
+player at build time). Every later palette switch just indexes this table via
+the control block's `pal` byte, so palettes are independent of stream delivery
+timing: a CD slip or re-seek can never corrupt the colours of a segment.
 
 ## Routing table
 
@@ -135,10 +143,9 @@ for this frame), consumed in order and DMA'd into ring slots. A pattern is
 | 2    | total_len   | total block length **including these 2 bytes**; always even |
 | 2    | frame_seq   | frame sequence number (low 16 bits). The player checks this against the frame it expects; a mismatch means the stream desynced (e.g. a dropped CD sector) — the frame's updates are discarded (previous frame held) and the desync counter increments. |
 | 2    | n_upd       | number of cell updates this frame |
-| 1    | pal         | 1 = reload CRAM this frame (segment change), else 0 |
+| 1    | pal         | v3: `segment index + 1` = switch CRAM this frame to that entry of the pre-loaded PALTAB; `0` = no change. (v1/v2 used a 0/1 flag followed by a 128-byte in-stream CRAM payload.) |
 | 1    | dbg         | 1 = a debug block follows immediately (see below), else 0 |
 | 22   | debug       | **present only if `dbg==1`**: fixed-length debug block (below) |
-| 128  | cram        | **present only if `pal==1`**: the new 4-line CRAM palette |
 | ceil(cells/8) | bitmap | one bit per cell; 1 = this cell is updated this frame |
 | n_upd x 2 | entries | one big-endian word per update, in cell order (see below) |
 | 887  | audio       | RF5C164 sign-magnitude PCM for this frame |
@@ -220,8 +227,8 @@ Two forward-compatible ways to extend the format:
 
 The player keeps a VRAM **tile pool** of `pool` resident patterns (an
 LRU/double-buffer-protected ring, `base + slot` in VRAM) and a name table. Per
-frame: if `pal`, reload CRAM; DMA the payload's cold patterns into their slots;
-for every set bit in the bitmap, apply its entry — cold entries having just
-filled a slot, warm entries re-pointing the name table to an existing
-`base + slot`. Audio is streamed to the PCM chip. A 1M/1M Word RAM double buffer
-swaps at frame boundaries.
+frame: if `pal`, reload CRAM from the Main-RAM PALTAB table (entry `pal - 1`);
+DMA the payload's cold patterns into their slots; for every set bit in the
+bitmap, apply its entry — cold entries having just filled a slot, warm entries
+re-pointing the name table to an existing `base + slot`. Audio is streamed to
+the PCM chip. A 1M/1M Word RAM double buffer swaps at frame boundaries.
