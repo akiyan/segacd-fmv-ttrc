@@ -1,0 +1,44 @@
+W=40  existing boundaries=13  mid-segment scene-cuts=16
+
+== gain at EXISTING boundaries (reference: these DO switch) ==
+  frame  E_keep     E_fresh    gain%   (E_keep uses the palette of the segment BEFORE the boundary)
+    339     201752      61505   69.5
+    404     641312     194103   69.7
+    550     196596     120666   38.6
+    694     181794     101017   44.4
+    836     132223      18904   85.7
+    984     133792      60892   54.5
+   1130     302062     144559   52.1
+   1274     243849     161275   33.9
+   1418     335343     128620   61.6
+   1562      74717      49833   33.3
+   1925     194735      42893   78.0
+   2071      39857      27784   30.3
+   3904          0          0    0.0
+
+== gain at MID-SEGMENT scene cuts (candidate new switch points) ==
+  frame  seg  dist2bnd  E_keep     E_fresh    gain%
+    376    1       28     176159     212865  -20.8
+    378    1       26     208920     237837  -13.8
+    383    1       21     295344     150480   49.0
+   2251   12      180      34870      26523   23.9
+   2389   12      318      31792      30053    5.5
+   2435   12      364      40892      31203   23.7
+   2533   12      462      71403      56661   20.6
+   2703   12      632      45695      42446    7.1
+   2819   12      748      85976      72151   16.1
+   3027   12      877     116754      54616   53.2
+   3088   12      816     143433      64766   54.8
+   3178   12      726     212087     154089   27.3
+   3474   12      430     111633      73511   34.1
+   3531   12      373      89221      55200   38.1
+   3610   12      294     181714     124627   31.4
+   3681   12      223     116717      70385   39.7
+
+== control: quiet mid-segment frames (should be LOW gain) ==
+    500  gain%  -0.3
+    900  gain%   2.2
+   2500  gain%  47.8
+   3300  gain%  48.7
+
+SUMMARY: candidate gain% mean=24.4 max=54.8 >10%=12/16   control gain% mean=24.6
