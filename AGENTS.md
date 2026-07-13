@@ -88,6 +88,10 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
   - [`COMPARISON.md`](COMPARISON.md) - the comparison overlay (Real vs Encoder-ideal) layout,
     frame-sync, and pipeline. Keep in sync with `tools/comparison_preview.py`
     and `tools/render_comparison.py`.
+  - [`CONFIG.md`](CONFIG.md) - the tunable settings, throttles and buffers (ring/tank,
+    cold cap, audio sync, CD pump, DMA budget, encoder knobs, per-source env). Keep in
+    sync with `tools/av_config.py`, `tools/sim.py`, `tools/pack_stream.py` and the
+    `boot/movieplay_*.s` player.
 - Claude skill files under `.claude/skills/**/SKILL.md` are allowed and should
   remain in place.
 - Do not reintroduce game-specific extraction notes or copyrighted sample
