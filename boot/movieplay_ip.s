@@ -118,6 +118,12 @@ ip_entry:
 	moveq	#0, d0
 	move.b	38(a0), d0			/* mode: 0=H32 1=H40 (2=mode4将来) */
 	move.w	d0, md_mode
+	/* v4: N(1コマの表示VBLANK数)@52。0(v2/v3ディスク)なら4(=15fps)。表示をN vblank間隔に */
+	move.w	52(a0), d0
+	bne	1f
+	moveq	#4, d0
+1:
+	move.w	d0, md_vsync_n
 	move.w	#32, d2				/* screen_cols */
 	move.w	#VB_WORDS_H32, d3
 	tst.w	d0
@@ -166,7 +172,20 @@ ip_entry:
 
 	clr.w	frame_no
 	clr.w	started
+	clr.w	vsync_acc			/* v4: ペーシングカウンタ初期化(.bssはMD上でクリアされない) */
 play_loop:
+	/* v4: 表示を N vblank/コマ にペーシング(15fps=N4=14.985, 30fps=N2=29.97)。
+	   build_frame が使った vblank(vsync_acc, wait_vb_start で計上)が N 未満なら残りを待つ。
+	   flip自体には触れない(pal切替のCRAM+flipアトミック性を壊さない)。Nを超えた重コマは
+	   即通過=そのコマは N超で回る(=パイプライン律速がそのままレートに出る)。 */
+pl_pace:
+	move.w	vsync_acc, d0
+	cmp.w	md_vsync_n, d0
+	bcc	pl_paced
+	bsr	wait_vb_start			/* +vsync_acc */
+	bra	pl_pace
+pl_paced:
+	clr.w	vsync_acc
 	tst.w	started
 	beq	1f
 	bsr	swap_or_end			/* CMD_SWAP → READY(継続) or END(映画終端) */
@@ -378,6 +397,7 @@ wait_vb_start:
 	move.w	(VDP_CTRL).l, d0
 	btst	#3, d0
 	beq	2b				/* vblankに入るまで */
+	addq.w	#1, vsync_acc			/* v4: 1コマのVBLANK数を計上(表示ペーシング用) */
 	rts
 
 /* NT flip: reg2をback_baseへ(1ワード書き=原子的)。d5=back_base。trashes d0 */
@@ -697,6 +717,10 @@ shadow:
 	.space 1120*2				/* 最大グリッド(H40 40x28)ぶん */
 md_mode:
 	.space 2
+md_vsync_n:
+	.space 2				/* v4: 1コマの表示VBLANK数(15fps=4, 30fps=2) */
+vsync_acc:
+	.space 2				/* v4: 現コマで消費したVBLANK数(ペーシング用) */
 md_tcols:
 	.space 2
 md_trows:
