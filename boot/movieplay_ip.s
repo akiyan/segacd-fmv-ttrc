@@ -174,18 +174,10 @@ ip_entry:
 	clr.w	started
 	clr.w	vsync_acc			/* v4: ペーシングカウンタ初期化(.bssはMD上でクリアされない) */
 play_loop:
-	/* v4: 表示を N vblank/コマ にペーシング(15fps=N4=14.985, 30fps=N2=29.97)。
-	   build_frame が使った vblank(vsync_acc, wait_vb_start で計上)が N 未満なら残りを待つ。
-	   flip自体には触れない(pal切替のCRAM+flipアトミック性を壊さない)。Nを超えた重コマは
-	   即通過=そのコマは N超で回る(=パイプライン律速がそのままレートに出る)。 */
-pl_pace:
-	move.w	vsync_acc, d0
-	cmp.w	md_vsync_n, d0
-	bcc	pl_paced
-	bsr	wait_vb_start			/* +vsync_acc */
-	bra	pl_pace
-pl_paced:
-	clr.w	vsync_acc
+	/* v4: ディスクが CD 1x レートマッチpadding済み(pack)=1コマぶんのデータ配送が表示レートに
+	   一致。よって旧来のデータ律速(Subシグナル=CMD_SWAP handshake)で正しい fps になる(15fps=
+	   5セクタ配送=~15fps, 30fps=2.5セクタ=~30fps)。vsync明示ペーシングは不要(むしろMainを
+	   ディスクレートから僅かにずらしSub過剰pump→スリップを招くため撤去)。 */
 	tst.w	started
 	beq	1f
 	bsr	swap_or_end			/* CMD_SWAP → READY(継続) or END(映画終端) */

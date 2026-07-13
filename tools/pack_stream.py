@@ -516,6 +516,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     # AUDIO も fps由来。FRAME_SECTORS(=5)は最大スロット(routingバイトの上限)としてのみ残す。
     NTSC_VSYNC = 59.94
     vsync_n = int(round(NTSC_VSYNC / FPS))            # N: 1コマの表示VBLANK数(30fps→2, 15fps→4)
+    fps_int = int(round(FPS))                         # 名目fps(15/30)。レートマッチpadding用(下記)
     _ver = 4 if f0_header else VERSION
     header = struct.pack(">4sHHHHHHHHH", MAGIC, _ver, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
@@ -525,6 +526,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     header += struct.pack(">LL", f0_ctrl_sec, f0_pat_sec)  # offset 40,44: frame0ブロック
     header += struct.pack(">L", paltab_sec)          # offset 48: PALTABセクタ数(v3)
     header += struct.pack(">HH", vsync_n, AUDIO)     # offset 52: N(vsync/コマ), 54: AUDIO(1コマ音声B) (v4)
+    header += struct.pack(">H", fps_int)             # offset 56: 名目fps(レートマッチpadding用) (v4)
     header += b"\0" * (64 - len(header)) + seg0
     header += b"\0" * (SECTOR - len(header))
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
@@ -537,16 +539,29 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
             f.write(frame0_blk)                       # FRAME0(control+patterns)
         f.write(bytes(routing).ljust(routing_sec * SECTOR, b"\0"))
         f.write(prebuf_bytes.ljust(prebuf_sec * SECTOR, b"\0"))
+        # v4 レートマッチpadding: 各frameを「CD 1x が1コマ時間に届けるセクタ数」までpaddingする。
+        # CD 1x = 75セクタ/秒。1コマ=75/fps_int セクタ(15fps→5, 30fps→2.5)。この整数割り当てを
+        # 累積器で出す(30fpsは2,3,2,3…平均2.5)。fsec=max(実データ, レート割当)。これで「ディスク
+        # 読み速度=表示速度」になり、paddingを外したv4で起きた過剰配送→バッファ溢れ→CDCスリップ
+        # を根絶する(15fpsでは5固定=v3と同一)。padセクタはプレイヤが読んで捨てる(累積器で同期)。
+        fsec_list = []
+        sec_acc = 0
         for i in range(nfr):
             if f0_header and i == 0:
                 continue                              # frame0 は FRAMES に出さない(ヘッダ側)
+            sec_acc += 75                             # CD 1x = 75 sectors/s
+            ratedelta = sec_acc // fps_int
+            sec_acc -= ratedelta * fps_int
+            actual = int(n_pay_sec[i]) + int(n_ctrl_sec[i])
+            fsec = max(actual, ratedelta)             # CD 1x レートまでpad(実データが超えるコマは超過)
+            fsec_list.append(fsec)
             npb = int(n_pay_sec[i]) * SECTOR
             ncb = int(n_ctrl_sec[i]) * SECTOR
             fr = stream_pay[pc:pc + npb].ljust(npb, b"\0"); pc += npb
             fr += stream_ctrl[cc:cc + ncb].ljust(ncb, b"\0"); cc += ncb
-            f.write(fr)                               # v4: 5セクタpadding無し=各frameは(n_pay+n_ctrl)セクタ
-    frames_stream_sec = int(sum(int(n_pay_sec[i]) + int(n_ctrl_sec[i])
-                                for i in range(1 if f0_header else 0, nfr)))
+            fr = fr.ljust(fsec * SECTOR, b"\0")       # レートマッチpad(超過ぶんは捨てセクタ)
+            f.write(fr)
+    frames_stream_sec = int(sum(fsec_list))
     total = (1 + paltab_sec + f0_ctrl_sec + f0_pat_sec + routing_sec + prebuf_sec
              + frames_stream_sec)
     print(f"wrote {path}  {total}sec (paltab {paltab_sec} frame0 {f0_ctrl_sec}+{f0_pat_sec} "

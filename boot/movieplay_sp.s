@@ -228,6 +228,15 @@ bad_magic:
 	move.w	#AUDIO_BYTES, d0		/* v2/v3(0)は887 */
 1:
 	move.w	d0, h_audio_bytes
+	/* v4: 名目fps@56(レートマッチpadding用)。v2/v3(=0)は15。CD 1x=75sec/s を fps で割った整数
+	   割当(累積器)まで各コマをpad=ディスク読み速度を表示速度に一致(過剰配送/CDCスリップ防止)。
+	   15fpsでは常に5(=v3固定と一致)、30fpsは2/3平均。sec_acc は累積器の初期化。 */
+	move.w	56(a0), d0			/* 名目fps(15/30) */
+	bne	1f
+	moveq	#15, d0				/* v2/v3(0)は15 */
+1:
+	move.w	d0, h_fps_int
+	clr.w	sec_acc
 	/* v4: h_stream_total は find_file がファイルサイズ(実セクタ数)から初期化済み。可変フレーム
 	   では frames*fsec 計算は過大(=paddingぶん多い)なので、ここでの上書きは行わない。
 	   ROM_READN の連続読み長・スリップ回復の残量は find_file のファイルサイズ値を使う。 */
@@ -728,9 +737,11 @@ da_loop:
 /* 1セクタを取り込む(ブロッキング)。CD→常にWord-RAM STAGE(実績ある経路)→
    CPUコピーで routing に従い PRG(リング/apply)へ振り分け。
    (CDC_TRN→PRG直行はリトライ中にセクタが滑る事故が起きる: 実測+1/2フレーム) */
-/* v4: 可変フレーム。1フレーム=(n_pay+n_ctrl)セクタ(5固定padding無し)。total==0の
-   フレーム(データ先行配送済み)は read無しでスキップ。routing読みは drain1(BIOS呼びで
-   d1等を壊す)の後に再読み込みして安全に。 */
+/* v4 レートマッチpadding。各フレーム = fsec = max(n_pay+n_ctrl, ratedelta) セクタ。
+   ratedelta = CD 1x(75 sec/s)を fps で割った整数割当(累積器 sec_acc)= ディスク読み速度を
+   表示速度に一致させる pad。15fpsでは常に5(=v3固定)、30fpsは2/3平均。n_pay+n_ctrl を超える
+   ぶん(pad)は読んで捨てる。fsec はコマ先頭(drain_k==0)で1回計算し cur_fsec に保持。
+   routing読みは drain1(BIOS呼びで d1等破壊)の後に再読み込み。 */
 pump1:
 	movem.l	d0-d7/a0-a6, -(sp)
 p1_top:
@@ -738,17 +749,28 @@ p1_top:
 	move.w	drain_frame, d0
 	cmp.w	h_frames, d0
 	bhs	p1_ret				/* ストリーム終端: 読まずに戻る */
+	tst.w	drain_k
+	bne	p1_read				/* コマ途中: cur_fsec は計算済み */
+	/* --- コマ先頭: cur_fsec = max(n_pay+n_ctrl, ratedelta) を計算 --- */
 	add.w	d0, d0
 	lea	ROUTING, a0
 	move.b	(a0,d0.w), d1			/* n_pay */
 	andi.w	#0xFF, d1
 	move.b	1(a0,d0.w), d2			/* n_ctrl */
 	andi.w	#0xFF, d2
-	add.w	d1, d2				/* total(0判定用) */
-	bne	p1_read
-	addq.w	#1, drain_frame			/* 0セクタフレーム: 前進のみ、read無し */
-	clr.w	drain_k
-	bra	p1_top
+	add.w	d1, d2				/* d2 = total = n_pay+n_ctrl */
+	moveq	#0, d0				/* ratedelta = (sec_acc+75)/h_fps_int, sec_acc=余り */
+	move.w	sec_acc, d0
+	addi.w	#75, d0
+	divu.w	h_fps_int, d0			/* d0低語=商(ratedelta), 高語=余り */
+	move.w	d0, d5				/* d5 = ratedelta */
+	swap	d0
+	move.w	d0, sec_acc			/* sec_acc = 余り */
+	cmp.w	d5, d2				/* cur_fsec = max(total, ratedelta) */
+	bhs	1f
+	move.w	d5, d2
+1:
+	move.w	d2, cur_fsec
 p1_read:
 	lea	PAD_SCR, a0			/* STAGE = Word-RAM */
 	bsr	drain1				/* 1セクタ取り込み(d1/d2破壊) */
@@ -767,7 +789,7 @@ p1_read:
 	blo	p1_ring				/* k < n_pay */
 	cmp.w	d4, d3
 	blo	p1_apply			/* k < total */
-	bra	p1_adv
+	bra	p1_adv				/* k >= total: pad セクタ(捨て) */
 p1_ring:
 	movea.l	ring_tail, a1
 	bsr	stage_copy			/* STAGE→PRG 2048B CPUコピー */
@@ -792,7 +814,7 @@ p1_apply:
 p1_adv:
 	addq.w	#1, drain_k
 	move.w	drain_k, d3
-	cmp.w	d4, d3				/* v4: total(=n_pay+n_ctrl)セクタで1フレーム完了(旧h_fsec) */
+	cmp.w	cur_fsec, d3			/* v4: fsec(=max(total,rate) レートマッチ)セクタで1コマ完了 */
 	blo	p1_ret
 	clr.w	drain_k
 	addq.w	#1, drain_frame
@@ -1377,6 +1399,12 @@ h_vsync_n:
 	.space 2				/* v4: 1コマの表示VBLANK数(30fps=2, 15fps=4) */
 h_audio_bytes:
 	.space 2				/* v4: 1コマの音声バイト(30fps=443, 15fps=887) */
+h_fps_int:
+	.space 2				/* v4: 名目fps(15/30)。レートマッチpadding累積器の除数 */
+sec_acc:
+	.space 2				/* v4: CD 1x レート累積器の余り(0..fps-1) */
+cur_fsec:
+	.space 2				/* v4: 現コマのディスクセクタ数 fsec=max(total,ratedelta) */
 f0_pat_addr:
 	.space 4
 h_stream_total:
