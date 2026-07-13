@@ -511,7 +511,12 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     # PALTAB: 全区間パレットをヘッダ直後に一括配置(セクタ整列)。boot時にMain-RAM表へ。
     paltab = b"".join(pals_to_bytes_128(p) for p in log["seg_pals"])
     paltab_sec = -(-len(paltab) // SECTOR)
-    _ver = 3 if f0_header else VERSION
+    # v4: 可変フレーム(5セクタ固定paddingを廃止=各frameは n_pay+n_ctrl セクタ)＋ vsync/コマ N。
+    # これで fps がセクタ境界から解放され、表示は N vsync/コマでペーシング(N4=14.985, N2=29.97)。
+    # AUDIO も fps由来。FRAME_SECTORS(=5)は最大スロット(routingバイトの上限)としてのみ残す。
+    NTSC_VSYNC = 59.94
+    vsync_n = int(round(NTSC_VSYNC / FPS))            # N: 1コマの表示VBLANK数(30fps→2, 15fps→4)
+    _ver = 4 if f0_header else VERSION
     header = struct.pack(">4sHHHHHHHHH", MAGIC, _ver, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
@@ -519,6 +524,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     header += b"\0"                                   # offset 39: pad
     header += struct.pack(">LL", f0_ctrl_sec, f0_pat_sec)  # offset 40,44: frame0ブロック
     header += struct.pack(">L", paltab_sec)          # offset 48: PALTABセクタ数(v3)
+    header += struct.pack(">HH", vsync_n, AUDIO)     # offset 52: N(vsync/コマ), 54: AUDIO(1コマ音声B) (v4)
     header += b"\0" * (64 - len(header)) + seg0
     header += b"\0" * (SECTOR - len(header))
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
@@ -538,16 +544,17 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
             ncb = int(n_ctrl_sec[i]) * SECTOR
             fr = stream_pay[pc:pc + npb].ljust(npb, b"\0"); pc += npb
             fr += stream_ctrl[cc:cc + ncb].ljust(ncb, b"\0"); cc += ncb
-            fr = fr.ljust(FRAME_SECTORS * SECTOR, b"\0")
-            f.write(fr)
-    nfr_stream = (nfr - 1) if f0_header else nfr
+            f.write(fr)                               # v4: 5セクタpadding無し=各frameは(n_pay+n_ctrl)セクタ
+    frames_stream_sec = int(sum(int(n_pay_sec[i]) + int(n_ctrl_sec[i])
+                                for i in range(1 if f0_header else 0, nfr)))
     total = (1 + paltab_sec + f0_ctrl_sec + f0_pat_sec + routing_sec + prebuf_sec
-             + nfr_stream * FRAME_SECTORS)
+             + frames_stream_sec)
     print(f"wrote {path}  {total}sec (paltab {paltab_sec} frame0 {f0_ctrl_sec}+{f0_pat_sec} "
-          f"routing {routing_sec} prebuf {prebuf_sec}) ring_peak {ring_peak*PAT/1024:.0f}KB")
-    print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS} PALTAB_SEC={paltab_sec} "
+          f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v4 N={vsync_n}(={NTSC_VSYNC/vsync_n:.3f}fps) AUDIO={AUDIO}")
+    print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS}(最大スロット) PALTAB_SEC={paltab_sec} "
           f"F0_CTRL_SEC={f0_ctrl_sec} F0_PAT_SEC={f0_pat_sec} ROUTING_SEC={routing_sec} "
-          f"PREBUF_SEC={prebuf_sec} PREBUF_PAT={Bpat} RING_PEAK_PAT={ring_peak}")
+          f"PREBUF_SEC={prebuf_sec} PREBUF_PAT={Bpat} RING_PEAK_PAT={ring_peak} VSYNC_N={vsync_n}")
 
 
 def main():
