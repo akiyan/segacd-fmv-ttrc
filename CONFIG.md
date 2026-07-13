@@ -128,8 +128,9 @@ Set per encode; they select the output and the codec behavior for that source.
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 
-Not settings, but the live readouts of the throttles above (top rows, drawn by
-`render_dbg` in ip). Handy when tuning.
+Not settings, but the live readouts of the throttles above — a single row in the
+top-left corner (`render_dbg` in ip, positions `HUD_ROW`/`HUD_PITCH`/`HUD_COL_*`,
+read back by `tools/read_frameno.py: read_hud`). Handy when tuning.
 
 | Marker | Meaning |
 |---|---|
