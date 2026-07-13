@@ -231,22 +231,44 @@ def segment_and_train(frames):
     seg_bounds = []
     if SEGPAL_ON:
         LWv = np.array([.299, .587, .114])
-        dark = np.array([((np.asarray(Image.open(frames[i]).convert("RGB")).astype(float) @ LWv) < 32).mean()
-                         for i in range(n)])
-        hit = dark >= float(os.environ.get("CBRSIM_SEG_DARK", "0.90"))  # 暗転とみなす暗さ(画素割合)
         SEG_GAP = int(os.environ.get("CBRSIM_SEG_GAP", "24"))  # 点滅フェードはこの範囲内なら1切替にまとめる
         SEG_MIN = int(os.environ.get("CBRSIM_SEG_MIN", "2"))   # 最小区間長=2 → 1フレーム暗転でも切替を許す
-        hi = np.where(hit)[0]
-        bnds = []                                       # 暗転の塊ごとに1境界(その塊の最暗フレーム=切替の継ぎ目)
-        if len(hi):
-            s = p = int(hi[0])
-            for h in hi[1:]:
-                h = int(h)
-                if h - p <= SEG_GAP:
-                    p = h
-                else:
-                    bnds.append(s + int(np.argmax(dark[s:p + 1]))); s = p = h
-            bnds.append(s + int(np.argmax(dark[s:p + 1])))
+        DARK_THR = float(os.environ.get("CBRSIM_SEG_DARK", "0.90"))  # 暗転とみなす暗さ(画素割合)
+        # 一様(色不問)検知: 深い暗さの本質は「画面全体が一様=ほぼ1枚の平坦タイルの繰り返し=タイル
+        # 流用が最大=CRAM切替のキャッシュ損失ほぼ0・色ポップも隠れる」こと。黒はその一例にすぎず、
+        # 白飛びや任意のフラット色でも同じ。フレーム平均色から距離の近い画素の割合(uni)で「一様さ」を
+        # 測り、暗検知とは独立にクラスタリングして境界を出す(独立にしないと一様ヒットが既存の暗クラスタ
+        # を橋渡しして黒境界を併合してしまうため)。暗境界からUNI_NEAR以内の一様は重複として捨てる。
+        UNI_THR = float(os.environ.get("CBRSIM_SEG_UNIFORM", "0.88"))  # 一様とみなす割合。2以上で無効化
+        UNI_TOL = float(os.environ.get("CBRSIM_SEG_UNIFORM_TOL", "24"))  # 平均色に近いとみなすRGB距離
+        UNI_NEAR = int(os.environ.get("CBRSIM_SEG_UNIFORM_NEAR", "8"))   # 暗境界からこの範囲内は重複扱い
+        dark = np.zeros(n)
+        uni = np.zeros(n)
+        for i in range(n):
+            a = np.asarray(Image.open(frames[i]).convert("RGB")).astype(float)
+            dark[i] = ((a @ LWv) < 32).mean()
+            d = np.sqrt(((a - a.reshape(-1, 3).mean(0)) ** 2).sum(2))    # 各画素の平均色からの距離
+            uni[i] = (d < UNI_TOL).mean()                                # 平坦度(黒でも白でも高い)
+
+        def _cluster(metric, hit):                      # 塊ごとに1境界(その塊で metric が最大=最も隠れる)
+            hi = np.where(hit)[0]
+            bb = []
+            if len(hi):
+                s = p = int(hi[0])
+                for h in hi[1:]:
+                    h = int(h)
+                    if h - p <= SEG_GAP:
+                        p = h
+                    else:
+                        bb.append(s + int(np.argmax(metric[s:p + 1]))); s = p = h
+                bb.append(s + int(np.argmax(metric[s:p + 1])))
+            return bb
+
+        dark_bnds = _cluster(dark, dark >= DARK_THR)    # 既存の暗検知(独立=edの黒境界を不変に保つ)
+        uni_bnds = _cluster(uni, uni >= UNI_THR)        # 一様検知(新規: 白飛び/フラット)
+        add = [u for u in uni_bnds
+               if min([abs(u - d) for d in dark_bnds] + [1 << 30]) > UNI_NEAR]
+        bnds = sorted(set(dark_bnds + add))
         edges = sorted(set([0] + bnds + [n]))
         segs = [(edges[j], edges[j + 1]) for j in range(len(edges) - 1) if edges[j + 1] - edges[j] >= SEG_MIN]
         seg_bounds = [a for (a, b) in segs if a > 0]
