@@ -237,6 +237,7 @@ bad_magic:
 1:
 	move.w	d0, h_fps_int
 	clr.w	sec_acc
+	clr.w	lead
 	/* v4: h_stream_total は find_file がファイルサイズ(実セクタ数)から初期化済み。可変フレーム
 	   では frames*fsec 計算は過大(=paddingぶん多い)なので、ここでの上書きは行わない。
 	   ROM_READN の連続読み長・スリップ回復の残量は find_file のファイルサイズ値を使う。 */
@@ -751,7 +752,7 @@ p1_top:
 	bhs	p1_ret				/* ストリーム終端: 読まずに戻る */
 	tst.w	drain_k
 	bne	p1_read				/* コマ途中: cur_fsec は計算済み */
-	/* --- コマ先頭: cur_fsec = max(n_pay+n_ctrl, ratedelta) を計算 --- */
+	/* --- コマ先頭: cur_fsec = max(total, ratedelta-lead) を計算(pack と同一の有界累積器) --- */
 	add.w	d0, d0
 	lea	ROUTING, a0
 	move.b	(a0,d0.w), d1			/* n_pay */
@@ -766,11 +767,22 @@ p1_top:
 	move.w	d0, d5				/* d5 = ratedelta */
 	swap	d0
 	move.w	d0, sec_acc			/* sec_acc = 余り */
-	cmp.w	d5, d2				/* cur_fsec = max(total, ratedelta) */
-	bhs	1f
-	move.w	d5, d2
+	move.w	d5, d6				/* delta = ratedelta - lead(先行ぶん, 負可) */
+	sub.w	lead, d6
+	cmp.w	d6, d2				/* cur_fsec = max(total, delta) 符号付き */
+	bge	1f				/* total >= delta → cur_fsec = total */
+	move.w	d6, d2				/* else cur_fsec = delta */
 1:
 	move.w	d2, cur_fsec
+	move.w	lead, d6			/* lead += cur_fsec - ratedelta (常に≥0) */
+	add.w	d2, d6
+	sub.w	d5, d6
+	move.w	d6, lead
+	tst.w	cur_fsec			/* fsec==0(total=0かつ先行中)= ディスク上0セクタ */
+	bne	p1_read
+	addq.w	#1, drain_frame			/* 前進のみ、read無し(データは先行配送済み) */
+	clr.w	drain_k
+	bra	p1_top
 p1_read:
 	lea	PAD_SCR, a0			/* STAGE = Word-RAM */
 	bsr	drain1				/* 1セクタ取り込み(d1/d2破壊) */
@@ -1404,7 +1416,9 @@ h_fps_int:
 sec_acc:
 	.space 2				/* v4: CD 1x レート累積器の余り(0..fps-1) */
 cur_fsec:
-	.space 2				/* v4: 現コマのディスクセクタ数 fsec=max(total,ratedelta) */
+	.space 2				/* v4: 現コマのディスクセクタ数 fsec=max(total,ratedelta-lead) */
+lead:
+	.space 2				/* v4: ディスクがCD 1x予定より先行しているセクタ数(≥0) */
 f0_pat_addr:
 	.space 4
 h_stream_total:

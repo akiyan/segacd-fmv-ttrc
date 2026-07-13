@@ -544,16 +544,25 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
         # 累積器で出す(30fpsは2,3,2,3…平均2.5)。fsec=max(実データ, レート割当)。これで「ディスク
         # 読み速度=表示速度」になり、paddingを外したv4で起きた過剰配送→バッファ溢れ→CDCスリップ
         # を根絶する(15fpsでは5固定=v3と同一)。padセクタはプレイヤが読んで捨てる(累積器で同期)。
+        # レートマッチpadding(有界累積器 sec_acc/lead)。CD 1x = 75 sec/s。1コマの CD 1x セクタ配分
+        # ratedelta を累積器で整数化(15fps→5固定, 30fps→2/3平均)。lead = ディスクが CD 1x 予定より
+        # 先行しているセクタ数(≥0)。重いコマ(実データ超過)は lead を増やし、後続の軽いコマは pad を
+        # lead ぶん減らして吸収する。fsec = max(実データ, ratedelta - lead)。総ディスク量が CD 1x 相当
+        # (=nfr*75/fps_int)に収束し、過剰配送(→バッファ溢れ→CDCスリップ)も過小配送も起きない。
+        # プレイヤ(sp.s pump1)と同一の整数演算=ディスク上のフレーム境界が完全一致。
         fsec_list = []
         sec_acc = 0
+        lead = 0
         for i in range(nfr):
             if f0_header and i == 0:
                 continue                              # frame0 は FRAMES に出さない(ヘッダ側)
-            sec_acc += 75                             # CD 1x = 75 sectors/s
+            sec_acc += 75
             ratedelta = sec_acc // fps_int
             sec_acc -= ratedelta * fps_int
+            delta = ratedelta - lead                  # このコマで追いつくべきセクタ数(先行時は負)
             actual = int(n_pay_sec[i]) + int(n_ctrl_sec[i])
-            fsec = max(actual, ratedelta)             # CD 1x レートまでpad(実データが超えるコマは超過)
+            fsec = actual if actual > delta else delta   # max(実データ, delta)
+            lead += fsec - ratedelta                  # lead は常に ≥0(padで0に戻る)
             fsec_list.append(fsec)
             npb = int(n_pay_sec[i]) * SECTOR
             ncb = int(n_ctrl_sec[i]) * SECTOR
