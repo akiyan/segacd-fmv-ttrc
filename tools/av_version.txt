@@ -83,6 +83,23 @@
 #        constants (HUD_ROW/HUD_PITCH/HUD_COL_* in movieplay_ip.s), kept in sync with
 #        the capture OCR (tools/read_frameno.py: read_hud). DEBUG-only overlay; the
 #        shipped (non-debug) codec/stream output is unchanged.
+#   e10: CRAM pre-load (MOVIE.DAT v3). All segment palettes ship once in a PALTAB
+#        region after the header; the per-frame control block carries only a 1-byte
+#        segment reference (pal = seg+1) instead of a 128-byte in-stream CRAM payload.
+#        pack_stream.py writes the PALTAB + paltab_sec header field and drops the
+#        in-stream CRAM; sim.py stops deducting the 128-byte palette write from the
+#        switch frame's budget. The rendered pixels are byte-identical to e9 (verified:
+#        machi_op + machi_ed decode_verify diff=0), so this is a delivery/robustness
+#        change, not a look change. Payoff: palettes no longer depend on stream timing
+#        (a CD slip/re-seek can't corrupt a segment's colours) and the heavy scene-cut
+#        switch frame's byte budget is freed — the base for adding more switch points.
+#   p7 : player side of CRAM pre-load. At boot the Sub stages the PALTAB into Word-RAM
+#        and the Main CPU copies it once into a Main-RAM table (PALTAB_MAX_SEG=64, 8 KB);
+#        bf_flip now indexes that table by the 1-byte segment ref instead of reading a
+#        per-frame in-stream CRAM block (CPU CRAM write, same as before — only the source
+#        moves to Main-RAM). av_config.PALTAB_MAX_SEG is the single source, build-asserted
+#        against the player equ. Verified on emulator: full machi_ed plays S=0 D=0 with all
+#        14 segments (P0->P0D) switching to correct colours.
 date=20260713
-e=9
-p=6
+e=10
+p=7
