@@ -110,6 +110,7 @@ for this frame), consumed in order and DMA'd into ring slots. A pattern is
 | Size | Field       | Meaning |
 |------|-------------|---------|
 | 2    | total_len   | total block length **including these 2 bytes**; always even |
+| 2    | frame_seq   | frame sequence number (low 16 bits). The player checks this against the frame it expects; a mismatch means the stream desynced (e.g. a dropped CD sector) and triggers recovery. |
 | 2    | n_upd       | number of cell updates this frame |
 | 1    | pal         | 1 = reload CRAM this frame (segment change), else 0 |
 | 1    | dbg         | 1 = a debug block follows immediately (see below), else 0 |
@@ -161,6 +162,15 @@ The Sub CPU reads `total_len` at the start of each control block, copies exactly
 `total_len` bytes to the apply buffer, and advances its cursor by `total_len`
 (`boot/movieplay_sp.s`). It parses by length, not by scanning to a fixed end, so
 `total_len` must stay even (odd desyncs by 1 byte per frame).
+
+**Slip detection and recovery.** Right after copying a block the player checks
+`frame_seq` against the frame it expects. A mismatch means the continuous CD read
+dropped a sector (the ring and control streams shifted). The player detects this
+at the source: `drain1` reads each sector's MSF header and, when it sees a gap
+(non-consecutive MSF), re-seeks (`CDC_STOP`+`ROM_READN`) to the lost sector and
+re-reads it — recovering the exact data with no quality loss. Slips are rare, so
+the brief re-seek is cheap; the `frame_seq` check is the backstop. The debug HUD
+shows `S` = slip/re-seek count and `D` = residual desyncs (normally 0).
 
 Two forward-compatible ways to extend the format:
 
