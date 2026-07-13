@@ -217,24 +217,20 @@ bad_magic:
 	moveq	#10, d0
 1:
 	move.w	d0, h_paltab_sec
-	/* stream_total(v3) = 1 + paltab + f0_ctrl + f0_pat + routing + prebuf + (frames-1)*fsec
-	   (frame0 はヘッダ側=FRAMESに無いので frames-1) */
-	move.w	h_frames, d0
-	subq.w	#1, d0
-	mulu	h_fsec, d0
-	moveq	#0, d1
-	move.w	h_routing_sec, d1
-	add.l	d1, d0
-	move.w	h_prebuf_sec, d1
-	add.l	d1, d0
-	move.w	h_f0_ctrl_sec, d1
-	add.l	d1, d0
-	move.w	h_f0_pat_sec, d1
-	add.l	d1, d0
-	move.w	h_paltab_sec, d1
-	add.l	d1, d0
-	addq.l	#HEADER_SECTORS, d0
-	move.l	d0, h_stream_total
+	/* v4: 可変フレーム。N(vsync/コマ)@52, AUDIO(1コマ音声B)@54。v2/v3(=0)なら15fps既定へ */
+	move.w	52(a0), d0			/* N */
+	bne	1f
+	moveq	#4, d0				/* v2/v3(0)は15fps=N4 */
+1:
+	move.w	d0, h_vsync_n
+	move.w	54(a0), d0			/* AUDIO(1コマ音声B) */
+	bne	1f
+	move.w	#AUDIO_BYTES, d0		/* v2/v3(0)は887 */
+1:
+	move.w	d0, h_audio_bytes
+	/* v4: h_stream_total は find_file がファイルサイズ(実セクタ数)から初期化済み。可変フレーム
+	   では frames*fsec 計算は過大(=paddingぶん多い)なので、ここでの上書きは行わない。
+	   ROM_READN の連続読み長・スリップ回復の残量は find_file のファイルサイズ値を使う。 */
 	/* MDへヘッダ写しを渡す(frame0と同じバンクに書く=swap後にMDが読める) */
 	lea	(O_HDR).l, a1
 	moveq	#32-1, d1			/* 64B */
@@ -732,11 +728,31 @@ da_loop:
 /* 1セクタを取り込む(ブロッキング)。CD→常にWord-RAM STAGE(実績ある経路)→
    CPUコピーで routing に従い PRG(リング/apply)へ振り分け。
    (CDC_TRN→PRG直行はリトライ中にセクタが滑る事故が起きる: 実測+1/2フレーム) */
+/* v4: 可変フレーム。1フレーム=(n_pay+n_ctrl)セクタ(5固定padding無し)。total==0の
+   フレーム(データ先行配送済み)は read無しでスキップ。routing読みは drain1(BIOS呼びで
+   d1等を壊す)の後に再読み込みして安全に。 */
 pump1:
 	movem.l	d0-d7/a0-a6, -(sp)
-	lea	PAD_SCR, a0			/* STAGE = Word-RAM */
-	bsr	drain1
+p1_top:
 	moveq	#0, d0
+	move.w	drain_frame, d0
+	cmp.w	h_frames, d0
+	bhs	p1_ret				/* ストリーム終端: 読まずに戻る */
+	add.w	d0, d0
+	lea	ROUTING, a0
+	move.b	(a0,d0.w), d1			/* n_pay */
+	andi.w	#0xFF, d1
+	move.b	1(a0,d0.w), d2			/* n_ctrl */
+	andi.w	#0xFF, d2
+	add.w	d1, d2				/* total(0判定用) */
+	bne	p1_read
+	addq.w	#1, drain_frame			/* 0セクタフレーム: 前進のみ、read無し */
+	clr.w	drain_k
+	bra	p1_top
+p1_read:
+	lea	PAD_SCR, a0			/* STAGE = Word-RAM */
+	bsr	drain1				/* 1セクタ取り込み(d1/d2破壊) */
+	moveq	#0, d0				/* drain1後に routing 再読み込み */
 	move.w	drain_frame, d0
 	add.w	d0, d0
 	lea	ROUTING, a0
@@ -744,13 +760,14 @@ pump1:
 	andi.w	#0xFF, d1
 	move.b	1(a0,d0.w), d2			/* n_ctrl */
 	andi.w	#0xFF, d2
+	move.w	d1, d4
+	add.w	d2, d4				/* d4 = total = n_pay+n_ctrl (stage_copyでも不変) */
 	move.w	drain_k, d3
 	cmp.w	d1, d3
 	blo	p1_ring				/* k < n_pay */
-	add.w	d1, d2
-	cmp.w	d2, d3
-	blo	p1_apply			/* k < n_pay+n_ctrl */
-	bra	p1_adv				/* pad → 捨て(STAGEに残すだけ) */
+	cmp.w	d4, d3
+	blo	p1_apply			/* k < total */
+	bra	p1_adv
 p1_ring:
 	movea.l	ring_tail, a1
 	bsr	stage_copy			/* STAGE→PRG 2048B CPUコピー */
@@ -775,11 +792,11 @@ p1_apply:
 p1_adv:
 	addq.w	#1, drain_k
 	move.w	drain_k, d3
-	cmp.w	h_fsec, d3
-	blo	2f
+	cmp.w	d4, d3				/* v4: total(=n_pay+n_ctrl)セクタで1フレーム完了(旧h_fsec) */
+	blo	p1_ret
 	clr.w	drain_k
 	addq.w	#1, drain_frame
-2:
+p1_ret:
 	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
@@ -1260,7 +1277,8 @@ write_wave_chunk:
 	add.w	#SYNC_LEAD, d2
 	andi.w	#RING_MASK, d2
 2:
-	move.w	#AUDIO_BYTES-1, d3
+	move.w	h_audio_bytes, d3		/* v4: 1コマ音声B(可変) */
+	subq.w	#1, d3
 	move.w	d2, d0
 	lsr.w	#8, d0
 	lsr.w	#4, d0
@@ -1355,6 +1373,10 @@ h_f0_pat_sec:
 	.space 2
 h_paltab_sec:
 	.space 2
+h_vsync_n:
+	.space 2				/* v4: 1コマの表示VBLANK数(30fps=2, 15fps=4) */
+h_audio_bytes:
+	.space 2				/* v4: 1コマの音声バイト(30fps=443, 15fps=887) */
 f0_pat_addr:
 	.space 4
 h_stream_total:
