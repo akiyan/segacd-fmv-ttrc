@@ -424,8 +424,8 @@ def draw_vram_real(i):
         pal = SEG_PALS_DISP[np.clip(segs, 0, len(SEG_PALS_DISP) - 1), np.clip(faces, 0, 3)]   # (N,15,3)
         pal16 = np.concatenate([np.zeros((len(slots), 1, 3), np.int16), pal], axis=1)         # idx0=黒
         rgb = pal16[np.arange(len(slots))[:, None], idx].astype(np.int16)                     # (N,64,3)
-        stale = (curs == 0) & (~np.isin(kids, fut_arr))    # 未参照(将来でもない)=半分薄く
-        rgb[stale] //= 2
+        stale = (curs == 0) & (~np.isin(kids, fut_arr))    # 未参照(将来でもない)=淡く(白寄せ)
+        rgb[stale] = rgb[stale] // 2 + 100                 # 半分薄く=パレットそのまま白寄せで褪せた表現(黒潰れ回避)
         rgb = rgb.clip(0, 255).astype(np.uint8).reshape(len(slots), VTILE, VTILE, 3)
         for n in range(len(slots)):
             s = int(slotn[n]); r, c = s // VGRID_COLS, s % VGRID_COLS
