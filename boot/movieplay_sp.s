@@ -935,7 +935,8 @@ dsd_w:
 /* apply-buffer(PRG循環, apply_cur) から control block を CTRL_SCR(Word-RAM) へコピー(折返し線形化)。
    block先頭 >H total_len。apply_cur を total_len 進める。 */
 fetch_control:
-	movem.l	d0-d7/a0-a6, -(sp)
+	/* issue#15: 呼び出し元 process_frame が既に d0-d7/a0-a6 を退避済み(唯一の呼び出し元)。
+	   戻り後は process_frame が d0/d1 を再ロードするので、ここでの退避は冗長=削除。 */
 	movea.l	apply_cur, a0
 	move.w	(a0), d7			/* total_len */
 	/* コピー: total_len バイトを a0(循環) → CTRL_SCR */
@@ -974,8 +975,7 @@ fc_done:
 	suba.l	#APPLY_SIZE, a0
 3:
 	move.l	a0, apply_cur
-	movem.l	(sp)+, d0-d7/a0-a6
-	rts
+	rts					/* issue#15: 冗長movem削除(process_frameが退避済み) */
 
 /* CTRL_SCR(線形 control block) を Word-RAM へ展開。cold は ring pop。
    block = >H total_len >H frame_seq >H n_upd >B pal >B dbg [22B DEBUG if dbg]
@@ -1032,7 +1032,7 @@ ef_byte:
 	   毎バイト(全画面140回/コマ)は過剰。8バイト毎(~18回/コマ)でも十分取りこぼさない。
 	   空振りpollを削り Sub時間を空ける=重コマのfps落ちを詰めて滑り天井を上げる狙い。 */
 	move.w	d7, d0
-	andi.w	#15, d0				/* issue#15: 8→16バイト毎。16B=最大128cell/最悪20kサイクル<<166k */
+	andi.w	#31, d0				/* issue#15: 32バイト毎。展開全体で~6.5ms<<1セクタ22msなのでCDC溢れ無し */
 	bne	ef_nopump
 	bsr	pump_poll			/* 長い展開中もCDを取りこぼさない(頻度は落としても間に合う) */
 ef_nopump:
@@ -1327,7 +1327,7 @@ write_wave_chunk:
 	adda.w	d4, a1				/* a1 = 初期wave書込ポインタ */
 wwc_loop:
 	move.w	d2, d0
-	andi.w	#0x7F, d0			/* issue#15: 0x40→0x80バイト毎(音声書込中のpump頻度半減) */
+	andi.w	#0xFF, d0			/* issue#15: 0x100バイト毎(音声全体~443Bで~2回、CDC溢れ無し) */
 	bne	3f
 	bsr	pump_poll			/* 音声書込中もCDを取りこぼさない(pump_pollはa1保存) */
 3:
