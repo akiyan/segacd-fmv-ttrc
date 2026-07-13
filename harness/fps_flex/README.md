@@ -75,3 +75,31 @@ frame clock to VBlanks while the pump streams underneath is delicate: the buffer
 must stay ahead at N-paced consumption, and the slip/desync recovery must still
 work. Verify on ares/hardware (GPGX is lenient), starting with the cold-capped
 Sonic H32 (256x208, N2 = 29.97) — the first real 30fps disc.
+
+## Progress (as of this checkpoint)
+
+**30fps is proven FEASIBLE (not structurally impossible).** The blocker was NOT a
+fundamental sector/CD limit — it was `AUDIO = 887` (a 15fps constant) making the
+disc carry 2x audio at 30fps and overrun CD 1x by ~8%. With `AUDIO` fps-derived
+(443 at 30fps) the simple approach (remove the 5-sector padding, keep sector-granular
+routing) fits CD 1x with margin — **approach A (byte-contiguous packing) is NOT
+needed.**
+
+Done + verified:
+- Cold cap: single knob `COLD_CAP_15FPS = 350` (confirmed), `cap(fps)=350*15/fps`
+  (30->175, 24->219); realized ceiling fps-scaled. Uncapped removed. (issue #15 raises the knob.)
+- `AUDIO` fps-derived in the pack (15->887, 30->443).
+- **MOVIE.DAT v4**: variable frames (no 5-sector padding; each frame = n_pay+n_ctrl
+  sectors), header offset 52 = N (VBlanks/frame), 54 = AUDIO. Sonic H32 30fps packs to
+  6552 frame-sectors < 6777 CD-1x, `decode_verify` pixel-identical, ring under=0.
+
+Remaining player work (v4), all delicate + emulator-tested:
+1. sp.s header parse: read N (off 52) and AUDIO_BYTES (off 54) into vars; copy to O_HDR
+   for the Main CPU; accept version 4.
+2. sp.s `pump1`: **skip 0-sector frames** (21 in Sonic H32 — data pre-delivered; advance
+   drain_frame without reading) and **advance after (n_pay+n_ctrl) sectors** instead of
+   `h_fsec`.
+3. sp.s `write_wave_chunk`: use the runtime `h_audio_bytes`, not the 887 constant.
+4. ip.s: read N from the header, and **pace the display at N VBlanks/frame** (currently
+   it flips as fast as the Sub signals; N=2 pins 29.97).
+5. Re-sim Sonic H32 at cap 175, pack v4, build, record on emulator (first true 30fps disc).
