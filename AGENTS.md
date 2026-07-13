@@ -61,6 +61,14 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
   5. Project link — always include the source repository URL:
      `https://github.com/akiyan/segacd-fmv-ttrc` . Put it in every description
      (both the English and the Japanese section).
+- **CRAM chapters (permanent).** Every codec video (analysis and real-playback)
+  MUST carry YouTube chapters at the CRAM (palette-segment) switch points, so the
+  switches are navigable. Generate them with `tools/youtube_chapters.py <sim_out>`
+  and prepend the block to the description (a blank line after it), before the
+  Overview. The tool reads the sim's `frame_seg`, emits one chapter per segment,
+  and enforces YouTube's rules (first at 0:00, 10 s minimum spacing, ascending).
+  This is not optional or per-video — it is the standing convention for these
+  uploads.
 - Do not show bitrate in the Source spec line.
 - Uploads are unlisted, category 20 (Gaming). Descriptive titles, not vNNN.
 - **"Upload" always means the latest version.** Before uploading, rebuild the
