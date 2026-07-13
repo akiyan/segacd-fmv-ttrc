@@ -62,3 +62,36 @@ long segment needs more palettes,"* not *"a hard cut needs a switch."*
 - Foundation already shipped: CRAM pre-load (PALTAB, MOVIE.DAT v3) means adding
   switch points costs no extra stream bytes and is slip-safe, and the table holds
   up to `PALTAB_MAX_SEG` = 64 segments (14 today, ample headroom).
+
+## Generalizing the trigger: "uniform screen", not "deep black"
+
+Deep black is really a proxy for *"the whole screen is one flat colour, so tile
+reuse is maximal and a CRAM swap costs almost nothing and its colour pop is
+hidden."* Black is just one such flat colour — a white-out or any flat-colour
+fade is an equally cheap switch point. `uni_ed.npy` / `uni_op.npy` measure, per
+frame, `uni` = fraction of pixels within 24 (RGB Euclidean) of the frame's mean
+colour (flatness, colour-agnostic) alongside the current `dark` metric.
+
+Finding — the two sources differ:
+
+- **machi_op HAS them.** Three non-black uniform moments the black-only detector
+  misses, two deep mid-segment: F1161 (meanL 236, uni 1.00, a white-out, 174
+  frames from any boundary), F1874-1883 (meanL 160, a bright flat stretch, 252
+  frames from a boundary), F1579 (white-out). Switching right after each gives a
+  huge colour gain: F1163 → 73 %, F1581 → 49 %, F1884 → 83 % — as good as the
+  best existing boundaries. So generalizing `dark >= 0.90` to `uniform >= thr`
+  (black OR white OR any flat colour; seam at the most-uniform frame; everything
+  downstream unchanged) directly adds high-value switch points on op. Low risk:
+  it only broadens the existing safe mechanism.
+- **machi_ed does NOT.** Segment 12 (122 s) has essentially zero non-black
+  uniform frames — its transitions are detailed-to-detailed **hard cuts** (a
+  single-frame MAD spike over a busy ~11 MAD background, screen never flat,
+  meanL ~30-40). The uniform detector can't help ed; only hard-cut detection can.
+
+So the two mechanisms are complementary:
+
+1. **Generalized uniform-screen detector** (black/white/flat) — a low-risk
+   broadening of today's code; demonstrably helps op. Do this first.
+2. **Hard-cut detector inside under-served long segments** — for ed-like content
+   whose long segments have no uniform moment; higher risk (pop at a detailed
+   cut, cold burst), needs the Tank gate.
