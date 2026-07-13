@@ -151,6 +151,29 @@ _SP = np.load(f"{SIM}/seg_palettes.npz")
 SEG_PALS = _SP["seg_pals"]                     # (nseg,4,15,3) rgb333(0-7)
 FRAME_SEG = _SP["frame_seg"]                   # (NF,)
 
+# ---- VRAMパネル用データ(sim OUT/vram.pkl) ----
+import pickle as _pk  # noqa: E402
+try:
+    _V = _pk.load(open(f"{SIM}/vram.pkl", "rb"))
+    VRAM_KEYS = _V["keys"]; VRAM_SLOTS = _V["slots"]
+    VRAM_TILES_N = int(_V["vram_tiles"]); VTILE = int(_V["tile"])
+except Exception as _e:
+    VRAM_KEYS = []; VRAM_SLOTS = []; VRAM_TILES_N = 1400; VTILE = 8
+    print("VRAM: vram.pkl 無し ->", _e)
+KEY_IDX = (np.frombuffer(b"".join(VRAM_KEYS), np.uint8).reshape(-1, VTILE * VTILE)
+           if VRAM_KEYS else np.zeros((0, VTILE * VTILE), np.uint8))
+SEG_PALS_DISP = SEG_PALS.astype(np.int16) * 36            # (nseg,4,15,3) 0-7 -> 0-252
+DISP_KIDS = [set(int(k) for k in (s[s[:, 4] == 1, 1] if len(s) else []))
+             for s in VRAM_SLOTS]                          # 各コマの今表示中key_id(将来判定用)
+VRAM_FUTURE_WIN = 30                                       # 「将来表示」とみなす先読み窓(コマ)
+VGRID_COLS, VGRID_ROWS = 64, 32                           # 2048スロット = 64KB/32B
+_NTGRAY = np.random.RandomState(3).randint(40, 165, size=(VGRID_ROWS * VGRID_COLS)).astype(np.uint8)
+# VRAMベースグリッド(暗背景 + ネームテーブル領域 slot>=1536 の静的グレースケール)。毎コマ複製して使う。
+VRAM_BASE = np.full((VGRID_ROWS * VTILE, VGRID_COLS * VTILE, 3), 12, np.uint8)
+for _slot in range(1536, VGRID_COLS * VGRID_ROWS):
+    _r, _c = _slot // VGRID_COLS, _slot % VGRID_COLS
+    VRAM_BASE[_r * VTILE:(_r + 1) * VTILE, _c * VTILE:(_c + 1) * VTILE] = int(_NTGRAY[_slot])
+
 
 def seg_pal_rgb(seg):
     seg = int(np.clip(seg, 0, len(SEG_PALS) - 1))
@@ -208,9 +231,10 @@ def frame_plinfo(i):
 # ---- メーター幅(統一廃止=各バーは自分のラベル幅) ----
 GAP = 16
 REQ_W = 180
-_dma_lab = "DMA:%05d/%05d %s" % (0, L.dma_frame_max(MODE, FPS), MODE)
-BAND_W, TANK_W, BUFF_W, DMA_W = L.meter_widths(_dma_lab)
-X_TL_STATUS = 4 + REQ_W + GAP + BAND_W + GAP + TANK_W + GAP + BUFF_W + GAP + DMA_W + GAP
+COLD_W = L._w(L.f_leg, "Cold:000") + 3                    # Coldバー(Req↔Bandの間)
+BAND_W, TANK_W, BUFF_W, DMA_W = L.meter_widths("DMA:00000")   # DMAは現在値のみ
+X_TL_STATUS = (4 + REQ_W + GAP + COLD_W + GAP + BAND_W + GAP + TANK_W + GAP
+               + BUFF_W + GAP + DMA_W + GAP)
 # 指針器フルスケールの基準 C-MAX_RAW の MAX_RAW は「1コマのRaw予算」(=CDで新規に読める最大タイル数)。
 # 観測最大(Raw.max)は初期タンク放出で全タイル≈Cになり scale≈0=全塗りになるので使わない。
 MAX_RAW = int(z["budget_tiles"]) if "budget_tiles" in z else FRAME_CD // 34   # TANK_DELTA は上の Band 節で計算済み
@@ -242,9 +266,12 @@ def build_base():
     if SRC_SPEC:
         d.text((_sx + L._w(L.f_head, "Source") + 12, _sby), SRC_SPEC, fill=L.COL_DIM, font=L.f_meta, anchor="ls")
     L.panel(d, L.CAT_FRAME)
-    L.panel(d, L.GRAPH_FRAME)
-    # metricパネルの下(旧パレット枠): カテゴリ合計の横棒グラフ(全編合計=静的)
-    cv.paste(L.draw_cattotals(L.PAL_W, L.PAL_H, {"cat_totals": CAT_TOTALS, "cat_uniq": CAT_UNIQ}), L.PAL_XY)
+    L.panel(d, L.VRAM_FRAME)         # VRAMパネル。見出しは枠の外(上)に小フォントで
+    d.text((L.VRAM_FRAME[0] + 2, L.VRAM_FRAME[1] - 7), "VRAM  (64KB tilemap, palette applied)",
+           fill=L.COL_TXT, font=L.f_lbl, anchor="ls")
+    # カテゴリ合計(全編合計=静的)を Category の下へ
+    cv.paste(L.draw_cattotals(L.CATTOT_W, L.CATTOT_H, {"cat_totals": CAT_TOTALS, "cat_uniq": CAT_UNIQ}),
+             L.CATTOT_XY)
     return cv
 
 
@@ -310,6 +337,10 @@ def draw_status_real(data):
     xr = L.draw_field(d, xq + 10, ly, "Raw:", cn["Raw"], 3, L.f_leg, L.COL_DIM)
     L.draw_field(d, xr + 8, ly, "Comp:", data["comp"], 3, L.f_leg, L.COL_DIM)
     x += REQ_W + GAP
+    # 1.5) Cold = このコマの新規タイル(Raw+Buf)。フルスケール=COLD_CAP_REALIZED
+    stacked([(data["cold_raw"], L.CAT_RAW), (data["cold_buf"], L.CAT_BUF)], data["cold_cap"], COLD_W)
+    L.draw_field(d, x, ly, "Cold:", data["cold"], 3, L.f_leg, L.COL_TXT)
+    x += COLD_W + GAP
     # 2) 有効Band = 映像(Raw色) + 貯蓄(Buf色) + 音声/その他ヘッダ(dim色)。バー幅=ラベル幅。単位 KiB/sec
     stacked([(data["raw_bytes"], L.CAT_RAW), (data["buf_bytes"], L.CAT_BUF),
              (data["ovh_bytes"], L.COL_OVH)], data["cd1x_bpf"], BAND_W)
@@ -323,14 +354,13 @@ def draw_status_real(data):
     # 4) Tank増減の指針器(中央薄線・減=左赤/増=右青)。フルスケール=描画範囲タイル数-最大Raw数
     L.draw_tank_delta(d, x, by, BH, ly, BUFF_W, data["tank_delta"], max(1, C - data["max_raw"]))
     x += BUFF_W + GAP
-    # 5) DMA(モード名の左にスペース)
+    # 5) DMA = 今フレームVRAM転送量(現在値のみ)。バー幅=ラベル幅
     fillw = int(DMA_W * min(dval, dmax) / dmax); over = dval > dmax
     d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else (70, 190, 90))
     if over:
         d.rectangle([x + fillw, by, x + DMA_W, by + BH], fill=(150, 60, 60))
     d.rectangle([x, by, x + DMA_W, by + BH], outline=L.COL_FRAME_IN)
-    xx = L.draw_field(d, x, ly, "DMA:", dval, 5, L.f_leg, L.COL_TXT, dmax, 5)
-    d.text((xx, ly), " " + MODE, fill=L.COL_DIM, font=L.f_leg)
+    L.draw_field(d, x, ly, "DMA:", dval, 5, L.f_leg, L.COL_TXT)   # 最大値/モード表記なし
     x += DMA_W + GAP
     # メーター下: パレット Prev/Current/Next(PL/Frame見出し, 正方形タイル)
     meters_right = x - GAP
@@ -368,11 +398,39 @@ def frame_data(i):
                 buf_cap=BUF_CAP, buf_rem=int(BUF_REM[i]), dma_bytes=int(DMA[i]),
                 raw_bytes=int(RAW_BYTES[i]), buf_bytes=int(BUF_BYTES[i]), ovh_bytes=int(OVH_BYTES[i]),
                 band_kbps=int(BAND[i]), cd1x_bpf=CD1X_BPF,
+                cold=cn["Raw"] + cn["Buf"], cold_raw=cn["Raw"], cold_buf=cn["Buf"],
+                cold_cap=L.av_config.COLD_CAP_REALIZED,
                 tank_delta=int(TANK_DELTA[i]), max_raw=MAX_RAW,
                 pl_info=frame_plinfo(i),
                 frame=i, total_frames=NF, time_s=i / FPS, palettes=frame_palettes(i),
                 series={k: [int(FULL[k][min(max(j, 0), NF - 1)]) for j in range(i - HALF, i + HALF + 1)]
                         for k in FULL})
+
+
+def draw_vram_real(i):
+    """VRAMパネル: 毎コマのスロットを 64x32 タイルマップで描画。パターンは適用CRAM(seg,face)で着色、
+    今表示/将来表示=フル・未参照=半分薄く、ネームテーブル領域=静的グレースケール。"""
+    bw = L.VRAM_FRAME[2] - L.VRAM_FRAME[0] - 2 * L.PAD
+    bh = L.VRAM_FRAME[3] - L.VRAM_FRAME[1] - 2 * L.PAD
+    grid = VRAM_BASE.copy()
+    slots = VRAM_SLOTS[i] if i < len(VRAM_SLOTS) else np.zeros((0, 5), np.int32)
+    if len(slots) and len(KEY_IDX):
+        future = set()                               # 将来表示(i+1..i+WIN)のkey_id
+        for j in range(i + 1, min(i + 1 + VRAM_FUTURE_WIN, len(DISP_KIDS))):
+            future |= DISP_KIDS[j]
+        fut_arr = np.fromiter(future, np.int64) if future else np.zeros(0, np.int64)
+        slotn = slots[:, 0]; kids = slots[:, 1]; segs = slots[:, 2]; faces = slots[:, 3]; curs = slots[:, 4]
+        idx = np.clip(KEY_IDX[kids], 0, 15)          # (N,64) 0=透明, 1..15=パレット
+        pal = SEG_PALS_DISP[np.clip(segs, 0, len(SEG_PALS_DISP) - 1), np.clip(faces, 0, 3)]   # (N,15,3)
+        pal16 = np.concatenate([np.zeros((len(slots), 1, 3), np.int16), pal], axis=1)         # idx0=黒
+        rgb = pal16[np.arange(len(slots))[:, None], idx].astype(np.int16)                     # (N,64,3)
+        stale = (curs == 0) & (~np.isin(kids, fut_arr))    # 未参照(将来でもない)=半分薄く
+        rgb[stale] //= 2
+        rgb = rgb.clip(0, 255).astype(np.uint8).reshape(len(slots), VTILE, VTILE, 3)
+        for n in range(len(slots)):
+            s = int(slotn[n]); r, c = s // VGRID_COLS, s % VGRID_COLS
+            grid[r * VTILE:(r + 1) * VTILE, c * VTILE:(c + 1) * VTILE] = rgb[n]
+    return Image.fromarray(grid).resize((bw, bh), Image.NEAREST)
 
 
 def render(i):
@@ -403,14 +461,14 @@ def render(i):
     _plw = max(2, len(str(_plt)))
     lab_t = "PL:%0*d/%0*d Time:%02d:%05.2f Frame:" % (_plw, int(FRAME_SEG[i]), _plw, _plt,
                                                       int(data["time_s"] // 60), data["time_s"] % 60)
-    tw = L._w(L.f_leg, lab_t) + L._w(L.f_leg, str(i).rjust(5, "0"))
+    fhex = "%04X" % i                              # F番号=実機HUDと同じ16進4桁
+    tw = L._w(L.f_leg, lab_t) + L._w(L.f_leg, fhex)
     tx = L.MAIN_FRAME[2] - tw; ty = base_y - L.f_leg.getmetrics()[0]
     d.text((tx, ty), lab_t, fill=L.COL_TXT, font=L.f_leg)
-    L.draw_padnum(d, tx + L._w(L.f_leg, lab_t), ty, i, 5, L.f_leg, L.COL_TXT)
-    # 凡例 / 線グラフ / status
+    d.text((tx + L._w(L.f_leg, lab_t), ty), fhex, fill=L.COL_TXT, font=L.f_leg)
+    # 凡例リスト(Categoryの上) / VRAMパネル(右下) / status
     cv.paste(L.draw_legend(L.CATLEG_W, L.CATLEG_H, data), L.CATLEG_XY)
-    cv.paste(L.draw_graph(L.GRAPH_FRAME[2] - L.GRAPH_FRAME[0], L.GRAPH_FRAME[3] - L.GRAPH_FRAME[1], data),
-             (L.GRAPH_FRAME[0], L.GRAPH_FRAME[1]))
+    cv.paste(draw_vram_real(i), (L.VRAM_FRAME[0] + L.PAD, L.VRAM_FRAME[1] + L.PAD))
     cv.paste(draw_status_real(data), L.STATUS_XY)
     cv.save(f"{FRAMES_DIR}/{i:05d}.png")
     return i

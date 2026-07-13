@@ -494,6 +494,14 @@ def main():
                                         # そのまま新区間の量子化なので安全=対象外。
     coa_bucket = defaultdict(list)      # 平均色バケツ -> [key,...] (末尾=最新)
 
+    # --- VRAMパネル用: 安定スロット割当(常駐追加=最小空きへ, 追出しで解放)+毎コマスナップショット ---
+    import heapq as _heapq
+    vram_slot_of = {}                   # key -> slot(0..VRAM_TILES-1)
+    vram_free = list(range(VRAM_TILES)); _heapq.heapify(vram_free)
+    vram_prev_res = set()
+    vram_key2id = {}; vram_keys = []    # unique idxパターンkey(64B) -> id
+    vram_slots_log = []                 # per frame: [(slot,key_id,seg,face,cur), ...] 占有スロットのみ
+
     def touch(key, fi):
         resident[key] = fi
 
@@ -907,6 +915,30 @@ def main():
         # プレビュー/カテゴリマップ/miss繰越は全てこの実表示色(=実機と同じ)で描く。
         cur_rgb[:] = render_cells(disp_idx, disp_pal, cur_pals)
 
+        if EMIT_DEC:
+            # VRAMスナップショット: 常駐集合の差分でスロットを更新し、占有スロットを記録。
+            # cur=1(ref>0=今表示) / 0(常駐だが未参照)。将来判定と描画は render_analysis 側。
+            _cur_res = set(resident.keys())
+            for _k in vram_prev_res - _cur_res:            # 追い出された=スロット解放
+                _s = vram_slot_of.pop(_k, None)
+                if _s is not None:
+                    _heapq.heappush(vram_free, _s)
+            for _k in _cur_res - vram_prev_res:            # 新規常駐=最小空きスロットへ
+                if vram_free:
+                    vram_slot_of[_k] = _heapq.heappop(vram_free)
+            vram_prev_res = _cur_res
+            _snap = []
+            for _k in _cur_res:
+                _s = vram_slot_of.get(_k)
+                if _s is None:
+                    continue
+                _kid = vram_key2id.get(_k)
+                if _kid is None:
+                    _kid = len(vram_keys); vram_key2id[_k] = _kid; vram_keys.append(_k)
+                _snap.append((_s, _kid, int(pat_seg.get(_k, int(frame_seg[i]))),
+                              int(pat_pal.get(_k, 0)), 1 if ref_count.get(_k, 0) > 0 else 0))
+            vram_slots_log.append(np.array(_snap, np.int32).reshape(-1, 5))
+
         # 実機決定ログ: このフレームで実際に書き換えたセルの (cell, パレット, 表示パターンkey)。
         # keyは64バイト(idx 1..15)を内包=pack_streamがそこから32Bパターンを復元できる。
         # Coaはcur_key=近似先(常駐), Buf/Rawはcur_key=新規ロードkey。dedup/Near/Missの区別は
@@ -1089,6 +1121,13 @@ def main():
             "max_cold": int(MAX_COLD), "tank_kb": int(TANK_KB),
         }, open(EMIT_DEC, "wb"), protocol=4)
         print(f"  実機決定ログ: {EMIT_DEC} ({len(dec_frames)} frames)")
+        # VRAMパネル用スナップショット(render_analysis が OUT から読む)。
+        # keys[id]=64B idxパターン(frombuffer(k,uint8).reshape(TILE,TILE))。
+        # slots[frame]=(N,5) int32 [(slot,key_id,seg,face,cur),...] 占有スロットのみ。
+        pickle.dump({"keys": vram_keys, "slots": vram_slots_log,
+                     "vram_tiles": int(VRAM_TILES), "tile": int(TILE)},
+                    open(OUT / "vram.pkl", "wb"), protocol=4)
+        print(f"  VRAMログ: {OUT/'vram.pkl'} ({len(vram_keys)} uniq tiles)")
 
     _mark("保存(stats/npy/決定ログ)", _t)
     total = time.perf_counter() - _t_all
