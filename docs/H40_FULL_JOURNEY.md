@@ -158,6 +158,12 @@ python3 tools/pack_stream.py \
 make disc DEBUG=1
 ```
 
+> **Historical note (e9):** `CBRSIM_PACK_MAXCOLD` was later removed — the cold
+> cap moved into the encoder (`CBRSIM_MAX_COLD` in `tools/sim.py`), with the
+> realized ceiling asserted at pack time via `tools/av_config.py`
+> (`COLD_CAP_REALIZED`). The command above no longer runs as-is; it is kept as
+> the record of the fix as shipped at the time.
+
 ---
 
 ## What actually mattered
@@ -316,6 +322,11 @@ python3 tools/pack_stream.py \
   --output out/movieplay/MOVIE.DAT
 make disc DEBUG=1
 ```
+
+> **後日注（e9）:** `CBRSIM_PACK_MAXCOLD` はその後撤去された。コールド上限は
+> エンコーダ側（`tools/sim.py` の `CBRSIM_MAX_COLD`）へ移り、実現値の上限は
+> `tools/av_config.py`（`COLD_CAP_REALIZED`）を単一の真実源として pack 時に
+> 検証される。上のコマンドはそのままでは動かないが、当時の修正の記録として残す。
 
 ---
 

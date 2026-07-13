@@ -85,9 +85,6 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
     Updated via the `/analysis` skill together with the layout code.
   - [`MOVIE.md`](MOVIE.md) - the `MOVIE.DAT` (TTRC) on-disc stream format. Keep in sync with
     `tools/pack_stream.py` and the `boot/movieplay_*.s` player.
-  - [`COMPARISON.md`](COMPARISON.md) - the comparison overlay (Real vs Encoder-ideal) layout,
-    frame-sync, and pipeline. Keep in sync with `tools/comparison_preview.py`
-    and `tools/render_comparison.py`.
   - [`CONFIG.md`](CONFIG.md) - the tunable settings, throttles and buffers (ring/tank,
     cold cap, audio sync, CD pump, DMA budget, encoder knobs, per-source env). Keep in
     sync with `tools/av_config.py`, `tools/sim.py`, `tools/pack_stream.py` and the
@@ -115,8 +112,10 @@ within Sega CD limits, not fixed presets:
   per-frame DMA budget.
 - Frame rate = the source's native rate.
 - Audio = **PCM** (RF5C164), 13.3 kHz mono 8-bit — the verified on-hardware
-  path. ADPCM was investigated for higher sampling but shelved (structural
-  limit); see [ADPCM.md](ADPCM.md).
+  path. 22.05 kHz ADPCM decoded on the 68000s was shelved (structural limit;
+  see [ADPCM.md](ADPCM.md)); a revival that moves the decode to the **Z80**
+  (YM2612 DAC output, custom double-buffer driver) is approved and tracked in
+  issue #13.
 
 The old `OP.STR` / RLE and `PROBE.BIN` bring-up paths have been removed.
 `make disc` builds the `MOVIE.DAT` disc played by `boot/movieplay_*.s`.
@@ -138,12 +137,12 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 | Straight sim output, video+audio, no overlay (`export_sim_video.py`) | `videos/<stem>_sim.mp4` |
 | PNGs, logs, stats for that encode  | `videos/<stem>/tmp/` (the sim working dir) |
 | Emulator recording (`record-mcd`)  | `videos/<stem>_emu.mp4` |
-| Real (emu) + Encoder ideal (sim) side-by-side compare (`render_comparison.py`) | `videos/<stem>_comparison.mp4` |
 
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
 - `<resolution>`: the Sega CD output resolution in pixels, `WxH` (e.g. `256x144`).
-- `<audio-format>`: `pcm` (ADPCM was shelved — see [ADPCM.md](ADPCM.md)).
+- `<audio-format>`: `pcm` (68000-decoded ADPCM was shelved — see
+  [ADPCM.md](ADPCM.md); a Z80-decode ADPCM path is planned in issue #13).
 
 ## Hardware Facts
 
@@ -268,7 +267,8 @@ ffmpeg -i tmp/<tag>.mkv \
   sim *no matter how you tune*, STOP and question whether the sim mis-models the
   hardware's real limit — do not keep shaving the encoder to fit a symptom.
   Precedents: the CRAM emulation had a sim-side bug; 22.05 kHz ADPCM decode was
-  simply infeasible on hardware (structural — see `ADPCM.md`); and the streaming
+  simply infeasible on the 68000s (structural — see `ADPCM.md`; a Z80-decode
+  revival is issue #13); and the streaming
   ring: the sim's VBV tank was set equal to the player's ring
   (`RING_SIZE`=420 KB, TANK=440→400), i.e. it assumed the *entire* ring is usable
   for banking. Real CD-delivery jitter makes the usable ring smaller, so a

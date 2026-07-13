@@ -56,8 +56,9 @@ source within what the hardware allows — not fixed project constants:
   sized to the per-frame DMA budget and the source's display aspect.
 - **Frame rate:** the source's native rate is kept (15 / 24 / 30 fps, etc.).
 - **Audio format:** **PCM** (RF5C164), 13.3 kHz mono 8-bit — the verified
-  on-hardware path. ADPCM was investigated for higher sampling but shelved
-  (structural limit); see [ADPCM.md](ADPCM.md).
+  on-hardware path. 22.05 kHz ADPCM decoded on the 68000s was shelved
+  (structural limit; see [ADPCM.md](ADPCM.md)); a Z80-decode revival is
+  planned (issue #13).
 
 ## Pipeline
 
@@ -92,9 +93,6 @@ meter and tile category.
   targets, and repository layout.
 - [ANALYSIS.md](ANALYSIS.md): the analysis-overlay reference, covering every
   panel, meter, timeline, and tile category drawn by `tools/render_analysis.py`.
-- [COMPARISON.md](COMPARISON.md): the Real-vs-Encoder-ideal comparison overlay,
-  including its layout, frame synchronization method, audio tracks, and render
-  pipeline.
 - [MOVIE.md](MOVIE.md): the exact `MOVIE.DAT` on-disc stream format written by
   `tools/pack_stream.py` and read by the Sega CD player.
 - [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
@@ -118,8 +116,10 @@ meter and tile category.
 
 | Target | Purpose |
 |---|---|
-| `movieplay` | Current stream player. |
+| `movieplay` | Current stream player (`disc`, the default target, is an alias). |
 | `cdcbench` | Measures continuous versus restarted CD reads. |
+| `dmabench` | Measures the largest VRAM DMA that fits in one VBlank, per screen mode. |
+| `still256` | Static one-frame H32 still renderer (display bring-up test). |
 | `streamtest` | Minimal continuous stream test. |
 | `pcmtest` | RF5C164 PCM register and wave RAM test. |
 | `test1m` | 1M/1M Word RAM swap test. |
@@ -131,6 +131,10 @@ meter and tile category.
 Required tools: Marsdev / `m68k-elf` toolchain, `mkisofs` or `genisoimage`,
 `ffmpeg` / `ffprobe`, `python3` with NumPy and Pillow, and a Sega CD BIOS for
 emulator testing.
+
+`make disc` (the default target) builds the `MOVIE.DAT` player disc as
+`out/MOVIEPLAY.iso` + `out/MOVIEPLAY.cue`. It expects an encoded stream at
+`out/movieplay/MOVIE.DAT` (produced by `tools/pack_stream.py`).
 
 ## Recording
 
