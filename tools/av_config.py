@@ -87,20 +87,31 @@ COLD_CAP_REALIZED = 380
 # --- Per-frame cold cap as a PHYSICAL DRAW LIMIT (scales with fps) ---
 # This project ships to real hardware, so the sim MUST model what the player can
 # actually DRAW per frame, not just what the CD/tank can deliver. The player renders
-# at most a fixed number of fresh (cold) 8x8 tiles per VBLANK — the raw-share DMA plus
-# buffer-drain draw ceiling. Measured at 15fps: ~360 cold/frame, and 15fps content
-# spans 4 VBLANks/frame (60/15), so the per-VBLANK limit is 360/4 = 90 cold/VBLANK.
-# The cap therefore scales with the ENCODE fps (higher fps = fewer VBLANks/frame =
-# fewer cold/frame): 15->360, 24->225, 30->180. Uncapped is no longer allowed — an
-# uncapped sim shows impossible bursts (e.g. Sonic H32 30fps: 600-738 cold on the
-# opening frames, far above the 180 the hardware could draw) that would collapse live.
-# Raising COLD_PER_VBLANK is the goal of the pipeline-speedup work (block copies via
-# MOVEM, padding to enable them, table lookups) — bump it here as the player improves.
-COLD_PER_VBLANK = 90
-NTSC_VBLANK_HZ = 60          # ~59.94; 60 keeps round numbers (15->360, 30->180, 24->225)
+# at most a fixed number of fresh (cold) 8x8 tiles per VBLANK (raw-share DMA + buffer
+# drain). The ONE confirmed data point is 15fps: cap 350 plays clean on hardware with
+# the p5 player (realized ~362, S=0). 15fps content spans 4 VBLANks/frame, and the cap
+# scales inversely with fps (higher fps = fewer VBLANks/frame = fewer drawable cold):
+#   cap(fps) = COLD_CAP_15FPS x 15 / fps   ->   15->350, 30->175, 24->219.
+# Uncapped is no longer allowed — an uncapped sim shows impossible bursts (Sonic H32
+# 30fps wanted 600-738 cold on the opening frames, far above what the hardware draws)
+# that would collapse live.
+#
+# COLD_CAP_15FPS is the single knob. The pipeline-speedup work (issue #15: MOVEM block
+# copies, padding, table lookups) will raise it; everything below derives from it so
+# the whole pipeline (per-fps caps, the drop-safe realized ceiling) tracks the change.
+COLD_CAP_15FPS = 350        # confirmed drop-safe at 15fps (p5 player). Raised by issue #15.
+_CAP_REF_FPS = 15
 
 
 def cold_cap_for_fps(fps):
-    """Per-frame cold cap = COLD_PER_VBLANK x (VBLANks per frame). frame0 is exempt
-    (loaded from the header at boot, no VBLANK limit)."""
-    return int(round(COLD_PER_VBLANK * NTSC_VBLANK_HZ / float(fps)))
+    """Per-frame cold cap, scaled inversely with fps from the confirmed 15fps value.
+    frame0 is exempt (loaded from the header at boot, no VBLANK limit)."""
+    return int(round(COLD_CAP_15FPS * _CAP_REF_FPS / float(fps)))
+
+
+def cold_realized_ceiling_for_fps(fps):
+    """Pack-time drop-safe realized-cold ceiling for a given fps. The packer's
+    contiguous-slot allocation reloads a few tiles the sim kept resident, so realized
+    cold runs a bit above the sim cap; the confirmed 15fps pair is cap 350 -> ceiling
+    380 (ratio ~1.086). Scale that ratio with the fps cap so it tracks COLD_CAP_15FPS."""
+    return int(round(cold_cap_for_fps(fps) * 380.0 / 350.0))

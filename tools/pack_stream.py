@@ -579,8 +579,10 @@ def main():
     # sim のモデル cap が pack の連続スロット割当に対して高すぎる兆候(=解析は合うが実機で滑る)。
     # frame0(完全ロードのヘッダ)は除外。
     # 上限は作品(解像度)ごとに実機で滑らないラインが違う(軽い黒帯ほど高い)。既定は
-    # av_config(全画面基準200)。env `CBRSIM_COLD_CAP_REALIZED` で作品ごとに実測値へ上書き可。
-    cold_ceiling = int(os.environ.get("CBRSIM_COLD_CAP_REALIZED", str(av_config.COLD_CAP_REALIZED)))
+    # av_config の fps連動 realized ceiling(15fps=380基準を 1/fps でスケール: 30fps=190)。
+    # env `CBRSIM_COLD_CAP_REALIZED` で作品ごとに実測値へ上書き可。
+    cold_ceiling = int(os.environ.get(
+        "CBRSIM_COLD_CAP_REALIZED", str(av_config.cold_realized_ceiling_for_fps(FPS))))
     realized_max = max([int(x) for x in n_load[1:]], default=0)
     if realized_max > cold_ceiling:
         raise SystemExit(
