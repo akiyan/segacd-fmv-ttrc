@@ -77,6 +77,12 @@
 #        so the cap rises from 195 to 362 (sim cap 350), lifting mean cold 167->230 (+37%)
 #        = the Tank/CD-bandwidth is now spent on fresh tiles instead of wasted. Verified
 #        S=0, R=1, D=0. Also improves machi_op (faster Sub = shallower audio-lead dips).
-date=20260712
+#   p6 : debug HUD reposition — the on-screen readout (F/P/S/D/R/L) is now a single
+#        row in the top-left corner with 1-tile gaps (was 2 rows, indented), so it
+#        covers less picture and every value reads on one line. Positions are named
+#        constants (HUD_ROW/HUD_PITCH/HUD_COL_* in movieplay_ip.s), kept in sync with
+#        the capture OCR (tools/read_frameno.py: read_hud). DEBUG-only overlay; the
+#        shipped (non-debug) codec/stream output is unchanged.
+date=20260713
 e=9
-p=5
+p=6

@@ -584,30 +584,43 @@ dbg_recolor_word:
    表示は F(rame) と P(区間) のみ・左上寄せ・スペース区切りの横並び(ユーザー指定)。
    行0-1はオーバースキャンで切れうるため行2を使用。下黒帯は将来の
    「黒帯走査中のDMA早期開始」用に空けておく。 */
+/* --- デバッグHUDレイアウト(左上端・1行) ---
+   各値 = glyph 1セル + hex4桁 4セル + 空け 1セル = 6セル間隔(HUD_PITCH)。
+   F/P/S/D/R/L を HUD_ROW の col 0/6/12/18/24/30 に横一列(末尾col34, H40の40列に収まる)。
+   OCR側(tools/read_frameno.py の HUD_*)はこの定義と一致させること。 */
+.equ HUD_ROW,   0			/* HUD行(0=最上段) */
+.equ HUD_PITCH, 6			/* 値ごとのセル間隔(glyph1+hex4+gap1) */
+.equ HUD_COL_F, 0
+.equ HUD_COL_P, HUD_COL_F+HUD_PITCH	/* 6 */
+.equ HUD_COL_S, HUD_COL_P+HUD_PITCH	/* 12 */
+.equ HUD_COL_D, HUD_COL_S+HUD_PITCH	/* 18 */
+.equ HUD_COL_R, HUD_COL_D+HUD_PITCH	/* 24 */
+.equ HUD_COL_L, HUD_COL_R+HUD_PITCH	/* 30 */
+
 render_dbg:
 	movem.l	d0-d4/d6-d7/a0-a1, -(sp)
 	move.w	dbg_palattr, d7
-	move.w	#2*128+1*2, d2			/* F frame (col1-5) */
-	move.w	#15, d3
+	move.w	#HUD_ROW*128+HUD_COL_F*2, d2	/* F フレーム番号 */
+	move.w	#15, d3				/* glyph 'F'(=hex F) */
 	move.w	frame_no, d4
 	bsr	dbg_put_row
-	move.w	#2*128+8*2, d2			/* P 区間 (col8-12, 2セル空け) */
-	move.w	#19, d3
+	move.w	#HUD_ROW*128+HUD_COL_P*2, d2	/* P パレット区間 */
+	move.w	#19, d3				/* glyph 'P' */
 	move.w	dbg_seg, d4
 	bsr	dbg_put_row
-	move.w	#2*128+15*2, d2			/* S 滑り=再シーク回復回数(グリッチマーカー, col15-19) */
+	move.w	#HUD_ROW*128+HUD_COL_S*2, d2	/* S 滑り=再シーク回復回数(グリッチマーカー) */
 	move.w	#23, d3				/* glyph 'S' */
 	move.w	(PROBE_BANK+0xAF00).l, d4
 	bsr	dbg_put_row
-	move.w	#2*128+22*2, d2			/* D desync検知回数(通常0, col22-26) */
-	move.w	#13, d3				/* glyph hex 'D' */
+	move.w	#HUD_ROW*128+HUD_COL_D*2, d2	/* D desync検知回数(通常0) */
+	move.w	#13, d3				/* glyph 'D'(=hex D) */
 	move.w	(PROBE_BANK+0xAF7E).l, d4
 	bsr	dbg_put_row
-	move.w	#3*128+1*2, d2			/* R 音声re-sync回数(計測, row3 col1-5) */
+	move.w	#HUD_ROW*128+HUD_COL_R*2, d2	/* R 音声re-sync回数(計測) */
 	move.w	#16, d3				/* glyph 'R' */
 	move.w	(PROBE_BANK+0xAF20).l, d4
 	bsr	dbg_put_row
-	move.w	#3*128+8*2, d2			/* L 現コマの音声リード(計測, row3 col8-12) */
+	move.w	#HUD_ROW*128+HUD_COL_L*2, d2	/* L 現コマの音声リード(計測) */
 	move.w	#21, d3				/* glyph 'L' */
 	move.w	(PROBE_BANK+0xAF22).l, d4
 	bsr	dbg_put_row
