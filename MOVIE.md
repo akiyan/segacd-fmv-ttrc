@@ -57,14 +57,14 @@ First 22 bytes: `struct ">4sHHHHHHHHH"`.
 | Off | Size | Field          | Meaning |
 |-----|------|----------------|---------|
 | 0   | 4    | magic          | `"TTRC"` |
-| 4   | 2    | version        | format version (currently 3) |
+| 4   | 2    | version        | format version (3 = fixed 5-sector frames; 4 = rate-matched variable frames + N/audio/fps fields) |
 | 6   | 2    | frames         | total frame count (`nfr`) |
 | 8   | 2    | tcols          | tile grid columns |
 | 10  | 2    | trows          | tile grid rows |
 | 12  | 2    | cells          | total cells = `tcols * trows` (`C_CELLS`) |
 | 14  | 2    | pool           | VRAM tile-pool size (number of resident slots) |
 | 16  | 2    | base           | `POOL_TILE_BASE`; VRAM tile index of slot `s` = `base + s` |
-| 18  | 2    | frame_sectors  | sectors per frame = 5 |
+| 18  | 2    | frame_sectors  | max sectors per frame = 5 (routing-byte cap; v4 frame size is `fsec`, see Routing) |
 | 20  | 2    | n_seg          | number of palette segments |
 
 Next 16 bytes: `struct ">LLLL"`.
@@ -85,7 +85,14 @@ Then:
 - offset 40: `u32 f0_ctrl_sec` — sectors of frame 0's control block (v2+);
 - offset 44: `u32 f0_pat_sec` — sectors of frame 0's cold patterns (v2+);
 - offset 48: `u32 paltab_sec` — sectors of the PALTAB region (v3; 0 = none);
-- bytes 52..63 are zero;
+- offset 52: `u16 vsync_n` (v4) — display VBlanks per frame `N = round(59.94/fps)`
+  (15fps→4, 30fps→2). `0` in v2/v3 streams (player defaults to 4 = 15fps);
+- offset 54: `u16 audio_bytes` (v4) — PCM bytes per frame `round(audio_rate/fps)`
+  (15fps→887, 30fps→443). `0` in v2/v3 (player defaults to 887);
+- offset 56: `u16 fps_int` (v4) — nominal fps (15/30) used by both packer and
+  player to compute the rate-matched per-frame sector count (see Routing/Frame).
+  `0` in v2/v3 (player defaults to 15);
+- bytes 58..63 are zero;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
 - remainder up to 2048 is zero.
@@ -108,13 +115,26 @@ timing: a CD slip or re-seek can never corrupt the colours of a segment.
 ## Routing table
 
 `routing_sec` sectors of **2 bytes per frame**: `[n_pay_sec, n_ctrl_sec]` (one
-byte each). For frame `i` these say how many of its 5 sectors are payload
+byte each). For frame `i` these say how many of its sectors are payload
 (cold tile patterns) and how many are control. The Sub CPU uses this to route
 the continuous read into the PRG-RAM ring (payload) and the apply buffer
 (control), staging each sector through Word RAM. `n_pay_sec + n_ctrl_sec <= 5`;
-the rest is padding. The table covers all `nfr` frames including frame 0, but
+any sectors beyond that up to the frame's total (`fsec`, below) are padding the
+player reads and discards. The table covers all `nfr` frames including frame 0, but
 in version 2 frame 0's entry is `(0, 0)` (it is delivered by the FRAME0 block,
 not the FRAMES region).
+
+**Rate-matched frame size (v4).** A frame's total on-disc sectors is
+`fsec = max(n_pay_sec + n_ctrl_sec, ratedelta)`, where `ratedelta` is the number
+of sectors CD 1x delivers in one frame's display time — an integer sequence
+whose average is `75 / fps_int` (CD 1x = 75 sectors/s). Both packer and player
+generate it with the same accumulator: `acc += 75; ratedelta = acc // fps_int;
+acc %= fps_int`. So 15fps is a constant 5 sectors/frame (identical to the old
+fixed slot); 30fps alternates 2 and 3 (average 2.5). This makes the disc read
+rate equal the display rate, so the buffers never over-fill (an under-sized
+frame would let the disc run ahead of display → ring overflow → dropped CDC
+sectors). v2/v3 streams have `fps_int = 0`; the player defaults it to 15, which
+yields the constant 5 and reproduces the old fixed-slot behaviour exactly.
 
 ## Prebuffer
 
@@ -123,7 +143,7 @@ frames 1 onward (frame 0's patterns are in the FRAME0 block), loaded into the
 ring before playback. `Bpat` is sized to fill the usable ring (`RING_CAP`), so
 frame 1 starts with a full ring.
 
-## Frame (exactly FRAME_SECTORS = 5 sectors; frames 1..nfr-1)
+## Frame (`fsec` sectors, rate-matched; frames 1..nfr-1)
 
 ```
 [ n_pay_sec sectors : payload  ]  cold tile patterns, 32 bytes each, back to back

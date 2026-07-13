@@ -117,6 +117,14 @@
 #   p8 : player v4対応。ヘッダのN(vsync/コマ)/AUDIO読込、pump1を可変フレーム化(0セクタは
 #        read無しでスキップ, (n_pay+n_ctrl)で前進)、音声可変、stream_totalはファイルサイズ。
 #        Sonic H32 30fpsは実機でD=0完走するが Sub pump律速で実効~16fps(スリップ多発)=issue#15待ち。
+#   e13: v4レートマッチpadding。各コマを CD 1x(75 sec/s)の1コマ配送レート(=75/fps セクタ)まで
+#        padding(累積器で整数割当: 15fps→5固定=v3と同一, 30fps→2/3平均)。paddingを外したv4は
+#        ディスクが表示より速く読まれ過剰配送→バッファ溢れ→CDCスリップ(ed実機S=689)していた。
+#        レートマッチで「ディスク読み速度=表示速度」に一致=スリップ根絶。header offset56=名目fps。
+#   p9 : player レートマッチ対応。pump1が fsec=max(n_pay+n_ctrl, ratedelta) セクタで1コマ前進
+#        (padセクタは読んで捨て、累積器sec_accでpackと同期)。h_fps_int@56読込。ip.sのvsync明示
+#        ペーシングは撤去(ディスクがレートマッチ=旧来のデータ律速で正しいfps)。ed実機 S=0 D=0
+#        R=1 15.0fps=v3同等を確認。30fpsも同枠組みで過剰配送ぶんのスリップが減る見込み。
 date=20260713
-e=12
-p=8
+e=13
+p=9
