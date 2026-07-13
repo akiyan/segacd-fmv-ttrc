@@ -103,3 +103,25 @@ Remaining player work (v4), all delicate + emulator-tested:
 4. ip.s: read N from the header, and **pace the display at N VBlanks/frame** (currently
    it flips as fast as the Sub signals; N=2 pins 29.97).
 5. Re-sim Sonic H32 at cap 175, pack v4, build, record on emulator (first true 30fps disc).
+
+## First 30fps disc: hardware (emulator) result
+
+Built the first true 30fps disc (Sonic Jam OP, H32 256x208, 832 cells, cap 175,
+MOVIE.DAT v4, N=2 = 29.97) and recorded it on Genesis Plus GX.
+
+**It plays** — correct content, palettes switch, **D=0 (zero desync), runs to the
+end (F 0x9ED)**. The v4 variable-frame format + player are sound. BUT the player
+**cannot sustain 30fps for this dense spec**: the HUD S (CD sector-slip recoveries)
+climbs to ~316 and R (audio re-sync) to ~147 over the movie, and the effective rate
+measured from the F counter is **~16 fps** (about half of 29.97) — each slip forces a
+re-seek that costs time.
+
+Root cause: at 30fps the Sub-CPU must drain the CDC at ~2x the 15fps rate, and the
+current pump can't keep up on the 832-cell frames → the CDC overflows → sector slips
+→ re-seeks → the effective rate halves. This is exactly the pipeline-throughput limit
+of **issue #15** (BUDGETS.md: "the real limit is the pipeline, not raw DMA").
+
+Conclusion: **true 30fps is NOT structurally impossible** — the format, the data rate
+(fits CD 1x), and the player all work (D=0, plays to completion). The binding limit is
+Sub-CPU pump throughput, which the issue-#15 speedup (MOVEM block copies, fewer polls)
+is designed to lift. A lighter spec (fewer cells) would already hit 30fps clean now.
