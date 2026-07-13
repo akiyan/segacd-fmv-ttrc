@@ -125,3 +125,37 @@ Conclusion: **true 30fps is NOT structurally impossible** — the format, the da
 (fits CD 1x), and the player all work (D=0, plays to completion). The binding limit is
 Sub-CPU pump throughput, which the issue-#15 speedup (MOVEM block copies, fewer polls)
 is designed to lift. A lighter spec (fewer cells) would already hit 30fps clean now.
+
+## Rate-matched padding (the real fix) + 30fps re-test
+
+Removing the padding entirely (first v4) was wrong: the disc must be padded back up
+to the **CD 1x delivery rate** (75 sectors/s → `75/fps` sectors per frame) or the
+disc reads faster than the display consumes → the buffers over-fill → CDC sectors
+drop → slips. The padding was never just an fps knob; it rate-matches the disc read
+to the display.
+
+Fix: `fsec = max(actual, ratedelta - lead)`, where `ratedelta` is the integer CD-1x
+sectors for this frame (5 for 15fps; 2/3 alternating for 30fps) and `lead` (≥0) is
+how far the disc already runs ahead of the CD-1x schedule — a heavy frame pushes
+`lead` up, later light frames pad less to absorb it, so the total lands on exactly
+`nfr·75/fps` (Sonic 30fps = 6777 sectors = CD 1x). Pack and player run the identical
+bounded `(sec_acc, lead)` integer accumulator, so on-disc frame boundaries match to
+the sector. The vsync-pacing added earlier was removed — with a rate-matched disc,
+plain data-pacing (Sub-signal handshake) already gives the right fps, and the pacing
+was itself nudging the Main off the disc rate and causing extra slips.
+
+Results:
+- **ed (15fps, H40 1120-cell): S=0, D=0, R=1, steady 15.0fps** — identical to v3
+  (15fps rate-matches to a constant 5 sectors/frame). Uploaded.
+- **Sonic (30fps, H32 832-cell): D=0, plays clean to the end, correct content — but
+  still ~16fps** with slips (S) growing (~12% of frames). Rate-matching removed the
+  over-delivery component but Sonic's binding limit is **Sub-CPU expand throughput**:
+  832 cells at 30fps is ~2x the per-second decode work of 15fps, more than the Sub
+  can do alongside the CD drain, so the ring fills → back-pressure → slips → the
+  effective rate settles at what the Sub can sustain (~16fps). This is the issue-#15
+  pipeline-speed limit, not a format/over-delivery problem.
+
+Bottom line: 30fps is structurally correct (D=0, rate-matched disc, plays fully).
+Clean 30fps of a **dense** spec needs the Sub speedup (issue #15); a lighter grid
+(~≤500 cells, so cells·30fps ≤ the ~16800 cells/s the Sub sustains at 15fps) would
+already play clean 30fps now.
