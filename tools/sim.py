@@ -170,7 +170,12 @@ TANK_CAP_BYTES = TANK_KB * 1024
 UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
 # cold(=新規パターン転送: Raw+Buf)の1コマ上限。実機MDの実時間デコード天井対策
 # (BUDGETS.md 'Encoder cap')。超過セルは Flbk近似 or Miss繰越。0=無効。
-MAX_COLD = int(os.environ.get("CBRSIM_MAX_COLD", "0"))
+# 1コマの cold 上限は「実機が1コマで描画できる新規タイル数」= 物理描画限界(90/VBLANK)を
+# エンコードfpsから計算(av_config.cold_cap_for_fps): 15fps→360, 24fps→225, 30fps→180。
+# uncapped(0)は禁止(実機で描画不能なバーストを sim が見逃すため)。CBRSIM_MAX_COLD を正の値で
+# 明示した時だけ上書き(特殊ケース用)。frame0 は下の frame_max_cold で別途免除。
+_mc = os.environ.get("CBRSIM_MAX_COLD", "").strip()
+MAX_COLD = int(_mc) if (_mc and int(_mc) > 0) else av_config.cold_cap_for_fps(FPS)
 # タンク(Buff)の温存率。Coa〜Miss(劣化の重い格上げ)にはこの割合を最低残す=将来の劣化タイル需要用に予約。
 # Nearの格上げは「余裕があるとき」だけ=より高い割合を残す(NEAR_RESERVE)まで温存。終盤はrampで両方0へ。
 UPGRADE_RESERVE = float(os.environ.get("CBRSIM_UPGRADE_RESERVE", "0.4"))       # Coa〜Miss用に最低4割予約

@@ -83,3 +83,24 @@ assert PALTAB_MAX_SEG <= 255, "pal byte = seg+1 addresses at most 255 segments"
 # plays S=0 fully *uncapped* (realized cold up to 714). The pack accepts
 # `CBRSIM_COLD_CAP_REALIZED` to raise this per source (machi_op ships uncapped).
 COLD_CAP_REALIZED = 380
+
+# --- Per-frame cold cap as a PHYSICAL DRAW LIMIT (scales with fps) ---
+# This project ships to real hardware, so the sim MUST model what the player can
+# actually DRAW per frame, not just what the CD/tank can deliver. The player renders
+# at most a fixed number of fresh (cold) 8x8 tiles per VBLANK — the raw-share DMA plus
+# buffer-drain draw ceiling. Measured at 15fps: ~360 cold/frame, and 15fps content
+# spans 4 VBLANks/frame (60/15), so the per-VBLANK limit is 360/4 = 90 cold/VBLANK.
+# The cap therefore scales with the ENCODE fps (higher fps = fewer VBLANks/frame =
+# fewer cold/frame): 15->360, 24->225, 30->180. Uncapped is no longer allowed — an
+# uncapped sim shows impossible bursts (e.g. Sonic H32 30fps: 600-738 cold on the
+# opening frames, far above the 180 the hardware could draw) that would collapse live.
+# Raising COLD_PER_VBLANK is the goal of the pipeline-speedup work (block copies via
+# MOVEM, padding to enable them, table lookups) — bump it here as the player improves.
+COLD_PER_VBLANK = 90
+NTSC_VBLANK_HZ = 60          # ~59.94; 60 keeps round numbers (15->360, 30->180, 24->225)
+
+
+def cold_cap_for_fps(fps):
+    """Per-frame cold cap = COLD_PER_VBLANK x (VBLANks per frame). frame0 is exempt
+    (loaded from the header at boot, no VBLANK limit)."""
+    return int(round(COLD_PER_VBLANK * NTSC_VBLANK_HZ / float(fps)))
