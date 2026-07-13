@@ -1032,7 +1032,7 @@ ef_byte:
 	   毎バイト(全画面140回/コマ)は過剰。8バイト毎(~18回/コマ)でも十分取りこぼさない。
 	   空振りpollを削り Sub時間を空ける=重コマのfps落ちを詰めて滑り天井を上げる狙い。 */
 	move.w	d7, d0
-	andi.w	#7, d0
+	andi.w	#15, d0				/* issue#15: 8→16バイト毎。16B=最大128cell/最悪20kサイクル<<166k */
 	bne	ef_nopump
 	bsr	pump_poll			/* 長い展開中もCDを取りこぼさない(頻度は落としても間に合う) */
 ef_nopump:
@@ -1313,35 +1313,43 @@ write_wave_chunk:
 2:
 	move.w	h_audio_bytes, d3		/* v4: 1コマ音声B(可変) */
 	subq.w	#1, d3
+	/* issue#15: 初期バンク設定＋走行ポインタ a1 を用意。以降は毎バイト a1+=2 だけ(lea/add/adda
+	   をバイト毎に再計算しない)。バンク境界(0x1000毎)とリング折返しで a1 を PCM_WAVE に戻す。 */
 	move.w	d2, d0
 	lsr.w	#8, d0
 	lsr.w	#4, d0
 	ori.b	#0x80, d0
-	move.b	d0, (PCM_CTRL).l
-wwc_loop:
-	move.w	d2, d0
-	andi.w	#0x3F, d0
-	bne	3f
-	bsr	pump_poll			/* 音声書込中もCDを取りこぼさない */
-3:
+	move.b	d0, (PCM_CTRL).l		/* 初期バンク */
 	move.w	d2, d4
 	andi.w	#0x0FFF, d4
-	bne	1f
+	add.w	d4, d4
+	lea	(PCM_WAVE).l, a1
+	adda.w	d4, a1				/* a1 = 初期wave書込ポインタ */
+wwc_loop:
 	move.w	d2, d0
+	andi.w	#0x7F, d0			/* issue#15: 0x40→0x80バイト毎(音声書込中のpump頻度半減) */
+	bne	3f
+	bsr	pump_poll			/* 音声書込中もCDを取りこぼさない(pump_pollはa1保存) */
+3:
+	move.b	(a0)+, (a1)			/* 書込 */
+	addq.w	#2, a1				/* 次wave slot(奇数バイト窓=×2) */
+	addq.w	#1, d2
+	cmp.w	#WAVE_RING_END, d2
+	blo	4f
+	moveq	#0, d2				/* リング折返し: bank0, a1=先頭 */
+	move.b	#0x80, (PCM_CTRL).l
+	lea	(PCM_WAVE).l, a1
+	bra	2f
+4:
+	move.w	d2, d4
+	andi.w	#0x0FFF, d4
+	bne	2f				/* バンク境界でなければそのまま */
+	move.w	d2, d0				/* バンク境界: バンク更新＋a1を先頭へ */
 	lsr.w	#8, d0
 	lsr.w	#4, d0
 	ori.b	#0x80, d0
 	move.b	d0, (PCM_CTRL).l
-1:
 	lea	(PCM_WAVE).l, a1
-	add.w	d4, d4
-	adda.w	d4, a1
-	move.b	(a0)+, (a1)
-	addq.w	#1, d2
-	cmp.w	#WAVE_RING_END, d2
-	blo	2f
-	moveq	#0, d2
-	move.b	#0x80, (PCM_CTRL).l
 2:
 	dbra	d3, wwc_loop
 	move.w	d2, write_ptr
