@@ -100,6 +100,17 @@
 #        moves to Main-RAM). av_config.PALTAB_MAX_SEG is the single source, build-asserted
 #        against the player equ. Verified on emulator: full machi_ed plays S=0 D=0 with all
 #        14 segments (P0->P0D) switching to correct colours.
+#   e11: CRAM-switch trigger generalized from "deep black" to "uniform screen" (any flat
+#        colour). A deep blackout is just one case of the screen being one flat colour, so
+#        tile reuse is maximal and a CRAM swap is cheap and its colour pop hidden; a
+#        white-out or any flat-colour fade is an equally cheap switch point. sim.py now
+#        detects uniform frames (fraction of pixels near the frame's mean colour) as a
+#        separate, independent clustering and merges those boundaries in (so it never
+#        bridges/merges the existing dark clusters). machi_op gains 3 switch points it
+#        missed before (two white-outs + a flat stretch, deep mid-segment): 7 -> 10
+#        switches, each giving 48-83% quantization-error reduction on the scene it opens.
+#        machi_ed is unchanged (its long segment 12 has no uniform moment; that needs the
+#        hard-cut path — issue #14, Phase 2). Env: CBRSIM_SEG_UNIFORM / _TOL / _NEAR.
 date=20260713
-e=10
+e=11
 p=7
