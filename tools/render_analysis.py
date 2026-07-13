@@ -151,28 +151,22 @@ _SP = np.load(f"{SIM}/seg_palettes.npz")
 SEG_PALS = _SP["seg_pals"]                     # (nseg,4,15,3) rgb333(0-7)
 FRAME_SEG = _SP["frame_seg"]                   # (NF,)
 
-# ---- VRAMパネル用データ(sim OUT/vram.pkl) ----
-import pickle as _pk  # noqa: E402
+# ---- 音声波形パネル用データ(sim OUT の音声wav) ----
+import wave as _wave  # noqa: E402
+WAVE_WIN_S = 2.0                                          # 前後2s
+WAVE_BW = L.WAVE_FRAME[2] - L.WAVE_FRAME[0] - 2
 try:
-    _V = _pk.load(open(f"{SIM}/vram.pkl", "rb"))
-    VRAM_KEYS = _V["keys"]; VRAM_SLOTS = _V["slots"]
-    VRAM_TILES_N = int(_V["vram_tiles"]); VTILE = int(_V["tile"])
+    _wf = _wave.open(f"{SIM}/audio_13k3_u8_mono.wav", "rb")
+    AUDIO_RATE = _wf.getframerate()
+    _araw = np.abs(np.frombuffer(_wf.readframes(_wf.getnframes()), np.uint8).astype(np.int16) - 128)
+    _wf.close()
 except Exception as _e:
-    VRAM_KEYS = []; VRAM_SLOTS = []; VRAM_TILES_N = 1400; VTILE = 8
-    print("VRAM: vram.pkl 無し ->", _e)
-KEY_IDX = (np.frombuffer(b"".join(VRAM_KEYS), np.uint8).reshape(-1, VTILE * VTILE)
-           if VRAM_KEYS else np.zeros((0, VTILE * VTILE), np.uint8))
-SEG_PALS_DISP = SEG_PALS.astype(np.int16) * 36            # (nseg,4,15,3) 0-7 -> 0-252
-DISP_KIDS = [set(int(k) for k in (s[s[:, 4] == 1, 1] if len(s) else []))
-             for s in VRAM_SLOTS]                          # 各コマの今表示中key_id(将来判定用)
-VRAM_FUTURE_WIN = 30                                       # 「将来表示」とみなす先読み窓(コマ)
-VGRID_COLS, VGRID_ROWS = 64, 32                           # 2048スロット = 64KB/32B
-_NTGRAY = np.random.RandomState(3).randint(40, 165, size=(VGRID_ROWS * VGRID_COLS)).astype(np.uint8)
-# VRAMベースグリッド(暗背景 + ネームテーブル領域 slot>=1536 の静的グレースケール)。毎コマ複製して使う。
-VRAM_BASE = np.full((VGRID_ROWS * VTILE, VGRID_COLS * VTILE, 3), 12, np.uint8)
-for _slot in range(1536, VGRID_COLS * VGRID_ROWS):
-    _r, _c = _slot // VGRID_COLS, _slot % VGRID_COLS
-    VRAM_BASE[_r * VTILE:(_r + 1) * VTILE, _c * VTILE:(_c + 1) * VTILE] = int(_NTGRAY[_slot])
+    AUDIO_RATE = 13300; _araw = np.zeros(1, np.int16); print("waveform: 音声wav 無し ->", _e)
+_PPS = WAVE_BW / (2 * WAVE_WIN_S)                         # pixels/秒
+_BIN = max(1, int(round(AUDIO_RATE / _PPS)))             # samples/pixel(1px=1bin)
+_nb = len(_araw) // _BIN
+AUDIO_ENV = ((_araw[:_nb * _BIN].reshape(_nb, _BIN).max(axis=1)) if _nb > 0
+             else np.zeros(1, np.int16)).astype(np.int16)   # px解像度の包絡(0..128)
 
 
 def seg_pal_rgb(seg):
@@ -266,9 +260,13 @@ def build_base():
     if SRC_SPEC:
         d.text((_sx + L._w(L.f_head, "Source") + 12, _sby), SRC_SPEC, fill=L.COL_DIM, font=L.f_meta, anchor="ls")
     L.panel(d, L.CAT_FRAME)
-    L.panel(d, L.VRAM_FRAME)         # VRAMパネル。見出しは枠の外(上)に小フォントで
-    d.text((L.VRAM_FRAME[0] + 2, L.VRAM_FRAME[1] - 7), "VRAM  (64KB tilemap, palette applied)",
-           fill=L.COL_TXT, font=L.f_lbl, anchor="ls")
+    L.panel(d, L.WAVE_FRAME)         # 音声波形パネル。見出し=Audio + 諸元 + 読み方(小フォント, 枠外)
+    _ax = L.WAVE_FRAME[0] + 2; _ay = L.WAVE_FRAME[1] - 4
+    d.text((_ax, _ay), "Audio", fill=L.COL_TXT, font=L.f_leg, anchor="ls")
+    _sx = _ax + L._w(L.f_leg, "Audio") + L._w(L.f_sm, " ")   # 右スペース=半角1文字
+    d.text((_sx, _ay), AUDIO_STR, fill=L.COL_DIM, font=L.f_sm, anchor="ls")
+    d.text((_sx + L._w(L.f_sm, AUDIO_STR) + 14, _ay), "±2s, now=center, scroll left",
+           fill=L.COL_DIM, font=L.f_sm, anchor="ls")   # 波形の読み方=見出しの後ろ
     # カテゴリ合計(全編合計=静的)を Category の下へ
     cv.paste(L.draw_cattotals(L.CATTOT_W, L.CATTOT_H, {"cat_totals": CAT_TOTALS, "cat_uniq": CAT_UNIQ}),
              L.CATTOT_XY)
@@ -407,30 +405,24 @@ def frame_data(i):
                         for k in FULL})
 
 
-def draw_vram_real(i):
-    """VRAMパネル: 毎コマのスロットを 64x32 タイルマップで描画。パターンは適用CRAM(seg,face)で着色、
-    今表示/将来表示=フル・未参照=半分薄く、ネームテーブル領域=静的グレースケール。"""
-    bw = L.VRAM_FRAME[2] - L.VRAM_FRAME[0] - 2 * L.PAD
-    bh = L.VRAM_FRAME[3] - L.VRAM_FRAME[1] - 2 * L.PAD
-    grid = VRAM_BASE.copy()
-    slots = VRAM_SLOTS[i] if i < len(VRAM_SLOTS) else np.zeros((0, 5), np.int32)
-    if len(slots) and len(KEY_IDX):
-        future = set()                               # 将来表示(i+1..i+WIN)のkey_id
-        for j in range(i + 1, min(i + 1 + VRAM_FUTURE_WIN, len(DISP_KIDS))):
-            future |= DISP_KIDS[j]
-        fut_arr = np.fromiter(future, np.int64) if future else np.zeros(0, np.int64)
-        slotn = slots[:, 0]; kids = slots[:, 1]; segs = slots[:, 2]; faces = slots[:, 3]; curs = slots[:, 4]
-        idx = np.clip(KEY_IDX[kids], 0, 15)          # (N,64) 0=透明, 1..15=パレット
-        pal = SEG_PALS_DISP[np.clip(segs, 0, len(SEG_PALS_DISP) - 1), np.clip(faces, 0, 3)]   # (N,15,3)
-        pal16 = np.concatenate([np.zeros((len(slots), 1, 3), np.int16), pal], axis=1)         # idx0=黒
-        rgb = pal16[np.arange(len(slots))[:, None], idx].astype(np.int16)                     # (N,64,3)
-        stale = (curs == 0) & (~np.isin(kids, fut_arr))    # 未参照(将来でもない)=淡く(白寄せ)
-        rgb[stale] = rgb[stale] // 2 + 100                 # 半分薄く=パレットそのまま白寄せで褪せた表現(黒潰れ回避)
-        rgb = rgb.clip(0, 255).astype(np.uint8).reshape(len(slots), VTILE, VTILE, 3)
-        for n in range(len(slots)):
-            s = int(slotn[n]); r, c = s // VGRID_COLS, s % VGRID_COLS
-            grid[r * VTILE:(r + 1) * VTILE, c * VTILE:(c + 1) * VTILE] = rgb[n]
-    return Image.fromarray(grid).resize((bw, bh), Image.NEAREST)
+def draw_waveform_real(i):
+    """音声波形パネル: このコマの前後2sを描く。中央=現在(now)、左=過去(明)/右=未来(暗)、左へ流れる。"""
+    bw, bh = WAVE_BW, L.WAVE_FRAME[3] - L.WAVE_FRAME[1] - 2
+    im = Image.new("RGB", (bw, bh), (16, 16, 16))
+    d = ImageDraw.Draw(im)
+    mid = bh // 2
+    d.line([(0, mid), (bw - 1, mid)], fill=(60, 60, 66))          # 振幅0の中央線
+    now_bin = int(i / FPS * _PPS); half = bw // 2
+    scale = bh * 0.46 / 128.0
+    for x in range(bw):
+        b = now_bin - half + x
+        if 0 <= b < len(AUDIO_ENV):
+            yy = int(AUDIO_ENV[b] * scale)
+            if yy > 0:
+                col = (150, 205, 150) if x < half else (95, 130, 95)   # 過去=明 / 未来=暗
+                d.line([(x, mid - yy), (x, mid + yy)], fill=col)
+    d.line([(half, 0), (half, bh - 1)], fill=(230, 230, 235))    # 現在(now)線
+    return im
 
 
 def render(i):
@@ -468,7 +460,7 @@ def render(i):
     d.text((tx + L._w(L.f_leg, lab_t), ty), fhex, fill=L.COL_TXT, font=L.f_leg)
     # 凡例リスト(Categoryの上) / VRAMパネル(右下) / status
     cv.paste(L.draw_legend(L.CATLEG_W, L.CATLEG_H, data), L.CATLEG_XY)
-    cv.paste(draw_vram_real(i), (L.VRAM_FRAME[0] + L.PAD, L.VRAM_FRAME[1] + L.PAD))
+    cv.paste(draw_waveform_real(i), (L.WAVE_FRAME[0] + 1, L.WAVE_FRAME[1] + 1))   # padding無し(枠内1px)
     cv.paste(draw_status_real(data), L.STATUS_XY)
     cv.save(f"{FRAMES_DIR}/{i:05d}.png")
     return i
