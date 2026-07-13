@@ -111,6 +111,12 @@
 #        switches, each giving 48-83% quantization-error reduction on the scene it opens.
 #        machi_ed is unchanged (its long segment 12 has no uniform moment; that needs the
 #        hard-cut path — issue #14, Phase 2). Env: CBRSIM_SEG_UNIFORM / _TOL / _NEAR.
+#   e12: MOVIE.DAT v4(可変フレーム)。5セクタ固定padding廃止(各frame=n_pay+n_ctrl sec)。AUDIO
+#        をfps由来(15=887,30=443)に=旧887固定が30fpsでdiscをCD 1x 8%超過させていた主因。
+#        cold cap基準を15fps=350に(cap(fps)=350*15/fps, 30->175)。真の30fps(N2=29.97)がCD 1x内。
+#   p8 : player v4対応。ヘッダのN(vsync/コマ)/AUDIO読込、pump1を可変フレーム化(0セクタは
+#        read無しでスキップ, (n_pay+n_ctrl)で前進)、音声可変、stream_totalはファイルサイズ。
+#        Sonic H32 30fpsは実機でD=0完走するが Sub pump律速で実効~16fps(スリップ多発)=issue#15待ち。
 date=20260713
-e=11
-p=7
+e=12
+p=8
