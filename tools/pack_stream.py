@@ -43,7 +43,9 @@ BASE = 1                     # POOL_TILE_BASE (VRAM tile index = BASE+slot)
 FRAME_SECTORS = 5
 PAT = 32
 PAT_PER_SEC = SECTOR // PAT  # 64
-AUDIO = 887                  # 13.3kHz/15fps ≒ 886.7 -> 887固定
+# 1コマの音声バイトは fps由来。15fps=887(13.3kHz/15), 30fps=443(13.3kHz/30)。
+# 旧: 887固定=15fps専用だった(30fpsで2倍消費し disc が CD 1x を8%超過する主因だった)。
+AUDIO = int(round(AUDIO_RATE / FPS))   # AUDIO_RATE, FPS は sim から import
 # リング諸元は tools/av_config.py の単一真実源から取る(sim/pack/playerで二重管理しない)。
 # RING_SIZE はプレイヤの実 .equ RING_SIZE と一致(ビルド時 check_player_ring.py が検証)。
 # RING_CAP(スケジュール上限)と sim の TANK は RING_SIZE から導出され必ず一致する。
