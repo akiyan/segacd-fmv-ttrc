@@ -166,7 +166,7 @@ def dummy_data():
                 comp=counts["Same"] + counts["Near"] + counts["Coa"] + counts["Flbk"],
                 buf_cap=buf_cap, buf_rem=13900,
                 cold=counts["Raw"] + counts["Buf"], cold_raw=counts["Raw"], cold_buf=counts["Buf"],
-                cold_cap=av_config.COLD_CAP_REALIZED,   # Coldバーのフルスケール=drop-safe上限
+                cold_cap=av_config.cold_cap_for_fps(15),   # Coldバー満スケール=cap(realized=cap)
                 dma_bytes=(counts["Raw"] + counts["Buf"]) * 32 + C * 2,   # パターン+ネームテーブル
                 tl=tl, buf_rem_series=rem, dma_tl=dma_tl, tln=tln,
                 time_s=42.0, frame=1260, total_frames=2712)
