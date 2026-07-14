@@ -54,11 +54,16 @@ segment's colours), and the palette-switch frame's byte budget is freed.
 resident tile). More cold = sharper picture, but a heavy frame that loads too
 many can overrun the CDC (a sector slip).
 
+The cap is **auto-derived** from `av_config.cold_cap_for_fps` (15fps→350, 30fps→175)
+and shared by the sim and the pack — no manual per-source env. The sim and pack use
+ONE tile allocator (`tools/tile_alloc.py`), so the pack's **realized cold == the cap
+exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
+
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| `CBRSIM_MAX_COLD` | ed = 350, op = 0 (uncapped) | sim (env) | **Encoder-side per-frame cold cap** — the real lever. Capped cells become smart reuse. 0 = uncapped. |
-| `COLD_CAP_REALIZED` | 380 | cfg | Pack-time assert: if realized cold exceeds it, the build FAILS (never ships a slipping/glitching disc). Raised 200 -> 380 with the p5 player. |
-| realized cold | 362 (ed, sim cap 350) | pack (measured) | Actual loads: contiguous slot allocation reloads a few tiles the sim kept resident, so it runs a bit above the sim cap. |
+| cap `cold_cap_for_fps` | 15fps→350, 30fps→175 | cfg (auto) | **Per-frame cold cap** = `COLD_CAP_15FPS(350)·15/fps`. Applied by the sim; the pack ships exactly this. All sources (op/ed/sonic) use it — none uncapped. |
+| `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
+| realized cold | == cap (e.g. op/ed 350, sonic 175) | pack (measured) | Equals the cap by construction (shared two-pass allocator). The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
 Chain: `CBRSIM_MAX_COLD` (sim 350) -> realized cold (~362) must be `<= COLD_CAP_REALIZED` (380).
 Per-source: lighter sources raise the ceiling via `CBRSIM_COLD_CAP_REALIZED` (machi_op ships uncapped).
