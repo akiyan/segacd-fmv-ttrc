@@ -1045,38 +1045,36 @@ ef_bit:
 	move.w	(a0)+, d2			/* entry */
 	move.w	d6, d3
 	add.w	d1, d3				/* cell */
-	move.w	d3, (a2)+
-	move.w	d2, d3
-	andi.w	#0x7FFF, d3			/* ent */
-	move.w	d3, (a2)+
-	addq.w	#1, d5
+	move.w	d3, (a2)+			/* O_UPDS: cell */
+	addq.w	#1, d5				/* n_upd++ */
 	btst	#15, d2
-	beq	ef_skip
+	bne	ef_cold				/* issue#15: coldのみ andi(スロット計算に要る)。reuseは直接書き */
+	move.w	d2, (a2)+			/* reuse: ent=d2(bit15既に0)=andi不要 */
+	bra	ef_skip
+ef_cold:
+	move.w	d2, d3
+	andi.w	#0x7FFF, d3			/* ent(cold bit除去) */
+	move.w	d3, (a2)+			/* O_UPDS: ent */
+	andi.w	#0x07FF, d3			/* ent & 0x7FF (=slot+1) */
+	move.w	d3, d2
+	subq.w	#1, d2				/* d2 = slot。以降 d3 は空き */
 	tst.w	f0_expand
 	bne	ef_no_occ			/* frame0(Word RAM f0pat): occ迂回(1008<=1024で十分) */
-	/* graceful underrun: cold は ring pop(32B)が要る。リングが枯渇(available<32B)なら、
-	   ゴミを読まず「このコマの以降の更新を打ち切る」=残り全セルは前コマ維持(stale/残像)。
-	   持続重シーンがCD帯域を超えても崩壊でなく軽い残像に化ける。全レジスタ使用中なので
-	   occ計算はd0退避で。 */
-	move.l	d0, -(sp)
-	move.l	ring_tail, d0
-	sub.l	a4, d0				/* occ = ring_tail - a4 (mod RING_SIZE) */
+	/* graceful underrun: cold は ring pop(32B)が要る。リング枯渇(available<32B)なら以降の更新を
+	   打ち切り=残りセルは前コマ維持(stale/残像)。issue#15: スロットを先にd2へ出したのでd3が空く=
+	   occ計算をd3で行い、従来の d0 push/pop(cold毎)を廃止。 */
+	move.l	ring_tail, d3
+	sub.l	a4, d3				/* occ = ring_tail - a4 (mod RING_SIZE) */
 	bge	1f
-	add.l	#RING_SIZE, d0
+	add.l	#RING_SIZE, d3
 1:
-	cmp.l	#32, d0
-	bhs	2f				/* >=32B: 1パターン分ある→pop可 */
-	move.l	(sp)+, d0			/* 枯渇: このセルのupdを取消(stale維持) */
-	subq.l	#4, a2
+	cmp.l	#32, d3
+	bhs	ef_no_occ			/* >=32B: 1パターン分ある→pop可 */
+	subq.l	#4, a2				/* 枯渇: このセルのupdを取消(stale維持) */
 	subq.w	#1, d5
 	bra	ef_finalize			/* 開いているランを閉じてコマ確定(残りは stale) */
-2:
-	move.l	(sp)+, d0
 ef_no_occ:
-	move.w	d3, d2
-	andi.w	#0x07FF, d2
-	subq.w	#1, d2				/* slot */
-	cmpa.w	d2, a6				/* 直前ランの続き(=期待スロット)か? */
+	cmpa.w	d2, a6				/* 直前ランの続き(=期待スロット)か? (d2=slot) */
 	beq	ef_cont
 	cmpa.w	#0, a5				/* 前のランを閉じる(countを書き戻す) */
 	beq	1f
