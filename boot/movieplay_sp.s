@@ -223,6 +223,15 @@ bad_magic:
 	moveq	#4, d0				/* v2/v3(0)は15fps=N4 */
 1:
 	move.w	d0, h_vsync_n
+	/* 展開中 pump_poll 頻度を fps 適応(統一パイプラインのランタイム値)。N>=3(≤20fps)は重コマの
+	   展開が長くSubに余裕もある→8バイト毎(mask 7, 15fpsで滑りゼロ)。N<=2(>=30fps)はSub律速→
+	   64バイト毎(mask 63, 速度優先)。30fps対応(高速pump間引き)を保ったまま15fps回帰を解消。 */
+	moveq	#63, d1
+	cmp.w	#3, d0
+	blo	pm_set
+	moveq	#7, d1
+pm_set:
+	move.w	d1, pump_mask
 	move.w	54(a0), d0			/* AUDIO(1コマ音声B) */
 	bne	1f
 	move.w	#AUDIO_BYTES, d0		/* v2/v3(0)は887 */
@@ -1032,7 +1041,7 @@ ef_byte:
 	   毎バイト(全画面140回/コマ)は過剰。8バイト毎(~18回/コマ)でも十分取りこぼさない。
 	   空振りpollを削り Sub時間を空ける=重コマのfps落ちを詰めて滑り天井を上げる狙い。 */
 	move.w	d7, d0
-	andi.w	#63, d0				/* issue#15: 64バイト毎。展開全体<<1セクタ時間なので更に間引いてもCDC溢れ無し */
+	and.w	pump_mask, d0			/* fps適応: 15fps=8バイト毎(clean), 30fps=64バイト毎(速度) */
 	bne	ef_nopump
 	bsr	pump_poll			/* 長い展開中もCDを取りこぼさない(頻度は落としても間に合う) */
 ef_nopump:
@@ -1281,7 +1290,9 @@ ip_loop:
 	move.b	#0x00, (PCM_ST).l
 	nop
 	nop
-	move.w	#0, write_ptr
+	/* 起動時からリードを SYNC_LEAD で確立=最初のフレームで resync(プライミング)を起こさない。
+	   これで R が 0 スタート(=以降の R>0 は本物の乱れだけ)。音声挙動は従来のプライミング結果と同一。 */
+	move.w	#SYNC_LEAD, write_ptr
 	movem.l	(sp)+, d0-d2/a0
 	rts
 
@@ -1415,6 +1426,8 @@ h_paltab_sec:
 	.space 2
 h_vsync_n:
 	.space 2				/* v4: 1コマの表示VBLANK数(30fps=2, 15fps=4) */
+pump_mask:
+	.space 2				/* 展開中pump頻度マスク(fps適応): 15fps=7(8B毎), 30fps=63(64B毎) */
 h_audio_bytes:
 	.space 2				/* v4: 1コマの音声バイト(30fps=443, 15fps=887) */
 h_fps_int:
