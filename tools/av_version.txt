@@ -125,6 +125,10 @@
 #        (padセクタは読んで捨て、累積器sec_accでpackと同期)。h_fps_int@56読込。ip.sのvsync明示
 #        ペーシングは撤去(ディスクがレートマッチ=旧来のデータ律速で正しいfps)。ed実機 S=0 D=0
 #        R=1 15.0fps=v3同等を確認。30fpsも同枠組みで過剰配送ぶんのスリップが減る見込み。
-date=20260713
+#   p10: Sub高速化 第1次(issue#15)。律速はcoldでなくSub固定費+per-cellデコードと診断(cap半減でも
+#        16→18.5fpsのみ)。pump_poll頻度削減(expand毎バイト系を64B毎, 音声0x100B毎)、write_wave_chunk
+#        を走行ポインタ化(毎バイトのアドレス再計算廃止)、fetch_control冗長movem削除。Sonic H32 832セル
+#        30fpsが実機16→24fps(+50%)、スリップ168→68、全編D=0。効果は非線形(Sub時間解放→CDC溢れ/再シーク減)。
+date=20260714
 e=13
-p=9
+p=10
