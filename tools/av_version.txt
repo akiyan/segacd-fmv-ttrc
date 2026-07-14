@@ -129,6 +129,11 @@
 #        16→18.5fpsのみ)。pump_poll頻度削減(expand毎バイト系を64B毎, 音声0x100B毎)、write_wave_chunk
 #        を走行ポインタ化(毎バイトのアドレス再計算廃止)、fetch_control冗長movem削除。Sonic H32 832セル
 #        30fpsが実機16→24fps(+50%)、スリップ168→68、全編D=0。効果は非線形(Sub時間解放→CDC溢れ/再シーク減)。
+#   e14: sim/pack でタイル割り当てを共有(tools/tile_alloc.py, 二段パス連続)。realized cold が
+#        sim cap と厳密一致(旧: LRU vs contig で pack が数枚多く再ロード=realized>cap)。二段パスが
+#        このコマの流用タイルを先に保護→coldスロット割当が追い出さない→再ロード消滅=realized=cap。
+#        cap は cold_cap_for_fps 自動導出・全ソース共有(手動env/uncapped/COLD_CAP_REALIZED廃止)。
+#        画質は op/ed とも旧と同一(Miss不変)、Sonic 30fps は realized 200→175 で ~25→27fps に改善。
 date=20260714
-e=13
+e=14
 p=10
