@@ -72,3 +72,28 @@ disc). The pump/fixed-cost lever has largely plateaued (opt1 +5, opt2 +2, opt3 +
 remaining ~6fps to 30 requires speeding the **raw per-cell decode** (`ef_bit` + cold
 handling), which is the harder, higher-risk work (must preserve D=0). At 24fps the value
 already holds: if the cell count is later reduced, fewer cells need cutting.
+
+## opt4: per-cell decode restructure (26fps)
+
+| build | change | fps | slips (mid) |
+|---|---|---|---|
+| opt3 | (pump lever) | ~24.0 | ~68 |
+| opt4 | ef_bit: strip cold-bit only for cold cells (reuse writes entry directly); compute slot into d2 first so d3 is free for the occ check → drop the per-cold-cell d0 push/pop | ~26.0 | ~48 |
+
+**16 → 26fps (+63%)**, full movie D=0. The decode restructure preserved correctness and
+still gained via the nonlinear slip effect.
+
+### Remaining architectural floor
+
+The two biggest fixed costs are hard to cut without an architecture change:
+- **32-byte pattern copy** (ring PRG → O_LOADS Word-RAM), 8x move.l per cold cell,
+  ~175/frame → roughly a tenth of the Sub. Register-constrained (only 2 free regs in the
+  inner loop, can't MOVEM). A pattern travels CDC→Word-RAM→PRG-ring→Word-RAM (three
+  copies) because the 420 KB ring must live in PRG-RAM (too big for Word-RAM) and the
+  Main can only DMA from Word-RAM.
+- **CD drain** (drain1 BIOS CDC_TRN + stage_copy 2 KB/sector, 75 sectors/s) is fixed by
+  CD 1x and unavoidable.
+
+These put a practical ceiling around ~27-28fps for 832 cells without reducing the pattern
+traffic (fewer cold tiles = the encoder cap, i.e. reducing cells) or a deeper redesign
+(e.g. moving the O_UPDS cell-walk to the Main CPU to halve the per-cell Sub writes).
