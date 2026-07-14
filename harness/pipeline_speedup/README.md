@@ -49,3 +49,26 @@ fixed pump/audio costs trimmed), i.e. broad work, not one lever:
 Individually each is a few percent, so they must compound; expect this to be several
 increments, measured against the Sonic-30fps slip/fps, not a single change. A lighter
 grid (fewer cells) reaches clean 30fps now without any of this (cell-rate is the knob).
+
+## Results (first optimization pass, Sonic H32 832-cell 30fps)
+
+Measured effective fps (from the debug F counter, 60s window), D=0 throughout, full
+movie plays correct:
+
+| build | change | fps | slips (mid-movie) |
+|---|---|---|---|
+| baseline (rate-matched) | — | ~16.0 | ~168 |
+| opt1 | pump_poll 8→16B (expand) + wwc 0x40→0x80; wave-write running pointer | ~21.2 | ~107 |
+| opt2 | pump 16→32B, wwc 0x80→0x100, drop fetch_control's redundant movem | ~22.9 | ~81 |
+| opt3 | pump 32→64B | ~24.0 | ~68 |
+
+**+50% (16→24fps)** from freeing Sub time. The gain is **nonlinear**: the disc delivers
+at 30fps but the Sub consumes slower, so the surplus overflows the CDC → sector slips →
+re-seeks (expensive). Freeing Sub time cuts slips, and each avoided re-seek is worth far
+more than its cycle cost — hence a few percent of Sub work buys a big fps jump.
+
+Consequence: **slips cannot reach 0 until the Sub actually sustains 30fps** (matches the
+disc). The pump/fixed-cost lever has largely plateaued (opt1 +5, opt2 +2, opt3 +1). The
+remaining ~6fps to 30 requires speeding the **raw per-cell decode** (`ef_bit` + cold
+handling), which is the harder, higher-risk work (must preserve D=0). At 24fps the value
+already holds: if the cell count is later reduced, fewer cells need cutting.
