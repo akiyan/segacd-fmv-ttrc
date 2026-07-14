@@ -126,11 +126,11 @@ def resolve(log, POOL, mode="lru"):
     Plist = []
 
     for i in range(nfr):
-        alloc.begin_frame()
+        fr = sorted(frames[i], key=lambda t: t[0])
+        results = alloc.place_frame([(int(cell), key) for (cell, pal, key) in fr], i)
         pal_w[i] = 1 if (i == 0 or frame_seg[i] != frame_seg[i - 1]) else 0
         cells, entries, colds = [], [], []
-        for (cell, pal, key) in sorted(frames[i], key=lambda t: t[0]):
-            slot, cold = alloc.place(int(cell), key, i)
+        for (cell, pal, key), (slot, cold) in zip(fr, results):
             if cold:
                 Plist.append(pack_key(key))
                 n_load[i] += 1
@@ -139,7 +139,6 @@ def resolve(log, POOL, mode="lru"):
             colds.append(cold)
             n_upd[i] += 1
         per.append((cells, entries, colds))
-        alloc.end_frame()
         if (i + 1) % 400 == 0:
             print(f"  resolve {i+1}/{nfr}", flush=True)
     return per, n_load, n_upd, pal_w, Plist, alloc.tearing
@@ -547,20 +546,14 @@ def main():
     # 不変条件(単一真実源 av_config): 実配信(pack)の1コマ cold が drop-safe 上限を超えたら失敗。
     # sim のモデル cap が pack の連続スロット割当に対して高すぎる兆候(=解析は合うが実機で滑る)。
     # frame0(完全ロードのヘッダ)は除外。
-    # 上限は作品(解像度)ごとに実機で滑らないラインが違う(軽い黒帯ほど高い)。既定は
-    # av_config の fps連動 realized ceiling(15fps=380基準を 1/fps でスケール: 30fps=190)。
-    # env `CBRSIM_COLD_CAP_REALIZED` で作品ごとに実測値へ上書き可。
-    cold_ceiling = int(os.environ.get(
-        "CBRSIM_COLD_CAP_REALIZED", str(av_config.cold_realized_ceiling_for_fps(FPS))))
+    # realized == cap(共有 TileAllocator で構成上保証)。上限=cap を自動取得(手動env廃止)。
+    cold_ceiling = av_config.cold_realized_ceiling_for_fps(FPS)   # = cold_cap_for_fps(FPS)
     realized_max = max([int(x) for x in n_load[1:]], default=0)
     if realized_max > cold_ceiling:
         raise SystemExit(
-            f"pack: realized per-frame cold max={realized_max} exceeds drop-safe "
-            f"COLD_CAP_REALIZED={cold_ceiling}. The sim's model cap is too high for the "
-            f"pack's contiguous-slot allocation; the disc would slip. Lower CBRSIM_MAX_COLD "
-            f"and re-sim, or raise CBRSIM_COLD_CAP_REALIZED if this source's measured "
-            f"drop-safe limit is higher (lighter frames tolerate more cold).")
-    print(f"  realized cold: max={realized_max} <= COLD_CAP_REALIZED={cold_ceiling} OK")
+            f"pack: realized per-frame cold max={realized_max} > cap={cold_ceiling}. "
+            f"共有 TileAllocator では realized=cap のはず=想定外。sim/pack の割り当て食い違いを疑う。")
+    print(f"  realized cold: max={realized_max} == cap {cold_ceiling} (共有割り当て)")
     run_stats(per)
     blocks = build_control(log, per, n_upd, pal_w, args.audio)
     sc = schedule(per, n_load, blocks)

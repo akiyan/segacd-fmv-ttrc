@@ -44,6 +44,7 @@ class TileAllocator:
         self.cur_slot = np.full(self.C_CELLS, -1, np.int64)  # cell -> slot it currently shows
         self.prev_slot = np.full(self.C_CELLS, -1, np.int64) # cell -> slot last frame (protect)
         self._prev_protect = np.zeros(self.POOL, bool)
+        self._tfp = None                                     # this-frame reuse-tile protection
 
     # ---- residency query (used by the sim for cold/reuse + near/coa reuse) ----
     def is_resident(self, key):
@@ -73,7 +74,8 @@ class TileAllocator:
         for _ in range(self.POOL):
             s = self.hand
             self.hand = (self.hand + 1) % self.POOL
-            if self.slot_refs[s] == 0 and not self._prev_protect[s]:
+            if self.slot_refs[s] == 0 and not self._prev_protect[s] and \
+               (self._tfp is None or not self._tfp[s]):
                 self._evict(s)
                 return s
         self.tearing += 1
@@ -107,3 +109,23 @@ class TileAllocator:
 
     def end_frame(self):
         self.prev_slot[:] = self.cur_slot
+
+    def place_frame(self, cells_keys, frame_idx):
+        """Two-pass frame allocation (the disc's true behaviour). ``cells_keys`` = a
+        LIST of ``(cell, key)`` in cell order (this frame's updated cells). Pass 1
+        protects every reuse tile (already resident) so pass 2's cold allocations
+        never evict a tile shown this frame -> no intra-frame reload -> realized cold
+        equals the fresh-key count (= the sim's cap). Returns ``[(slot, cold), ...]``
+        in the given order. There is always room: a frame shows <= C_CELLS distinct
+        tiles and the pool is larger."""
+        self.begin_frame()
+        tfp = np.zeros(self.POOL, bool)
+        for (cell, key) in cells_keys:
+            s = self.key_slot.get(key)
+            if s is not None:
+                tfp[s] = True
+        self._tfp = tfp
+        out = [self.place(cell, key, frame_idx) for (cell, key) in cells_keys]
+        self._tfp = None
+        self.end_frame()
+        return out

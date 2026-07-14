@@ -513,8 +513,12 @@ def main():
     cur_key = [None] * C_CELLS          # 表示中パターン(idx bytes)
     cur_pal = np.full(C_CELLS, -1, np.int16)
     committed_plain = [None] * C_CELLS  # 直近commitした plain パターン(内容変化検出用)
-    resident = {}                       # pattern key -> last_used frame(LRU)
-    ref_count = {}                       # pattern key -> 参照セル数(表示中は退避不可)
+    from tile_alloc import TileAllocator
+    # 共有割り当て(連続, pack と同一コード)。これが residency の真の源=pack の realized と一致=cap=realized。
+    # 判定は前フレーム末の状態を参照し、割り当て(スロット付与+追い出し)は各フレーム末に cell順で実行
+    # (=pack の resolve と同一順)。VRAM_TILES=pack POOL。
+    alloc = TileAllocator(C_CELLS, VRAM_TILES, 1)
+    ref_count = {}                       # pattern key -> 参照セル数(repoint用に保持, residencyはallocが真)
     l3 = {}                             # L3(PRG-RAM) victim cache: pattern key -> last_used frame
     pat_rgb = {}                        # 近似dedup: pattern key -> 代表rgb(8,8,3) uint8
     pat_sig = {}                        # pattern key -> 2×2低周波(12,) float32
@@ -527,10 +531,9 @@ def main():
     coa_bucket = defaultdict(list)      # 平均色バケツ -> [key,...] (末尾=最新)
 
     def touch(key, fi):
-        resident[key] = fi
+        pass                            # residency は alloc が真(コマ末に cell順で place)
 
     def demote_to_l3(key, t):
-        """VRAMから追い出したパターンをL3へ。L3も溢れたらLRUで完全忘却(=再登場はcold miss)。"""
         if L3_TILES <= 0:
             return
         l3[key] = t
@@ -538,17 +541,7 @@ def main():
             del l3[min(l3, key=l3.get)]
 
     def ensure_capacity(fi):
-        while len(resident) > VRAM_TILES:
-            # 参照0で最古のものを退避 → 捨てずにL3(PRG-RAM)へ
-            victim = None
-            oldest = None
-            for k, t in resident.items():
-                if ref_count.get(k, 0) == 0 and (oldest is None or t < oldest):
-                    oldest, victim = t, k
-            if victim is None:
-                break
-            demote_to_l3(victim, resident.pop(victim))
-            pat_rgb.pop(victim, None); pat_sig.pop(victim, None); pat_pal.pop(victim, None)
+        pass                            # 追い出しは alloc.place が担う(コマ末の cell順割り当て)
 
     # CRAMエミュレーション: 表示中タイルは「インデックス列(disp_idx)」と「パレット行(disp_pal)」で
     # 保持し、cur_rgb は現区間パレットで毎フレーム引き直す(=実機の挙動)。これにより区間跨ぎで
@@ -690,7 +683,7 @@ def main():
             b = (int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))
             s = sig2[c]; cnt = 0
             for ck in reversed(coa_bucket[b]):
-                if ck not in resident and ck not in loaded_keys:
+                if not alloc.is_resident(ck) and ck not in loaded_keys:
                     continue                                     # もう常駐に無い(退避済み)
                 if pat_seg.get(ck) != cur_seg:                   # 区間跨ぎ近似流用の禁止
                     continue
@@ -710,7 +703,7 @@ def main():
             # (タンク満杯時の余りCDでの Raw 格上げは後段の格上げパスで行う)
             nonlocal tile_recs, name_recs, dedup_saved, l3_hits, prg_hits, coa_hits, spent_tiles, cold_spent
             key = plain_keys[c]
-            in_vram = key in resident or key in loaded_keys      # L1/L2: VRAM常駐(転送ゼロ)
+            in_vram = alloc.is_resident(key) or key in loaded_keys      # L1/L2: VRAM常駐(転送ゼロ)
             approx_key = find_approx(c) if (COA_ON and not in_vram) else None
             in_prg = (not in_vram) and (approx_key is None) and key in frame_patch
             in_l3 = (not in_vram) and (approx_key is None) and (not in_prg) and L3_TILES > 0 and key in l3
@@ -772,7 +765,7 @@ def main():
                 b = (int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))
                 cnt = 0
                 for ck in reversed(coa_bucket[b]):
-                    if (ck not in resident and ck not in loaded_keys) or ck not in pat_rgb:
+                    if (not alloc.is_resident(ck) and ck not in loaded_keys) or ck not in pat_rgb:
                         continue
                     if pat_seg.get(ck) != cur_seg:       # 区間跨ぎ近似流用の禁止(index列が新CRAMでゴミ化)
                         continue
@@ -801,7 +794,7 @@ def main():
                 if near_keep[c]:
                     near_mask[c] = True
                     return
-                exact = key in resident or key in loaded_keys
+                exact = alloc.is_resident(key) or key in loaded_keys
                 if exact:
                     bk, tier = key, 0
                 else:
@@ -886,7 +879,7 @@ def main():
                 def raw_upgrade(c, lim):
                     nonlocal tile_recs, name_recs, dedup_saved, coa_hits, spent_tiles, upgraded, cold_spent
                     key = plain_keys[c]
-                    in_vram = key in resident or key in loaded_keys
+                    in_vram = alloc.is_resident(key) or key in loaded_keys
                     cost = NAME_BYTES if in_vram else NAME_BYTES + PATTERN_BYTES
                     if spent_tiles + cost > lim:
                         return
@@ -933,6 +926,12 @@ def main():
                 tank = min(TANK_CAP_BYTES, max(0, tank + frame_cd - spent_tiles))
             tank_tiles_log.append(tank // PATTERN_BYTES)
 
+        # 共有割り当て: このフレームの更新セルを cell順で place(=pack の resolve と同一順・同一コード)。
+        # ここで residency/追い出しが確定し、次フレームの cold 判定に反映される。維持(near_keep)セルは
+        # 更新でないので place しない=cur_slot/slot_refs が前回のまま(参照継続で保護)。realized=cap の要。
+        upd_ck = [(int(c), cur_key[int(c)]) for c in np.where(updated)[0]
+                  if cur_key[int(c)] is not None]
+        alloc.place_frame(upd_ck, i)
         ensure_capacity(i)
 
         # CRAMエミュ: このフレームの全更新を反映した最終表示を、現区間パレットで引き直す。
