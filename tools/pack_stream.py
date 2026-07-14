@@ -117,96 +117,32 @@ def resolve(log, POOL, mode="lru"):
     frames = log["frames"]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
     nfr = len(frames)
-    key_slot = {}
-    slot_key = [None] * POOL
-    slot_lastuse = np.full(POOL, -1, np.int64)
-    slot_refs = np.zeros(POOL, np.int32)
-    free = list(range(POOL - 1, -1, -1))
-    prev_slot = np.full(C_CELLS, -1, np.int64)
-    cur_slot = np.full(C_CELLS, -1, np.int64)
+    from tile_alloc import TileAllocator
+    alloc = TileAllocator(C_CELLS, POOL, BASE)   # 共有割り当て(連続)。sim も同一 = cap=realized
     per = []
     n_load = np.zeros(nfr, np.int64)
     n_upd = np.zeros(nfr, np.int64)
     pal_w = np.zeros(nfr, np.int64)
     Plist = []
-    tearing = 0
-    hand = 0
-
-    def evict(s):
-        k = slot_key[s]
-        if k is not None:
-            key_slot.pop(k, None)
-            slot_key[s] = None
 
     for i in range(nfr):
-        prev_protect = np.zeros(POOL, bool)
-        ps = prev_slot[prev_slot >= 0]
-        prev_protect[ps] = True
-
-        def alloc_slot():
-            nonlocal tearing
-            if free:
-                return free.pop()
-            cand = np.where((slot_refs == 0) & (~prev_protect))[0]
-            if cand.size == 0:
-                tearing += 1
-                cand = np.where(slot_refs == 0)[0]
-                if cand.size == 0:
-                    cand = np.arange(POOL)
-            s = int(cand[np.argmin(slot_lastuse[cand])])
-            evict(s)
-            return s
-
-        def alloc_slot_contig():
-            nonlocal hand, tearing
-            for _ in range(POOL):
-                s = hand
-                hand = (hand + 1) % POOL
-                if slot_refs[s] == 0 and not prev_protect[s]:
-                    evict(s)
-                    return s
-            tearing += 1
-            for _ in range(POOL):
-                s = hand
-                hand = (hand + 1) % POOL
-                if slot_refs[s] == 0:
-                    evict(s)
-                    return s
-            s = int(np.argmin(slot_lastuse))
-            evict(s)
-            return s
-
-        if mode == "contig":
-            alloc_slot = alloc_slot_contig
-
+        alloc.begin_frame()
         pal_w[i] = 1 if (i == 0 or frame_seg[i] != frame_seg[i - 1]) else 0
         cells, entries, colds = [], [], []
         for (cell, pal, key) in sorted(frames[i], key=lambda t: t[0]):
-            cold = key not in key_slot
-            # NOTE: no cold cap here — capping is the encoder's job (sim CBRSIM_MAX_COLD).
+            slot, cold = alloc.place(int(cell), key, i)
             if cold:
-                slot = alloc_slot()
-                key_slot[key] = slot
-                slot_key[slot] = key
                 Plist.append(pack_key(key))
                 n_load[i] += 1
-            else:
-                slot = key_slot[key]
-            oldc = cur_slot[cell]
-            if oldc >= 0:
-                slot_refs[oldc] -= 1
-            slot_refs[slot] += 1
-            slot_lastuse[slot] = i
-            cur_slot[cell] = slot
             cells.append(int(cell))
             entries.append((int(pal) << 13) | (BASE + slot))
             colds.append(cold)
             n_upd[i] += 1
         per.append((cells, entries, colds))
-        prev_slot[:] = cur_slot
+        alloc.end_frame()
         if (i + 1) % 400 == 0:
             print(f"  resolve {i+1}/{nfr}", flush=True)
-    return per, n_load, n_upd, pal_w, Plist, tearing
+    return per, n_load, n_upd, pal_w, Plist, alloc.tearing
 
 
 def run_stats(per):
