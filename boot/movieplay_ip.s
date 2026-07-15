@@ -156,25 +156,6 @@ ip_entry:
 	sub.w	md_trows, d2			/* row0 = (screen_rows-trows)/2 */
 	lsr.w	#1, d2
 	move.w	d2, md_row0
-.ifdef DEBUG
-	/* reg18 makes the top Window row full-width, so its transparent pixels reveal
-	   Plane B rather than Plane A. Precompute a blit that leaves physical NT row0
-	   clear: when video starts at row0, skip its hidden first source row and move
-	   the visible blit down to row1. This startup-only branch removes one complete
-	   NT row of writes per frame; bf_blit itself gains no branch, write, or DMA. */
-	lea	shadow, a4				/* immutable DEBUG blit source pointer */
-	tst.w	md_row0
-	bne	ip_dbg_blit_ready		/* vertical padding already leaves row0 clear */
-	cmpi.w	#2, md_trows
-	blo	ip_dbg_blit_ready		/* defensive: supported movie grids are taller */
-	moveq	#0, d0
-	move.w	md_tcols, d0
-	add.w	d0, d0				/* one source row in shadow bytes */
-	adda.w	d0, a4
-	addq.w	#1, md_row0
-	subq.w	#1, md_trows
-ip_dbg_blit_ready:
-.endif
 	/* CRAM pre-load: PALTAB(全区間パレット)をWord-RAM(frame0バンク)からMain-RAM表へ
 	   一度だけコピー。n_seg=O_HDR+20。以降の区間切替はこの表を引くだけ(bf_flip)。 */
 	move.w	20(a0), d1			/* n_seg (a0=O_HDR) */
@@ -193,7 +174,9 @@ ip_dbg_blit_ready:
 	dbra	d1, 1b
 2:
 	/* デバッグフォントをフォントVRAM位置へ一度だけCPUロード。
-	   dbgfont.binの画素index 1をP0の固定色index 15へビット展開する。 */
+	   dbgfont.binの画素index 1をP0/index15(最明色)、背景index 0を
+	   P0/index1(最暗色)へ展開する。Windowは動画の上に不透明に重なるが、
+	   背後の動画NTはDEBUGでも全行を通常どおり更新する。 */
 .ifdef DEBUG
 	move.l	md_font_addr, d0
 	bsr	set_vram_write
@@ -208,6 +191,7 @@ ip_dbg_blit_ready:
 	or.w	d2, d0
 	lsl.w	#1, d2
 	or.w	d2, d0			/* 1 -> 0xF independently in every nibble */
+	ori.w	#0x1111, d0			/* 0 -> 0x1; 0xF remains 0xF */
 	move.w	d0, (VDP_DATA).l
 	dbra	d1, 1b
 	/* Initialize the maximum-width Window row once with the reserved blank glyph.
@@ -356,11 +340,7 @@ bf_blit:
 	lsl.l	#8, d5
 	lsl.l	#5, d5				/* back_idx*0x2000 */
 	add.l	#NT0, d5			/* back_base = 0xC000 or 0xE000 (flipまで保持) */
-.ifdef DEBUG
-	movea.l	a4, a1				/* startup-selected source row; no runtime branch */
-.else
 	lea	shadow, a1
-.endif
 	move.w	md_row0, d4			/* plane_row = (screen_rows-trows)/2 */
 	move.w	md_trows, d6
 	subq.w	#1, d6

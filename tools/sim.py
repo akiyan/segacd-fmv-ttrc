@@ -29,6 +29,7 @@
 import os
 import sys
 import time
+import math
 from collections import defaultdict
 from pathlib import Path
 
@@ -80,6 +81,15 @@ if AUDIO_KIND == "pcm13":
 else:
     AUDIO_RATE = 22_050; AUDIO_BPS = 0.5; AUDIO_FFCODEC = "adpcm_ima_wav"
     AUDIO_LABEL = "22.05kHz mono ADPCM"; AUDIO_FILE = "audio_22k05_adpcm_mono.wav"
+# The player advances on integer NTSC VBlanks. PCM deliberately rounds the
+# fixed chunk up against that actual cadence, yielding 444 B at N2 and 888 B at
+# N4. This is about 2.94 B/s above FD=0x0345, so lead grows slightly instead of
+# slowly draining. The packer uses the same calculation.
+NTSC_VSYNC = 60_000 / 1001
+VSYNC_N = int(round(NTSC_VSYNC / FPS))
+PLAYBACK_FPS = NTSC_VSYNC / VSYNC_N
+AUDIO_FRAME_BYTES = (int(math.ceil(AUDIO_RATE / PLAYBACK_FPS))
+                     if AUDIO_KIND == "pcm13" else 0)
 PATTERN_BYTES = 32              # 4bpp 8x8 パターン
 NAME_BYTES = 2                  # ネームテーブル1エントリ(tile index + palette + priority)
 VRAM_TILES = int(os.environ.get("CBRSIM_VRAM_TILES", "1400"))   # VRAM常駐パターン数(LRU)。
@@ -358,6 +368,70 @@ def render_cells(idx, assign, pals_arr):
     full16[:, 1:] = pals_arr
     rgb333 = full16[assign[:, None], idx]                       # (C,64,3)
     return rgb333_to_rgb888(rgb333).reshape(C, TILE, TILE, 3)
+
+
+def pin_p0_debug_extremes(seg_pals):
+    """Put the darkest colour at P0/index1 and brightest at P0/index15.
+
+    This runs before quantisation. It only permutes the existing 4x15 CRAM
+    colours; no RGB333 value is created or changed. Moving colours between
+    palette rows can alter the best per-tile palette choice, so every frame is
+    quantised against the final grouping afterwards.
+    """
+    canonical = []
+    dark_swaps = []
+    bright_swaps = []
+    for seg, src in enumerate(seg_pals):
+        old = np.asarray(src, np.uint8)
+        if old.shape != (4, 15, 3):
+            raise ValueError(f"segment {seg} palette shape {old.shape}, expected (4, 15, 3)")
+        new = old.copy()
+
+        brightness = new.astype(np.int16).sum(axis=2)
+        darkest = int(brightness.min())
+        if int(brightness[0, 0]) == darkest:
+            dark_row, dark_slot = 0, 0
+        else:
+            dark_row, dark_slot = map(int, np.argwhere(brightness == darkest)[0])
+        new[0, 0], new[dark_row, dark_slot] = (
+            new[dark_row, dark_slot].copy(), new[0, 0].copy())
+
+        # Recompute after the first swap so the second source location remains
+        # exact even if P0/index1 originally held a globally brightest colour.
+        brightness = new.astype(np.int16).sum(axis=2)
+        brightest = int(brightness.max())
+        if int(brightness[0, 14]) == brightest:
+            bright_row, bright_slot = 0, 14
+        else:
+            bright_row, bright_slot = map(int, np.argwhere(brightness == brightest)[0])
+        new[0, 14], new[bright_row, bright_slot] = (
+            new[bright_row, bright_slot].copy(), new[0, 14].copy())
+
+        old_code = ((old[:, :, 0].astype(np.int16) << 6)
+                    | (old[:, :, 1].astype(np.int16) << 3)
+                    | old[:, :, 2].astype(np.int16))
+        new_code = ((new[:, :, 0].astype(np.int16) << 6)
+                    | (new[:, :, 1].astype(np.int16) << 3)
+                    | new[:, :, 2].astype(np.int16))
+        if not np.array_equal(np.sort(old_code, axis=None), np.sort(new_code, axis=None)):
+            raise AssertionError(f"segment {seg} colour multiset changed")
+        final_brightness = new.astype(np.int16).sum(axis=2)
+        if int(final_brightness[0, 0]) != int(final_brightness.min()):
+            raise AssertionError(f"segment {seg} P0 index1 is not globally darkest")
+        if int(final_brightness[0, 14]) != int(final_brightness.max()):
+            raise AssertionError(f"segment {seg} P0 index15 is not globally brightest")
+
+        canonical.append(new)
+        dark_swaps.append((dark_row, dark_slot + 1))
+        bright_swaps.append((bright_row, bright_slot + 1))
+
+    return canonical, {
+        "segments": len(canonical),
+        "dark_swapped_segments": sum(pos != (0, 1) for pos in dark_swaps),
+        "bright_swapped_segments": sum(pos != (0, 15) for pos in bright_swaps),
+        "dark_sources": dark_swaps,
+        "bright_sources": bright_swaps,
+    }
 
 
 def canonicalize_p0_index15(seg_pals, frame_seg, assigns, pidxs):
@@ -723,12 +797,19 @@ def main():
     tank_tiles_log = []                           # 毎フレームのタンク残量(タイル換算)
     cd_used_log = []                              # 毎フレームの有効CD使用量(=FRAME_BYTES - パディング捨て分)
 
+    # DEBUG色はCRAMに既にある色だけを並べ替えて固定する。異なるパレット行との
+    # 入替があり得るので、全フレームを最終的な行構成に対して量子化する前に行う。
+    seg_pals, pal_extreme_stats = pin_p0_debug_extremes(seg_pals)
+    print(f"  P0 DEBUG colours pinned: index1 darkest swaps "
+          f"{pal_extreme_stats['dark_swapped_segments']}/{pal_extreme_stats['segments']}, "
+          f"index15 brightest swaps "
+          f"{pal_extreme_stats['bright_swapped_segments']}/{pal_extreme_stats['segments']}")
+
     # フレーム独立の割当/索引を並列で前計算(実行時間の大半)。以降のループは逐次(状態依存)。
     Q_detail, Q_assign, Q_pidx = precompute_quant(frames, seg_pals, frame_seg)
-    # Quantise against the original order first, then pin the brightest P0
-    # colour to hardware index 15 and remap every affected index.  Doing this
-    # before the stateful codec loop keeps sim preview, decision log, analysis,
-    # pack and player on the same canonical palette/index representation.
+    # The older lossless index-15 canonicalizer is now a no-op for current
+    # palettes because both DEBUG extremes were pinned before quantisation.
+    # Keep the proof here while older palette inputs remain supported.
     seg_pals, pal15_stats = canonicalize_p0_index15(
         seg_pals, frame_seg, Q_assign, Q_pidx)
     # palettes.bin is the legacy fallback CRAM image.  In segmented mode the
@@ -796,8 +877,11 @@ def main():
         order = np.lexsort((center_dist, -score)) if CENTERTIE_ON else np.argsort(-score)
         order = [int(c) for c in order if changed[c] and not near[c]]
 
-        audio_due = round((i + 1) * AUDIO_RATE * AUDIO_BPS / FPS) - audio_sent_total  # このコマの音声バイト
-        audio_sent_total += audio_due
+        if AUDIO_KIND == "pcm13":
+            audio_due = AUDIO_FRAME_BYTES             # fixed 444B@N2 / 888B@N4, packと一致
+        else:
+            audio_due = round((i + 1) * AUDIO_RATE * AUDIO_BPS / FPS) - audio_sent_total
+            audio_sent_total += audio_due
 
         # 純CBR: 毎フレーム固定バイトのみ。繰り越し無し。強制更新も無し(CBR厳守)。
         # パレット差替フレームはCRAM書換分だけ予算を引く(暗転中なので影響は小)。
@@ -1248,7 +1332,8 @@ def main():
                          len(guniq["flbk"])], np.int64)
     np.savez(OUT / "stats.npz", stats=stats, cols=cols, fps=FPS, cells=C_CELLS,
              target=TARGET_RATE, cd1x=CD_RATE, frame_bytes=FRAME_BYTES, cat_uniq=cat_uniq,
-             audio_label=AUDIO_LABEL, budget_tiles=budget_tiles,
+             audio_label=AUDIO_LABEL, audio_frame_bytes=AUDIO_FRAME_BYTES,
+             budget_tiles=budget_tiles,
              wait_hist=np.array(wait_hist_rows), nbins=NBINS)
     np.save(OUT / "miss_masks.npy", np.array(stale_rows, np.uint8))   # (n,72) packbits
     if VBV_ON:                                          # 貯水池残量カーブを実測から保存(下段Bufマップ/メーター用)
@@ -1269,7 +1354,8 @@ def main():
             "frames": dec_frames,                                     # [[(cell,pal,key),...], ...]
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]
-            "frame_bytes": int(FRAME_BYTES), "audio_rate": int(AUDIO_RATE), "fps": float(FPS),
+            "frame_bytes": int(FRAME_BYTES), "audio_rate": int(AUDIO_RATE),
+            "audio_frame_bytes": int(AUDIO_FRAME_BYTES), "fps": float(FPS),
             "vram_tiles": int(VRAM_TILES),
             # エンコード時の実効パラメータを焼き込む(pack/解析が同一値を使い二重管理を防ぐ)。
             "max_cold": int(MAX_COLD), "tank_kb": int(TANK_KB),

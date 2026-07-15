@@ -11,6 +11,21 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e30/p41 : Round fixed PCM chunks up against the actual NTSC cadence: 444 B
+#        at N2 and 888 B at N4. FD=0x0345 consumes about 13303.76 samples/s;
+#        either schedule supplies about 13306.69 samples/s, retaining a small
+#        2.94 B/s surplus. The source WAV is retimed evenly across the full
+#        movie instead of ending in padded silence.
+#   e29/p41 : Keep the startup PCM reserve for the full movie. HEADER queues the
+#        first 30 chunks and live control frame 0 starts at chunk 30 instead of
+#        duplicating chunk 0 and skipping 30 writes. Playback sample order and
+#        frame-0 A/V alignment stay unchanged; the writer remains about 30
+#        frames ahead, preventing the low-lead glitches seen near Bad Apple
+#        F06E5 and the eventual R01 at F080F.
+#   e28/p41 : Reserve P0 index1/index15 for the globally darkest/brightest
+#        existing CRAM colours so the DEBUG Window has an opaque dark background
+#        and bright text. DEBUG now blits every video row behind the Window;
+#        it no longer saves one name-table row of work at full H32/H40 height.
 #   e27/p40 : Expand the Sub-CPU routing table from 8 KiB/4096 frames to
 #        16 KiB/8192 frames. Long 30fps streams previously wrote routing bytes
 #        into the adjacent APPLY control ring; after that ring wrapped, valid
@@ -242,5 +257,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260715
-e=27
-p=40
+e=30
+p=41

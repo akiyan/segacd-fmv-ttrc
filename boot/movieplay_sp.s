@@ -67,7 +67,7 @@
                                        control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
 .equ O_CTRLWAIT,SUB_BANK_1M+0xAF18  /* DEBUG: current-control blocking sector pumps */
 .equ O_BODYWAIT,SUB_BANK_1M+0xAF1A  /* DEBUG: prior BODY payload/pad blocking pumps */
-.equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: startup-audio duplicate chunks left */
+.equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: legacy startup-audio duplicate skips left */
 .equ O_RESYNC, SUB_BANK_1M+0xAF20   /* 計測: 音声re-sync回数(リード下限/上限逸脱で書込ジャンプ=乱れの元) */
 .equ O_LEAD,   SUB_BANK_1M+0xAF22   /* 計測: 現コマの音声リード(write-play, バイト)。SYNC_MINに近づく=枯渇 */
 .equ O_HDR,    SUB_BANK_1M+0xAF80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
@@ -271,8 +271,9 @@ pm_set:
 	move.w	d1, sec_base
 	swap	d1
 	move.w	d1, sec_rem
-	/* v5: startup audio is stored as one PCM chunk per sector.  It is written
-	   before PCM starts, then the matching control chunks are skipped once. */
+	/* v5: startup audio is stored as one PCM chunk per sector and written before
+	   PCM starts. Offset 58 is the legacy duplicate-control skip count. Current
+	   packs shift controls ahead by the prefetch depth, so this count is zero. */
 	move.w	58(a0), preloaded_audio_remaining
 	move.w	60(a0), h_audio_pre_sec
 	move.w	62(a0), h_features		/* bit0: post-audio cold-run descriptor suffix */
@@ -292,9 +293,10 @@ pm_set:
 	lea	(O_PALTAB).l, a0
 	bsr	drain_lin_staged		/* CDC_TRN直行を避けSTAGE経由(スリップ防止) */
 1:
-	/* v5 STARTUP_AUDIO follows PALTAB.  Each sector starts with exactly one
-	   h_audio_bytes chunk, so no cross-sector staging is needed.  PCM is still
-	   stopped; write_wave_chunk appends without consulting the stale play head. */
+	/* v5 STARTUP_AUDIO follows PALTAB. Each sector starts with exactly one
+	   h_audio_bytes chunk, so no cross-sector staging is needed. Current packs
+	   queue the source prefix here and put future chunks in live controls, keeping
+	   this reserve for the whole movie instead of consuming it during startup. */
 	move.w	h_audio_pre_sec, d7
 	tst.w	d7
 	beq	ap_done
@@ -1022,9 +1024,10 @@ fetch_control:
 	/* コピー: total_len バイトを a0(循環) → CTRL_SCR */
 	lea	CTRL_SCR, a1
 	move.w	d7, d6				/* 残バイト */
-	/* Startup audio was already copied from the boot prefix.  Keep advancing
-	   apply_cur by the full d7 block, but do not spend Sub-CPU time copying the
-	   duplicate padded audio tail into CTRL_SCR. */
+	/* Legacy duplicate-startup audio was already copied from the boot prefix.
+	   Keep advancing apply_cur by the full d7 block, but do not spend Sub-CPU
+	   time copying that duplicate padded audio tail into CTRL_SCR. Current packs
+	   use shifted future chunks and set this counter to zero. */
 	tst.w	preloaded_audio_remaining
 	beq.s	1f
 	move.w	h_features, d0
@@ -1096,7 +1099,7 @@ fc_copy_even:
 
 /* CTRL_SCR(線形 control block) を Word-RAM へ展開。cold は ring pop。
    block = >H total_len >H frame_seq >H n_upd >B pal >B dbg [22B DEBUG if dbg]
-           72 bitmap n_upd*(entry) 887 audio [even pad]   (MOVIE.md 準拠)
+           72 bitmap n_upd*(entry) h_audio_bytes audio [even pad]   (MOVIE.md 準拠)
    v3: pal = 区間番号+1(0=切替なし)。CRAM本体はboot時にMain-RAM表へ渡し済み(PALTAB)。
    loads はラン形式: [slot_start.w count.w pattern(count*32B)] の列。エンコーダが
    フレーム内coldを連番スロットに割当てるので、MDは1ランを1回の大DMAで転送できる。 */
@@ -1716,7 +1719,7 @@ pump_mask:
 wave_pump_mask:
 	.space 2				/* wave書込みpump頻度: 15fps=0xFF(256B毎), 30fps=0x1FF(512B毎) */
 h_audio_bytes:
-	.space 2				/* v4: 1コマの音声バイト(30fps=443, 15fps=887) */
+	.space 2				/* v4: 1コマの音声バイト(N2=444, N4=888 in current packs) */
 h_fps_int:
 	.space 2				/* v4: nominal fps and accumulator modulus */
 h_audio_pre_sec:

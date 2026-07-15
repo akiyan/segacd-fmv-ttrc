@@ -12,7 +12,7 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
 TTRCレイアウト(v6): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
-              n_seg×128B, boot時Main-RAM表へ) + startup audio(1 sector/frame)
+              n_seg×128B, boot時Main-RAM表へ) + startup audio prefetch(1 sector/frame)
               + frame0(control+patterns) + routing(2B/frame: n_pay_sec,n_ctrl_sec)
               + prebuffer(payload先頭Bpat)
               BODY.DAT = frame1以降の [control][payload][rate pad]
@@ -26,6 +26,7 @@ control block: >H total_len >H frame_seq >H n_upd >B pal >B dbg [DEBUG if dbg]
   既定OFF(CBRSIM_PACK_DEBUG=1 で有効=デバッグ時だけ載せる)。
 """
 import argparse
+import math
 import os
 import pickle
 import struct
@@ -47,16 +48,23 @@ BASE = 1                     # POOL_TILE_BASE (VRAM tile index = BASE+slot)
 FRAME_SECTORS = 5
 PAT = 32
 PAT_PER_SEC = SECTOR // PAT  # 64
-# 1コマの音声バイトは fps由来。15fps=887(13.3kHz/15), 30fps=443(13.3kHz/30)。
-# 旧: 887固定=15fps専用だった(30fpsで2倍消費し disc が CD 1x を8%超過する主因だった)。
-AUDIO = int(round(AUDIO_RATE / FPS))   # AUDIO_RATE, FPS は sim から import
+# Keep the PCM writer very slightly ahead of the RF5C164 clock. Playback is
+# paced by integer NTSC VBlanks (60000/1001 Hz), not nominal 15/30 exactly.
+# Ceil(13.3k / actual playback fps) gives 888 B at N4 and 444 B at N2. With
+# FD=0x0345 (about 13303.76 samples/s), either writes about 13306.69 samples/s:
+# a deliberate reserve gain of only about 2.94 B/s. Non-PCM experiments retain
+# their historical nominal-fps calculation.
+NTSC_VSYNC = 60_000 / 1001
+VSYNC_N = int(round(NTSC_VSYNC / FPS))
+PLAYBACK_FPS = NTSC_VSYNC / VSYNC_N
+AUDIO = (int(math.ceil(AUDIO_RATE / PLAYBACK_FPS))
+         if sim.AUDIO_KIND == "pcm13" else int(round(AUDIO_RATE / FPS)))
 # PCM開始直後はエミュレータ/実機の立上がり位相で一時的にSubの供給が遅れる。先頭音声を
 # ディスクのboot prefixへ複製し、PCMを開始する前にwave RAMへ並べておく。frame0を含む
-# Requested startup arming depth. The player starts PCM at SYNC_LEAD (the same
-# address used by the write pointer). Thirty chunks cover the frame-0 build and
-# the first dense scene while the live writer catches up; the header keeps this
-# explicit so older streams remain readable and experiments can override it.
-# Leave the setting overridable for old stream/player combinations.
+# Startup PCM prefetch depth. HEADER queues chunks 0..N-1 before playback;
+# control frame 0 carries chunk N, frame 1 carries N+1, and so on. This keeps a
+# real N-frame reserve instead of consuming the reserve while duplicate control
+# chunks are skipped. The existing environment name remains for compatibility.
 STARTUP_AUDIO_FRAMES = max(0, int(os.environ.get("CBRSIM_STARTUP_AUDIO_FRAMES", "30")))
 PCM_SYNC_LEAD = 0x3000
 PCM_SYNC_MAX = 0x6800
@@ -114,8 +122,8 @@ def load_log(path):
         return pickle.load(f)
 
 
-def require_canonical_p0_index15(log):
-    """Reject stale decision logs that cannot provide the fixed DEBUG colour."""
+def require_canonical_p0_debug_colours(log):
+    """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
     if not seg_pals:
         raise SystemExit("pack v6: decision log has no segment palettes; re-run sim")
@@ -126,10 +134,14 @@ def require_canonical_p0_index15(log):
                 f"pack v6: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
                 "re-run sim")
         brightness = a.astype(np.int16).sum(axis=2)
+        if int(brightness[0, 0]) != int(brightness.min()):
+            raise SystemExit(
+                f"pack v6: decision log segment {seg} P0 index1 is not tied for globally "
+                "darkest usable CRAM colour (RGB sum); re-run sim with the current encoder")
         if int(brightness[0, 14]) != int(brightness.max()):
             raise SystemExit(
                 f"pack v6: decision log segment {seg} P0 index15 is not tied for globally "
-                "brightest nonzero CRAM colour (RGB sum); re-run sim with the current encoder")
+                "brightest usable CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
 def pals_to_bytes_128(pal_4x15):
@@ -253,6 +265,11 @@ def build_control(log, per, n_upd, pal_w, audio_path):
             _w.close()
         except Exception:
             raw = Path(audio_path).read_bytes()
+        source_len = len(raw)
+        raw = retime_pcm_u8(raw, len(per) * AUDIO)
+        if len(raw) != source_len:
+            print(f"  PCM retime: {source_len} -> {len(raw)} samples "
+                  f"({AUDIO} B/frame x {len(per)} frames)")
         sm = bytearray(len(raw))
         for j, b in enumerate(raw):                     # u8(中心128) -> RF5C164 符号+絶対値
             s = b - 128                                 # 符号付き -128..127 (128=無音=0)
@@ -305,15 +322,50 @@ def build_control(log, per, n_upd, pal_w, audio_path):
     return blocks
 
 
-def control_audio(block):
-    """Return the fixed-size PCM chunk embedded in one control block."""
+def control_audio_bounds(block):
+    """Return the fixed-size PCM slice embedded in one control block."""
     n_upd = struct.unpack_from(">H", block, 4)[0]
     dbg = block[7]
     pos = 8 + (DBG_LEN if dbg else 0) + ((C_CELLS + 7) // 8) + n_upd * 2
-    chunk = block[pos:pos + AUDIO]
+    return pos, pos + AUDIO
+
+
+def control_audio(block):
+    """Return the fixed-size PCM chunk embedded in one control block."""
+    start, end = control_audio_bounds(block)
+    chunk = block[start:end]
     if len(chunk) != AUDIO:
         raise ValueError(f"control audio truncated: got {len(chunk)}, expected {AUDIO}")
     return chunk
+
+
+def replace_control_audio(block, chunk):
+    """Replace one PCM chunk without changing the control block length."""
+    if len(chunk) != AUDIO:
+        raise ValueError(f"replacement audio is {len(chunk)} bytes, expected {AUDIO}")
+    start, end = control_audio_bounds(block)
+    out = bytearray(block)
+    if len(out[start:end]) != AUDIO:
+        raise ValueError("control audio replacement points outside the block")
+    out[start:end] = chunk
+    if len(out) != len(block):
+        raise AssertionError("audio replacement changed the control block length")
+    return bytes(out)
+
+
+def retime_pcm_u8(raw, target_len):
+    """Stretch mono u8 PCM evenly to the fixed-chunk playback length."""
+    if target_len <= 0:
+        return b""
+    if not raw:
+        return b"\x80" * target_len
+    if len(raw) == target_len:
+        return bytes(raw)
+    src = np.frombuffer(raw, np.uint8).astype(np.float64)
+    src_x = np.arange(len(src), dtype=np.float64)
+    dst_x = np.linspace(0.0, float(len(src) - 1), target_len)
+    out = np.rint(np.interp(dst_x, src_x, src)).clip(0, 255).astype(np.uint8)
+    return out.tobytes()
 
 
 def rate_deltas(nfr):
@@ -628,7 +680,38 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     nl0 = int(sc.get("f0_cold", 0))
     f0_ctrl_len = int(sc.get("f0_ctrl_len", 0))
     payload = b"".join(Plist)
-    control = b"".join(blocks)
+
+    # Queue the first N chunks from HEADER, then make each live control carry
+    # the next future chunk. The old duplicate-and-skip layout consumed the
+    # entire startup reserve by frame N and left the writer next to the play
+    # head. Shifting fixed-size chunks keeps block lengths and sector scheduling
+    # unchanged while preserving the exact source sample order.
+    safe_audio_prefetch = max(0, min(
+        (PCM_SYNC_MAX - PCM_SYNC_LEAD) // max(1, AUDIO),
+        (PCM_WAVE_RING_END - PCM_SYNC_LEAD - PCM_STARTUP_MARGIN) // max(1, AUDIO)))
+    audio_prefetch_frames = (
+        min(nfr, STARTUP_AUDIO_FRAMES, safe_audio_prefetch) if f0_header else 0)
+    source_audio_chunks = [control_audio(block) for block in blocks]
+    silence_chunk = b"\0" * AUDIO
+    disc_blocks = [
+        replace_control_audio(
+            block,
+            source_audio_chunks[i + audio_prefetch_frames]
+            if i + audio_prefetch_frames < nfr else silence_chunk)
+        for i, block in enumerate(blocks)
+    ]
+    queued_audio = (source_audio_chunks[:audio_prefetch_frames]
+                    + [control_audio(block) for block in disc_blocks])
+    if queued_audio[:nfr] != source_audio_chunks:
+        raise AssertionError("startup PCM prefetch changed the source sample order")
+    if any(chunk != silence_chunk for chunk in queued_audio[nfr:]):
+        raise AssertionError("startup PCM prefetch tail is not silent")
+    if [len(block) for block in disc_blocks] != [len(block) for block in blocks]:
+        raise AssertionError("startup PCM prefetch changed control block lengths")
+    print(f"  audio prefetch: {audio_prefetch_frames} chunks queued; "
+          f"source order verified for {nfr} playback chunks")
+
+    control = b"".join(disc_blocks)
     # frame0の control/patterns をストリームから切り出す(ヘッダ側へ)
     if f0_header:
         f0_ctrl = control[:f0_ctrl_len]
@@ -661,24 +744,20 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     # PALTAB: 全区間パレットをヘッダ直後に一括配置(セクタ整列)。boot時にMain-RAM表へ。
     paltab = b"".join(pals_to_bytes_128(p) for p in log["seg_pals"])
     paltab_sec = -(-len(paltab) // SECTOR)
-    # v5 startup audio: one PCM chunk per sector. Sector-per-frame is deliberate:
-    # the Sub CPU can drain one sector and write one complete chunk immediately,
-    # without a cross-sector staging buffer. The data is a duplicate; controls stay
-    # self-contained and older analysis/verification paths remain unchanged.
-    safe_audio_preload = max(0, min(
-        (PCM_SYNC_MAX - PCM_SYNC_LEAD) // max(1, AUDIO),
-        (PCM_WAVE_RING_END - PCM_SYNC_LEAD - PCM_STARTUP_MARGIN) // max(1, AUDIO)))
-    audio_preload_frames = min(nfr, STARTUP_AUDIO_FRAMES, safe_audio_preload) if f0_header else 0
+    # One prefetched PCM chunk per sector lets the Sub write each chunk without
+    # cross-sector staging. Controls are already shifted ahead, so offset 58's
+    # legacy duplicate-skip count is zero; offset 60 still tells the player how
+    # many HEADER sectors to queue before PCM starts.
     audio_preload = b"".join(
-        control_audio(blocks[i]).ljust(SECTOR, b"\0")
-        for i in range(audio_preload_frames)
+        source_audio_chunks[i].ljust(SECTOR, b"\0")
+        for i in range(audio_prefetch_frames)
     )
-    audio_preload_sec = audio_preload_frames
+    audio_preload_frames = 0
+    audio_preload_sec = audio_prefetch_frames
     # v4: 可変フレーム(5セクタ固定paddingを廃止=各frameは n_pay+n_ctrl セクタ)＋ vsync/コマ N。
     # これで fps がセクタ境界から解放され、表示は N vsync/コマでペーシング(N4=14.985, N2=29.97)。
     # AUDIO も fps由来。FRAME_SECTORS(=5)は最大スロット(routingバイトの上限)としてのみ残す。
-    NTSC_VSYNC = 59.94
-    vsync_n = int(round(NTSC_VSYNC / FPS))            # N: 1コマの表示VBLANK数(30fps→2, 15fps→4)
+    vsync_n = VSYNC_N                                  # N: 1コマの表示VBLANK数(30fps→2, 15fps→4)
     fps_int = int(round(FPS))                         # 名目fps(15/30)。レートマッチpadding用(下記)
     if not f0_header:
         raise SystemExit("pack v6 requires frame0 in HEADER.DAT")
@@ -774,10 +853,11 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     if out_path.stat().st_size != total * SECTOR:
         raise AssertionError("combined MOVIE.DAT size disagrees with HEADER.DAT + BODY.DAT")
     print(f"wrote {header_path} {header_sec}sec + {body_path} {frames_stream_sec}sec; "
-          f"combined {out_path} {total}sec (mode {mode_name} paltab {paltab_sec} startup_audio {audio_preload_frames}f/"
-          f"{audio_preload_sec}s frame0 {f0_ctrl_sec}+{f0_pat_sec} "
+          f"combined {out_path} {total}sec (mode {mode_name} paltab {paltab_sec} "
+          f"startup_audio prefetch {audio_prefetch_frames}f/skip {audio_preload_frames}f "
+          f"frame0 {f0_ctrl_sec}+{f0_pat_sec} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v6 N={vsync_n}(={NTSC_VSYNC/vsync_n:.3f}fps) AUDIO={AUDIO}")
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v6 N={vsync_n}(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
     print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS}(最大スロット) PALTAB_SEC={paltab_sec} "
           f"F0_CTRL_SEC={f0_ctrl_sec} F0_PAT_SEC={f0_pat_sec} ROUTING_SEC={routing_sec} "
@@ -799,14 +879,19 @@ def main():
     args = ap.parse_args()
 
     log = load_log(args.dec_log)
-    require_canonical_p0_index15(log)
+    require_canonical_p0_debug_colours(log)
     # 単一真実源チェック: sim が焼いた tank と、この pack の RING_CAP は同じ実機リングを
     # モデルするので一致すべき。ズレていたら二重管理の兆候なので警告。
     sim_tank = log.get("tank_kb")
     sim_cold = log.get("max_cold")
+    sim_audio = log.get("audio_frame_bytes")
     if sim_tank is not None and sim_tank != RING_CAP_KB:
         print(f"  [warn] sim tank_kb={sim_tank} != pack RING_CAP_KB={RING_CAP_KB} "
               f"(should match: both model the usable ring, av_config.py)")
+    if sim_audio is not None and int(sim_audio) != AUDIO:
+        raise SystemExit(
+            f"decision log audio_frame_bytes={sim_audio} != pack AUDIO={AUDIO}; "
+            "re-run sim with the current encoder")
     print(f"  encode params from sim: max_cold={sim_cold} tank_kb={sim_tank}  "
           f"pack RING_CAP_KB={RING_CAP_KB} (RING_SIZE {RING_SIZE_KB})")
     POOL = args.pool_slots or int(log["vram_tiles"])

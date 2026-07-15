@@ -20,7 +20,7 @@ MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
 VERSION        = 6               (bump for an incompatible base-layout change)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
-AUDIO          = header field    (887 B at 15 fps; 443 B at 30 fps)
+AUDIO          = header field    (888 B at N4; 444 B at N2)
 BASE           = 1               (POOL_TILE_BASE: VRAM tile index = BASE + slot)
 ```
 
@@ -30,10 +30,10 @@ ring). **v3** added the **PALTAB** (all segment palettes pre-loaded at boot
 into a Main-RAM table) and dropped the per-frame in-stream CRAM payload. **v4**
 added rate-matched variable frame sectors plus per-stream VBlank, audio-byte and
 nominal-fps fields.
-**v5** added a boot-prefix PCM preload: the first audio chunks are duplicated
-into one sector each and written to wave RAM before playback starts. The normal
-control blocks stay self-contained; the player simply skips their duplicate
-writes for the preloaded frame count.
+**v5** added a boot-prefix PCM preload. Legacy streams duplicated the first
+audio chunks into one sector each and skipped their control writes. Current
+streams use the same fields for a persistent prefetch: the prefix holds the
+source start and controls carry future chunks.
 **v6** split the boot prefix and timed stream into `HEADER.DAT` and `BODY.DAT`,
 put frame 0 entirely in `HEADER.DAT`, and changed each timed frame from
 payload-first to control-first. The `[n_pay_sec, n_ctrl_sec]` routing-byte order
@@ -119,16 +119,18 @@ Then:
 - offset 48: `u32 paltab_sec` — sectors of the PALTAB region (v3; 0 = none);
 - offset 52: `u16 vsync_n` (v4) — display VBlanks per frame `N = round(59.94/fps)`
   (15fps→4, 30fps→2). `0` in v2/v3 streams (player defaults to 4 = 15fps);
-- offset 54: `u16 audio_bytes` (v4) — PCM bytes per frame `round(audio_rate/fps)`
-  (15fps→887, 30fps→443). `0` in v2/v3 (player defaults to 887);
+- offset 54: `u16 audio_bytes` (v4) — fixed PCM bytes per actual NTSC-paced
+  frame, rounded up to keep a tiny positive reserve (N4→888, N2→444).
+  `0` in v2/v3 (player defaults to 887);
 - offset 56: `u16 fps_int` (v4) — nominal fps (15/30) used by both packer and
   player to compute the rate-matched per-frame sector count (see Routing/Frame).
   `0` in v2/v3 (player defaults to 15);
-- offset 58: `u16 audio_preload_frames` (v5+) — number of leading control audio
-  chunks already written during boot, including frame 0;
+- offset 58: `u16 audio_preload_frames` (v5+) — legacy count of leading control
+  chunks duplicated in STARTUP_AUDIO and therefore skipped at run time. Current
+  prefetched streams shift controls ahead and store `0` here;
 - offset 60: `u16 audio_preload_sec` (v5+) — sectors in STARTUP_AUDIO. v5+
-  uses
-  one chunk per sector, so this equals `audio_preload_frames`;
+  uses one chunk per sector. Current streams normally store `30`, independently
+  of the legacy skip count at offset 58;
 - offset 62: `u16 features` (v6 optional extensions). Bit 0
   (`FEATURE_COLD_RUNS`) means every control block appends the cold-slot run
   suffix described below. Unknown bits must not move any legacy field;
@@ -146,15 +148,13 @@ A 128-byte CRAM block is 4 palette lines x 16 words; each word is
 `0000BBB0GGG0RRR0` (Genesis colour). Only 15 of the 16 entries per line are
 usable colour (entry 0 = transparent).
 
-Every v6 encoder palette is stored in a canonical, picture-preserving order.
-Among the 60 usable entries, the globally brightest existing RGB333 colour
-(largest `R + G + B`) is moved to palette line 0, index 15. The encoder first
-swaps its complete source palette line with line 0, then swaps its colour slot
-with index 15. Every tile palette attribute and 1..15 pixel index receives the
-same two permutations, so rendered RGB333 pixels and the complete 60-colour
-multiset are byte-identical before and after. Index 0 in all four lines stays
-zero and is never remapped. This is a representation invariant, not another
-stream-layout version.
+Every current encoder palette reserves two existing RGB333 colours before frame
+quantisation. Among the 60 usable entries, the globally darkest colour (smallest
+`R + G + B`) is moved to palette line 0, index 1 and the globally brightest is
+moved to palette line 0, index 15. Only positions change: the complete 60-colour
+multiset is identical, and index 0 in all four lines stays zero. Frames are then
+quantised against that final grouping. This is a representation invariant, not
+another stream-layout version.
 
 ## PALTAB (v3)
 
@@ -168,23 +168,24 @@ player at build time). Every later palette switch just indexes this table via
 the control block's `pal` byte, so palettes are independent of stream delivery
 timing: a CD slip or re-seek can never corrupt the colours of a segment.
 The PALTAB already contains the canonical line/slot order described above; the
-packer rejects a stale decision log whose P0/index15 is not tied for the global
-maximum. This fixed entry lets a DEBUG player upload its font once using
-P0/index15. Palette switches require no colour search, glyph rewrite, font DMA,
-or extra VBlank wait.
+packer rejects a stale decision log unless P0/index1 is tied for the global
+minimum and P0/index15 is tied for the global maximum. These fixed entries let
+a DEBUG player upload an opaque dark background and bright font once. Palette
+switches require no colour search, glyph rewrite, font DMA, or extra VBlank wait.
 
 ## STARTUP_AUDIO (v5)
 
-Each `HEADER.DAT` sector begins with one normal `audio_bytes` PCM chunk and is zero-padded
-to 2048 bytes. The chunks duplicate the leading control-block audio; they do
-not replace it on disc. During boot the Sub CPU drains one sector, appends its
-chunk to wave RAM at `SYNC_LEAD`, and repeats while PCM is stopped. PCM starts
-at that same address after frame 0 is displayed, so the first audio sample is
-aligned with the first visible movie frame rather than preceded by ring silence.
-As frames are expanded, the player skips exactly `audio_preload_frames` duplicate
-writes. The default thirty-chunk preload covers the frame-0 build and the first
-dense scene while the live writer catches up; longer windows must still fit the
-ring's startup margin.
+Each STARTUP_AUDIO sector in `HEADER.DAT` begins with one normal `audio_bytes`
+PCM chunk and is zero-padded to 2048 bytes. During boot the Sub CPU drains one
+sector, appends its chunk to
+wave RAM at `SYNC_LEAD`, and repeats while PCM is stopped. Current streams put
+source chunks 0-29 in this prefix, then put chunk 30 in frame 0's control,
+chunk 31 in frame 1's control, and so on. This preserves the exact source sample
+order while keeping a real 30-frame write reserve. Legacy streams may instead
+duplicate the leading chunks in their controls and use `audio_preload_frames`
+to skip those writes. PCM starts at the prefetched source prefix after frame 0
+is displayed, so the first audio sample remains aligned with the first visible
+movie frame rather than starting during the Mega-CD boot screen.
 
 ## Routing table
 
@@ -271,7 +272,7 @@ pixels `(hi<<4)|lo`.
 | 22   | debug       | **present only if `dbg==1`**: fixed-length debug block (below) |
 | ceil(cells/8) | bitmap | one bit per cell; 1 = this cell is updated this frame |
 | n_upd x 2 | entries | one big-endian word per update, in cell order (see below) |
-| audio_bytes | audio | RF5C164 sign-magnitude PCM for this frame (header field; normally 887 B at 15 fps or 443 B at 30 fps) |
+| audio_bytes | audio | RF5C164 sign-magnitude PCM queued by this control block (header field; normally 888 B at N4 or 444 B at N2). Current prefetched streams carry the chunk `audio_preload_sec` frames ahead. |
 | 0/1  | audio pad   | zero byte when needed to align the optional suffix to a word boundary and keep the legacy block end even |
 | 2    | n_runs      | present when header feature bit 0 is set; number of cold-slot runs |
 | n_runs x 4 | cold runs | present when feature bit 0 is set; repeated `u16 slot_start, u16 count` pairs in payload-consumption order |

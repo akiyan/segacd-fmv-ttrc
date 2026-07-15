@@ -34,6 +34,12 @@ models the same usable buffer so a schedule it calls feasible actually is.
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | prebuffer | fills ring to `RING_CAP` | pack | Final region of `HEADER.DAT`; a boot-time burst that fills the ring before frame 1 so bursts are pre-buffered. |
 
+DEBUG uses the Window name table for one opaque HUD row. It still updates every
+video row behind that Window, so diagnostic playback has the same video-name-table
+work as a release build. The encoder only reorders existing CRAM colours to keep
+palette 0 index 1 globally darkest (HUD background) and index 15 globally
+brightest (HUD text); it does not alter either colour value.
+
 ## A2. CRAM pre-load (PALTAB) — palette table, off the stream
 
 All segment palettes are shipped once in a **PALTAB** region right after the
@@ -44,18 +50,18 @@ payload. So palettes no
 longer depend on stream-delivery timing (a CD slip or re-seek can't corrupt a
 segment's colours), and the palette-switch frame's byte budget is freed.
 
-The encoder also gives every segment a lossless canonical CRAM order. It swaps
-the whole row containing the globally brightest existing usable colour into P0,
-then swaps that colour into index 15 and applies the same row/index permutation
-to every tile. No colour is added or removed, and transparent index 0 remains
-zero in all four rows. This makes P0/index15 a stable DEBUG font colour without
-changing the picture.
+The encoder also gives every segment a canonical DEBUG pair before frame
+quantisation. It only reorders the 60 existing usable colours: the globally
+darkest goes to P0/index1 and the globally brightest goes to P0/index15. No
+colour value is added or changed, and transparent index 0 remains zero in all
+four rows. Frames are then quantised against this final palette grouping.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | `PALTAB_MAX_SEG` | 64 | cfg | Palette-table capacity (segments). Main-RAM table = `PALTAB_MAX_SEG * 128 B` (8 KB at `PALTAB_RAM` 0xFFB000). Build-asserted equal to the player's `.equ PALTAB_MAX_SEG`. |
 | `PALTAB_OFF` | 0xB000 | sp / ip | Word-RAM staging offset for the table at boot (must agree between the two CPUs; build-checked). Staging room caps the hard limit at 160 segments; the 1-byte `pal` ref caps it at 255. |
 | PALTAB sectors | `ceil(n_seg * 128 / 2048)` | pack | Region size; 16 segments per sector (op/ed both fit in 1). |
+| P0/index1 | global minimum `R + G + B` among 60 usable colours | sim -> pack / ip | Fixed opaque HUD background colour. The packer rejects non-canonical decision logs. |
 | P0/index15 | global maximum `R + G + B` among 60 usable colours | sim -> pack / ip | Fixed font colour. Whole-row and within-row swaps are mirrored in tile attributes and indices; pack rejects non-canonical decision logs. |
 
 ## B. Cold cap (quality vs. sector slip) — the main quality lever
@@ -83,10 +89,10 @@ audible click). See the `R`/`L` HUD readouts below.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| `AUDIO_BYTES` / `AUDIO` | 887 B at 15 fps; 443 B at 30 fps | sp / pack | Per-stream header value, rounded from 13.3 kHz / native fps. PCM bytes written to wave RAM per frame. |
+| `AUDIO_BYTES` / `AUDIO` | 888 B at N4 (~15 fps); 444 B at N2 (~30 fps) | sp / pack | Fixed PCM bytes per frame, rounded up against the actual NTSC VBlank cadence. FD=0x0345 consumes about 13,303.76 samples/s while either chunk size supplies about 13,306.69 samples/s, so the reserve grows by only about 2.94 B/s. The packer evenly retimes the source WAV to this fixed-chunk length instead of padding only the tail. |
 | `SYNC_LEAD` | 0x3000 (12288 B, ~0.92 s) | sp | Write-ahead lead in wave RAM. PCM starts at this address; the ring's initial silence is not played, so the first source sample aligns with the first visible movie frame. |
-| `CBRSIM_STARTUP_AUDIO_FRAMES` | 30 (frame0 + first dense scene) | pack/sp | Startup audio preload (introduced in v5, stored in v6 `HEADER.DAT`). The player prepares frame0 after the header read, starts PCM at `SYNC_LEAD` after frame0 is displayed, and skips the matching duplicate control writes. The longer window covers the initial Sub-CPU catch-up without reintroducing the old A/V offset. |
-| `SYNC_MIN` | 0 (0 B) | sp | Lower lead bound. Re-sync is disabled when the writer catches the play head; this prevents an artificial startup jump after the PCM origin is aligned. |
+| `CBRSIM_STARTUP_AUDIO_FRAMES` | 30 | pack/sp | Persistent audio prefetch. `HEADER.DAT` queues source chunks 0-29; control frame 0 carries chunk 30, frame 1 carries 31, and so on. Playback still begins with chunk 0 at frame 0, while the writer remains about 30 frames ahead instead of consuming the reserve by skipping duplicate chunks. |
+| `SYNC_MIN` | 0 (0 B) | sp | Lower lead bound. The persistent prefetch should keep the writer far above it; reaching zero indicates a real supply or clock problem. |
 | `SYNC_MAX` | 0x6800 (26624 B, ~2.0 s) | sp | Upper lead bound. Above it -> re-sync. |
 | `WAVE_RING_END` | 0x8000 (32 KB) | sp | RF5C164 wave-RAM ring size. |
 
@@ -177,23 +183,20 @@ Both H32 and H40 use the same contiguous 32-cell layout, with no field gaps:
 shows the high byte of the lead, and `P/S/D/R/C/W/M/A` show their low byte.
 Every compact field is two digits and wraps naturally from `FF` to `00`.
 
-The shared font asset uses transparent index 0 and set-pixel index 1. The movie
-player expands index 1 to P0/index15 once while uploading the font to VRAM, then
-uses that fixed font for the whole movie. Because the encoder guarantees that
-P0/index15 is a globally brightest existing colour in every segment, a CRAM
-switch needs no font scan, recolour, DMA, or additional VBlank wait.
+The shared font asset uses source index 0 for its background and source index 1
+for set pixels. The movie player expands them once to P0/index1 and P0/index15
+while uploading the font to VRAM. The result is an opaque darkest-colour HUD
+background with brightest-colour text in every palette segment, with no
+per-frame font scan, recolour, DMA, or additional VBlank wait.
 
-The font's index 0 remains transparent. The top Window row is full-width, so a
-DEBUG build keeps that physical name-table row clear and lets its transparent
-pixels reveal the black backdrop through Plane B. If a full-height movie starts
-at row 0, startup code preselects source row 1 and reduces the video blit by one
-row; a vertically inset movie already leaves row 0 clear. The playback loop
-gains no branch, write, or DMA, and full-height H32/H40 actually save 32/40 CPU
-name-table writes per frame. The whole 8-pixel diagnostic row is black, avoiding
-shifted Plane-B content after the 32-cell text. In DEBUG builds, the old
+The top Window row covers the video visually, but a DEBUG build still updates
+the hidden video name-table row and all other rows exactly as a release build.
+All Window cells are initialized with the opaque darkest-colour blank glyph;
+the 32 live HUD cells are then overwritten once per frame. This adds no DMA and
+does not branch on whether the video starts at row 0. In DEBUG builds, the old
 slip-triggered CRAM0 red border is disabled; slips remain visible in `Sxx`, while
-CRAM0 stays black. Release builds retain the red indicator because they do not
-have the HUD.
+the HUD colours stay stable. Release builds retain the red indicator because
+they do not have the HUD.
 
 | Marker | Display | Meaning |
 |---|---|---|
@@ -206,4 +209,4 @@ have the HUD.
 | `C` | `Cxx` | Blocking CD pumps needed before the current control could run, including an older BODY slot. Zero means delivery was already armed. |
 | `W` | `Wxx` | Approximate Main-CPU wait for Sub completion at `CMD_SWAP`, in V-counter scanlines. It wraps at 256, so use it as a short-wait diagnostic rather than an absolute stopwatch. |
 | `M` | `Mxx` | VBlank starts waited by the Main pattern path this frame. Values of 2 or more prove an extra VBlank spill. |
-| `A` | `Axx` | Startup-audio duplicate chunks still being skipped. It naturally reaches zero at the live-writer handoff. |
+| `A` | `Axx` | Legacy startup-audio duplicate chunks still being skipped. Current persistent-prefetch streams start and remain at zero. |
