@@ -11,6 +11,13 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e23/p34 : Keep the startup PCM origin aligned while giving the Sub CPU a
+#        30-frame boot-prefix queue. The player starts RF5C164 playback
+#        at SYNC_LEAD, where the boot-prefix audio is written, instead of
+#        playing the 0x0000..SYNC_LEAD ring silence first. Thirty startup chunks
+#        are duplicated so the live writer resumes promptly after frame 0; the
+#        queue uses the safe 30-frame window and SYNC_LEAD is
+#        0x3000, avoiding the measured 1.386-second A/V lead.
 #   p32 : Compact the DEBUG HUD to a 5-cell pitch in H32 so all F/P/S/D/R/L
 #        fields fit in the native 32-column plane; H40 retains 6-cell pitch.
 #   p31 : Select H32/H40 from the MOVIE.DAT mode byte. The previous branch
@@ -188,5 +195,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260715
-e=21
-p=31
+e=23
+p=34

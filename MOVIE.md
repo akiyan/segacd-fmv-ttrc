@@ -136,10 +136,13 @@ timing: a CD slip or re-seek can never corrupt the colours of a segment.
 Each sector begins with one normal `audio_bytes` PCM chunk and is zero-padded
 to 2048 bytes. The chunks duplicate the leading control-block audio; they do
 not replace it on disc. During boot the Sub CPU drains one sector, appends its
-chunk to wave RAM, and repeats while PCM is stopped. Playback therefore begins
-with the normal `SYNC_LEAD` silence and additional future audio already queued,
-without changing the first sample's position or A/V start timing. As frames are
-expanded, the player skips exactly `audio_preload_frames` duplicate writes.
+chunk to wave RAM at `SYNC_LEAD`, and repeats while PCM is stopped. PCM starts
+at that same address after frame 0 is displayed, so the first audio sample is
+aligned with the first visible movie frame rather than preceded by ring silence.
+As frames are expanded, the player skips exactly `audio_preload_frames` duplicate
+writes. The default thirty-chunk preload covers the frame-0 build and the first
+dense scene while the live writer catches up; longer windows must still fit the
+ring's startup margin.
 
 ## Routing table
 

@@ -74,9 +74,9 @@ audible click). See the `R`/`L` HUD readouts below.
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | `AUDIO_BYTES` / `AUDIO` | 887 B at 15 fps; 443 B at 30 fps | sp / pack | Per-stream header value, rounded from 13.3 kHz / native fps. PCM bytes written to wave RAM per frame. |
-| `SYNC_LEAD` | 0x4800 (18432 B, ~1.38 s) | sp | Write-ahead lead = the A/V lag and the startup silence. The larger lead absorbs the initial heavy-frame startup without a pointer jump. |
-| `CBRSIM_STARTUP_AUDIO_FRAMES` | 2 (frame0 + frame1) | pack/sp | v5 boot-prefix audio preload. The player stops the CD while expanding frame0 and starts PCM only after frame0 is displayed; duplicating only the first two chunks avoids starving the live writer during startup. Matching control writes are skipped once; A/V sample positions are unchanged. |
-| `SYNC_MIN` | 0x400 (1024 B) | sp | Lower lead bound. Below it -> re-sync. The startup lead is increased instead, so this guard remains unchanged. |
+| `SYNC_LEAD` | 0x3000 (12288 B, ~0.92 s) | sp | Write-ahead lead in wave RAM. PCM starts at this address; the ring's initial silence is not played, so the first source sample aligns with the first visible movie frame. |
+| `CBRSIM_STARTUP_AUDIO_FRAMES` | 30 (frame0 + first dense scene) | pack/sp | v5 boot-prefix audio preload. The player stops the CD while expanding frame0, starts PCM at `SYNC_LEAD` after frame0 is displayed, and skips the matching duplicate control writes. The longer window covers the initial Sub-CPU catch-up without reintroducing the old A/V offset. |
+| `SYNC_MIN` | 0 (0 B) | sp | Lower lead bound. Re-sync is disabled when the writer catches the play head; this prevents an artificial startup jump after the PCM origin is aligned. |
 | `SYNC_MAX` | 0x6800 (26624 B, ~2.0 s) | sp | Upper lead bound. Above it -> re-sync. |
 | `WAVE_RING_END` | 0x8000 (32 KB) | sp | RF5C164 wave-RAM ring size. |
 

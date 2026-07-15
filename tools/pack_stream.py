@@ -49,14 +49,13 @@ PAT_PER_SEC = SECTOR // PAT  # 64
 AUDIO = int(round(AUDIO_RATE / FPS))   # AUDIO_RATE, FPS は sim から import
 # PCM開始直後はエミュレータ/実機の立上がり位相で一時的にSubの供給が遅れる。先頭音声を
 # ディスクのboot prefixへ複製し、PCMを開始する前にwave RAMへ並べておく。frame0を含む
-# Requested startup arming depth.  The player now stops the CD while expanding
-# frame 0, then pre-drains frame 1 before enabling PCM.  Only those two control
-# chunks need to be duplicated in the boot prefix; keeping a long (45-frame)
-# skip window starves the live writer while the dense opening frames are being
-# expanded and drives the audio lead into SYNC_MIN (R re-syncs around F=0x2f).
+# Requested startup arming depth. The player starts PCM at SYNC_LEAD (the same
+# address used by the write pointer). Thirty chunks cover the frame-0 build and
+# the first dense scene while the live writer catches up; the header keeps this
+# explicit so older streams remain readable and experiments can override it.
 # Leave the setting overridable for old stream/player combinations.
-STARTUP_AUDIO_FRAMES = max(0, int(os.environ.get("CBRSIM_STARTUP_AUDIO_FRAMES", "2")))
-PCM_SYNC_LEAD = 0x4800
+STARTUP_AUDIO_FRAMES = max(0, int(os.environ.get("CBRSIM_STARTUP_AUDIO_FRAMES", "30")))
+PCM_SYNC_LEAD = 0x3000
 PCM_SYNC_MAX = 0x6800
 PCM_WAVE_RING_END = 0x8000
 PCM_STARTUP_MARGIN = 0x0200

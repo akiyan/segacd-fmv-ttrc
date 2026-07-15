@@ -89,14 +89,16 @@
 .equ PCM_PLAY_H, 0x00FF0023
 .equ WAVE_RING_END, 0x8000
 .equ RING_MASK, WAVE_RING_END-1
-/* 音声リード: リング先頭の無音を SYNC_LEAD ぶん再生してから実音声に到達=起動遅延。
-   タイトル同期優先。起動時のframe0展開を吸収するためリードは0x4800(1.38s)。
+/* 音声リード: 起動時から先行書き込み位置(SYNC_LEAD)で再生を開始する。
+   以前は再生位置を0x0000に固定していたため、リング先頭の無音約1.38秒を
+   先に再生して映像が音声より先行していた。STARTUP_AUDIOを同じ位置へ
+   先行配置し、PCM_STもSYNC_LEADへ合わせることでframe0と音声の先頭を揃える。
    SYNC_MIN(リード下限)を割ると書込を play+SYNC_LEAD へジャンプ=re-sync(古い音をまたぐ乱れ)。
    重いシーン転換クラスタで映像が数コマ遅れリードが一瞬凹むが、O_LEAD計測で底≈0x5BB(machi_op
-   F1056)と実測。SYNC_MIN=0x400(≈1.6コマ)はその底より下・追い越し(0)より十分上に置き、
-   安全な一瞬の凹みでは re-sync させない(=乱れゼロ・無劣化)。真に枯渇した時だけ最後の砦として発火。 */
-.equ SYNC_LEAD, 0x4800
-.equ SYNC_MIN,  0x0400
+   F1056)と実測。起動用先行チャンクを消費する間も不要なre-syncを起こさないよう、
+   下限は0(追いついた位置での人工的な再アンカーを禁止)に置く。 */
+.equ SYNC_LEAD, 0x3000
+.equ SYNC_MIN,  0x0000
 .equ SYNC_MAX,  0x6800
 
 .equ HEADER_SECTORS,  1
@@ -412,17 +414,16 @@ stream_loop:
 	cmp.w	h_frames, d0
 	bhs	movie_end
 	bsr	process_frame
-	/* On the first timed frame, Main has already displayed frame 0 and is now
-	   waiting on this CMD_SWAP.  Start PCM immediately before acknowledging it;
-	   subsequent frames run with the normal live sync path. */
-	tst.w	pcm_running
-	bne	1f
-	bsr	pcm_on
-1:
 3:
 	bsr	pump_poll			/* MD待ち中もCDを吸い上げ(溢れ防止) */
 	cmp.w	#CMD_SWAP, (COMCMD0).l
 	bne	3b
+	/* Main has now finished and is displaying frame 0. Start PCM at this exact
+	   handshake, after the frame-0 build latency has been absorbed. */
+	tst.w	pcm_running
+	bne	1f
+	bsr	pcm_on
+1:
 	bchg	#0, (MEMMODE+1).l
 	bsr	swap_settle
 	move.w	#STAT_READY, (COMSTAT0).l
@@ -1486,19 +1487,24 @@ ip_loop:
 	move.b	#0x00, (PCM_LSH).l
 	nop
 	nop
-	move.b	#0x00, (PCM_ST).l
+	/* PCM_ST is the high byte of the 16-bit sample address. Start at
+	   SYNC_LEAD, where STARTUP_AUDIO was written, instead of 0x0000 silence. */
+	move.b	#0x30, (PCM_ST).l		/* SYNC_LEAD=0x3000 */
 	nop
 	nop
-	/* 起動時からリードを SYNC_LEAD で確立=最初のフレームで resync(プライミング)を起こさない。
-	   これで R が 0 スタート(=以降の R>0 は本物の乱れだけ)。音声挙動は従来のプライミング結果と同一。 */
+	/* 起動時からリードを SYNC_LEAD で確立する。PCM_ST と write_ptr を同じ
+	   サンプル位置に置き、先頭リング無音を再生しない。 */
 	move.w	#SYNC_LEAD, write_ptr
-	move.w	#SYNC_LEAD, cur_lead
 	clr.w	resync_count
 	movem.l	(sp)+, d0-d2/a0
 	rts
 
 pcm_on:
 	move.w	#1, pcm_running
+	/* GPGX reloads a channel's address on the OFF write. Repeat OFF here so
+	   PCM_ST=SYNC_LEAD is latched even when the channel was left selected during
+	   the boot-prefix writes, then enable it. */
+	move.b	#0xFF, (PCM_ONOFF).l
 	move.b	#0xFE, (PCM_ONOFF).l
 	rts
 
