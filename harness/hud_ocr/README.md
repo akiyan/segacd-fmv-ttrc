@@ -19,4 +19,7 @@ python3 harness/hud_ocr/verify.py
 It renders the actual generated font onto H32- and H40-sized frames, verifies
 all six fields and their widths, covers `00`/`FF` byte values, and confirms that
 the older `read_frameno()` API still reads an isolated `Fxxxx` field without
-requiring the rest of the HUD.
+requiring the rest of the HUD. The synthetic source is deliberately bright and
+noisy; the proof also models the full-width cleared top row produced by the
+player's branch-free DEBUG blit and verifies OCR against that black diagnostic
+bar.

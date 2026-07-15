@@ -157,8 +157,14 @@ remux offline audio when verifying playback):
 
 ```sh
 tools/record_movie.sh --disc out/MOVIEPLAY.cue --no-build \
-  --seconds 180 --trim 0 --tag rec_delta --out tmp/op_delta.mp4
+  --seconds 180 --tag STEM_emu --out videos/STEM_emu_preview.mp4
 ```
+
+The high-level recorder defaults to a native-size FFV1/FLAC lossless MKV under
+`videos/`; the MP4 is only its quick verification preview. An explicit
+`--preset realtime` capture uses 4:2:0 chroma and is not an upload master.
+The default keeps the Mega-CD startup screens. Trimming is an explicit
+movie-only option, not part of the normal recording or upload path.
 
 ## Repository Layout
 

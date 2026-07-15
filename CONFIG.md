@@ -156,7 +156,9 @@ Set per encode; they select the output and the codec behavior for that source.
 | `CBRSIM_MAX_COLD` | Per-frame cold cap (section B). |
 | `CBRSIM_RING_CAP_KB` / `CBRSIM_TANK_KB` | Override the ring cap / tank (normally derived from av_config). |
 | `CBRSIM_RATE_KIB` | CBR target rate (section F). |
-| `CBRSIM_REUSE`, `CBRSIM_GPU`, `CBRSIM_EMIT_DEC`, `CBRSIM_OUT` | Reuse decoded frames / use the GPU / save the decision log / output dir. `CBRSIM_EMIT_DEC=1` writes `CBRSIM_OUT/decisions.pkl`; an explicit path is also accepted. |
+| `CBRSIM_REUSE` | Reuse decoded frames. |
+| `CBRSIM_GPU` | GPU quantization is on by default (`1`). Set `0`, `off`, `false`, or `no` only to force CPU execution. If CuPy/CUDA cannot be initialized, the encoder reports the reason and falls back to CPU. |
+| `CBRSIM_EMIT_DEC`, `CBRSIM_OUT` | Save the decision log / output dir. `CBRSIM_EMIT_DEC=1` writes `CBRSIM_OUT/decisions.pkl`; an explicit path is also accepted. |
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 
@@ -176,6 +178,18 @@ player expands index 1 to P0/index15 once while uploading the font to VRAM, then
 uses that fixed font for the whole movie. Because the encoder guarantees that
 P0/index15 is a globally brightest existing colour in every segment, a CRAM
 switch needs no font scan, recolour, DMA, or additional VBlank wait.
+
+The font's index 0 remains transparent. The top Window row is full-width, so a
+DEBUG build keeps that physical name-table row clear and lets its transparent
+pixels reveal the black backdrop through Plane B. If a full-height movie starts
+at row 0, startup code preselects source row 1 and reduces the video blit by one
+row; a vertically inset movie already leaves row 0 clear. The playback loop
+gains no branch, write, or DMA, and full-height H32/H40 actually save 32/40 CPU
+name-table writes per frame. The whole 8-pixel diagnostic row is black, avoiding
+shifted Plane-B content after the 22-cell text. In DEBUG builds, the old
+slip-triggered CRAM0 red border is disabled; slips remain visible in `Sxx`, while
+CRAM0 stays black. Release builds retain the red indicator because they do not
+have the HUD.
 
 | Marker | Display | Meaning |
 |---|---|---|

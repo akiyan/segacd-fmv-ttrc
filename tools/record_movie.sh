@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
 #
-# record_movie.sh - record the Sega CD disc playback to a shareable mp4.
+# record_movie.sh - record Sega CD playback and create a verification preview.
 #
-# Wraps tools/run_headless.sh --record-realtime (RetroArch + Genesis Plus GX
-# FFmpeg recorder under Xvfb), selects an audible window by default, and
-# transcodes it to an H.264 + AAC mp4 for sharing.
+# Wraps tools/run_headless.sh (RetroArch + Genesis Plus GX FFmpeg recorder under
+# Xvfb), keeps the Mega-CD startup sequence by default, and transcodes it to an
+# H.264 + AAC preview for quick verification.
 #
 # The recording is the emulator's own synchronized A/V output (video + whatever
 # audio the build produces) - not an offline re-mux of PROBE.BIN.
 #
 # Usage:
-#   tools/record_movie.sh                      # record out/SCFMV_MCD.cue, ~160s
+#   tools/record_movie.sh                      # record out/MOVIEPLAY.cue, ~160s
 #   tools/record_movie.sh --seconds 30         # short clip
-#   tools/record_movie.sh --disc out/SCFMV_MCD.cue --out tmp/op.mp4 --seconds 160
+#   tools/record_movie.sh --disc out/MOVIEPLAY.cue --out videos/op.mp4 --seconds 160
 #
 # Options:
-#   --disc CUE     disc image to boot (default out/SCFMV_MCD.cue)
-#   --out MP4      output mp4 (default tmp/<tag>_movie.mp4)
-#   --seconds N    seconds of playback to include in the MP4 (default 160)
+#   --disc CUE     disc image to boot (default out/MOVIEPLAY.cue)
+#   --out MP4      verification preview (default videos/<tag>_preview.mp4)
+#   --seconds N    seconds to keep in the bounded native MKV/preview (default 160)
 #   --trim SEC     seconds to drop from the front; disables auto-audio-trim
-#                  (default: auto-audio-trim)
-#   --tag NAME     work prefix under tmp/ (default: rec_<disc basename>)
+#                  (default: 0, preserving the startup sequence)
+#   --tag NAME     work prefix under the capture dir (default: rec_<disc basename>)
 #   --display :N   X display for Xvfb (default :236)
-#   --preset NAME  run_headless record preset, or realtime (default realtime)
+#   --preset NAME  ffv1-flac (pixel-lossless default) or realtime (4:2:0 check)
 #   --record-size WxH
-#                  native recording surface (H32 verification: 320x224)
+#                  native recording surface (H32: 256x224, H40: 320x224)
 #   --audio-jump-threshold N
 #                  pass through to run_headless (default: run_headless default)
 #   --audio-min-rms N
 #                  fail pre/post-transcode checks if RMS is below N
 #   --auto-audio-trim
-#                  choose the trim position from the loudest recorded WAV window
+#                  explicitly choose a movie-only window from the recorded WAV
 #   --no-audio-check
 #                  pass through to run_headless
 #   --no-build     do not run `make disc` first
@@ -39,17 +39,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-DISC="out/SCFMV_MCD.cue"
+DISC="out/MOVIEPLAY.cue"
 OUT=""
 REC_SECS=160
-TRIM=8
+TRIM=0
 TAG=""
 DISPLAY_NUM=":236"
-PRESET="realtime"
+PRESET="ffv1-flac"
 RECORD_SIZE=""
 BUILD=1
 AUDIO_CHECK_ARGS=()
-AUTO_AUDIO_TRIM=1
+AUTO_AUDIO_TRIM=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -66,14 +66,17 @@ while [ $# -gt 0 ]; do
     --auto-audio-trim) AUTO_AUDIO_TRIM=1; shift;;
     --no-audio-check) AUDIO_CHECK_ARGS+=(--no-audio-check); shift;;
     --no-build) BUILD=0; shift;;
-    -h|--help) sed -n '2,34p' "$0"; exit 0;;
+    -h|--help) sed -n '2,36p' "$0"; exit 0;;
     *) echo "unknown option: $1" >&2; exit 2;;
   esac
 done
 
 [ -z "$TAG" ] && TAG="rec_$(basename "${DISC%.*}")"
-[ -z "$OUT" ] && OUT="tmp/${TAG}_movie.mp4"
+[ -z "$OUT" ] && OUT="videos/${TAG}_preview.mp4"
+CAPTURE_DIR="${OUTDIR:-$ROOT/videos}"
+mkdir -p "$CAPTURE_DIR" "$(dirname "$OUT")"
 command -v ffmpeg >/dev/null 2>&1 || { echo "missing ffmpeg" >&2; exit 1; }
+command -v ffprobe >/dev/null 2>&1 || { echo "missing ffprobe" >&2; exit 1; }
 
 if [ "$BUILD" -eq 1 ]; then
   echo ">> make disc"
@@ -83,31 +86,45 @@ fi
 
 # run_headless records launch->Escape. The capture loop (shots*interval) is the
 # window during which playback is recorded; size it to cover trim + requested
-# seconds plus a small margin.
+# seconds plus a small margin. Auto trim is an explicit movie-only mode, so give
+# its window enough extra material to search without changing the default path.
 INTERVAL=2
-SHOTS=$(( (TRIM + REC_SECS + 10 + INTERVAL - 1) / INTERVAL ))
+CAPTURE_LEAD="$TRIM"
+[ "$AUTO_AUDIO_TRIM" -eq 1 ] && CAPTURE_LEAD=30
+SHOTS=$(( (CAPTURE_LEAD + REC_SECS + 10 + INTERVAL - 1) / INTERVAL ))
 
 echo ">> recording ${REC_SECS}s of $DISC (preset $PRESET) ..."
 RECORD_SIZE_ARGS=()
 [ -n "$RECORD_SIZE" ] && RECORD_SIZE_ARGS=(--record-size "$RECORD_SIZE")
 if [ "$PRESET" = "realtime" ]; then
-  tools/run_headless.sh "$DISC" --tag "$TAG" \
+  OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record-realtime \
     --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
     "${RECORD_SIZE_ARGS[@]}" \
     "${AUDIO_CHECK_ARGS[@]}"
 else
-  tools/run_headless.sh "$DISC" --tag "$TAG" \
+  OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record --record-preset "$PRESET" \
     --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
     "${RECORD_SIZE_ARGS[@]}" \
     "${AUDIO_CHECK_ARGS[@]}"
 fi
 
-MKV="tmp/${TAG}.mkv"
-[ -f "$MKV" ] || { echo "recording not produced: $MKV (see tmp/retroarch_${TAG}.log)" >&2; exit 1; }
+RAW_MKV="$CAPTURE_DIR/${TAG}.mkv"
+if [ "$PRESET" = "ffv1-flac" ]; then
+  BOUNDED_MKV="$CAPTURE_DIR/${TAG}_lossless.mkv"
+  BOUNDED_KEY="LOSSLESS"
+  BOUNDED_LABEL="lossless"
+else
+  # flac-fast/realtime converts chroma to yuv420p before lossless H.264 coding,
+  # so it is useful for synchronized checks but must not be labelled lossless.
+  BOUNDED_MKV="$CAPTURE_DIR/${TAG}_native.mkv"
+  BOUNDED_KEY="CAPTURE"
+  BOUNDED_LABEL="native 4:2:0"
+fi
+[ -f "$RAW_MKV" ] || { echo "recording not produced: $RAW_MKV (see $CAPTURE_DIR/retroarch_${TAG}.log)" >&2; exit 1; }
 if [ "${#AUDIO_CHECK_ARGS[@]}" -eq 0 ] || [[ " ${AUDIO_CHECK_ARGS[*]} " != *" --no-audio-check "* ]]; then
-  [ -s "tmp/${TAG}_audio.json" ] || { echo "audio check report not produced: tmp/${TAG}_audio.json" >&2; exit 1; }
+  [ -s "$CAPTURE_DIR/${TAG}_audio.json" ] || { echo "audio check report not produced: $CAPTURE_DIR/${TAG}_audio.json" >&2; exit 1; }
 fi
 
 MIN_RMS=0
@@ -117,9 +134,9 @@ for ((i = 0; i < ${#AUDIO_CHECK_ARGS[@]}; i++)); do
   fi
 done
 if [ "$AUTO_AUDIO_TRIM" -eq 1 ]; then
-  [ -s "tmp/${TAG}.wav" ] || { echo "auto audio trim requires tmp/${TAG}.wav" >&2; exit 1; }
+  [ -s "$CAPTURE_DIR/${TAG}.wav" ] || { echo "auto audio trim requires $CAPTURE_DIR/${TAG}.wav" >&2; exit 1; }
   [ "$MIN_RMS" = "0" ] && MIN_RMS=1
-  TRIM="$(python3 - "tmp/${TAG}.wav" "$REC_SECS" "$MIN_RMS" <<'PY'
+  TRIM="$(python3 - "$CAPTURE_DIR/${TAG}.wav" "$REC_SECS" "$MIN_RMS" <<'PY'
 import math
 import struct
 import sys
@@ -161,23 +178,36 @@ PY
   echo ">> auto audio trim selected ${TRIM}s (min_rms=$MIN_RMS)"
 fi
 
-echo ">> trimming ${TRIM}s boot and transcoding -> $OUT"
-ffmpeg -y -hide_banner -loglevel error -ss "$TRIM" -i "$MKV" \
-  -t "$REC_SECS" \
+if [ "$TRIM" = "0" ]; then
+  echo ">> keeping Mega-CD startup in bounded $BOUNDED_LABEL capture -> $BOUNDED_MKV"
+else
+  echo ">> explicitly trimming ${TRIM}s from the bounded $BOUNDED_LABEL capture -> $BOUNDED_MKV"
+fi
+ffmpeg -y -hide_banner -loglevel error -ss "$TRIM" -i "$RAW_MKV" \
+  -t "$REC_SECS" -map 0:v:0 -map '0:a:0?' -c copy "$BOUNDED_MKV"
+
+THRESHOLD=12000
+for ((i = 0; i < ${#AUDIO_CHECK_ARGS[@]}; i++)); do
+  if [ "${AUDIO_CHECK_ARGS[$i]}" = "--audio-jump-threshold" ]; then
+    THRESHOLD="${AUDIO_CHECK_ARGS[$((i + 1))]}"
+  elif [ "${AUDIO_CHECK_ARGS[$i]}" = "--audio-min-rms" ]; then
+    MIN_RMS="${AUDIO_CHECK_ARGS[$((i + 1))]}"
+  fi
+done
+if [ "${#AUDIO_CHECK_ARGS[@]}" -eq 0 ] || [[ " ${AUDIO_CHECK_ARGS[*]} " != *" --no-audio-check "* ]]; then
+  tools/verify_recording.sh "$BOUNDED_MKV" \
+    --out-prefix "${BOUNDED_MKV%.*}" \
+    --jump-threshold "$THRESHOLD" --min-rms "$MIN_RMS"
+fi
+
+echo ">> transcoding verification preview -> $OUT"
+ffmpeg -y -hide_banner -loglevel error -i "$BOUNDED_MKV" \
   -c:v libx264 -crf 18 -pix_fmt yuv420p \
   -c:a aac -b:a 128k -movflags +faststart "$OUT"
 
 if [ "${#AUDIO_CHECK_ARGS[@]}" -eq 0 ] || [[ " ${AUDIO_CHECK_ARGS[*]} " != *" --no-audio-check "* ]]; then
   OUT_WAV="${OUT%.*}_audio.wav"
   OUT_JSON="${OUT%.*}_audio.json"
-  THRESHOLD=12000
-  for ((i = 0; i < ${#AUDIO_CHECK_ARGS[@]}; i++)); do
-    if [ "${AUDIO_CHECK_ARGS[$i]}" = "--audio-jump-threshold" ]; then
-      THRESHOLD="${AUDIO_CHECK_ARGS[$((i + 1))]}"
-    elif [ "${AUDIO_CHECK_ARGS[$i]}" = "--audio-min-rms" ]; then
-      MIN_RMS="${AUDIO_CHECK_ARGS[$((i + 1))]}"
-    fi
-  done
   ffmpeg -y -hide_banner -loglevel error -i "$OUT" -vn -ar 44100 "$OUT_WAV"
   python3 tools/analyze_recorded_audio.py "$OUT" \
     --wav "$OUT_WAV" \
@@ -188,5 +218,9 @@ if [ "${#AUDIO_CHECK_ARGS[@]}" -eq 0 ] || [[ " ${AUDIO_CHECK_ARGS[*]} " != *" --
   echo "mp4 audio check: $OUT_JSON (jump_threshold=$THRESHOLD min_rms=$MIN_RMS)"
 fi
 
+rm -f "$RAW_MKV" "$CAPTURE_DIR/${TAG}.wav"
+echo "$BOUNDED_KEY=$BOUNDED_MKV"
 echo "OUT=$OUT"
-ffprobe -hide_banner "$OUT" 2>&1 | grep -E 'Duration|Stream' || true
+for artifact in "$BOUNDED_MKV" "$OUT"; do
+  ffprobe -hide_banner "$artifact" 2>&1 | grep -E 'Input|Duration|Stream' || true
+done

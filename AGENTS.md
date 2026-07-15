@@ -63,12 +63,16 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
      (both the English and the Japanese section).
 - **CRAM chapters (permanent).** Every codec video (analysis and real-playback)
   MUST carry YouTube chapters at the CRAM (palette-segment) switch points, so the
-  switches are navigable. Generate them with `tools/youtube_chapters.py <sim_out>`
-  and prepend the block to the description (a blank line after it), before the
-  Overview. The tool reads the sim's `frame_seg`, emits one chapter per segment,
-  and enforces YouTube's rules (first at 0:00, 10 s minimum spacing, ascending).
-  This is not optional or per-video — it is the standing convention for these
-  uploads.
+  switches are navigable. Generate analysis chapters with
+  `tools/youtube_chapters.py <sim_out>` and prepend the block to the description
+  (a blank line after it), before the Overview. For a playback recording that
+  retains the Mega-CD startup, pass
+  `--content-offset <movie-start-seconds> --intro-label "Mega-CD startup"`.
+  Determine the offset by ordinary visual playback, not DEBUG HUD OCR. It shifts
+  chapter metadata only: do not trim or seek the recording. The tool reads the
+  sim's `frame_seg` and enforces YouTube's rules (first at 0:00, 10 s minimum
+  spacing, ascending). This is not optional or per-video — it is the standing
+  convention for these uploads.
 - Do not show bitrate in the Source spec line.
 - Uploads are unlisted, category 20 (Gaming). Descriptive titles, not vNNN.
 - **"Upload" always means the latest version.** Before uploading, rebuild the
@@ -148,7 +152,9 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 | Analysis-frame video (from `sim`) | `videos/<stem>_analysis.mp4` |
 | Straight sim output, video+audio, no overlay (`export_sim_video.py`) | `videos/<stem>_sim.mp4` |
 | PNGs, logs, stats for that encode  | `videos/<stem>/tmp/` (the sim working dir) |
-| Emulator recording (`record-mcd`)  | `videos/<stem>_emu.mp4` |
+| Lossless emulator capture (`record`) | `videos/<stem>_emu_lossless.mkv` |
+| Verification preview (`record`) | `videos/<stem>_emu_preview.mp4` |
+| Upload compilation (`compilation`) | `videos/<stem>_emu.mp4` |
 
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
@@ -237,21 +243,28 @@ Emulator pitfalls learned the hard way:
 
 ## HQ Deliverable Encode (final mp4)
 
-The raw capture (`tmp/<tag>.mkv`, lossless) is 256x192 with non-square pixels.
-For the final mp4, bake the pixel aspect and upscale with integer factors so
-dots stay crisp:
+`record` owns the native lossless capture; `compilation` owns the upload
+transcode. Keep the complete recording, including the Mega-CD startup. Do not
+leave a non-square SAR for YouTube to rescale: bake the mode's pixel aspect into
+a high-resolution square-pixel raster with nearest-neighbour scaling:
 
 ```sh
-ffmpeg -i tmp/<tag>.mkv \
-  -vf "scale=1792:1152:flags=neighbor,setsar=1" \
-  -c:v libx264 -crf 16 -preset slow -pix_fmt yuv420p \
-  -c:a aac -b:a 192k out.mp4
+ffmpeg -i videos/<stem>_emu_lossless.mkv \
+  -vf "scale=2048:1568:flags=neighbor,setsar=1" \
+  -c:v libx264 -crf 10 -preset slow -pix_fmt yuv420p \
+  -c:a aac -b:a 192k -movflags +faststart videos/<stem>_emu.mp4
 ```
 
-- The old fixed `1792x1152` / 7:6 recipe is not a universal Mega Drive
-  conversion.  Use the mode-aware geometry harness: H32 is PAR 8:7 and H40
-  is PAR 32:35.  Keep the source raster integer-scaled and set the matching
-  SAR, or use the harness's display-sized output when baking square pixels.
+- H32: 256x224 PAR 8:7 becomes 2048x1568 SAR 1:1. This is exact 8x horizontal
+  and 7x vertical pixel replication.
+- H40: 320x224 PAR 32:35 becomes the same 2048x1568 SAR 1:1 aperture. A
+  practical-size exact integer replication is impossible, so nearest-neighbour
+  assigns each source column to 6 or 7 output columns without colour blending.
+- The nearest-neighbour enlargement preserves source colour samples, but the
+  H.264 mezzanine and YouTube delivery are re-encoded and are not end-to-end
+  lossless. Use CRF 10 to give YouTube a clean high-resolution input.
+- Do not add `-ss`, `-t`, an fps filter, or `-r` to the standard upload path.
+- Do not guess a mode4 PAR; verify it in the geometry harness before adding it.
 - Telegram's bot limit is 50MB; send a `896x576` crf20 preview and keep the
   full-quality file on disk (or upload to YouTube).
 
@@ -302,12 +315,18 @@ ffmpeg -i tmp/<tag>.mkv \
 
 ```sh
 tools/record_movie.sh --disc out/MOVIEPLAY.cue --no-build \
-  --seconds 180 --trim 0 --tag rec_delta --out tmp/op_delta.mp4
+  --seconds 180 --tag STEM_emu --out videos/STEM_emu_preview.mp4
 ```
 
+- The high-level recorder defaults to FFV1/FLAC and writes its bounded
+  pixel-lossless MKV under `videos/`. Explicit `--preset realtime` is a faster
+  4:2:0 verification capture and must not be used as a `compilation` input.
+- The default keeps the Mega-CD startup. Use trimming only when the user
+  explicitly asks for a movie-only clip.
 - Run one RetroArch/Xvfb recording at a time.
 - If a run is black, silent, or has no duration, treat it as failed and rerun
-  after checking `tmp/retroarch_<tag>.log` and `tmp/xvfb_<tag>.log`.
+  after checking `retroarch_<tag>.log` and `xvfb_<tag>.log` in the selected
+  `OUTDIR` (`videos/` by default for `record_movie.sh`).
 
 ## Shared-Machine Exclusion (sim/render ↔ emulator)
 

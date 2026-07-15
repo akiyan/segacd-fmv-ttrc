@@ -77,6 +77,7 @@ ip_entry:
 	move.w	#0x9001, (VDP_CTRL).l		/* reg16 plane 64x32 */
 	move.w	#0x8F02, (VDP_CTRL).l		/* reg15 autoinc 2 */
 	move.w	#0x8B00, (VDP_CTRL).l		/* reg11 scroll full-screen */
+	move.w	#0x8407, (VDP_CTRL).l		/* reg4  Plane B NT = NT1(0xE000) */
 	move.w	#0x8578, (VDP_CTRL).l		/* reg5  sprite table 0xF000 */
 	move.w	#0x8D3F, (VDP_CTRL).l		/* reg13 hscroll 0xFC00 */
 	move.w	#0x8238, (VDP_CTRL).l		/* reg2  表示=NT1(front)。裏はNT0から構築 */
@@ -155,6 +156,25 @@ ip_entry:
 	sub.w	md_trows, d2			/* row0 = (screen_rows-trows)/2 */
 	lsr.w	#1, d2
 	move.w	d2, md_row0
+.ifdef DEBUG
+	/* reg18 makes the top Window row full-width, so its transparent pixels reveal
+	   Plane B rather than Plane A. Precompute a blit that leaves physical NT row0
+	   clear: when video starts at row0, skip its hidden first source row and move
+	   the visible blit down to row1. This startup-only branch removes one complete
+	   NT row of writes per frame; bf_blit itself gains no branch, write, or DMA. */
+	lea	shadow, a4				/* immutable DEBUG blit source pointer */
+	tst.w	md_row0
+	bne	ip_dbg_blit_ready		/* vertical padding already leaves row0 clear */
+	cmpi.w	#2, md_trows
+	blo	ip_dbg_blit_ready		/* defensive: supported movie grids are taller */
+	moveq	#0, d0
+	move.w	md_tcols, d0
+	add.w	d0, d0				/* one source row in shadow bytes */
+	adda.w	d0, a4
+	addq.w	#1, md_row0
+	subq.w	#1, md_trows
+ip_dbg_blit_ready:
+.endif
 	/* CRAM pre-load: PALTAB(全区間パレット)をWord-RAM(frame0バンク)からMain-RAM表へ
 	   一度だけコピー。n_seg=O_HDR+20。以降の区間切替はこの表を引くだけ(bf_flip)。 */
 	move.w	20(a0), d1			/* n_seg (a0=O_HDR) */
@@ -313,13 +333,17 @@ bf_ubit:
 	dbra	d4, bf_ubit
 	dbra	d5, bf_ubyte
 bf_blit:
-	/* シャドウ全体(18行x32)を裏NTへ blit (裏は非表示=active可) */
+	/* シャドウ全体を裏NTへ blit (裏は非表示=active可) */
 	moveq	#0, d5
 	move.w	back_idx, d5
 	lsl.l	#8, d5
 	lsl.l	#5, d5				/* back_idx*0x2000 */
 	add.l	#NT0, d5			/* back_base = 0xC000 or 0xE000 (flipまで保持) */
+.ifdef DEBUG
+	movea.l	a4, a1				/* startup-selected source row; no runtime branch */
+.else
 	lea	shadow, a1
+.endif
 	move.w	md_row0, d4			/* plane_row = (screen_rows-trows)/2 */
 	move.w	md_trows, d6
 	subq.w	#1, d6
@@ -409,12 +433,14 @@ bf_flip:
 bf_doflip:
 	bsr	do_flip
 bf_after_flip:
-	/* 滑りインジケータ: SPが検出した滑り回数>0なら枠を赤に */
+.ifndef DEBUG
+	/* Release build has no Sxx HUD, so retain the existing red slip indicator. */
 	move.w	(PROBE_BANK+0xAF00).l, d0
 	beq	1f
 	move.l	#0xC0000000, (VDP_CTRL).l
 	move.w	#0x000E, (VDP_DATA).l
 1:
+.endif
 	movem.l	(sp)+, d0-d7/a0-a3
 	rts
 

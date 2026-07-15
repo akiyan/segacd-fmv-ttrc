@@ -5,9 +5,10 @@
 (assign_palette)と、選んだパレットで最近傍量子化する部分(idx_for)＝まさに行列演算。
 ここを GPU に載せる。CPU版と結果はビット単位で一致することを確認済み。
 
-有効化は環境変数 CBRSIM_GPU=1。cupy が無い/GPU が使えない場合は自動でCPUへフォールバック
-(enabled()==False)。CUDA 実行環境は専用venv ~/.config/cbrsim-gpu/venv に隔離
-(cupy-cuda12x[ctk])。sim を GPU で回すときはその venv の python で起動する。
+GPU実行は既定で有効。CBRSIM_GPU=0/off/false/no のときだけ明示的に無効化する。
+cupy が無い/GPU が使えない場合は自動でCPUへフォールバック(enabled()==False)。
+CUDA 実行環境は専用venv ~/.config/cbrsim-gpu/venv に隔離(cupy-cuda12x[ctk])。
+sim を GPU で回すときはその venv の python で起動する。
 """
 import os
 import numpy as np
