@@ -171,6 +171,7 @@ movieplay: check-tools $(OUT_DIR)/MOVIEPLAY.iso $(OUT_DIR)/MOVIEPLAY.cue
 # 既定はリリースビルド。DEBUG=1 でデバッグオーバーレイを有効化する。
 # ストリーム側のデバッグ欄は CBRSIM_PACK_DEBUG=1 で pack した時だけ載せる。
 DEBUG ?= 0
+ISO_HOLD_N ?= 0
 # DEBUG changes assembler flags without changing a source timestamp. Force this
 # small object to rebuild so `make disc DEBUG=1` can never reuse a release object
 # (or vice versa).
@@ -188,7 +189,7 @@ $(OUT_DIR)/movieplay_ip.bin: $(OUT_DIR)/movieplay_ip.o
 
 $(OUT_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s tools/av_config.py tools/check_player_ring.py movieplay-force | setup
 	python3 tools/check_player_ring.py
-	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) -I$(BOOT_DIR) $< -o $@
+	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter-out 0,$(ISO_HOLD_N)),--defsym ISO_HOLD_N=$(ISO_HOLD_N)) -I$(BOOT_DIR) $< -o $@
 
 $(OUT_DIR)/movieplay_sp.bin: $(OUT_DIR)/movieplay_sp.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/sp.ld -o $@ $<

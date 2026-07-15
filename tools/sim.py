@@ -167,7 +167,7 @@ PRG_PRELOAD_PATH = os.environ.get("CBRSIM_PRG_PRELOAD", "")
 # 実機はVBV必須なので sim は VBV専用(env CBRSIM_VBV は無視して常にON)。非VBVパスは未使用。
 VBV_ON = True
 # タンク容量は tools/av_config.py の単一真実源(=実機の使えるリング RING_CAP)から取る。
-# 旧既定414や実行時440はリング物理420KBを超えており、simが実機より広いバッファを仮定して
+# 旧既定414や実行時440はリング物理容量を超えており、simが実機より広いバッファを仮定して
 # 実機で枯渇していた。envで上書き可(実験用)だが、既定はconfigから導出=pack/playerと一致。
 import av_config
 TANK_KB = int(os.environ.get("CBRSIM_TANK_KB", str(av_config.TANK_KB)))

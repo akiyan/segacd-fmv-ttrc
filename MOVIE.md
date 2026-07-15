@@ -53,7 +53,7 @@ HEADER.DAT
 +--------------------------------------------------+
 | FRAME 0 (f0_ctrl_sec + f0_pat_sec sectors)       |  control, then patterns
 +--------------------------------------------------+
-| ROUTING (routing_sec sectors)                    |  2 bytes per frame
+| ROUTING (routing_sec sectors)                    |  2 bytes per frame, max 8192 frames
 +--------------------------------------------------+
 | PREBUFFER (prebuf_sec sectors)                   |  frame-1 ring prefill (Bpat patterns)
 +--------------------------------------------------+
@@ -101,6 +101,10 @@ Next 16 bytes: `struct ">LLLL"`.
 | 26  | 4    | routing_sec  | sectors occupied by the routing table |
 | 30  | 4    | prebuf_sec   | sectors occupied by the prebuffer |
 | 34  | 4    | ring_peak    | peak PRG-RAM ring usage (patterns), for buffer sizing |
+
+The player reserves 16 KiB for ROUTING, so a v6 stream may contain at most
+8192 frames. The packer rejects a longer stream instead of allowing routing to
+overwrite the adjacent control apply ring.
 
 Then:
 

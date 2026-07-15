@@ -20,22 +20,24 @@ Argument: source MP4 path, optionally plus display name or upload instruction.
 
 1. **Keep the source fps**: use the native source fps. Do not lower it.
    Examples: 29.97 -> 30, 23.976 -> 24, 15 -> 15.
-2. **Use resolution up to the DMA limit**: target about 384-396 total grid
-   tiles. Reason: the H32 2-VBlank VRAM write budget is about 13 KB.
-   A full refresh costs about 34 bytes per tile
-   (32 pattern bytes + 2 name-table bytes) plus 128 bytes of CRAM:
-   `34*C + 128 <= 13000`, so `C <= about 390`.
-   Match aspect to the source display aspect after crop.
+2. **Use the maximum valid display raster**: use H32 256x224 (32x28,
+   896 cells) or H40 320x224 (40x28, 1120 cells) unless a source-specific
+   hardware constraint requires less. The DMA budget limits how many changed
+   tiles can be delivered in one frame; it does not limit the canvas or total
+   cell count. Preserve the source display aspect with the mode's HAR-aware
+   fit/pad conversion.
 3. **Preserve source pixels**: `tools/video_geometry.py` uses HAR-aware
    full-frame `pad` by default. Use `crop` only when inspection confirms that
    the discarded outer margins are black bars, not picture content.
 4. **Allow starvation**: it is OK if CD supply is not enough and starvation
-   appears. Prefer the DMA-limit resolution. Do not force starvation to 0%.
+   appears. Keep the maximum valid display raster. Do not force starvation to
+   0% by shrinking the canvas.
 
 Other fixed defaults:
 
 - All features on: `DITHER`, `SEGPAL`, `NEAR`, `VBV`, `COA`.
-- `TANK_KB=440`.
+- Tank size comes from `tools/av_config.py`, matching the
+  packer's usable ring cap. Do not set `CBRSIM_TANK_KB` in normal runs.
 - Rate = 144 KiB/s by default.
 - GPU encoding is on by default. CPU is the fallback.
 - Start sim/render with the GPU-specific Python when available:
@@ -59,9 +61,13 @@ ffprobe -v error -select_streams v:0 -show_entries \
   -of default=nw=1 SRC
 ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 SRC
 
-# Black-bar detection. Use a mid section to avoid fade-to-black frames.
-ffmpeg -hide_banner -ss 15 -t 30 -i SRC -vf cropdetect=24:2:0 -f null - 2>&1 \
-  | grep -oE 'crop=[0-9:]+' | sort | uniq -c | sort -rn | head
+# Black-bar detection. Sample at least three separated content sections; avoid
+# fades and title cards. Replace the timestamps with positions inside SRC.
+for t in 15 60 120; do
+  ffmpeg -hide_banner -ss "$t" -t 10 -i SRC \
+    -vf cropdetect=24:2:0 -an -f null - 2>&1 \
+    | rg -o 'crop=[0-9:]+' | sort | uniq -c | sort -rn | head
+done
 ```
 
 Rules:
@@ -69,31 +75,30 @@ Rules:
 - Always inspect at least one content frame. A filename can lie about what is
   inside.
 - `fps = round(r_frame_rate)`.
-- Use crop only when cropdetect returns something other than `W:H:0:0`.
+- Treat a margin as a black bar only when the same crop rectangle dominates at
+  three or more separated content sections and a visual check confirms that
+  the margin is fixed, edge-to-edge black rather than picture content. A dark
+  or black-and-white scene is not evidence of a black bar.
+- If the samples disagree, include fades, or are otherwise ambiguous, do not
+  crop. Preserve the complete source instead.
+- Crop only the confirmed fixed black margins. Never crop active picture just
+  to fill H32/H40; fit/pad the remaining active picture with the mode HAR.
+- Read the exact full duration from `ffprobe` and always export it as
+  `CBRSIM_DURATION`. Do not rely on `sim.py`'s diagnostic default or unset the
+  variable for a full-length encode.
 
 ### 2. Choose Resolution / Tile Grid
 
+- Use the full valid raster for the selected display mode: H32 is 256x224
+  (32x28, 896 cells), and H40 is 320x224 (40x28, 1120 cells).
 - Let `A` be the displayed aspect of the source after applying its SAR. If the
   file has no reliable SAR, set `CBRSIM_SOURCE_SAR` explicitly.
-- H32 stored pixels display at 8:7 and H40 stored pixels at 32:35. The tile-grid
-  aspect is `r = A / HAR` for the selected mode.
-- Aim for about `T = 390` total tiles:
-
-```text
-Hc = round(sqrt(T / r))
-Wc = round(T / Hc)
-```
-
-- Keep `Wc * Hc <= about 400`.
-- The stored resolution is `Wc*8` by `Hc*8`.
-
-Examples:
-
-- 16:9 source: `A=1.778`, `r=1.52`, `24x16=384`, so `192x128`.
-- Sonic Jam-like source: use the source's declared display aspect; do not infer
+- Fit the complete source into that raster using H32 HAR 8:7 or H40 HAR 32:35.
+  This normally leaves no border or only a small border. Do not reduce the
+  grid merely because fewer tiles can change in one frame; the encoder's
+  priority and starvation behavior handle the update budget.
+- Sonic Jam-like sources must use the declared display aspect; do not infer
   4:3 from a 576x400 coded raster without an SAR override.
-- 4:3 source: H32 `r=1.167`, H40 `r=1.458` (choose the tile grid from the
-  selected mode and DMA budget).
 
 ### 3. Run Simulation
 
@@ -120,9 +125,9 @@ export CBRSIM_SOURCE_SAR=25:27       # example: 576x400 authored as 4:3
 
 # Output convention (AGENTS.md "Output Paths"): one stem per encode,
 #   <stem> = <input-basename>_<mode>_<resolution>_<audio>
-#            e.g. OP1_ps2_H32_256x144_pcm  (resolution = output WxH px)
+#            e.g. OP1_ps2_H32_256x224_pcm  (resolution = output WxH px)
 # All artifacts go under videos/ (git-ignored), never tmp/.
-export CBRSIM_OUT=videos/<stem> CBRSIM_TANK_KB=440
+export CBRSIM_OUT=videos/<stem>
 export CBRSIM_DITHER=1 CBRSIM_SEGPAL=1 CBRSIM_NEAR=1 CBRSIM_VBV=1 CBRSIM_COA=1
 
 PY=~/.config/cbrsim-gpu/venv/bin/python

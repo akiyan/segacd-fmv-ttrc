@@ -25,11 +25,12 @@ models the same usable buffer so a schedule it calls feasible actually is.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| `RING_SIZE` / `RING_SIZE_KB` | 420 KB (0x69000) | sp / cfg | Physical PRG ring. The one source; everything else derives from it. |
+| `RING_SIZE` / `RING_SIZE_KB` | 412 KB (0x67000) | sp / cfg | Physical PRG ring. The final 8 KB was reassigned to the long-form routing table. |
 | `RING_JITTER_MARGIN_KB` | 40 KB | cfg | Headroom for real CD-delivery jitter, subtracted from the physical ring. |
-| `RING_CAP_KB` | 380 KB (derived) | cfg -> pack | Pack schedule / prefetch cap = `RING_SIZE_KB - RING_JITTER_MARGIN_KB`. |
-| `TANK_KB` | 380 KB (derived) | cfg -> sim | Sim VBV tank = usable ring. How much bandwidth a heavy frame may borrow. (Was wrongly 440 = larger than the ring.) |
-| `BACKPRESSURE_KB` | 416 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the ring. `RING_CAP` must stay below it. |
+| `RING_CAP_KB` | 372 KB (derived) | cfg -> pack | Pack schedule / prefetch cap = `RING_SIZE_KB - RING_JITTER_MARGIN_KB`. |
+| `TANK_KB` | 372 KB (derived) | cfg -> sim | Sim VBV tank = usable ring. How much bandwidth a heavy frame may borrow. (Was wrongly 440 = larger than the ring.) |
+| `BACKPRESSURE_KB` | 408 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the ring. `RING_CAP` must stay below it. |
+| routing table | 16 KB, 8192 frames | sp / pack | Two bytes per frame. The packer rejects longer streams before they can overwrite the apply ring. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | prebuffer | fills ring to `RING_CAP` | pack | Final region of `HEADER.DAT`; a boot-time burst that fills the ring before frame 1 so bursts are pre-buffered. |
 

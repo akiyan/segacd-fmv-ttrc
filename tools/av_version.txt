@@ -11,6 +11,13 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e27/p40 : Expand the Sub-CPU routing table from 8 KiB/4096 frames to
+#        16 KiB/8192 frames. Long 30fps streams previously wrote routing bytes
+#        into the adjacent APPLY control ring; after that ring wrapped, valid
+#        controls were replaced by routing data and the picture collapsed with
+#        S=0/D=0. The physical payload ring gives 8 KiB to routing (412 KiB),
+#        preserving the 34 KiB APPLY ring and 40 KiB jitter margin; sim/pack
+#        tank and cap derive to 372 KiB. The packer rejects longer streams.
 #   e26/p39 : Shape useful BODY payload to the CD-1x per-frame allowance instead
 #        of refilling an already-full startup ring with all five routing slots.
 #        A backwards deadline proof still permits necessary future bursts; the
@@ -235,5 +242,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260715
-e=26
-p=39
+e=27
+p=40

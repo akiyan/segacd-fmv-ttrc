@@ -33,15 +33,14 @@
 
 /* --- PRG-RAM レイアウト(program 0x6000〜, <0x1000) --- */
 /* 0x6800-0x8000 は連続読み中にBIOSが踏む(実証)。0x8000以上は安全(マーカー実証)。 */
-.equ ROUTING,     0x00075000        /* routing table(最大8KB=4096フレーム) 0x75000-0x77000
-                                       旧0x8000-0x9800(6KB)は3072フレームまでしか入らないため
-                                       安全な高位PRGへ移設(0x9800-0xC000はBIOSが踏むので拡張不可) */
+.equ ROUTING,     0x00073000        /* routing table(最大16KB=8192フレーム) 0x73000-0x77000。
+                                       8KB版は30fps長尺のframe4096以降がAPPLYへ越境した。 */
 .equ ISO_BUF,     0x00007000        /* ISO初期化用(streaming前のみ・BIOS領域を一時利用) */
 .equ SP_STACK,    0x0007FF00        /* スタック最上位(apply端0x7F800の上, 1.8KB) */
 /* 0x9800-0xC000は連続読み中にBIOSが踏む(回収を試みたら化けた)。RINGは0xC000から。 */
 .equ RING_BASE,   0x0000C000
-.equ RING_SIZE,   0x00069000        /* 420KB(全機能ON tank414のdecode peak<=410KB向け) */
-.equ RING_END,    RING_BASE+RING_SIZE     /* 0x75000 */
+.equ RING_SIZE,   0x00067000        /* 412KB。末尾8KBを長尺routingへ譲り、40KB jitter余白は維持 */
+.equ RING_END,    RING_BASE+RING_SIZE     /* 0x73000 */
 .equ RING_PATTERNS, RING_SIZE/32
 .equ APPLY_BASE,  0x00077000        /* routing(8KB)の直後 */
 .equ APPLY_SIZE,  0x00008800        /* 34KB(16KBは頭詰まり→滑りを実測。42KB→34KBはrouting移設分) */
@@ -429,7 +428,9 @@ f0h2:
 	move.w	#0, (COMSTAT0).l
 	bra	f0h1
 .endif
+.ifndef ISO_HOLD_N
 .equ ISO_HOLD_N, 0			/* ISO診断: frame N を表示した状態で静止(0=無効) */
+.endif
 .equ ISO_HOLD_DUMP, 0			/* 0=クリーン静止(全画面=実フレームN) 1=内部状態ダンプ */
 stream_loop:
 	move.w	frame_idx, d0			/* 全フレーム処理済み=映画終端 */
@@ -460,11 +461,6 @@ stream_loop:
 .if ISO_HOLD_DUMP
 	/* ISO診断: ring_head(現pop位置)から576パターンをダンプした擬似フレームを1回出して静止 */
 	bsr	dump_ring_head
-.else
-	/* クリーン静止: 更新0を渡す=MDは現シャドウ(=実フレームN)を再描画し続ける */
-	move.w	#0, (O_NLOAD).l
-	move.w	#0, (O_NUPD).l
-.endif
 1:
 	cmp.w	#CMD_SWAP, (COMCMD0).l
 	bne	1b
@@ -477,7 +473,14 @@ stream_loop:
 	move.w	#0, (COMSTAT0).l
 hold_n:
 	bra	hold_n
+.else
+	/* クリーン静止: frame N is already displayed after the completed handshake
+	   above. Stop the Sub immediately; no synthetic zero-update swap is needed. */
+hold_n:
+	bra	hold_n
+.endif
 
+.if ISO_HOLD_DUMP
 dump_ring_head:
 	/* ISO診断: 内部状態5ロング値を各32bit=32タイル(白=1,黒=0)で表示。
 	   loadsはラン形式: slot 0..159 連番 = 先頭に1ランのヘッダを置く。 */
@@ -607,6 +610,7 @@ sec_count:
 	.long	0
 xor_acc:
 	.long	0
+.endif
 .endif
 	bra	stream_loop
 

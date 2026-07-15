@@ -4,8 +4,8 @@ The encoder (``tools/sim.py``), the packer (``tools/pack_stream.py``) and the
 on-disc player (``boot/movieplay_sp.s``) all describe the *same* PRG-RAM ring.
 Historically each side had its own knob:
 
-* player  ``.equ RING_SIZE``       = 420 KB   (the physical buffer)
-* pack    ``CBRSIM_RING_CAP_KB``    = 380 KB   (schedule / prebuffer cap)
+* player  ``.equ RING_SIZE``       = 412 KB   (the physical buffer)
+* pack    ``CBRSIM_RING_CAP_KB``    = 372 KB   (schedule / prebuffer cap)
 * sim     ``CBRSIM_TANK_KB``        = 440 KB   (VBV tank — *larger than the ring!*)
 
 Three independent values for one buffer is a double-management trap: the sim can
@@ -20,18 +20,20 @@ encoder alone (``CBRSIM_MAX_COLD`` in the sim). The packer refuses to re-cap.
 """
 
 # Physical PRG-RAM ring in the player. MUST equal boot/movieplay_sp.s
-# `.equ RING_SIZE` (0x69000 = 420 KB). Build-time assertion enforces it.
-RING_SIZE_KB = 420
+# `.equ RING_SIZE` (0x67000 = 412 KB). Build-time assertion enforces it.
+# The adjacent 16 KB routing table supports 8192 frames without overwriting the
+# control apply ring (the old 8 KB table failed after frame 4095).
+RING_SIZE_KB = 412
 
 # The player throttles its CD pump at RING_SIZE-4KB (back-pressure); real
 # CD-delivery jitter shrinks the usable ring further. The pack schedules within,
 # and the sim's VBV tank models, the SAME jitter-adjusted usable ring, so all
 # three agree by construction. 40 KB keeps the scheduled peak (~RING_CAP-32)
-# comfortably below the 416 KB back-pressure threshold (measured: no ratchet).
+# comfortably below the 408 KB back-pressure threshold.
 RING_JITTER_MARGIN_KB = 40
 
 # Derived — do not set these independently anywhere else.
-RING_CAP_KB = RING_SIZE_KB - RING_JITTER_MARGIN_KB   # 380: pack schedule cap
+RING_CAP_KB = RING_SIZE_KB - RING_JITTER_MARGIN_KB   # 372: pack schedule cap
 TANK_KB = RING_CAP_KB                                # sim VBV tank == usable ring
 
 # The player's pump_poll back-pressure threshold (RING_SIZE - 4KB). RING_CAP must
