@@ -17,7 +17,7 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 6               (bump when the header or a block layout changes)
+VERSION        = 6               (bump for an incompatible base-layout change)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = header field    (887 B at 15 fps; 443 B at 30 fps)
@@ -37,7 +37,8 @@ writes for the preloaded frame count.
 **v6** split the boot prefix and timed stream into `HEADER.DAT` and `BODY.DAT`,
 put frame 0 entirely in `HEADER.DAT`, and changed each timed frame from
 payload-first to control-first. The `[n_pay_sec, n_ctrl_sec]` routing-byte order
-did not change.
+did not change. Header feature bit 0 is an optional v6 extension that appends
+cold-slot run descriptors after audio without moving any legacy field.
 
 ## File layout
 
@@ -124,7 +125,9 @@ Then:
 - offset 60: `u16 audio_preload_sec` (v5+) — sectors in STARTUP_AUDIO. v5+
   uses
   one chunk per sector, so this equals `audio_preload_frames`;
-- bytes 62..63 are zero;
+- offset 62: `u16 features` (v6 optional extensions). Bit 0
+  (`FEATURE_COLD_RUNS`) means every control block appends the cold-slot run
+  suffix described below. Unknown bits must not move any legacy field;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
 - remainder up to 2048 is zero.
@@ -216,6 +219,15 @@ stream converges to the CD 1x display-rate total without overflowing the ring.
 v2/v3 streams have `fps_int = 0`; the player defaults it to 15, which yields
 the constant 5 and reproduces the old fixed-slot behaviour exactly.
 
+The v6 packer first spends that frame's allowance on control, then replaces
+otherwise-unused rate padding with future payload while ring space is
+available. It exceeds the allowance only when a backwards deadline proof says
+a later cold-pattern burst cannot otherwise be armed within the five-sector
+routing cap. The normal `lead` repayment then removes padding from following
+light frames. In particular, a full startup ring is not refilled with all five
+sectors merely to keep it full; at 30 fps an ordinary light region remains on
+the 2/3-sector CD-1x sequence.
+
 ## Prebuffer
 
 The final `prebuf_sec` sectors of `HEADER.DAT` hold the first `Bpat` cold
@@ -256,7 +268,17 @@ pixels `(hi<<4)|lo`.
 | ceil(cells/8) | bitmap | one bit per cell; 1 = this cell is updated this frame |
 | n_upd x 2 | entries | one big-endian word per update, in cell order (see below) |
 | audio_bytes | audio | RF5C164 sign-magnitude PCM for this frame (header field; normally 887 B at 15 fps or 443 B at 30 fps) |
-| 0/1  | pad         | one zero byte if needed to make `total_len` even |
+| 0/1  | audio pad   | zero byte when needed to align the optional suffix to a word boundary and keep the legacy block end even |
+| 2    | n_runs      | present when header feature bit 0 is set; number of cold-slot runs |
+| n_runs x 4 | cold runs | present when feature bit 0 is set; repeated `u16 slot_start, u16 count` pairs in payload-consumption order |
+
+The suffix repeats information already encoded by the cold entry flag and tile
+index. For a 30 fps frame with at most 1024 updates, the current player can copy
+each consecutive cold run directly without walking all update entries a second
+time. The sum of all run counts is the number of cold entries. Each run stays
+within the header's `pool` slots. Legacy players still advance by `total_len`
+and ignore these trailing bytes; new players use the entry scan when bit 0 is
+clear or when their proven fast path does not cover the frame.
 
 **Debug block** (a fixed 22 bytes, present only when `dbg==1`). It sits at a
 **fixed position right after the 8-byte mini-header**, so a player reads it at a
@@ -325,10 +347,11 @@ Two forward-compatible ways to extend the format:
    does not simply advances past them (`+22` when `dbg==1`). Its 8 reserved
    bytes (4 x u16) are the room to add more 16-bit debug metrics without moving
    anything.
-2. **Appending within `total_len`.** Because the player advances by `total_len`,
-   any bytes added after `audio` (still inside `total_len`, kept even) are
-   skipped by a player that does not know them. Use this for a larger or
-   variable-length future extension.
+2. **Appending within `total_len`.** Feature bit 0 uses this extension point for
+   the cold-run suffix. Because the player advances by `total_len`, trailing
+   bytes remain skippable by a player that does not know them. Any future
+   suffix must stay inside `total_len`, preserve the legacy audio position, and
+   keep the complete block even.
 
 ## Reconstruction (player)
 

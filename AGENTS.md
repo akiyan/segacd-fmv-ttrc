@@ -281,12 +281,12 @@ ffmpeg -i videos/<stem>_emu_lossless.mkv \
   dashes = pixels much darker than both vertical neighbors on a bright field)
   and run it over recordings of each build generation. 3.2/frame vs a 0.4
   false-positive floor identified the Word-RAM DMA first-word bug in one pass.
-- **The recording is not pixel-exact**: the capture is 192 lines (of a 224-line
-  mode) and window screenshots are non-integer scaled, so pixel-perfect
-  comparisons against decoded ground truth fail on dithered content (a 1px
-  sampling shift flips half the dither pixels). Verify pixel-level issues via
-  integer paths only (lossless mkv at native res, or emulator-side dumps), and
-  treat cell-mean correlation as alignment-tolerant but detail-blind.
+- **Legacy 192-line captures and window screenshots are not pixel-exact**:
+  window screenshots are non-integer scaled, so pixel-perfect comparisons
+  against decoded ground truth fail on dithered content (a 1px sampling shift
+  flips half the dither pixels). Use the current native 256x224/320x224 FFV1
+  recording or emulator-side dumps for pixel-level checks, and treat cell-mean
+  correlation as alignment-tolerant but detail-blind.
 - **The sim is a MODEL of the hardware — when the two disagree, suspect the sim,
   not just the encoder tuning.** The hardware's job is to reproduce the sim
   faithfully (the sim's Miss/residual is expected and fine; extra garbage or a
@@ -303,9 +303,10 @@ ffmpeg -i videos/<stem>_emu_lossless.mkv \
   live. The fix is a sim-side correction — TANK a jitter margin *below* the ring
   (e.g. 350 KB) so the sim only decides loads the hardware can actually deliver —
   not a per-frame cold cap papering over it. Keep `pack_stream.py`'s
-  `RING_CAP_KB` tied to the player's real `RING_SIZE` minus that margin, and the
-  full-screen "use all 5 sectors" forward-fill (bank the pad into the ring
-  reserve) so bursts are pre-buffered rather than starved.
+  `RING_CAP_KB` tied to the player's real `RING_SIZE` minus that margin. Shape
+  useful payload to the CD-1x allowance (replace rate padding while space is
+  available), and exceed that allowance only when the future-deadline proof
+  requires a burst; the following light frames repay the temporary lead.
 
 ## Recording Rules
 

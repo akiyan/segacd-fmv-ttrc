@@ -99,11 +99,13 @@ continuously.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| pump_poll frequency | 8 bitmap bytes at 15 fps; 128 at 30 fps | sp `ef_byte` | Runtime-selected cadence. The 30fps path keeps the Sub-CPU optimization cadence; frame 0 has no active `BODY.DAT` read. |
+| pump_poll frequency | every 64 entries at <=20 fps; one end poll for a non-empty 30 fps descriptor frame | sp `expand_frame` | Runtime-selected cadence. A 30fps block with at most 1024 updates consumes packed cold-run descriptors directly and preserves the old end-of-frame poll. Larger H40 blocks and <=20fps streams retain the entry walker. Frame 0 has no active `BODY.DAT` read. |
 | ring-full skip | occ >= 416 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
-| `FRAME_SECTORS` | max 5 | pack -> sp (`h_fsec`) | Routing-byte maximum. v4+ uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; alternating 2/3 at 30 fps). In v6 each `BODY.DAT` slot is control / future payload / pad. |
+| `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. v4+ uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; alternating 2/3 at 30 fps). In v6 each `BODY.DAT` slot is control / future payload / pad. |
 | `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
+| `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. The 30fps Sub copies patterns by these runs instead of scanning every update entry again. Old streams use the entry fallback; old players ignore the suffix via `total_len`. |
+| Word-RAM swap completion | DMNA bit 1 | sp `swap_settle` | Poll the hardware's 1M bank-switch busy flag. The former fixed `0x400` loop burned about 0.82 ms after every frame even when the switch was already complete. |
 
 ## E. VDP DMA budget (Main CPU)
 
@@ -156,6 +158,7 @@ Set per encode; they select the output and the codec behavior for that source.
 | `CBRSIM_MAX_COLD` | Per-frame cold cap (section B). |
 | `CBRSIM_RING_CAP_KB` / `CBRSIM_TANK_KB` | Override the ring cap / tank (normally derived from av_config). |
 | `CBRSIM_RATE_KIB` | CBR target rate (section F). |
+| `CBRSIM_PACK_FILL` | Packer payload scheduling. Default `1` replaces CD-1x rate padding with useful future payload while space is available, but sends more only when a future deadline requires it. `0` selects the backwards-minimum diagnostic schedule. |
 | `CBRSIM_REUSE` | Reuse decoded frames. |
 | `CBRSIM_GPU` | GPU quantization is on by default (`1`). Set `0`, `off`, `false`, or `no` only to force CPU execution. If CuPy/CUDA cannot be initialized, the encoder reports the reason and falls back to CPU. |
 | `CBRSIM_EMIT_DEC`, `CBRSIM_OUT` | Save the decision log / output dir. `CBRSIM_EMIT_DEC=1` writes `CBRSIM_OUT/decisions.pkl`; an explicit path is also accepted. |
@@ -168,10 +171,10 @@ on the VDP Window plane (`render_dbg` in ip, read back by
 the two alternating video name tables, so a video-plane flip cannot make the
 text disappear for one frame.
 
-Both H32 and H40 use the same contiguous 22-cell layout, with no field gaps:
-`FxxxxPxxSxxDxxRxxLxxxx`. `F` and `L` are four hexadecimal digits. `P`, `S`,
-`D`, and `R` show their low 8 bits as two hexadecimal digits. The display is
-not clamped, so its visible value wraps naturally from `FF` to `00`.
+Both H32 and H40 use the same contiguous 32-cell layout, with no field gaps:
+`FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx`. `F` is four hexadecimal digits; `L`
+shows the high byte of the lead, and `P/S/D/R/C/W/M/A` show their low byte.
+Every compact field is two digits and wraps naturally from `FF` to `00`.
 
 The shared font asset uses transparent index 0 and set-pixel index 1. The movie
 player expands index 1 to P0/index15 once while uploading the font to VRAM, then
@@ -186,7 +189,7 @@ at row 0, startup code preselects source row 1 and reduces the video blit by one
 row; a vertically inset movie already leaves row 0 clear. The playback loop
 gains no branch, write, or DMA, and full-height H32/H40 actually save 32/40 CPU
 name-table writes per frame. The whole 8-pixel diagnostic row is black, avoiding
-shifted Plane-B content after the 22-cell text. In DEBUG builds, the old
+shifted Plane-B content after the 32-cell text. In DEBUG builds, the old
 slip-triggered CRAM0 red border is disabled; slips remain visible in `Sxx`, while
 CRAM0 stays black. Release builds retain the red indicator because they do not
 have the HUD.
@@ -198,4 +201,8 @@ have the HUD.
 | `S` | `Sxx` | Low byte of the CD sector-slip count (re-seek recoveries). 0 = clean video. |
 | `D` | `Dxx` | Low byte of the stream-desync count. 0 = clean. |
 | `R` | `Rxx` | Low byte of the audio re-sync count (lead left `[SYNC_MIN, SYNC_MAX]`). 0 is ideal; each increment is a write-pointer jump. |
-| `L` | `Lxxxx` | 16-bit current audio lead (write - play), in bytes. Approaching `SYNC_MIN` = the buffer is draining. |
+| `L` | `Lxx` | High byte of the current audio lead (write - play), in 256-byte units. Approaching `00` means the startup reserve is draining. |
+| `C` | `Cxx` | Blocking CD pumps needed before the current control could run, including an older BODY slot. Zero means delivery was already armed. |
+| `W` | `Wxx` | Approximate Main-CPU wait for Sub completion at `CMD_SWAP`, in V-counter scanlines. It wraps at 256, so use it as a short-wait diagnostic rather than an absolute stopwatch. |
+| `M` | `Mxx` | VBlank starts waited by the Main pattern path this frame. Values of 2 or more prove an extra VBlank spill. |
+| `A` | `Axx` | Startup-audio duplicate chunks still being skipped. It naturally reaches zero at the live-writer handoff. |

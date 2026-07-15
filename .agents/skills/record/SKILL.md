@@ -123,7 +123,7 @@ clicks exist only after listening to the final file.
 
 ## Optional DEBUG diagnostics
 
-Require DEBUG only when the task asks to inspect `F/P/S/D/R/L`. Keep this separate from the
+Require DEBUG only when the task asks to inspect `F/P/S/D/R/L/C/W/M/A`. Keep this separate from the
 normal capture and upload path:
 
 ```sh
@@ -136,9 +136,9 @@ OUTDIR="$PWD/videos" tools/run_headless.sh out/MOVIEPLAY.cue \
   --shots 68 --interval 2 --display :NNN
 ```
 
-Confirm the contiguous Window-plane HUD `FxxxxPxxSxxDxxRxxLxxxx` is visible before a long
-OCR scan. `F/L` contain four hexadecimal digits; `P/S/D/R` contain two. Read the requested
-counters over the complete loop. Never reuse this OCR as a publication trim point.
+Confirm the contiguous Window-plane HUD `FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx` is visible before
+a long OCR scan. `F` contains four hexadecimal digits; every other field contains two. Read
+the requested counters over the complete loop. Never reuse this OCR as a publication trim point.
 
 ## Existing recordings and smoke tests
 

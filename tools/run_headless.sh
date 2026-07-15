@@ -31,7 +31,7 @@
 #                     ffv1-flac.
 #   --record-size WxH pass RetroArch --size for recording output geometry.
 #                     H32 uses native 256x224 and H40 uses native 320x224;
-#                     both contain the same fixed 22-cell Window HUD.
+#                     both contain the same fixed 32-cell Window HUD.
 #   --record-realtime
 #                     shorthand for synced emulator audio recording:
 #                     --record --record-preset flac-fast

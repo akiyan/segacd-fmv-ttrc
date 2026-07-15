@@ -212,7 +212,7 @@ ip_dbg_blit_ready:
 	dbra	d1, 1b
 	/* Initialize the maximum-width Window row once with the reserved blank glyph.
 	   H40 uses all 64 entries; H32 displays the first 32.  Per-frame code then
-	   overwrites only the 22 live HUD entries and never clears the row again. */
+	   overwrites only the 32 live HUD entries and never clears the row again. */
 	move.l	#WIN_NT, d0
 	bsr	set_vram_write
 	move.w	md_font_vtile, d0
@@ -226,6 +226,9 @@ ip_dbg_blit_ready:
 	clr.w	frame_no
 	clr.w	started
 	clr.w	vsync_acc			/* v4: ペーシングカウンタ初期化(.bssはMD上でクリアされない) */
+.ifdef DEBUG
+	clr.w	sub_wait_lines
+.endif
 play_loop:
 	/* v4: ディスクが CD 1x レートマッチpadding済み(pack)=1コマぶんのデータ配送が表示レートに
 	   一致。よって旧来のデータ律速(Subシグナル=CMD_SWAP handshake)で正しい fps になる(15fps=
@@ -264,6 +267,9 @@ movie_end_md:
      はみ出すと化ける**ので、コピー(遅い)とDMA発行(vblank厳守)を分ける。 */
 build_frame:
 	movem.l	d0-d7/a0-a3, -(sp)
+.ifdef DEBUG
+	clr.w	vsync_acc			/* per-frame VBlank-start waits shown as Mxx */
+.endif
 	/* Pass1: コピー無し。(dst.w, len.w, src.l)のラン表だけ作る=Main CPUはパターンに触れない。
 	   src は Word-RAM 内のパターン先頭(タイルDMAはWord-RAM直, 先頭1ワード化けはPass2で対処) */
 	lea	(PROBE_BANK+0x82), a0		/* n_load @ +0x82, loads @ +0x84 */
@@ -314,23 +320,34 @@ bf_upd:
 	movea.l	a0, a2				/* bitmap */
 	adda.w	md_bmbytes, a0			/* entries */
 	lea	shadow, a1
-	moveq	#0, d6				/* cell */
 	move.w	md_bmbytes, d5
 	subq.w	#1, d5
 bf_ubyte:
 	move.b	(a2)+, d0
+	beq	bf_uzero			/* no entries: advance eight shadow words at once */
+	cmpi.b	#0xFF, d0
+	beq	bf_ufull			/* all entries: straight pointer writes, no bit branches */
 	moveq	#7, d4
 bf_ubit:
 	lsr.b	#1, d0
 	bcc	1f
 	move.w	(a0)+, d3
 	andi.w	#0x7FFF, d3			/* strip the on-disc cold flag */
-	move.w	d6, d2
-	add.w	d2, d2				/* cell*2 */
-	move.w	d3, (a1,d2.w)
+	move.w	d3, (a1)
 1:
-	addq.w	#1, d6
+	addq.l	#2, a1
 	dbra	d4, bf_ubit
+	bra	bf_unext
+bf_uzero:
+	lea	16(a1), a1
+	bra	bf_unext
+bf_ufull:
+	.rept 8
+	move.w	(a0)+, d3
+	andi.w	#0x7FFF, d3
+	move.w	d3, (a1)+
+	.endr
+bf_unext:
 	dbra	d5, bf_ubyte
 bf_blit:
 	/* シャドウ全体を裏NTへ blit (裏は非表示=active可) */
@@ -356,11 +373,25 @@ bf_row:
 	andi.l	#0xFFFF, d1
 	add.l	d1, d0				/* NT addr */
 	bsr	set_vram_write
-	move.w	md_tcols, d1
+	move.w	md_tcols, d2
+	move.w	d2, d1
+	lsr.w	#3, d1
+	beq.s	bf_btail
 	subq.w	#1, d1
 bf_bw:
-	move.w	(a1)+, (VDP_DATA).l
+	move.l	(a1)+, (VDP_DATA).l		/* high word then low word at the VDP data port */
+	move.l	(a1)+, (VDP_DATA).l
+	move.l	(a1)+, (VDP_DATA).l
+	move.l	(a1)+, (VDP_DATA).l
 	dbra	d1, bf_bw
+bf_btail:
+	andi.w	#7, d2				/* preserve arbitrary per-source widths, not just 32/40 */
+	beq.s	bf_bdone
+	subq.w	#1, d2
+bf_bword:
+	move.w	(a1)+, (VDP_DATA).l
+	dbra	d2, bf_bword
+bf_bdone:
 	addq.w	#1, d4
 	dbra	d6, bf_row
 
@@ -597,6 +628,10 @@ cmd_wait_ready:
 
 /* CMD_SWAP送信 → STAT_READY(通常) か STAT_END(映画終端) を待つ。d0=受けたSTAT */
 swap_or_end:
+.ifdef DEBUG
+	move.w	(VDP_HV).l, d1
+	lsr.w	#8, d1				/* V-counter at CMD_SWAP request */
+.endif
 	move.w	#CMD_SWAP, (GA_COMCMD0).l
 1:
 	move.w	(GA_COMSTAT0).l, d0
@@ -605,6 +640,13 @@ swap_or_end:
 	cmp.w	#STAT_END, d0
 	bne	1b
 2:
+.ifdef DEBUG
+	move.w	(VDP_HV).l, d2
+	lsr.w	#8, d2
+	sub.w	d1, d2
+	andi.w	#0x00FF, d2			/* approximate elapsed scanlines */
+	move.w	d2, sub_wait_lines
+.endif
 	move.w	#0, (GA_COMCMD0).l
 3:
 	tst.w	(GA_COMSTAT0).l
@@ -625,8 +667,8 @@ wait_vblank:
 	rts
 
 /* 独立Window planeの最上段1行にデバッグHUDを連続書きする。
-   Layout: FxxxxPxxSxxDxxRxxLxxxx = 22 words in both H32 and H40.
-   F/Lは16-bitの4桁、P/S/D/Rはlow byteの2桁でFF→00を自然wrapさせる。
+   Layout: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx = 32 words in H32/H40.
+	Fは16-bit、Lはleadのhigh byte、他はlow byteの2桁。Lは256B単位。
    WIN_NTは固定なのでNT0/NT1の裏表flipに影響されない。 */
 render_dbg:
 	movem.l	d0-d4, -(sp)
@@ -642,7 +684,7 @@ render_dbg:
 	blo	0b
 1:
 	move.l	#WIN_NT, d0
-	bsr	set_vram_write			/* one address setup, then exactly 22 sequential writes */
+	bsr	set_vram_write			/* one address setup, then exactly 32 sequential writes */
 	/* F: frame number, 4 digits */
 	move.w	#15, d3				/* glyph 'F'(=hex F) */
 	move.w	frame_no, d4
@@ -663,10 +705,28 @@ render_dbg:
 	move.w	#16, d3				/* glyph 'R' */
 	move.w	(PROBE_BANK+0xAF20).l, d4
 	bsr	dbg_put2
-	/* L: current audio lead, 4 digits */
+	/* L: current audio lead high byte (256-byte units) */
 	move.w	#21, d3				/* glyph 'L' */
 	move.w	(PROBE_BANK+0xAF22).l, d4
-	bsr	dbg_put4
+	lsr.w	#8, d4
+	bsr	dbg_put2
+	/* C: total blocking CD pumps (current control + older BODY slot) */
+	move.w	#12, d3				/* glyph 'C'(=hex C) */
+	move.w	(PROBE_BANK+0xAF18).l, d4
+	add.w	(PROBE_BANK+0xAF1A).l, d4
+	bsr	dbg_put2
+	/* W: Main's CMD_SWAP wait for Sub completion, in approximate scanlines */
+	move.w	#17, d3				/* glyph 'W' */
+	move.w	sub_wait_lines, d4
+	bsr	dbg_put2
+	/* M: VBlank starts waited by this frame's Main-side pattern path */
+	move.w	#18, d3				/* glyph 'M' */
+	move.w	vsync_acc, d4
+	bsr	dbg_put2
+	/* A: startup-audio duplicate chunks still skipped after this frame */
+	move.w	#10, d3				/* glyph 'A'(=hex A) */
+	move.w	(PROBE_BANK+0xAF1C).l, d4
+	bsr	dbg_put2
 	movem.l	(sp)+, d0-d4
 	rts
 
@@ -736,5 +796,7 @@ n_runs:
 	.space 2
 dbg_seg:
 	.space 2
+sub_wait_lines:
+	.space 2				/* DEBUG HUD W: Main wait for Sub at last bank swap */
 md_nseg:
 	.space 2				/* PALTAB区間数(表コピー時にクランプ済み) */

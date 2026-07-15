@@ -69,12 +69,14 @@ def check_case(width, values, origin):
 
 
 def main():
-    if read_frameno.HUD_CELLS != 22:
-        raise SystemExit(f"HUD layout is {read_frameno.HUD_CELLS} cells, expected 22")
+    if read_frameno.HUD_CELLS != 32:
+        raise SystemExit(f"HUD layout is {read_frameno.HUD_CELLS} cells, expected 32")
     check_case(256, {"F": 0x1234, "P": 0xAB, "S": 0xFF,
-                     "D": 0x00, "R": 0x7E, "L": 0xBEEF}, (7, 5))
+                     "D": 0x00, "R": 0x7E, "L": 0x68,
+                     "C": 0x02, "W": 0x03, "M": 0x04, "A": 0x1E}, (0, 5))
     check_case(320, {"F": 0x0000, "P": 0xFF, "S": 0x00,
-                     "D": 0xFF, "R": 0x00, "L": 0xFFFF}, (2, 3))
+                     "D": 0xFF, "R": 0x00, "L": 0x7F,
+                     "C": 0x00, "W": 0xFF, "M": 0x02, "A": 0x00}, (2, 3))
 
     # The longstanding single-purpose API must not depend on later HUD fields.
     only_f = make_hud(
@@ -85,7 +87,7 @@ def main():
         raise SystemExit(
             f"standalone F API: got {frame:04X}/{confidence:.3f}, expected CAFE")
 
-    print("HUD OCR proof: OK (full-width black row, H32/H40 22-cell layout, standalone F compatible)")
+    print("HUD OCR proof: OK (full-width black row, H32/H40 32-cell layout, standalone F compatible)")
 
 
 if __name__ == "__main__":

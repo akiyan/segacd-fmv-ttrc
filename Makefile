@@ -186,9 +186,9 @@ $(BOOT_DIR)/dbgfont.bin: tools/gen_debugfont.py
 $(OUT_DIR)/movieplay_ip.bin: $(OUT_DIR)/movieplay_ip.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/ip.ld -o $@ $<
 
-$(OUT_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s tools/av_config.py tools/check_player_ring.py | setup
+$(OUT_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s tools/av_config.py tools/check_player_ring.py movieplay-force | setup
 	python3 tools/check_player_ring.py
-	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $< -o $@
+	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) -I$(BOOT_DIR) $< -o $@
 
 $(OUT_DIR)/movieplay_sp.bin: $(OUT_DIR)/movieplay_sp.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/sp.ld -o $@ $<

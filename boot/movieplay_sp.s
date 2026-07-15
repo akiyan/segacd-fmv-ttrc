@@ -66,6 +66,9 @@
 .equ O_DSY,    SUB_BANK_1M+0xAF7E   /* desync_count(同期マーカー不一致=フォールバック) */
 .equ O_DBG,    SUB_BANK_1M+0xAF02   /* 22Bデバッグブロック転写先(raw,same,near,coa,flbk,buf,miss,予約4)
                                        control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
+.equ O_CTRLWAIT,SUB_BANK_1M+0xAF18  /* DEBUG: current-control blocking sector pumps */
+.equ O_BODYWAIT,SUB_BANK_1M+0xAF1A  /* DEBUG: prior BODY payload/pad blocking pumps */
+.equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: startup-audio duplicate chunks left */
 .equ O_RESYNC, SUB_BANK_1M+0xAF20   /* 計測: 音声re-sync回数(リード下限/上限逸脱で書込ジャンプ=乱れの元) */
 .equ O_LEAD,   SUB_BANK_1M+0xAF22   /* 計測: 現コマの音声リード(write-play, バイト)。SYNC_MINに近づく=枯渇 */
 .equ O_HDR,    SUB_BANK_1M+0xAF80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
@@ -214,6 +217,7 @@ bad_header:
 	/* ヘッダ解析(>4sHHHHHHHHH + >LLLL + mode@38)。焼き込み定数を廃し実行時に読む */
 	lea	PAD_SCR, a0
 	move.w	6(a0), h_frames
+	move.w	14(a0), h_pool			/* tile pool slots; validates run-descriptor bounds */
 	move.w	12(a0), d0			/* cells */
 	addq.w	#7, d0
 	lsr.w	#3, d0
@@ -272,6 +276,7 @@ pm_set:
 	   before PCM starts, then the matching control chunks are skipped once. */
 	move.w	58(a0), preloaded_audio_remaining
 	move.w	60(a0), h_audio_pre_sec
+	move.w	62(a0), h_features		/* bit0: post-audio cold-run descriptor suffix */
 	clr.w	sec_acc
 	clr.w	lead
 	/* MDへヘッダ写しを渡す(frame0と同じバンクに書く=swap後にMDが読める) */
@@ -775,7 +780,7 @@ dls_loop:
 /* 1セクタを取り込む(ブロッキング)。CD→常にWord-RAM STAGE(実績ある経路)→
    BODYの control→payload→pad 順に apply/PRG ring/捨て場へ振り分け。
    (CDC_TRN→PRG直行はリトライ中にセクタが滑る事故が起きる: 実測+1/2フレーム) */
-/* v4 レートマッチpadding。各フレーム = fsec = max(n_pay+n_ctrl, ratedelta) セクタ。
+/* v4 レートマッチpadding。各フレーム = fsec = max(n_pay+n_ctrl, ratedelta-lead) セクタ。
    ratedelta = CD 1x(75 sec/s)を fps で割った整数割当(累積器 sec_acc)= ディスク読み速度を
    表示速度に一致させる pad。15fpsでは常に5(=v3固定)、30fpsは2/3平均。n_pay+n_ctrl を超える
    ぶん(pad)は読んで捨てる。fsec はコマ先頭(drain_k==0)で1回計算し cur_fsec に保持。
@@ -936,11 +941,15 @@ pp_done:
 /* 1フレーム: BODY先頭側の control sector が揃うまでポンプ → control取り出し
    → expand → 音声。payload/pad はpattern tankを先行充填しながら後続処理と並走する。 */
 process_frame:
+.ifdef DEBUG
+	clr.w	pf_ctrl_wait
+	clr.w	pf_body_wait
+.endif
 pf_pump:
 	move.w	frame_idx, d0			/* pump1_core may trash d0; reload each pass */
 	cmp.w	drain_frame, d0
 	blo	pf_ready			/* drain_frame > frame_idx: full frame already drained */
-	bhi	pf_need_pump			/* BODY is still draining an older frame */
+	bhi	pf_body_blocked			/* BODY is still draining an older frame */
 	/* Same frame: control-first means drain_k>=n_ctrl is sufficient.  n_ctrl=0
 	   is intentionally ready immediately because its bytes arrived earlier. */
 	add.w	d0, d0
@@ -949,6 +958,14 @@ pf_pump:
 	move.b	1(a0,d0.w), d1
 	cmp.w	drain_k, d1
 	bls	pf_ready
+.ifdef DEBUG
+	addq.w	#1, pf_ctrl_wait
+.endif
+	bra	pf_need_pump
+pf_body_blocked:
+.ifdef DEBUG
+	addq.w	#1, pf_body_wait
+.endif
 pf_need_pump:
 	bsr	pump1_core			/* non-preserving blocking sector pump */
 	bra	pf_pump
@@ -1006,6 +1023,9 @@ fetch_control:
 	   duplicate padded audio tail into CTRL_SCR. */
 	tst.w	preloaded_audio_remaining
 	beq.s	1f
+	move.w	h_features, d0
+	btst	#0, d0
+	bne.s	1f				/* run suffix follows audio: copy the complete block */
 	move.w	h_audio_bytes, d0
 	addq.w	#1, d0
 	andi.w	#0xFFFE, d0			/* padded audio tail = round_up_even(audio bytes) */
@@ -1144,6 +1164,78 @@ ef_ring_count:
 	lsr.l	#5, d6				/* patterns remaining before ring wrap */
 ef_count_ready:
 	moveq	#0, d4				/* n_load */
+	/* New v6 streams append the packer's already-known cold slot runs after the
+	   padded audio chunk.  At 30 fps and n_upd<=1024 the legacy entry walker has
+	   exactly one CDC poll at the end, so the descriptor path preserves that
+	   cadence while removing the duplicate entry scan and run reconstruction. */
+	move.w	h_features, d0
+	btst	#0, d0
+	beq	ef_entries
+	cmpi.w	#0x03FF, pump_mask
+	bne	ef_entries			/* <=20 fps retains its proven 64-entry cadence */
+	cmpi.w	#1024, d5
+	bhi	ef_entries			/* H40 >1024 needs the legacy intermediate poll */
+	movea.l	a5, a0				/* audio start */
+	move.w	h_audio_bytes, d0
+	adda.w	d0, a0				/* first byte after audio */
+	move.l	a0, d0
+	btst	#0, d0				/* align the absolute block address, not AUDIO alone */
+	beq.s	1f				/* an odd H40 bitmap can start audio on an odd byte */
+	addq.l	#1, a0
+1:
+	move.w	(a0)+, d7			/* n_runs */
+	cmp.w	d5, d7				/* no valid frame can have more runs than updates */
+	bls	1f
+	move.w	d5, d7				/* corrupt-count clamp */
+1:
+	tst.w	d7
+	beq	ef_runs_polled
+	subq.w	#1, d7
+ef_run:
+	move.w	(a0)+, d2			/* zero-based slot_start */
+	move.w	(a0)+, d3			/* pattern count */
+	move.w	d5, d0
+	sub.w	d4, d0				/* remaining cold count cannot exceed n_upd */
+	cmp.w	d0, d3
+	bls	1f
+	move.w	d0, d3
+1:
+	move.w	h_pool, d0
+	sub.w	d2, d0				/* slots available from slot_start */
+	bls	ef_run_next			/* corrupt slot outside the pool */
+	cmp.w	d0, d3
+	bls	1f
+	move.w	d0, d3
+1:
+	tst.w	d3
+	beq	ef_run_next
+	move.w	d2, (a1)+
+	move.w	d3, (a1)+
+	add.w	d3, d4
+	subq.w	#1, d3
+ef_run_pattern:
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	move.l	(a4)+, (a1)+
+	subq.w	#1, d6
+	bne	1f
+	movea.l	#RING_BASE, a4
+	move.w	#RING_PATTERNS, d6
+1:
+	dbra	d3, ef_run_pattern
+ef_run_next:
+	dbra	d7, ef_run
+ef_runs_polled:
+	tst.w	d5				/* legacy path polls once iff at least one entry exists */
+	beq	ef_store
+	bsr	pump_poll
+	bra	ef_store
+ef_entries:
 	moveq	#0, d3				/* open run count (register-resident hot state) */
 	movea.w	#-2, a6				/* a6=直前slot。先頭の+1が-1になる無効値で開始 */
 	/* Main re-walks bitmap+entries from CTRL_SCR to update its cell shadow. The
@@ -1208,12 +1300,18 @@ ef_finalize:
 	beq	1f
 	move.w	d3, (a5)
 1:
+ef_store:
 	move.w	d4, (O_NLOAD).l
 	move.w	d5, (O_NUPD).l
 	move.w	slip_count, (O_SLIP).l	/* 滑り(=再シーク回復)回数をMDへ=グリッチマーカー */
 	move.w	desync_count, (O_DSY).l	/* desync検知回数をMDへ(再シーク回復が効けば0のまま) */
 	move.w	resync_count, (O_RESYNC).l	/* 計測: 音声re-sync回数をMDへ */
 	move.w	cur_lead, (O_LEAD).l		/* 計測: 現コマの音声リードをMDへ */
+.ifdef DEBUG
+	move.w	pf_ctrl_wait, (O_CTRLWAIT).l
+	move.w	pf_body_wait, (O_BODYWAIT).l
+	move.w	preloaded_audio_remaining, (O_AUDIOLEFT).l
+.endif
 	tst.w	f0_expand
 	bne	1f
 	move.l	a4, ring_head			/* frame0はring_head書き戻さない(0xC000維持=frame1がPREBUF1から) */
@@ -1221,9 +1319,12 @@ ef_finalize:
 	rts
 
 swap_settle:
-	move.w	#0x0400, d0
 1:
-	dbra	d0, 1b
+	/* In 1M mode DMNA reads as 1 while the RET bank change is in progress and
+	   clears when the new mapping is usable.  Wait for the hardware condition
+	   instead of burning a fixed 0x400-iteration delay after every frame. */
+	btst	#1, (MEMMODE+1).l
+	bne	1b
 	rts
 
 read_cd:
@@ -1528,7 +1629,9 @@ wwc_done:
 	move.w	d2, write_ptr
 	tst.w	pcm_running
 	bne	1f
-	move.w	d2, cur_lead			/* boot HUD reports the fully armed lead */
+	sub.w	#SYNC_LEAD, d2
+	andi.w	#RING_MASK, d2
+	move.w	d2, cur_lead			/* boot HUD reports reserve, not absolute write address */
 1:
 	move.b	#0xC0, (PCM_CTRL).l
 	movem.l	(sp)+, d0-d5/a0-a1
@@ -1588,6 +1691,8 @@ drain_frame:
 	.word	0
 h_frames:
 	.space 2
+h_pool:
+	.space 2				/* header pool slots; descriptor destination bound */
 h_bmbytes:
 	.space 2
 h_routing_sec:
@@ -1612,6 +1717,8 @@ h_fps_int:
 	.space 2				/* v4: nominal fps and accumulator modulus */
 h_audio_pre_sec:
 	.space 2				/* v5: STARTUP_AUDIO sector count (one chunk per sector) */
+h_features:
+	.space 2				/* v6 optional control suffix features (header offset 62) */
 sec_base:
 	.space 2				/* floor(75/fps), precomputed at header load */
 sec_rem:
@@ -1644,5 +1751,11 @@ resync_count:
 	.word	0				/* 計測: 音声re-sync累積(リード逸脱=書込ジャンプ=乱れ) */
 cur_lead:
 	.word	0				/* 計測: 現コマの音声リード(write-play) */
+.ifdef DEBUG
+pf_ctrl_wait:
+	.word	0				/* current-frame control wait pumps */
+pf_body_wait:
+	.word	0				/* prior BODY frame wait pumps */
+.endif
 
 sp_end:

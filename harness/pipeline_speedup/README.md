@@ -234,8 +234,10 @@ Run the format proof against the real packed stream:
 python3 harness/pipeline_speedup/verify_entry_walk.py
 ```
 
-The current Sonic disc passes all 2714 frames: 1,870,030 entries and 262,363
-cold entries produce identical entry order and cold-run grouping.
+That p35 Sonic disc passed all 2714 frames: 1,870,030 entries and 262,363 cold
+entries produced identical entry order and cold-run grouping. Later encoder
+changes alter those counts, so the verifier output is the current source of
+truth.
 
 The important A/B result is that the first dense section did **not** move after
 the CPU work was removed. Relative to the first visible frame, both p34 and p35
@@ -250,3 +252,62 @@ The next structural step is therefore to separate the boot prefix from the
 timed stream and place current control before future payload. CPU optimization
 adds safety margin, but cannot make a control block arrive before preceding CD
 sectors.
+
+## Main bitmap and name-table fast-path proof
+
+p39 implements dedicated zero/full/mixed bitmap-byte paths and advances the
+shadow pointer directly. Name-table rows use four longword writes for each
+eight-word group, followed by a scalar 0--7-word tail for arbitrary per-source
+widths. Run the equivalence proof against the real DEBUG control stream:
+
+```sh
+python3 harness/pipeline_speedup/verify_main_fastpaths.py
+```
+
+The checker replays all packed Sonic frames and requires the optimized shadow to
+match the former bit loop after every frame. It also checks each packed bitmap and
+entry palette against `decisions.pkl`, and requires the real stream to exercise all
+three bitmap paths (`0x00`, `0xFF`, and mixed). For the blit, it models the 68000
+longword groups plus the tail and compares every real H32 row and deterministic
+widths 1--40 with the scalar word copy.
+
+## Packed cold-run descriptor proof
+
+e26 feature bit 0 appends the already-known cold slot runs to each control block
+after its audio and absolute-address alignment pad. The suffix is one big-endian
+`n_runs` word followed by `slot_start,count` word pairs. At 30 fps with at most
+1024 updates, p39 consumes only these cold runs instead of scanning every update
+entry and rebuilding the same runs. Run the independent proof against the real
+split stream and its decision log:
+
+```sh
+python3 harness/pipeline_speedup/verify_run_descriptors.py
+```
+
+The checker reconstructs controls and payload sectors without importing the packer.
+When header feature bit 0 is set, it parses the actual aligned descriptor suffix from
+every control; feature-zero legacy streams remain supported by constructing the same
+suffix hypothetically. For all 2714 frames it compares the current entry scan with
+the descriptor path, including slot order, run grouping and 32-byte payload
+consumption. It also matches bitmap cells, entry palettes and every physical cold
+pattern to `decisions.pkl`. The report gives the exact added control bytes/sectors,
+startup frames 1--42 statistics, and decimal frame 2019 statistics.
+
+## 30 fps entry-poll fast-path proof
+
+The legacy/fallback Sub entry loop decrements both an update counter and a CDC
+cadence counter for every entry. At 30 fps the cadence is 1024 entries, while
+this H32 stream has at most 896 entries per frame, so every real non-empty frame
+polls exactly once after its final entry. The descriptor path preserves that end
+poll. Run:
+
+```sh
+python3 harness/pipeline_speedup/verify_entry_poll_fastpath.py
+```
+
+The checker compares the fallback masked initial `DBRA` counter with an
+equivalent grouped model. It requires identical poll positions, entry order and
+cold-run grouping for every packed frame, then
+repeats the cadence comparison for every synthetic update count from 0 through
+the 1120-cell H40 limit. H40 retains the fallback entry walk and its possible
+prefix poll when a frame exceeds 1024 updates.

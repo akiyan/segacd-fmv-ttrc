@@ -5,12 +5,22 @@
 # - p = player version. Bump when the on-disc player (boot/movieplay_*.s) changes.
 # - Bump one or both as appropriate; never decrease either.
 # - When bumping, if today's date differs from `date` below, set `date` to today.
-# - This is the YouTube-title build version only. The MOVIE.DAT header version
+# - This is the YouTube-title build version only. The HEADER.DAT format-version
 #   field is separate and must NOT be touched.
 #
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e26/p39 : Shape useful BODY payload to the CD-1x per-frame allowance instead
+#        of refilling an already-full startup ring with all five routing slots.
+#        A backwards deadline proof still permits necessary future bursts; the
+#        Sonic first 30 BODY frames fall from 102 to the exact 75-sector budget.
+#        Header feature bit 0 appends cold-slot run descriptors after the legacy
+#        audio position, with entry-scan fallback for old streams and uncovered
+#        frame sizes. The Sub consumes those runs directly at 30 fps and waits
+#        for real DMNA bank-switch completion instead of a fixed 0x400 delay.
+#        Main adds exact zero/full bitmap and eight-word name-table fast paths.
+#        The 32-cell DEBUG Window HUD adds C/W/M/A startup-pipeline counters.
 #   p38 : Keep the DEBUG Window HUD's 22-cell backing black without another
 #        tile, palette colour, per-frame branch, or DMA. Startup preselects a
 #        blit that keeps the full-width top Window row clear; a full-height H32
@@ -225,5 +235,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260715
-e=25
-p=38
+e=26
+p=39
