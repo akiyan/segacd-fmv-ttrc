@@ -207,3 +207,46 @@ p22 reached `S=0 D=0 R=3` for the complete loop and into the next loop. e17
 extends boot-time PCM arming from 32 to 45 frames at 30fps, moving thirteen more
 PCM writes out of the live startup bottleneck. The pack derives a safe maximum
 from AUDIO and keeps a 0x200 lead margin, clamping 15fps content to 22 frames.
+
+## p35: remove the duplicate Sub walk and isolate delivery pacing
+
+The Main CPU must read the bitmap to map each update entry to a screen cell. The
+Sub CPU does not need that mapping: it only consumes cold entries, in their
+existing stream order, to pop patterns and build consecutive DMA runs. p35 makes
+the Sub iterate the header's validated `n_upd` entries directly instead of
+scanning all 896 bitmap cells a second time. The old bitmap walk remains on the
+Main CPU unchanged.
+
+The same pass removes fixed work from the 75 Hz CDC path:
+
+- cache the current routing bytes across the BIOS transfer;
+- copy each 2 KB stage sector with seven six-way MOVEM groups instead of 42
+  loop iterations;
+- remove dead full-register saves from non-preserving frame paths;
+- compute the `75/fps` quotient and remainder once, replacing the per-frame
+  DIVU with an exact accumulator;
+- remove the successful-sector register save after all callers reload their
+  live state from memory.
+
+Run the format proof against the real packed stream:
+
+```sh
+python3 harness/pipeline_speedup/verify_entry_walk.py
+```
+
+The current Sonic disc passes all 2714 frames: 1,870,030 entries and 262,363
+cold entries produce identical entry order and cold-run grouping.
+
+The important A/B result is that the first dense section did **not** move after
+the CPU work was removed. Relative to the first visible frame, both p34 and p35
+reach frame `0x0101` at 9.376 seconds and frame `0x0181` at 13.447 seconds
+(within one 60000/1001 capture frame at earlier landmarks). `S=0` and `D=0`
+remain unchanged. This proves that the remaining early ~27 fps reading is not
+the Sub loop: it is the on-disc delivery order. Each slot currently delivers
+two or three sectors of future ring refill before the current control stream,
+even though the current patterns are already in the 380 KB boot prebuffer.
+
+The next structural step is therefore to separate the boot prefix from the
+timed stream and place current control before future payload. CPU optimization
+adds safety margin, but cannot make a control block arrive before preceding CD
+sectors.

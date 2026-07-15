@@ -11,6 +11,13 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p35 : Remove duplicate Sub-CPU work from the 30fps hot path. Expansion now
+#        iterates the existing n_upd entry stream directly instead of scanning
+#        every bitmap cell a second time; the Main CPU remains the sole bitmap
+#        consumer. The 75Hz CDC path caches routing, unrolls the 2KB stage copy,
+#        removes dead register saves and replaces the per-frame DIVU with an
+#        exact precomputed quotient/remainder accumulator. Valid streams produce
+#        the same entries, sector schedule and decoded frames.
 #   e23/p34 : Keep the startup PCM origin aligned while giving the Sub CPU a
 #        30-frame boot-prefix queue. The player starts RF5C164 playback
 #        at SYNC_LEAD, where the boot-prefix audio is written, instead of
@@ -196,4 +203,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260715
 e=23
-p=34
+p=35

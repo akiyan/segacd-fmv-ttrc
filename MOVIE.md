@@ -157,16 +157,17 @@ in version 2 frame 0's entry is `(0, 0)` (it is delivered by the FRAME0 block,
 not the FRAMES region).
 
 **Rate-matched frame size (v4).** A frame's total on-disc sectors is
-`fsec = max(n_pay_sec + n_ctrl_sec, ratedelta)`, where `ratedelta` is the number
+`fsec = max(n_pay_sec + n_ctrl_sec, ratedelta - lead)`. `ratedelta` is the number
 of sectors CD 1x delivers in one frame's display time — an integer sequence
 whose average is `75 / fps_int` (CD 1x = 75 sectors/s). Both packer and player
 generate it with the same accumulator: `acc += 75; ratedelta = acc // fps_int;
-acc %= fps_int`. So 15fps is a constant 5 sectors/frame (identical to the old
-fixed slot); 30fps alternates 2 and 3 (average 2.5). This makes the disc read
-rate equal the display rate, so the buffers never over-fill (an under-sized
-frame would let the disc run ahead of display → ring overflow → dropped CDC
-sectors). v2/v3 streams have `fps_int = 0`; the player defaults it to 15, which
-yields the constant 5 and reproduces the old fixed-slot behaviour exactly.
+acc %= fps_int`. So 15fps is a constant 5 sectors/frame; 30fps alternates 2 and
+3 (average 2.5). `lead` starts at zero and increases by
+`fsec - ratedelta`. A data-heavy frame can therefore run long, while following
+light frames omit padding until that temporary lead is repaid. The complete
+stream converges to the CD 1x display-rate total without overflowing the ring.
+v2/v3 streams have `fps_int = 0`; the player defaults it to 15, which yields
+the constant 5 and reproduces the old fixed-slot behaviour exactly.
 
 ## Prebuffer
 

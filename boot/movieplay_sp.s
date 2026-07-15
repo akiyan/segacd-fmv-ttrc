@@ -42,6 +42,7 @@
 .equ RING_BASE,   0x0000C000
 .equ RING_SIZE,   0x00069000        /* 420KB(全機能ON tank414のdecode peak<=410KB向け) */
 .equ RING_END,    RING_BASE+RING_SIZE     /* 0x75000 */
+.equ RING_PATTERNS, RING_SIZE/32
 .equ APPLY_BASE,  0x00077000        /* routing(8KB)の直後 */
 .equ APPLY_SIZE,  0x00008800        /* 34KB(16KBは頭詰まり→滑りを実測。42KB→34KBはrouting移設分) */
 .equ APPLY_END,   APPLY_BASE+APPLY_SIZE   /* 0x7F800 */
@@ -201,7 +202,6 @@ bad_magic:
 	/* ヘッダ解析(>4sHHHHHHHHH + >LLLL + mode@38)。焼き込み定数を廃し実行時に読む */
 	lea	PAD_SCR, a0
 	move.w	6(a0), h_frames
-	move.w	18(a0), h_fsec
 	move.w	12(a0), d0			/* cells */
 	addq.w	#7, d0
 	lsr.w	#3, d0
@@ -226,16 +226,14 @@ bad_magic:
 	bne	1f
 	moveq	#4, d0				/* v2/v3(0)は15fps=N4 */
 1:
-	move.w	d0, h_vsync_n
-	/* Adapt both mid-expand and wave-writer polls to fps. At 30fps, process_frame
-	   still blocks on every required sector and polls at frame boundaries, so one
-	   expand poll per 112-byte bitmap plus one per 512 PCM bytes is sufficient.
-	   Keep the proven denser polling for <=20fps content. */
-	moveq	#127, d1
+	/* Adapt both mid-expand and wave-writer polls to fps. The Sub walks the entry
+	   list directly: poll every 1024 entries at 30fps (normally once at the end;
+	   H40's 1120-cell maximum needs two polls) or every 64 entries at <=20fps. */
+	move.w	#0x03FF, d1
 	move.w	#0x01FF, d2
 	cmp.w	#3, d0
 	blo	pm_set
-	moveq	#7, d1
+	moveq	#63, d1
 	move.w	#0x00FF, d2
 pm_set:
 	move.w	d1, pump_mask
@@ -253,11 +251,15 @@ pm_set:
 	moveq	#15, d0				/* v2/v3(0)は15 */
 1:
 	move.w	d0, h_fps_int
+	move.w	#75, d1				/* precompute 75/fps quotient+remainder once */
+	divu.w	d0, d1
+	move.w	d1, sec_base
+	swap	d1
+	move.w	d1, sec_rem
 	/* v5: startup audio is stored as one PCM chunk per sector.  It is written
 	   before PCM starts, then the matching control chunks are skipped once. */
-	move.w	58(a0), h_audio_pre_frames
+	move.w	58(a0), preloaded_audio_remaining
 	move.w	60(a0), h_audio_pre_sec
-	move.w	h_audio_pre_frames, preloaded_audio_remaining
 	clr.w	sec_acc
 	clr.w	lead
 	/* v4: h_stream_total は find_file がファイルサイズ(実セクタ数)から初期化済み。可変フレーム
@@ -371,7 +373,7 @@ pb_done:
 	beq	stream_armed
 	bsr	issue_frames_readn
 arm_frame1:
-	bsr	pump1
+	bsr	pump1_core
 	cmpi.w	#2, drain_frame
 	blo	arm_frame1
 stream_armed:
@@ -387,7 +389,7 @@ stream_armed:
 	bsr	swap_settle
 	move.w	#STAT_READY, (COMSTAT0).l
 2:
-	bsr	pump_poll
+	bsr	pump_poll_core
 	tst.w	(COMCMD0).l
 	bne	2b
 	move.w	#0, (COMSTAT0).l
@@ -415,7 +417,7 @@ stream_loop:
 	bhs	movie_end
 	bsr	process_frame
 3:
-	bsr	pump_poll			/* MD待ち中もCDを吸い上げ(溢れ防止) */
+	bsr	pump_poll_core			/* MD待ち中もCDを吸い上げ(溢れ防止) */
 	cmp.w	#CMD_SWAP, (COMCMD0).l
 	bne	3b
 	/* Main has now finished and is displaying frame 0. Start PCM at this exact
@@ -428,7 +430,7 @@ stream_loop:
 	bsr	swap_settle
 	move.w	#STAT_READY, (COMSTAT0).l
 4:
-	bsr	pump_poll
+	bsr	pump_poll_core
 	tst.w	(COMCMD0).l
 	bne	4b
 	move.w	#0, (COMSTAT0).l
@@ -703,7 +705,6 @@ drain1:
 	BIOSCALL BIOS_CDC_ACK
 	subq.l	#1, stream_remaining
 	/* 滑り検出: セクタヘッダ(BCD分秒フレーム)の連番検査。飛び=slip_count++ */
-	movem.l	d0-d2/a0, -(sp)
 	lea	bios_packet+12, a0
 	moveq	#0, d1
 	move.b	(a0)+, d0
@@ -737,21 +738,17 @@ d1_check:
 	sub.l	d0, d1				/* 残セクタ数 */
 	add.l	read_lba, d0			/* absolute LBA */
 	bsr	reseek_readn
-	movem.l	(sp)+, d0-d2/a0			/* 保存レジスタ復帰 */
 	movea.l	dr_dest, a0			/* drain1再入用に宛先を復元 */
 	bra	drain1				/* 再読み: CDCは今度 d2 を返す→連番に戻る */
 d1_ok:
 	move.l	d1, prev_msf
-	movem.l	(sp)+, d0-d2/a0
 	rts
 
 bcd2bin:
-	move.w	d0, -(sp)
+	move.w	d0, d2
+	andi.w	#0x0F, d2
 	lsr.w	#4, d0
 	mulu	#10, d0
-	move.w	d0, d2
-	move.w	(sp)+, d0
-	andi.w	#0x0F, d0
 	add.w	d2, d0
 	rts
 
@@ -845,16 +842,9 @@ da_loop:
    ratedelta = CD 1x(75 sec/s)を fps で割った整数割当(累積器 sec_acc)= ディスク読み速度を
    表示速度に一致させる pad。15fpsでは常に5(=v3固定)、30fpsは2/3平均。n_pay+n_ctrl を超える
    ぶん(pad)は読んで捨てる。fsec はコマ先頭(drain_k==0)で1回計算し cur_fsec に保持。
-   routing読みは drain1(BIOS呼びで d1等破壊)の後に再読み込み。 */
-pump1:
-	movem.l	d0-d7/a0-a6, -(sp)
-	bsr	pump1_core
-	movem.l	(sp)+, d0-d7/a0-a6
-	rts
-
-/* Non-preserving core. process_frame and pump_poll already save all registers;
-   calling this entry avoids a duplicate 15-register save/restore per sector.
-   The boot-time arming path uses the preserving pump1 wrapper above. */
+	   routingはコマ先頭でcacheし、drain1(BIOS呼びでd1等破壊)後はcacheから復元。 */
+/* Non-preserving sector pump. Every caller either reloads its live state from
+   memory or explicitly preserves the small subset it needs. */
 pump1_core:
 p1_top:
 	moveq	#0, d0
@@ -871,13 +861,19 @@ p1_top:
 	move.b	1(a0,d0.w), d2			/* n_ctrl */
 	andi.w	#0xFF, d2
 	add.w	d1, d2				/* d2 = total = n_pay+n_ctrl */
-	moveq	#0, d0				/* ratedelta = (sec_acc+75)/h_fps_int, sec_acc=余り */
+	move.w	d1, cur_n_pay
+	move.w	d2, cur_total
+	/* ratedelta = floor((acc+75)/fps).  75/fps quotient and remainder were
+	   computed once at header load, so the per-frame path needs no DIVU. */
+	move.w	sec_base, d5			/* d5 = base quotient */
 	move.w	sec_acc, d0
-	addi.w	#75, d0
-	divu.w	h_fps_int, d0			/* d0低語=商(ratedelta), 高語=余り */
-	move.w	d0, d5				/* d5 = ratedelta */
-	swap	d0
-	move.w	d0, sec_acc			/* sec_acc = 余り */
+	add.w	sec_rem, d0
+	cmp.w	h_fps_int, d0
+	blo	1f
+	sub.w	h_fps_int, d0
+	addq.w	#1, d5
+1:
+	move.w	d0, sec_acc			/* accumulator remainder */
 	move.w	d5, d6				/* delta = ratedelta - lead(先行ぶん, 負可) */
 	sub.w	lead, d6
 	cmp.w	d6, d2				/* cur_fsec = max(total, delta) 符号付き */
@@ -897,16 +893,8 @@ p1_top:
 p1_read:
 	lea	PAD_SCR, a0			/* STAGE = Word-RAM */
 	bsr	drain1				/* 1セクタ取り込み(d1/d2破壊) */
-	moveq	#0, d0				/* drain1後に routing 再読み込み */
-	move.w	drain_frame, d0
-	add.w	d0, d0
-	lea	ROUTING, a0
-	move.b	(a0,d0.w), d1			/* n_pay */
-	andi.w	#0xFF, d1
-	move.b	1(a0,d0.w), d2			/* n_ctrl */
-	andi.w	#0xFF, d2
-	move.w	d1, d4
-	add.w	d2, d4				/* d4 = total = n_pay+n_ctrl (stage_copyでも不変) */
+	move.w	cur_n_pay, d1
+	move.w	cur_total, d4			/* stage_copy preserves cached routing in memory */
 	move.w	drain_k, d3
 	cmp.w	d1, d3
 	blo	p1_ring				/* k < n_pay */
@@ -944,31 +932,40 @@ p1_adv:
 p1_ret:
 	rts
 
-/* Copy the 2 KB CDC stage to PRG RAM. MOVEM transfers 48 bytes per iteration,
-   reducing loop and memory-to-memory instruction overhead on this 75 Hz path.
-   Each caller reaches this through a register-preserving outer frame/poll path. */
+/* Copy the 2 KB CDC stage to PRG RAM. Six 48-byte MOVEM transfers per loop
+   preserve the proven bus operation while minimizing loop/address overhead on
+   this fixed 75 Hz path; one final 32-byte MOVEM completes the sector. */
 stage_copy:
 	lea	PAD_SCR, a0
-	move.w	#42-1, d0			/* 42 * 48 = 2016 bytes */
+	move.w	#7-1, d0			/* 7 * 6 * 48 = 2016 bytes */
 1:
 	movem.l	(a0)+, d1-d7/a2-a6
 	movem.l	d1-d7/a2-a6, (a1)
-	lea	48(a1), a1
+	movem.l	(a0)+, d1-d7/a2-a6
+	movem.l	d1-d7/a2-a6, 48(a1)
+	movem.l	(a0)+, d1-d7/a2-a6
+	movem.l	d1-d7/a2-a6, 96(a1)
+	movem.l	(a0)+, d1-d7/a2-a6
+	movem.l	d1-d7/a2-a6, 144(a1)
+	movem.l	(a0)+, d1-d7/a2-a6
+	movem.l	d1-d7/a2-a6, 192(a1)
+	movem.l	(a0)+, d1-d7/a2-a6
+	movem.l	d1-d7/a2-a6, 240(a1)
+	lea	288(a1), a1
 	dbra	d0, 1b
-	move.l	(a0)+, (a1)+			/* final 32 bytes */
-	move.l	(a0)+, (a1)+
-	move.l	(a0)+, (a1)+
-	move.l	(a0)+, (a1)+
-	move.l	(a0)+, (a1)+
-	move.l	(a0)+, (a1)+
-	move.l	(a0)+, (a1)+
-	move.l	(a0)+, (a1)+
+	movem.l	(a0)+, d1-d7/a2		/* final 32 bytes */
+	movem.l	d1-d7/a2, (a1)
 	rts
 
 /* ノンブロッキング: CDCにセクタが用意できていて、受け側に余裕があれば1セクタ取り込む。
    MD待ちループから毎回呼ぶ。 */
 pump_poll:
 	movem.l	d0-d7/a0-a6, -(sp)
+	bsr	pump_poll_core
+	movem.l	(sp)+, d0-d7/a0-a6
+	rts
+
+pump_poll_core:
 	move.w	drain_frame, d0
 	beq	pp_done				/* v2: frame0展開中は drain_frame=0。ここで pump すると
 						   routing[0]=(0,0) によりframe1の実セクタをpad扱いで捨て、
@@ -997,12 +994,10 @@ pump_poll:
 	bcs	pp_done
 	bsr	pump1_core
 pp_done:
-	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
 /* 1フレーム: frame_idx のセクタが全部届くまでポンプ → control取り出し → expand → 音声。 */
 process_frame:
-	movem.l	d0-d7/a0-a6, -(sp)
 pf_pump:
 	move.w	frame_idx, d0			/* pump1_core may trash d0; reload each pass */
 	cmp.w	drain_frame, d0
@@ -1020,9 +1015,8 @@ pf_ready:
 	subq.w	#1, d1				/* 期待 seq */
 	cmp.w	d1, d0
 	bne	pf_desync
-	bsr	pump_poll
+	bsr	pump_poll_core
 	bsr	expand_frame			/* CTRL_SCR → Word-RAM 出力 + 音声 */
-	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 pf_desync:
 	addq.w	#1, desync_count
@@ -1047,15 +1041,13 @@ dsd_w:
 .endif
 	move.w	#0, (O_NLOAD).l			/* このコマは更新破棄=前コマ維持 */
 	move.w	#0, (O_NUPD).l
-	bsr	pump_poll
-	movem.l	(sp)+, d0-d7/a0-a6
+	bsr	pump_poll_core
 	rts
 
 /* apply-buffer(PRG循環, apply_cur) から control block を CTRL_SCR(Word-RAM) へコピー(折返し線形化)。
    block先頭 >H total_len。apply_cur を total_len 進める。 */
 fetch_control:
-	/* issue#15: 呼び出し元 process_frame が既に d0-d7/a0-a6 を退避済み(唯一の呼び出し元)。
-	   戻り後は process_frame が d0/d1 を再ロードするので、ここでの退避は冗長=削除。 */
+	/* The sole caller reloads every value it needs after this routine. */
 	movea.l	apply_cur, a0
 	move.w	(a0), d7			/* total_len */
 	/* コピー: total_len バイトを a0(循環) → CTRL_SCR */
@@ -1082,9 +1074,7 @@ fetch_control:
 	bsr	fc_copy_even
 	movea.l	#APPLY_BASE, a0
 fc_nowrap:
-	/* 残 d6 バイトをコピー */
-	tst.w	d6
-	beq.s	fc_done
+	/* 残 d6 バイトをコピー。d6=0でもfc_copy_evenはno-op。 */
 	move.w	d6, d5
 	bsr	fc_copy_even
 fc_done:
@@ -1139,10 +1129,15 @@ fc_copy_even:
    loads はラン形式: [slot_start.w count.w pattern(count*32B)] の列。エンコーダが
    フレーム内coldを連番スロットに割当てるので、MDは1ランを1回の大DMAで転送できる。 */
 expand_frame:
-	movem.l	d0-d7/a0-a6, -(sp)
 	lea	CTRL_SCR, a0
 	addq.l	#4, a0				/* skip total_len(2) + frame_seq(2) */
-	move.w	(a0)+, d5			/* n_upd (使わないが読み飛ばし用に保持) */
+	move.w	(a0)+, d5			/* n_upd (forward validated value to O_NUPD) */
+	move.w	h_bmbytes, d1			/* corrupt-count guard: never walk past this mode's cells */
+	lsl.w	#3, d1
+	cmp.w	d1, d5
+	bls	1f
+	move.w	d1, d5
+1:
 	move.w	(a0)+, d0			/* pal(hi) dbg(lo) */
 	lea	(O_DBG).l, a1
 	move.w	d0, d4
@@ -1167,7 +1162,6 @@ ef_pal:
 	move.w	d4, (O_PALW).l
 ef_bm:
 .equ ISO_DUMP_OFF, 0
-	movea.l	a0, a3				/* bitmap(ceil(cells/8)B) */
 	move.w	h_bmbytes, d0
 	adda.w	d0, a0				/* entries */
 	/* Feed this frame's PCM before the variable-cost bitmap/cold expansion.
@@ -1192,63 +1186,50 @@ ef_bm:
 	lea	(O_LOADS).l, a1
 	movea.l	ring_head, a4			/* pop ptr(PRG読み) */
 	tst.w	f0_expand
-	beq	1f
+	beq	ef_ring_count
 	movea.l	f0_pat_addr, a4			/* frame0: popは Word RAM f0pat から(ring_headはpump occ用に0xC000維持) */
-1:
+	moveq	#-1, d6				/* frame0 patterns are contiguous and never wrap */
+	bra	ef_count_ready
+ef_ring_count:
+	move.l	#RING_END, d6
+	sub.l	a4, d6
+	lsr.l	#5, d6				/* patterns remaining before ring wrap */
+ef_count_ready:
 	moveq	#0, d4				/* n_load */
-	moveq	#0, d5				/* n_upd */
-	moveq	#0, d6				/* cell base */
 	moveq	#0, d3				/* open run count (register-resident hot state) */
-	suba.l	a5, a5				/* a5=開いているランのcountワード位置(0=無し) */
-	movea.w	#-1, a6				/* a6=次に連結できるスロット(無効値で開始) */
-	move.w	h_bmbytes, d7
+	movea.w	#-2, a6				/* a6=直前slot。先頭の+1が-1になる無効値で開始 */
+	/* Main re-walks bitmap+entries from CTRL_SCR to update its cell shadow. The
+	   Sub only needs cold entries in their existing stream order, so walking all
+	   896 bitmap bits here was duplicate work. Iterate the n_upd entries directly. */
+	move.w	d5, d7
+	beq	ef_finalize
 	subq.w	#1, d7
-ef_byte:
-	/* pump_poll は重い(15レジ退避+BIOS_CDC_STAT)。CDは166kサイクルに1セクタしか来ないので
-	   毎バイト(全画面140回/コマ)は過剰。8バイト毎(~18回/コマ)でも十分取りこぼさない。
-	   空振りpollを削り Sub時間を空ける=重コマのfps落ちを詰めて滑り天井を上げる狙い。 */
-	move.w	d7, d0
-	and.w	pump_mask, d0			/* fps適応: 15fps=8バイト毎(clean), 30fps=128バイト毎(速度) */
-	bne	ef_nopump
-	bsr	pump_poll			/* 長い展開中もCDを取りこぼさない(頻度は落としても間に合う) */
-ef_nopump:
-	move.b	(a3)+, d0
-	beq	ef_zero_byte
-	cmpi.b	#0xFF, d0
-	beq	ef_full_byte
-	/* Shift the bitmap instead of testing an indexed bit. d6 advances with the
-	   bit, removing cell=d6+d1 and the add/cmp/blo loop tail for all 896 cells. */
-	moveq	#7, d1
-ef_bit:
-	lsr.b	#1, d0
-	bcc	ef_skip
+	move.w	d7, d1
+	and.w	pump_mask, d1			/* entries until the first poll minus one */
+ef_entry:
 	move.w	(a0)+, d2			/* entry */
-	addq.w	#1, d5				/* n_upd++ */
-	tst.w	d2					/* cold flag is bit15, i.e. the word sign */
-	bmi	ef_cold				/* issue#15: coldのみ andi(スロット計算に要る)。reuseは直接書き */
-	bra	ef_skip
+	bpl	ef_entry_done			/* bit15 clear = reuse; Main consumes it directly */
 ef_cold:
-	andi.w	#0x7FFF, d2			/* remove cold bit in place */
-	andi.w	#0x07FF, d2			/* ent & 0x7FF (=slot+1) */
+	andi.w	#0x07FF, d2			/* remove cold bit and keep slot+1 */
 	subq.w	#1, d2				/* d2 = slot; d3 remains the run count */
 	/* process_frame blocks until every sector assigned to this frame has been
 	   drained, and pack_stream proves schedule under=0 for the complete stream.
 	   Therefore this cold entry is resident; a per-cold ring occupancy check was
 	   redundant hot-path work. Sector loss is recovered in drain1 before here. */
-	cmpa.w	d2, a6				/* 直前ランの続き(=期待スロット)か? (d2=slot) */
+	addq.l	#1, a6				/* 直前slot+1 = 連結時に期待するslot */
+	cmpa.w	d2, a6				/* 直前ランの続きか? (d2=slot) */
 	beq	ef_cont
-	cmpa.w	#0, a5				/* 前のランを閉じる(countを書き戻す) */
+	tst.w	d3					/* 前のランを閉じる(countを書き戻す) */
 	beq	1f
 	move.w	d3, (a5)
 1:
 	move.w	d2, (a1)+			/* slot_start */
 	movea.l	a1, a5				/* countワードの位置を覚える */
-	clr.w	(a1)+
+	addq.l	#2, a1				/* count is filled when the run closes */
 	clr.w	d3
+	movea.w	d2, a6				/* new run: remember its current last slot */
 ef_cont:
 	addq.w	#1, d3
-	movea.w	d2, a6
-	addq.l	#1, a6				/* 期待スロット = slot+1 */
 	/* ring pop 32B: RING/O_LOADSとも4バイト整列・パターンはリング末端を跨がない
 	   (RING_SIZEはセクタ倍数, パターンは32B整列)ので move.l×8 で一括コピー */
 	move.l	(a4)+, (a1)+
@@ -1259,72 +1240,23 @@ ef_cont:
 	move.l	(a4)+, (a1)+
 	move.l	(a4)+, (a1)+
 	move.l	(a4)+, (a1)+
-	cmpa.l	#RING_END, a4
-	blo	1f
-	tst.w	f0_expand
-	bne	1f				/* frame0: Word RAM連続=wrap不要 */
+	subq.w	#1, d6
+	bne	1f
 	movea.l	#RING_BASE, a4
+	move.w	#RING_PATTERNS, d6
 1:
 	addq.w	#1, d4
-ef_skip:
-	addq.w	#1, d6
-	dbra	d1, ef_bit
-	bra	ef_byte_done
-
-/* A full bitmap byte is common in dense motion (854/896 updates around the
-   startup bottleneck). Process its eight entries without eight LSR/BCC pairs. */
-ef_full_byte:
-	addq.w	#8, d5				/* all eight cells update: count once outside the loop */
-	moveq	#7, d1
-ef_full_bit:
-	move.w	(a0)+, d2
-	tst.w	d2
-	bmi	eff_cold
-	bra	eff_skip
-eff_cold:
-	andi.w	#0x7FFF, d2
-	andi.w	#0x07FF, d2
-	subq.w	#1, d2
-	cmpa.w	d2, a6
-	beq	eff_cont
-	cmpa.w	#0, a5
-	beq	eff_new_run
-	move.w	d3, (a5)
-eff_new_run:
-	move.w	d2, (a1)+
-	movea.l	a1, a5
-	clr.w	(a1)+
-	clr.w	d3
-eff_cont:
-	addq.w	#1, d3
-	movea.w	d2, a6
-	addq.l	#1, a6
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	cmpa.l	#RING_END, a4
-	blo	eff_no_wrap
-	tst.w	f0_expand
-	bne	eff_no_wrap
-	movea.l	#RING_BASE, a4
-eff_no_wrap:
-	addq.w	#1, d4
-eff_skip:
-	addq.w	#1, d6
-	dbra	d1, ef_full_bit
-	bra	ef_byte_done
-
-ef_zero_byte:
-	addq.w	#8, d6
-ef_byte_done:
-	dbra	d7, ef_byte
+ef_entry_done:
+	/* Keep the prior CDC cadence in units of useful entries: one end poll for
+	   30fps, every 64 entries for <=20fps. Sparse frames finish sooner and need
+	   no bitmap-time polls for cells the Sub no longer processes. */
+	dbra	d1, 1f
+	bsr	pump_poll
+	move.w	pump_mask, d1
+1:
+	dbra	d7, ef_entry
 ef_finalize:
-	cmpa.w	#0, a5				/* 最後のランを閉じる */
+	tst.w	d3					/* 最後のランを閉じる */
 	beq	1f
 	move.w	d3, (a5)
 1:
@@ -1338,15 +1270,12 @@ ef_finalize:
 	bne	1f
 	move.l	a4, ring_head			/* frame0はring_head書き戻さない(0xC000維持=frame1がPREBUF1から) */
 1:
-	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
 swap_settle:
-	movem.l	d0, -(sp)
 	move.w	#0x0400, d0
 1:
 	dbra	d0, 1b
-	movem.l	(sp)+, d0
 	rts
 
 read_cd:
@@ -1706,8 +1635,6 @@ drain_frame:
 	.word	0
 h_frames:
 	.space 2
-h_fsec:
-	.space 2
 h_bmbytes:
 	.space 2
 h_routing_sec:
@@ -1722,24 +1649,28 @@ h_f0_pat_sec:
 	.space 2
 h_paltab_sec:
 	.space 2
-h_vsync_n:
-	.space 2				/* v4: 1コマの表示VBLANK数(30fps=2, 15fps=4) */
 pump_mask:
-	.space 2				/* 展開中pump頻度マスク(fps適応): 15fps=7(8B毎), 30fps=127(128B毎) */
+	.space 2				/* entry展開中pump頻度: 15fps=63(64件毎), 30fps=1023(末尾1回) */
 wave_pump_mask:
 	.space 2				/* wave書込みpump頻度: 15fps=0xFF(256B毎), 30fps=0x1FF(512B毎) */
 h_audio_bytes:
 	.space 2				/* v4: 1コマの音声バイト(30fps=443, 15fps=887) */
 h_fps_int:
-	.space 2				/* v4: 名目fps(15/30)。レートマッチpadding累積器の除数 */
-h_audio_pre_frames:
-	.space 2				/* v5: control側で二重書きを省く先頭コマ数(frame0含む) */
+	.space 2				/* v4: nominal fps and accumulator modulus */
 h_audio_pre_sec:
 	.space 2				/* v5: STARTUP_AUDIO sector count (one chunk per sector) */
+sec_base:
+	.space 2				/* floor(75/fps), precomputed at header load */
+sec_rem:
+	.space 2				/* 75 mod fps, precomputed at header load */
 sec_acc:
 	.space 2				/* v4: CD 1x レート累積器の余り(0..fps-1) */
 cur_fsec:
 	.space 2				/* v4: 現コマのディスクセクタ数 fsec=max(total,ratedelta-lead) */
+cur_n_pay:
+	.space 2				/* 現コマrouting cache: payload sectors */
+cur_total:
+	.space 2				/* 現コマrouting cache: payload+control sectors */
 lead:
 	.space 2				/* v4: ディスクがCD 1x予定より先行しているセクタ数(≥0) */
 f0_pat_addr:
