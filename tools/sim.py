@@ -303,7 +303,12 @@ def segment_and_train(frames):
 OUT = sim_work_dir()
 # 実機TTRCエンコード用の決定ログ出力先。既定off(mp4出力に一切影響しない・追加のみ)。
 # 毎フレームの「更新セル(cell,pal,key)」＋区間パレットを吐き、pack_streamが再生してTTRC化する。
-EMIT_DEC = os.environ.get("CBRSIM_EMIT_DEC", "")
+_EMIT_DEC_ENV = os.environ.get("CBRSIM_EMIT_DEC", "").strip()
+# Boolean-looking values select the conventional file beside the other sim
+# artifacts.  An explicit path remains supported for one-off comparisons.
+EMIT_DEC = (str(OUT / "decisions.pkl")
+            if _EMIT_DEC_ENV.lower() in {"1", "true", "yes", "on"}
+            else _EMIT_DEC_ENV)
 
 
 def border_weight_mask():
@@ -353,6 +358,120 @@ def render_cells(idx, assign, pals_arr):
     full16[:, 1:] = pals_arr
     rgb333 = full16[assign[:, None], idx]                       # (C,64,3)
     return rgb333_to_rgb888(rgb333).reshape(C, TILE, TILE, 3)
+
+
+def canonicalize_p0_index15(seg_pals, frame_seg, assigns, pidxs):
+    """Put a globally brightest nonzero colour at P0 index 15, losslessly.
+
+    Quantisation must run *before* this function with the original palette
+    order.  For each segment, the complete row containing the first globally
+    brightest RGB-sum colour is swapped with row 0, then that colour is swapped
+    with P0 slot 15.  Tile palette assignments and 1..15 pixel indices receive
+    the same permutations.  This avoids nearest-colour tie changes and proves
+    every quantised RGB333 pixel is identical.  Hardware index 0 stays fixed in
+    every row and is never part of either permutation.
+
+    Returns ``(canonical_palettes, stats)`` and updates ``assigns`` and
+    ``pidxs`` in place.
+    """
+    if len(assigns) != len(pidxs) or len(assigns) != len(frame_seg):
+        raise ValueError("palette canonicalization frame arrays have different lengths")
+
+    canonical = []
+    originals = []
+    row_remaps = []
+    index_remaps = []
+    row_swaps = []
+    index_swaps = []
+    for seg, src in enumerate(seg_pals):
+        old = np.asarray(src, np.uint8)
+        if old.shape != (4, 15, 3):
+            raise ValueError(f"segment {seg} palette shape {old.shape}, expected (4, 15, 3)")
+        new = old.copy()
+        brightness = old.astype(np.int16).sum(axis=2)
+        brightest = int(brightness.max())
+        # Avoid every permutation when the fixed destination is already tied
+        # for globally brightest.  Otherwise choose the first CRAM-order max,
+        # matching the old 68000 scanner's deterministic tie behaviour.
+        if int(brightness[0, 14]) == brightest:
+            src_row, src_slot = 0, 14
+        else:
+            src_row, src_slot = map(int, np.argwhere(brightness == brightest)[0])
+
+        row_remap = np.arange(4, dtype=np.uint8)          # old row -> new row
+        if src_row != 0:
+            new[[0, src_row]] = new[[src_row, 0]]
+            row_remap[0] = src_row
+            row_remap[src_row] = 0
+        index_remap = np.arange(16, dtype=np.uint8)       # old index -> new; 0 stays 0
+        if src_slot != 14:
+            new[0, [src_slot, 14]] = new[0, [14, src_slot]]
+            index_remap[src_slot + 1] = 15
+            index_remap[15] = src_slot + 1
+
+        # The two permutations preserve the complete 4x15 colour multiset,
+        # including duplicates, rather than merely its distinct set.
+        old_code = ((old[:, :, 0].astype(np.int16) << 6)
+                    | (old[:, :, 1].astype(np.int16) << 3)
+                    | old[:, :, 2].astype(np.int16))
+        new_code = ((new[:, :, 0].astype(np.int16) << 6)
+                    | (new[:, :, 1].astype(np.int16) << 3)
+                    | new[:, :, 2].astype(np.int16))
+        if not np.array_equal(np.sort(old_code, axis=None), np.sort(new_code, axis=None)):
+            raise AssertionError(f"segment {seg} colour multiset changed")
+        if int(new[0, 14].astype(np.int16).sum()) != brightest:
+            raise AssertionError(f"segment {seg} P0 index15 is not globally brightest")
+        if int(index_remap[0]) != 0:
+            raise AssertionError("reserved palette index 0 was remapped")
+
+        canonical.append(new)
+        originals.append(old.copy())
+        row_remaps.append(row_remap)
+        index_remaps.append(index_remap)
+        row_swaps.append((src_row, 0))
+        index_swaps.append((src_slot + 1, 15))
+
+    verified_pixels = 0
+    reassigned_tiles = 0
+    reindexed_pixels = 0
+    for i, (assign, idx) in enumerate(zip(assigns, pidxs)):
+        seg = int(frame_seg[i])
+        if seg < 0 or seg >= len(canonical):
+            raise ValueError(f"frame {i} refers to invalid palette segment {seg}")
+        assign = np.asarray(assign)
+        idx = np.asarray(idx)
+        if idx.shape[0] != assign.shape[0]:
+            raise ValueError(f"frame {i} assign/index cell count mismatch")
+        before_assign = assign.copy()
+        before_idx = idx.copy()
+        if before_idx.size and (int(before_idx.min()) < 1 or int(before_idx.max()) > 15):
+            raise AssertionError(f"frame {i} contains an index outside 1..15")
+        after_assign = row_remaps[seg][before_assign]
+        after_idx = before_idx.copy()
+        new_p0 = after_assign == 0
+        after_idx[new_p0] = index_remaps[seg][before_idx[new_p0]]
+
+        before_rgb = originals[seg][before_assign[:, None], before_idx - 1]
+        after_rgb = canonical[seg][after_assign[:, None], after_idx - 1]
+        if not np.array_equal(before_rgb, after_rgb):
+            raise AssertionError(f"frame {i} RGB changed while canonicalizing P0 index15")
+        assign[:] = after_assign
+        idx[:] = after_idx
+        reassigned_tiles += int((before_assign != after_assign).sum())
+        reindexed_pixels += int((before_idx != after_idx).sum())
+        verified_pixels += int(before_idx.size)
+
+    stats = {
+        "segments": len(canonical),
+        "row_swapped_segments": sum(a != b for a, b in row_swaps),
+        "index_swapped_segments": sum(a != b for a, b in index_swaps),
+        "reassigned_tiles": reassigned_tiles,
+        "reindexed_pixels": reindexed_pixels,
+        "verified_pixels": verified_pixels,
+        "row_swaps": row_swaps,
+        "index_swaps": index_swaps,
+    }
+    return canonical, stats
 
 
 def cells_to_image(cell_rgb):
@@ -506,12 +625,7 @@ def main():
               f"({uniq*PATTERN_BYTES/1024:.0f}KB) をロード時バッファ")
 
     print(f"training palettes (4x15)  DITHER={DITHER_ON} SEGPAL={SEGPAL_ON} NEAR={NEAR_ON} ...")
-    pals_arr, seg_pals, frame_seg, seg_bounds = segment_and_train(frames)
-    (OUT / "palettes.bin").write_bytes(pals_to_bytes(list(pals_arr)))
-    # 解析パネルのパレット Prev/Current/Next 用に区間パレット(rgb333)とフレーム→区間を保存
-    np.savez(OUT / "seg_palettes.npz",
-             seg_pals=np.asarray([np.asarray(p, np.uint8) for p in seg_pals]),   # (nseg,4,15,3)
-             frame_seg=np.asarray(frame_seg, np.int32))
+    _global_pals, seg_pals, frame_seg, seg_bounds = segment_and_train(frames)
     if SEGPAL_ON:
         print(f"  per-segment palettes: {len(seg_pals)}区間, 暗転差替 {len(seg_bounds)}点")
     _t = _mark("パレット学習", _t)
@@ -611,6 +725,25 @@ def main():
 
     # フレーム独立の割当/索引を並列で前計算(実行時間の大半)。以降のループは逐次(状態依存)。
     Q_detail, Q_assign, Q_pidx = precompute_quant(frames, seg_pals, frame_seg)
+    # Quantise against the original order first, then pin the brightest P0
+    # colour to hardware index 15 and remap every affected index.  Doing this
+    # before the stateful codec loop keeps sim preview, decision log, analysis,
+    # pack and player on the same canonical palette/index representation.
+    seg_pals, pal15_stats = canonicalize_p0_index15(
+        seg_pals, frame_seg, Q_assign, Q_pidx)
+    # palettes.bin is the legacy fallback CRAM image.  In segmented mode the
+    # separately trained global palette was never the actual initial CRAM, so
+    # write canonical segment 0 and keep every consumer aligned with PALTAB.
+    (OUT / "palettes.bin").write_bytes(pals_to_bytes(list(seg_pals[0])))
+    np.savez(OUT / "seg_palettes.npz",
+             seg_pals=np.asarray(seg_pals, np.uint8),
+             frame_seg=np.asarray(frame_seg, np.int32))
+    print(f"  P0 index15 globally brightest: row swaps "
+          f"{pal15_stats['row_swapped_segments']}/{pal15_stats['segments']}, "
+          f"index swaps {pal15_stats['index_swapped_segments']}/{pal15_stats['segments']}; "
+          f"RGB identity verified for {pal15_stats['verified_pixels']} pixels "
+          f"({pal15_stats['reassigned_tiles']} tile assignments and "
+          f"{pal15_stats['reindexed_pixels']} indices remapped, frame0 included)")
     _t = _mark("量子化", _t)
 
     _t_render = 0.0        # ループ内訳: 描画+PNG保存に費やした時間(残りがcommit/探索)

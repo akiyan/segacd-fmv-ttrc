@@ -11,6 +11,24 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e25/p37 : Canonicalize each segment's existing 60 usable CRAM colours so a
+#        globally brightest colour is always P0/index15. Whole-row and slot
+#        swaps are mirrored in tile palette attributes and pixel indices, with
+#        RGB333 identity asserted for every quantized pixel; pack rejects stale
+#        logs and writes the matching initial palettes.bin beside HEADER/BODY.
+#        DEBUG uploads its index-1 font once as index15, removes all palette-
+#        switch font recolouring/DMA, and moves the HUD to an independent top-
+#        row Window plane. The compact FxxxxPxxSxxDxxRxxLxxxx row takes one
+#        address setup plus 22 writes; P/S/D/R show the low byte and naturally
+#        wrap from FF to 00. A scanline guard avoids racing the visible row.
+#   e24/p36 : Split the on-disc TTRC stream into HEADER.DAT and BODY.DAT.
+#        HEADER contains every startup dependency, including the complete
+#        frame-0 control/pattern data, routing and frame-1 prebuffer; BODY starts
+#        at frame 1 and is the only continuous timed read. BODY stores control
+#        sectors before future payload sectors, so the player can begin a frame
+#        as soon as its complete control block arrives. The packer proves that
+#        every current-frame cold pattern was delivered by the previous frame
+#        and keeps MOVIE.DAT only as an offline concatenated compatibility file.
 #   p35 : Remove duplicate Sub-CPU work from the 30fps hot path. Expansion now
 #        iterates the existing n_upd entry stream directly instead of scanning
 #        every bitmap cell a second time; the Main CPU remains the sole bitmap
@@ -202,5 +220,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260715
-e=23
-p=35
+e=25
+p=37

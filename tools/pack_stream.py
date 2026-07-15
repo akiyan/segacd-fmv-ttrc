@@ -11,10 +11,12 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v5): Header(1sec) + PALTAB(全区間パレット n_seg×128B, boot時Main-RAM表へ)
-              + startup audio(1 sector/frame) + frame0(control+patterns)
-              + routing(2B/frame: n_pay_sec,n_ctrl_sec)
-              + prebuffer(payload先頭Bpat) + frames(各5sec = [payload][control][pad])
+TTRCレイアウト(v6): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
+              n_seg×128B, boot時Main-RAM表へ) + startup audio(1 sector/frame)
+              + frame0(control+patterns) + routing(2B/frame: n_pay_sec,n_ctrl_sec)
+              + prebuffer(payload先頭Bpat)
+              BODY.DAT = frame1以降の [control][payload][rate pad]
+MOVIE.DAT はツール互換用の HEADER.DAT || BODY.DAT 連結コンテナ。
 control block: >H total_len >H frame_seq >H n_upd >B pal >B dbg [DEBUG if dbg]
                ceil(cells/8) bitmap n_upd*(>H entry) 887 audio [pad偶数]
   pal = 区間番号+1(0=切替なし)。実機はMain-RAMのPALTAB表を引く(in-stream CRAM廃止)。
@@ -39,7 +41,7 @@ from cbr_paths import sim_work_dir
 
 SECTOR = 2048
 MAGIC = b"TTRC"             # Tile Texture Reuse Codec
-VERSION = 1
+VERSION = 6
 BASE = 1                     # POOL_TILE_BASE (VRAM tile index = BASE+slot)
 FRAME_SECTORS = 5
 PAT = 32
@@ -107,6 +109,24 @@ def pack_key(key):
 def load_log(path):
     with open(path, "rb") as f:
         return pickle.load(f)
+
+
+def require_canonical_p0_index15(log):
+    """Reject stale decision logs that cannot provide the fixed DEBUG colour."""
+    seg_pals = log.get("seg_pals")
+    if not seg_pals:
+        raise SystemExit("pack v6: decision log has no segment palettes; re-run sim")
+    for seg, pals in enumerate(seg_pals):
+        a = np.asarray(pals, np.uint8)
+        if a.shape != (4, 15, 3):
+            raise SystemExit(
+                f"pack v6: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
+                "re-run sim")
+        brightness = a.astype(np.int16).sum(axis=2)
+        if int(brightness[0, 14]) != int(brightness.max()):
+            raise SystemExit(
+                f"pack v6: decision log segment {seg} P0 index15 is not tied for globally "
+                "brightest nonzero CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
 def pals_to_bytes_128(pal_4x15):
@@ -274,9 +294,12 @@ def schedule(per, n_load, blocks):
     """control JIT(前向き)で nc[i] を決め、payload は cap=(5-nc)*64 でセクタ単位の後ろ向き最小占有。"""
     nfr = len(per)
     blk_len = np.array([len(b) for b in blocks], np.int64)
-    # frame0はDAT冒頭の専用ヘッダブロック(control+patterns)としてboot中に別ロードする。
-    # よってストリーム(routing/prebuf/frames)からは frame0 のcontrolもpatternsも除外する。
-    F0_HEADER = os.environ.get("CBRSIM_F0_HEADER", "1") != "0"
+    # v6 always arms frame 0 from HEADER.DAT.  Keeping a switch here would
+    # produce a file whose layout disagrees with its version, so reject the
+    # removed legacy mode explicitly instead of silently emitting it.
+    if os.environ.get("CBRSIM_F0_HEADER", "1") == "0":
+        raise SystemExit("pack v6 requires frame0 in HEADER.DAT; CBRSIM_F0_HEADER=0 is unsupported")
+    F0_HEADER = True
     nc = np.zeros(nfr, np.int64)
     ctrl_deliv = 0
     ctrl_cur = 0
@@ -332,16 +355,58 @@ def schedule(per, n_load, blocks):
     occ = A * PAT_PER_SEC - d
     under = int((occ < 0).sum())                          # リング枯渇(飢餓)コマ数
     over = int((n_pay_sec + nc > FRAME_SECTORS).sum())
-    feasible = (n_pay_sec >= 0).all() and over == 0 and under == 0
+
+    # BODY.DAT is control-first.  The player may apply frame i immediately
+    # after its control sectors arrive, before frame i's payload sectors.  All
+    # cold patterns consumed through frame i must therefore have arrived by
+    # the end of frame i-1.  Frame 0 is independent and comes from HEADER.DAT.
+    if nfr > 1:
+        ready_margin = A[:-1] * PAT_PER_SEC - d[1:]
+        ready_bad = np.flatnonzero(ready_margin < 0)
+        ready_min = int(ready_margin.min())
+        if ready_bad.size:
+            frame = int(ready_bad[0]) + 1
+            raise SystemExit(
+                f"pack v6 control-first invariant failed at frame {frame}: "
+                f"only {int(A[frame - 1]) * PAT_PER_SEC} patterns delivered before control, "
+                f"but {int(d[frame])} are consumed through that frame "
+                f"(short by {-int(ready_margin[frame - 1])})")
+    else:
+        ready_min = 0
+
+    # Independently prove that the cumulative control sectors routed through
+    # each frame contain that frame's complete variable-length control block.
+    # This also covers n_ctrl=0: the block must already fit in earlier sectors.
+    ctrl_need_len = blk_len.copy()
+    if nfr:
+        ctrl_need_len[0] = 0                              # frame0 control is in HEADER.DAT
+    ctrl_need = np.cumsum(ctrl_need_len)
+    ctrl_delivered = np.cumsum(nc) * SECTOR
+    ctrl_margin = ctrl_delivered - ctrl_need
+    ctrl_bad = np.flatnonzero(ctrl_margin < 0)
+    ctrl_min = int(ctrl_margin.min()) if nfr else 0
+    if ctrl_bad.size:
+        frame = int(ctrl_bad[0])
+        raise SystemExit(
+            f"pack v6 control completeness failed at frame {frame}: "
+            f"{int(ctrl_delivered[frame])} bytes delivered, "
+            f"{int(ctrl_need[frame])} bytes required")
+
+    feasible = ((n_pay_sec >= 0).all() and over == 0 and under == 0
+                and ready_min >= 0 and ctrl_min >= 0)
     return dict(n_pay_sec=n_pay_sec, n_ctrl_sec=nc, feasible=feasible, over=over, under=under,
                 prebuf_pat=Bsec * PAT_PER_SEC, ring_peak=int(occ.max()), ring_min=int(occ.min()),
-                blk_len=blk_len, M=M,
+                ready_min=ready_min, ctrl_min=ctrl_min, blk_len=blk_len, M=M,
                 f0_header=F0_HEADER, f0_cold=int(n_load[0]), f0_ctrl_len=int(blk_len[0]))
 
 
 def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None):
-    """プレイヤをシミュレート: payloadをセクタ単位でリングへ, control を apply-buffer カーソルで
-    処理, cold entryでリングpop, レンダして sim preview と画素比較。"""
+    """Simulate the v6 control-first player and compare it with sim output.
+
+    A frame consumes its already-armed cold patterns before that frame's BODY
+    payload is appended to the ring.  This intentionally models the earliest
+    legal apply time instead of relying on favorable CPU/CD overlap.
+    """
     frame_seg = np.asarray(log["frame_seg"], np.int64)
     seg_pals = log["seg_pals"]
     n_pay_sec = sc["n_pay_sec"]; blk_len = sc["blk_len"]; B = sc["prebuf_pat"]
@@ -364,10 +429,6 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
     diffs = []; ring_peak = len(ring); bad = 0
     for i in range(len(per)):
         add = int(n_pay_sec[i]) * PAT_PER_SEC
-        for k in range(pc, min(pc + add, len(Plist))):
-            ring.append(Plist[k])
-        pc += add
-        ring_peak = max(ring_peak, len(ring))
         src = f0_ring if (f0h and i == 0) else ring   # frame0はヘッダのf0patから, 以降はリング
         blk = ctrl[cc:cc + int(blk_len[i])]; cc += int(blk_len[i])
         p = 2                                         # skip total_len
@@ -393,6 +454,12 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
                     bad += 1
                 else:
                     tile[int(nt_slot[c]) + BASE] = src.popleft()
+        # BODY payload follows control and arms later frames.  Append it only
+        # after the current block has consumed every cold entry.
+        for k in range(pc, min(pc + add, len(Plist))):
+            ring.append(Plist[k])
+        pc += add
+        ring_peak = max(ring_peak, len(ring))
         need_img = (cmp is not None) or (sample_dir is not None and i in samples)
         if not need_img:
             continue
@@ -427,10 +494,15 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
 
 
 def write_stream(path, log, per, blocks, Plist, sc, POOL):
-    """TTRC MOVIE.DAT を書き出す。
-    F0_HEADER(既定)レイアウト(VERSION 5):
-      Header(1sec) | PALTAB(paltab_sec) | STARTUP_AUDIO | FRAME0(control+patterns)
-                   | ROUTING(0..N-1,[0]=0,0) | PREBUF1(frame1用RING_CAP) | FRAMES(1..N-1)
+    """Write the v6 split stream and a combined tooling container.
+
+    HEADER.DAT:
+      Header(1sec) | PALTAB | STARTUP_AUDIO | FRAME0(control+patterns)
+                   | ROUTING(0..N-1,[0]=0,0) | PREBUF1(frame1用RING_CAP)
+    BODY.DAT:
+      FRAMES(1..N-1), each [control sectors][payload sectors][rate pad]
+    MOVIE.DAT (``path``) is the off-disc HEADER.DAT || BODY.DAT container.
+
     frame0 はストリーミングのリングを経由せず boot 中に VRAM 直ロードするので、リングは
     常に RING_CAP 以下=back-pressure非接触。frame1以降が満タンリングで始まる。
     PALTAB = 全区間パレット(n_seg×128B, セクタ整列)。実機はboot時にWord-RAM経由で
@@ -496,8 +568,9 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     NTSC_VSYNC = 59.94
     vsync_n = int(round(NTSC_VSYNC / FPS))            # N: 1コマの表示VBLANK数(30fps→2, 15fps→4)
     fps_int = int(round(FPS))                         # 名目fps(15/30)。レートマッチpadding用(下記)
-    _ver = 5 if f0_header else VERSION
-    header = struct.pack(">4sHHHHHHHHH", MAGIC, _ver, nfr, TCOLS, TROWS, C_CELLS,
+    if not f0_header:
+        raise SystemExit("pack v6 requires frame0 in HEADER.DAT")
+    header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
     header += bytes([_mode])                          # offset 38: display mode
@@ -511,15 +584,33 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     header += b"\0" * (SECTOR - len(header))
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
                   + f0_pat.ljust(f0_pat_sec * SECTOR, b"\0"))
+    header_blob = (header
+                   + paltab.ljust(paltab_sec * SECTOR, b"\0")
+                   + audio_preload
+                   + frame0_blk
+                   + bytes(routing).ljust(routing_sec * SECTOR, b"\0")
+                   + prebuf_bytes.ljust(prebuf_sec * SECTOR, b"\0"))
+    if len(header_blob) % SECTOR:
+        raise AssertionError(f"HEADER.DAT is not sector aligned: {len(header_blob)} bytes")
+
+    out_path = Path(path)
+    if out_path.name.upper() in {"HEADER.DAT", "BODY.DAT"}:
+        raise SystemExit(
+            "--output names the combined tooling container; "
+            "use a name other than HEADER.DAT/BODY.DAT")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    header_path = out_path.with_name("HEADER.DAT")
+    body_path = out_path.with_name("BODY.DAT")
+    # The Main-IP binary embeds the initial CRAM image.  Keep that build input
+    # beside the split stream and derive it from the same canonical decision
+    # log, so a stale palettes.bin cannot disagree with HEADER.DAT's PALTAB.
+    palette_path = out_path.with_name("palettes.bin")
+    palette_path.write_bytes(seg0)
+    with header_path.open("wb") as f:
+        f.write(header_blob)
+
     pc = Bpat * PAT; cc = 0
-    with Path(path).open("wb") as f:
-        f.write(header)
-        f.write(paltab.ljust(paltab_sec * SECTOR, b"\0"))  # PALTAB(v3)
-        f.write(audio_preload)                         # STARTUP_AUDIO(v5), 1 chunk/sector
-        if f0_header:
-            f.write(frame0_blk)                       # FRAME0(control+patterns)
-        f.write(bytes(routing).ljust(routing_sec * SECTOR, b"\0"))
-        f.write(prebuf_bytes.ljust(prebuf_sec * SECTOR, b"\0"))
+    with body_path.open("wb") as f:
         # v4 レートマッチpadding: 各frameを「CD 1x が1コマ時間に届けるセクタ数」までpaddingする。
         # CD 1x = 75セクタ/秒。1コマ=75/fps_int セクタ(15fps→5, 30fps→2.5)。この整数割り当てを
         # 累積器で出す(30fpsは2,3,2,3…平均2.5)。fsec=max(実データ, レート割当)。これで「ディスク
@@ -547,17 +638,39 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
             fsec_list.append(fsec)
             npb = int(n_pay_sec[i]) * SECTOR
             ncb = int(n_ctrl_sec[i]) * SECTOR
-            fr = stream_pay[pc:pc + npb].ljust(npb, b"\0"); pc += npb
-            fr += stream_ctrl[cc:cc + ncb].ljust(ncb, b"\0"); cc += ncb
+            # v6 physical order: complete the current control first, then
+            # carry only payload that has been armed for future frames.
+            fr = stream_ctrl[cc:cc + ncb].ljust(ncb, b"\0"); cc += ncb
+            fr += stream_pay[pc:pc + npb].ljust(npb, b"\0"); pc += npb
             fr = fr.ljust(fsec * SECTOR, b"\0")       # レートマッチpad(超過ぶんは捨てセクタ)
             f.write(fr)
+    if cc < len(stream_ctrl):
+        raise AssertionError(f"BODY.DAT omitted {len(stream_ctrl) - cc} control bytes")
+    if pc < len(stream_pay):
+        raise AssertionError(f"BODY.DAT omitted {len(stream_pay) - pc} payload bytes")
     frames_stream_sec = int(sum(fsec_list))
-    total = (1 + paltab_sec + audio_preload_sec + f0_ctrl_sec + f0_pat_sec + routing_sec + prebuf_sec
-             + frames_stream_sec)
-    print(f"wrote {path}  {total}sec (mode {mode_name} paltab {paltab_sec} startup_audio {audio_preload_frames}f/"
+    if body_path.stat().st_size != frames_stream_sec * SECTOR:
+        raise AssertionError("BODY.DAT size disagrees with frame sector schedule")
+
+    # Preserve MOVIE.DAT for offline tools.  Derive it from the two physical
+    # disc files so there cannot be a third, subtly different representation.
+    with out_path.open("wb") as dst, header_path.open("rb") as src:
+        while chunk := src.read(1024 * 1024):
+            dst.write(chunk)
+    with out_path.open("ab") as dst, body_path.open("rb") as src:
+        while chunk := src.read(1024 * 1024):
+            dst.write(chunk)
+
+    header_sec = len(header_blob) // SECTOR
+    total = header_sec + frames_stream_sec
+    if out_path.stat().st_size != total * SECTOR:
+        raise AssertionError("combined MOVIE.DAT size disagrees with HEADER.DAT + BODY.DAT")
+    print(f"wrote {header_path} {header_sec}sec + {body_path} {frames_stream_sec}sec; "
+          f"combined {out_path} {total}sec (mode {mode_name} paltab {paltab_sec} startup_audio {audio_preload_frames}f/"
           f"{audio_preload_sec}s frame0 {f0_ctrl_sec}+{f0_pat_sec} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v4 N={vsync_n}(={NTSC_VSYNC/vsync_n:.3f}fps) AUDIO={AUDIO}")
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v6 N={vsync_n}(={NTSC_VSYNC/vsync_n:.3f}fps) AUDIO={AUDIO}")
+    print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
     print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS}(最大スロット) PALTAB_SEC={paltab_sec} "
           f"F0_CTRL_SEC={f0_ctrl_sec} F0_PAT_SEC={f0_pat_sec} ROUTING_SEC={routing_sec} "
           f"PREBUF_SEC={prebuf_sec} PREBUF_PAT={Bpat} RING_PEAK_PAT={ring_peak} VSYNC_N={vsync_n}")
@@ -578,6 +691,7 @@ def main():
     args = ap.parse_args()
 
     log = load_log(args.dec_log)
+    require_canonical_p0_index15(log)
     # 単一真実源チェック: sim が焼いた tank と、この pack の RING_CAP は同じ実機リングを
     # モデルするので一致すべき。ズレていたら二重管理の兆候なので警告。
     sim_tank = log.get("tank_kb")
@@ -609,7 +723,8 @@ def main():
     under = sc.get("under", 0)
     print(f"schedule[{st}] prebuf {sc['prebuf_pat']*PAT/1024:.0f}KB ring_peak {sc['ring_peak']*PAT/1024:.0f}KB "
           f"ring_min {sc.get('ring_min',0)*PAT/1024:.0f}KB (cap {RING_CAP_KB}KB)  under(枯渇) {under} "
-          f"({100.0*under/max(1,len(per)):.1f}%)  n_pay_sec avg {sc['n_pay_sec'].mean():.2f}")
+          f"({100.0*under/max(1,len(per)):.1f}%)  n_pay_sec avg {sc['n_pay_sec'].mean():.2f}  "
+          f"control-first ready_min {sc['ready_min']}pat ctrl_min {sc['ctrl_min']}B")
     if sc["ring_peak"] > RING_CAP_PAT:
         print(f"  !! ring_peak {sc['ring_peak']*PAT/1024:.0f}KB > cap {RING_CAP_KB}KB (PRG収容不可の恐れ)")
     if args.verify:

@@ -2,15 +2,14 @@
 """実機/エミュ録画のデバッグHUD(左上端・1行)から各値を読む。
 
 HUD は boot/movieplay_ip.s の render_dbg が描く1行:
-    F<4桁> P<4桁> S<4桁> D<4桁> R<4桁> L<4桁>
-各値 = glyph 1セル + hex4桁 4セル + 空け 1セル = 6セル間隔(HUD_PITCH と一致)。
+    FxxxxPxxSxxDxxRxxLxxxx
+F/L は16進4桁、P/S/D/Rはlow byteの16進2桁で、間隔なしの連続22セル。
 先頭 F の直後4桁が現在の movie フレーム番号(16進, boot/dbgfont.bin の 8x8 フォント)。
 8x8セルをテンプレート(gen_debugfont.py と同じ字形)と正規化相互相関(NCC)で照合。
 背景映像に強いよう NCC(明暗オフセット不変) + 先頭Fで原点自動較正。
 
-このモジュールの HUD_* 定数は boot/movieplay_ip.s の HUD_ROW/HUD_PITCH/HUD_COL_* と
-一致させること(HUDレイアウトを変えたら両方直す)。native 320x224 キャプチャ前提
-(1セル=8px)。
+このモジュールの HUD_LAYOUT は boot/movieplay_ip.s の render_dbg と一致させること
+(HUDレイアウトを変えたら両方直す)。H32/H40とも1セル=8pxの同じ並びを使う。
 
 使い方:
     from read_frameno import read_frameno, read_hud
@@ -41,13 +40,30 @@ _HEX = {
 _T = {v: np.array([[1.0 if c == "#" else 0.0 for c in r] for r in rows]) for v, rows in _HEX.items()}
 _Fg = _T[0xF]
 
-# --- HUDレイアウト(boot/movieplay_ip.s の HUD_* と一致させる) ---
+# --- HUDレイアウト(boot/movieplay_ip.s の render_dbg と一致させる) ---
 CELL = 8                 # 1 HUDセル = 8px
-HUD_PITCH_H32 = 5        # native 256px H32: glyph+4 digits, no gap
-HUD_PITCH_H40 = 6        # native 320px H40: glyph+4 digits+one gap
-HUD_ROW = 0              # HUD行(0=最上段)。ip.s の HUD_ROW と一致
-HUD_FIELDS = ["F", "P", "S", "D", "R", "L"]   # H32: col 0,5,10,15,20,25; H40: 0,6,12,18,24,30
-DIGITS = 4               # 各値の16進桁数
+HUD_ROW = 0              # Window planeの最上段
+HUD_FIELD_DIGITS = (     # label 1セル + 指定桁数。field間の空けはない
+    ("F", 4),
+    ("P", 2),
+    ("S", 2),
+    ("D", 2),
+    ("R", 2),
+    ("L", 4),
+)
+
+
+def _make_layout():
+    col = 0
+    fields = []
+    for name, digits in HUD_FIELD_DIGITS:
+        fields.append((name, col, digits))
+        col += 1 + digits
+    return tuple(fields), col
+
+
+HUD_LAYOUT, HUD_CELLS = _make_layout()
+HUD_FIELDS = tuple(name for name, _col, _digits in HUD_LAYOUT)
 
 
 def _ncc(a, b):
@@ -76,10 +92,10 @@ def _calib_origin(gray):
     return bx, by, best
 
 
-def _read_hex(gray, x0, y):
-    """(x0, y) から4桁の16進を読む。x0 は先頭桁の左端。-> (値, 最小NCC)。"""
+def _read_hex(gray, x0, y, digits=4):
+    """(x0, y) から指定桁の16進を読む。x0 は先頭桁の左端。-> (値, 最小NCC)。"""
     val, minsc = 0, 2.0
-    for j in range(DIGITS):
+    for j in range(digits):
         x = x0 + j * CELL
         cell = gray[y:y + 8, x:x + 8].astype(float)
         best, bv = -2.0, 0
@@ -102,14 +118,13 @@ def read_frameno(img):
 
 def read_hud(img):
     """HUDの全値を読む -> {'F':(値,conf), 'P':..., 'S':..., 'D':..., 'R':..., 'L':...}。
-    先頭Fで原点較正し、以降は HUD_PITCH セル間隔で各値の hex4桁を読む。"""
+    先頭Fで原点較正し、連続22セルの固定レイアウトを各field固有の桁数で読む。"""
     gray = _gray(img)
     x0, y, fconf = _calib_origin(gray)
-    pitch = HUD_PITCH_H32 if gray.shape[1] < 300 else HUD_PITCH_H40
     out = {}
-    for k, name in enumerate(HUD_FIELDS):
-        gx = x0 + k * pitch * CELL               # この値の glyph x
-        val, minsc = _read_hex(gray, gx + CELL, y)   # hex は glyph の1セル後ろ
+    for name, col, digits in HUD_LAYOUT:
+        gx = x0 + col * CELL                     # この値の glyph x
+        val, minsc = _read_hex(gray, gx + CELL, y, digits)
         out[name] = (val, round(min(fconf, minsc), 3))
     return out
 
@@ -119,5 +134,8 @@ if __name__ == "__main__":
     from PIL import Image
     for p in sys.argv[1:]:
         hud = read_hud(Image.open(p))
-        parts = " ".join("%s=%04X(%.2f)" % (k, hud[k][0], hud[k][1]) for k in HUD_FIELDS)
+        widths = {name: digits for name, _col, digits in HUD_LAYOUT}
+        parts = " ".join(
+            "%s=%0*X(%.2f)" % (k, widths[k], hud[k][0], hud[k][1])
+            for k in HUD_FIELDS)
         print("%s -> %s" % (p, parts))

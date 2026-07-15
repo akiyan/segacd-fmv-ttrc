@@ -111,8 +111,9 @@ OUTDIR="$PWD/videos" tools/run_headless.sh out/MOVIEPLAY.cue \
 Do not omit audio synchronization options when composing a lower-level command.
 The script now supplies them automatically, but the post-run timing check remains
 mandatory evidence. For H32, keep the raw core surface at native 256x224. The
-player uses a compact 5-cell HUD pitch so F/P/S/D/R/L all fit in the 32-column
-plane. H40 remains native 320x224 with the 6-cell HUD pitch.
+player uses the same contiguous 22-cell HUD in every mode:
+`FxxxxPxxSxxDxxRxxLxxxx`. F/L have four hexadecimal digits; P/S/D/R have two.
+It fits the 32-column H32 plane, while H40 remains native 320x224.
 
 After every verification capture, require all of the following before trusting it:
 

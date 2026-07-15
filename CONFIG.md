@@ -31,22 +31,31 @@ models the same usable buffer so a schedule it calls feasible actually is.
 | `TANK_KB` | 380 KB (derived) | cfg -> sim | Sim VBV tank = usable ring. How much bandwidth a heavy frame may borrow. (Was wrongly 440 = larger than the ring.) |
 | `BACKPRESSURE_KB` | 416 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the ring. `RING_CAP` must stay below it. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
-| prebuffer | fills ring to `RING_CAP` | pack | Boot-time burst that fills the ring before frame 1 so bursts are pre-buffered. |
+| prebuffer | fills ring to `RING_CAP` | pack | Final region of `HEADER.DAT`; a boot-time burst that fills the ring before frame 1 so bursts are pre-buffered. |
 
 ## A2. CRAM pre-load (PALTAB) — palette table, off the stream
 
 All segment palettes are shipped once in a **PALTAB** region right after the
-header (see [`MOVIE.md`](MOVIE.md)) and copied at boot into a Main-RAM table. The
-per-frame stream then carries only a 1-byte segment reference (`pal = seg + 1`,
-0 = no switch) instead of a 128-byte in-stream CRAM payload. So palettes no
+first sector of `HEADER.DAT` (see [`MOVIE.md`](MOVIE.md)) and copied at boot
+into a Main-RAM table. The per-frame stream then carries only a 1-byte segment
+reference (`pal = seg + 1`, 0 = no switch) instead of a 128-byte in-stream CRAM
+payload. So palettes no
 longer depend on stream-delivery timing (a CD slip or re-seek can't corrupt a
 segment's colours), and the palette-switch frame's byte budget is freed.
+
+The encoder also gives every segment a lossless canonical CRAM order. It swaps
+the whole row containing the globally brightest existing usable colour into P0,
+then swaps that colour into index 15 and applies the same row/index permutation
+to every tile. No colour is added or removed, and transparent index 0 remains
+zero in all four rows. This makes P0/index15 a stable DEBUG font colour without
+changing the picture.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | `PALTAB_MAX_SEG` | 64 | cfg | Palette-table capacity (segments). Main-RAM table = `PALTAB_MAX_SEG * 128 B` (8 KB at `PALTAB_RAM` 0xFFB000). Build-asserted equal to the player's `.equ PALTAB_MAX_SEG`. |
 | `PALTAB_OFF` | 0xB000 | sp / ip | Word-RAM staging offset for the table at boot (must agree between the two CPUs; build-checked). Staging room caps the hard limit at 160 segments; the 1-byte `pal` ref caps it at 255. |
 | PALTAB sectors | `ceil(n_seg * 128 / 2048)` | pack | Region size; 16 segments per sector (op/ed both fit in 1). |
+| P0/index15 | global maximum `R + G + B` among 60 usable colours | sim -> pack / ip | Fixed font colour. Whole-row and within-row swaps are mirrored in tile attributes and indices; pack rejects non-canonical decision logs. |
 
 ## B. Cold cap (quality vs. sector slip) — the main quality lever
 
@@ -75,25 +84,26 @@ audible click). See the `R`/`L` HUD readouts below.
 |---|---|---|---|
 | `AUDIO_BYTES` / `AUDIO` | 887 B at 15 fps; 443 B at 30 fps | sp / pack | Per-stream header value, rounded from 13.3 kHz / native fps. PCM bytes written to wave RAM per frame. |
 | `SYNC_LEAD` | 0x3000 (12288 B, ~0.92 s) | sp | Write-ahead lead in wave RAM. PCM starts at this address; the ring's initial silence is not played, so the first source sample aligns with the first visible movie frame. |
-| `CBRSIM_STARTUP_AUDIO_FRAMES` | 30 (frame0 + first dense scene) | pack/sp | v5 boot-prefix audio preload. The player stops the CD while expanding frame0, starts PCM at `SYNC_LEAD` after frame0 is displayed, and skips the matching duplicate control writes. The longer window covers the initial Sub-CPU catch-up without reintroducing the old A/V offset. |
+| `CBRSIM_STARTUP_AUDIO_FRAMES` | 30 (frame0 + first dense scene) | pack/sp | Startup audio preload (introduced in v5, stored in v6 `HEADER.DAT`). The player prepares frame0 after the header read, starts PCM at `SYNC_LEAD` after frame0 is displayed, and skips the matching duplicate control writes. The longer window covers the initial Sub-CPU catch-up without reintroducing the old A/V offset. |
 | `SYNC_MIN` | 0 (0 B) | sp | Lower lead bound. Re-sync is disabled when the writer catches the play head; this prevents an artificial startup jump after the PCM origin is aligned. |
 | `SYNC_MAX` | 0x6800 (26624 B, ~2.0 s) | sp | Upper lead bound. Above it -> re-sync. |
 | `WAVE_RING_END` | 0x8000 (32 KB) | sp | RF5C164 wave-RAM ring size. |
 
 ## D. CD pump throttles (keeping the Sub from dropping sectors)
 
-Startup is deliberately two-phase: load the prefix through PREBUFFER, stop the
-CDC while frame 0 is fully expanded, then start one continuous FRAMES read. The
-steady read delivers 75 sectors/s, so the Sub must drain it continuously.
+Startup is deliberately two-phase: read `HEADER.DAT` through PREBUFFER, fully
+expand frame 0 after that request ends, then start one continuous `BODY.DAT`
+read at frame 1. The steady read delivers 75 sectors/s, so the Sub must drain it
+continuously.
 `pump_poll` grabs one ready sector if the receivers have room.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| pump_poll frequency | 8 bitmap bytes at 15 fps; 128 at 30 fps | sp `ef_byte` | Runtime-selected cadence. The 30fps path keeps the Sub-CPU optimization cadence; frame 0 has no active CD read. |
+| pump_poll frequency | 8 bitmap bytes at 15 fps; 128 at 30 fps | sp `ef_byte` | Runtime-selected cadence. The 30fps path keeps the Sub-CPU optimization cadence; frame 0 has no active `BODY.DAT` read. |
 | ring-full skip | occ >= 416 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
-| `FRAME_SECTORS` | max 5 | pack -> sp (`h_fsec`) | Routing-byte maximum. v4 uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; alternating 2/3 at 30 fps), split into payload / control / pad. |
-| `HEADER_SECTORS` | 1 | sp / pack | The 1-second TTRC header block at the start of MOVIE.DAT. |
+| `FRAME_SECTORS` | max 5 | pack -> sp (`h_fsec`) | Routing-byte maximum. v4+ uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; alternating 2/3 at 30 fps). In v6 each `BODY.DAT` slot is control / future payload / pad. |
+| `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
 
 ## E. VDP DMA budget (Main CPU)
 
@@ -146,19 +156,32 @@ Set per encode; they select the output and the codec behavior for that source.
 | `CBRSIM_MAX_COLD` | Per-frame cold cap (section B). |
 | `CBRSIM_RING_CAP_KB` / `CBRSIM_TANK_KB` | Override the ring cap / tank (normally derived from av_config). |
 | `CBRSIM_RATE_KIB` | CBR target rate (section F). |
-| `CBRSIM_REUSE`, `CBRSIM_GPU`, `CBRSIM_EMIT_DEC`, `CBRSIM_OUT` | Reuse decoded frames / use the GPU / save decisions.pkl / output dir. |
+| `CBRSIM_REUSE`, `CBRSIM_GPU`, `CBRSIM_EMIT_DEC`, `CBRSIM_OUT` | Reuse decoded frames / use the GPU / save the decision log / output dir. `CBRSIM_EMIT_DEC=1` writes `CBRSIM_OUT/decisions.pkl`; an explicit path is also accepted. |
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 
-Not settings, but the live readouts of the throttles above — a single row in the
-top-left corner (`render_dbg` in ip, positions `HUD_ROW`/`HUD_PITCH`/`HUD_COL_*`,
-read back by `tools/read_frameno.py: read_hud`). Handy when tuning.
+Not settings, but the live readouts of the throttles above — a single top row
+on the VDP Window plane (`render_dbg` in ip, read back by
+`tools/read_frameno.py: read_hud`). Keeping the HUD on Window separates it from
+the two alternating video name tables, so a video-plane flip cannot make the
+text disappear for one frame.
 
-| Marker | Meaning |
-|---|---|
-| `F` | Frame number. |
-| `P` | Palette segment. |
-| `S` | CD sector slips (re-seek recoveries). 0 = clean video. |
-| `D` | Stream desync count. 0 = clean. |
-| `R` | Audio re-sync count (lead left `[SYNC_MIN, SYNC_MAX]`). 0 is ideal; each increment is a write-pointer jump. |
-| `L` | Current audio lead (write - play), in bytes. Approaching `SYNC_MIN` = the buffer is draining. |
+Both H32 and H40 use the same contiguous 22-cell layout, with no field gaps:
+`FxxxxPxxSxxDxxRxxLxxxx`. `F` and `L` are four hexadecimal digits. `P`, `S`,
+`D`, and `R` show their low 8 bits as two hexadecimal digits. The display is
+not clamped, so its visible value wraps naturally from `FF` to `00`.
+
+The shared font asset uses transparent index 0 and set-pixel index 1. The movie
+player expands index 1 to P0/index15 once while uploading the font to VRAM, then
+uses that fixed font for the whole movie. Because the encoder guarantees that
+P0/index15 is a globally brightest existing colour in every segment, a CRAM
+switch needs no font scan, recolour, DMA, or additional VBlank wait.
+
+| Marker | Display | Meaning |
+|---|---|---|
+| `F` | `Fxxxx` | 16-bit frame number. |
+| `P` | `Pxx` | Low byte of the palette segment. |
+| `S` | `Sxx` | Low byte of the CD sector-slip count (re-seek recoveries). 0 = clean video. |
+| `D` | `Dxx` | Low byte of the stream-desync count. 0 = clean. |
+| `R` | `Rxx` | Low byte of the audio re-sync count (lead left `[SYNC_MIN, SYNC_MAX]`). 0 is ideal; each increment is a write-pointer jump. |
+| `L` | `Lxxxx` | 16-bit current audio lead (write - play), in bytes. Approaching `SYNC_MIN` = the buffer is draining. |

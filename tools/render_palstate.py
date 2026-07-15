@@ -2,7 +2,8 @@
 """現在のパレット状態パネル(palstate/%05d.png)を生成する。右下の空き領域に置く。
 4行(PL0..PL3=CRAMの4面) × 3列(直前 / 現在 / 次 の区間パレット)。各列見出しに切替時刻(mm:ss)。
 現在列を黄枠で強調。暗転で区間別パレットが差し替わる様子が分かる。
-区間分割/パレット学習は sim と同じ segment_and_train を使う(env CBRSIM_DITHER/SEGPAL を合わせる)。"""
+区間分割/パレット学習とP0/index15正規化は sim と同じ処理を使う
+(env CBRSIM_DITHER/SEGPAL を合わせる)。"""
 import sys
 from pathlib import Path
 import numpy as np
@@ -10,9 +11,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cbr_paths import sim_work_dir
-from sim import (segment_and_train, to_rgb333, flatten_low_detail,
-                           assign_palette, idx_for, FPS)
-from quantize_global4_tiles import tile_blocks
+from sim import (canonicalize_p0_index15, precompute_quant,
+                 segment_and_train, FPS)
 from quantize_md_video import rgb333_to_rgb888
 
 OUT = sim_work_dir()
@@ -36,7 +36,14 @@ def mmss(fr):
 def main():
     master = sorted((OUT / "master").glob("*.png"))
     n = len(master)
-    pals_arr, seg_pals, frame_seg, seg_bounds = segment_and_train(master)
+    _global_pals, seg_pals, frame_seg, _seg_bounds = segment_and_train(master)
+    # Preserve sim's exact nearest-colour tie choices: quantise in the trained
+    # order first, then apply the same lossless row/slot permutation used by the
+    # encoder.  Merely drawing the raw training order would label different
+    # physical CRAM rows from the packed PALTAB.
+    _detail, q_assign, q_pidx = precompute_quant(master, seg_pals, frame_seg)
+    seg_pals, _pal15_stats = canonicalize_p0_index15(
+        seg_pals, frame_seg, q_assign, q_pidx)
     nseg = len(seg_pals)
     seg_start = [int(np.argmax(frame_seg == s)) for s in range(nseg)]   # 各区間の開始フレーム
     seg_rgb = [rgb333_to_rgb888(sp) for sp in seg_pals]                 # [(4,15,3)]
@@ -72,10 +79,8 @@ def main():
         xc = LBLW + COLW                                # 現在列(中央)を強調
         d.rectangle([xc - 1, 0, xc + COLW - 1, PSH - 1], outline=(255, 235, 120), width=2)
         # 今フレームで実際に使われている「色」を Current 列で 1マスずつ枠付け(cyan)
-        m888 = np.asarray(Image.open(master[f]).convert("RGB"))
-        flat, _ = flatten_low_detail(tile_blocks(to_rgb333(m888)))
-        assign = assign_palette(flat, seg_pals[s])
-        idx = idx_for(flat, assign, seg_pals[s])        # (C,64) 各画素の色index 1..15
+        assign = q_assign[f]
+        idx = q_pidx[f]                                 # (C,64) physical CRAM indices 1..15
         sw = COLW / 15.0
         for p in range(4):
             mp = assign == p

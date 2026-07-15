@@ -3,8 +3,13 @@
 
 The Main CPU still needs the bitmap to map entries to cells.  The Sub CPU only
 needs cold entries in stream order to pop patterns and build DMA runs.  This
-checker walks every real control block in MOVIE.DAT both ways and verifies that
-the entry stream, cold-slot order and run grouping are identical.
+checker walks every real control block in the packed TTRC files both ways and
+verifies that the entry stream, cold-slot order and run grouping are identical.
+
+For v6 it prefers the on-disc HEADER.DAT + BODY.DAT pair, verifies that each
+frame's control block and cold patterns are ready before that frame can run,
+and also accepts the off-disc MOVIE.DAT compatibility concatenation.  v4/v5
+combined MOVIE.DAT files remain readable for regression checks.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ SECTOR = 2048
 
 
 def frame_sectors(routes: list[tuple[int, int]], fps: int) -> list[int]:
-    """Return the v4/v5 bounded-accumulator sector schedule for frames 1+."""
+    """Return the v4+ bounded-accumulator sector schedule for frames 1+."""
     acc = 0
     lead = 0
     out = [0]
@@ -97,16 +102,39 @@ def verify_block(block: bytes, seq: int, cells: int, pool: int) -> tuple[int, in
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("movie", nargs="?", default="out/movieplay/MOVIE.DAT")
+    parser = argparse.ArgumentParser(
+        description="Verify direct entry walking and the packed TTRC delivery order."
+    )
+    parser.add_argument(
+        "stream",
+        nargs="?",
+        help="HEADER.DAT or combined MOVIE.DAT (default: on-disc pair if present)",
+    )
+    parser.add_argument(
+        "body",
+        nargs="?",
+        help="BODY.DAT when the first argument is a standalone v6 HEADER.DAT",
+    )
     args = parser.parse_args()
-    data = Path(args.movie).read_bytes()
+
+    if args.stream:
+        stream_path = Path(args.stream)
+    else:
+        header_path = Path("out/movieplay/HEADER.DAT")
+        body_path = Path("out/movieplay/BODY.DAT")
+        stream_path = (
+            header_path
+            if header_path.exists() and body_path.exists()
+            else Path("out/movieplay/MOVIE.DAT")
+        )
+    data = stream_path.read_bytes()
 
     magic, version, nfr, _cols, _rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", data, 0
     )
-    if magic != b"TTRC" or version < 4:
-        raise SystemExit(f"expected TTRC v4+, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (4, 5, 6):
+        raise SystemExit(f"expected TTRC v4/v5/v6, got {magic!r} v{version}")
+    prebuf_pat = struct.unpack_from(">L", data, 22)[0]
     routing_sec = struct.unpack_from(">L", data, 26)[0]
     prebuf_sec = struct.unpack_from(">L", data, 30)[0]
     f0_ctrl_sec, f0_pat_sec, paltab_sec = struct.unpack_from(">LLL", data, 40)
@@ -122,19 +150,54 @@ def main() -> None:
     if len(routing_raw) != 2 * nfr:
         raise AssertionError("truncated routing table")
     routes = [(routing_raw[2 * i], routing_raw[2 * i + 1]) for i in range(nfr)]
+    if routes[0] != (0, 0):
+        raise AssertionError(f"frame 0 must live entirely in the header, route is {routes[0]}")
     fsecs = frame_sectors(routes, fps)
 
     frames_off = (routing_off // SECTOR + routing_sec + prebuf_sec) * SECTOR
-    cursor = frames_off
+    if len(data) < frames_off:
+        raise AssertionError(
+            f"truncated boot prefix: {len(data)} bytes, expected {frames_off}"
+        )
+    if version == 6:
+        if args.body:
+            if len(data) != frames_off:
+                raise AssertionError(
+                    "an explicit BODY.DAT requires a standalone HEADER.DAT"
+                )
+            body_path = Path(args.body)
+            frames = body_path.read_bytes()
+        elif len(data) == frames_off:
+            body_path = stream_path.with_name("BODY.DAT")
+            if not body_path.exists():
+                raise AssertionError(f"missing v6 body file: {body_path}")
+            frames = body_path.read_bytes()
+        else:
+            body_path = None
+            frames = data[frames_off:]
+    else:
+        if args.body:
+            raise AssertionError("separate HEADER.DAT/BODY.DAT requires TTRC v6")
+        body_path = None
+        frames = data[frames_off:]
+
+    cursor = 0
     control_stream = bytearray()
     for i in range(1, nfr):
         n_pay, n_ctrl = routes[i]
         frame_len = fsecs[i] * SECTOR
-        frame = data[cursor : cursor + frame_len]
+        frame = frames[cursor : cursor + frame_len]
         if len(frame) != frame_len:
             raise AssertionError(f"frame {i}: truncated sector slot")
-        control_stream += frame[n_pay * SECTOR : (n_pay + n_ctrl) * SECTOR]
+        if version == 6:
+            control_stream += frame[: n_ctrl * SECTOR]
+        else:
+            control_stream += frame[n_pay * SECTOR : (n_pay + n_ctrl) * SECTOR]
         cursor += frame_len
+    if cursor != len(frames):
+        raise AssertionError(
+            f"body length {len(frames)} does not match routed frame slots {cursor}"
+        )
 
     control_pos = 0
     for seq in range(1, nfr):
@@ -148,12 +211,38 @@ def main() -> None:
 
     updates = 0
     cold = 0
+    cold_by_frame = []
     for seq, block in enumerate(controls):
         frame_updates, frame_cold = verify_block(block, seq, cells, pool)
         updates += frame_updates
         cold += frame_cold
+        cold_by_frame.append(frame_cold)
+
+    if version == 6:
+        control_delivered = 0
+        control_needed = 0
+        payload_delivered = prebuf_pat
+        payload_needed = 0
+        for seq in range(1, nfr):
+            n_pay, n_ctrl = routes[seq]
+            control_delivered += n_ctrl * SECTOR
+            control_needed += len(controls[seq])
+            if control_delivered < control_needed:
+                raise AssertionError(
+                    f"frame {seq}: control is not ready "
+                    f"({control_delivered} delivered, {control_needed} needed)"
+                )
+
+            payload_needed += cold_by_frame[seq]
+            if payload_delivered < payload_needed:
+                raise AssertionError(
+                    f"frame {seq}: cold payload is not armed before control "
+                    f"({payload_delivered} patterns delivered, {payload_needed} needed)"
+                )
+            payload_delivered += n_pay * (SECTOR // 32)
+
     print(
-        f"entry-walk equivalence: OK ({nfr} frames, {updates} entries, "
+        f"entry-walk equivalence: OK (v{version}, {nfr} frames, {updates} entries, "
         f"{cold} cold, {cells} cells)"
     )
 

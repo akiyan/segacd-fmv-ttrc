@@ -1,13 +1,13 @@
 /*
  * Phase B5: TTRC delta-stream player, Sub CPU side.
  *
- * Startup uses two sequential reads.  The first loads the boot prefix through
- * PREBUFFER, then stops while frame 0 is expanded.  The second starts at
- * FRAMES and remains continuous for the whole timed movie.  This keeps the
- * frame-0 full-screen copy from competing with live sector delivery.
+ * HEADER.DAT contains the complete startup image through PREBUFFER.  It is
+ * consumed and frame 0 is expanded before BODY.DAT starts.  BODY.DAT then runs
+ * as one uninterrupted timed read, independent of either file's ISO location.
  *
- * During the timed read, payload sectors feed the PRG-RAM ring, control sectors
- * feed the apply ring and rate-matching sectors are discarded.  Each control
+ * During the timed read, each frame places control sectors first, then payload
+ * sectors, then rate padding.  Control feeds the apply ring and payload feeds
+ * the PRG-RAM pattern ring.  Each control
  * block is linearized in Word RAM, expanded to Main-CPU output, paired with PCM
  * audio and handed over by a 1M Word-RAM bank swap.
  */
@@ -103,8 +103,8 @@
 .equ SYNC_MAX,  0x6800
 
 .equ HEADER_SECTORS,  1
-/* frames/tcols/trows/cells/pool/base/frame_sectors/prebuf/routing/mode は
-   MOVIE.DAT ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
+/* frames/tcols/trows/cells/pool/base/prebuf/routing/mode は HEADER.DAT の
+   v6ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
@@ -174,30 +174,42 @@ do_stream:
 	andi.b	#0xF0, (CDB_STAT).w
 	bne	1b
 	bsr	init_iso9660
-	lea	file_stream, a0
-	bsr	find_file		/* d0 = LBA */
-	move.l	d0, stream_lba
+	lea	file_header, a0
+	bsr	find_file		/* d0=LBA, d1=sector count */
+	move.l	d0, header_lba
+	move.l	d1, header_total
+	lea	file_body, a0
+	bsr	find_file
+	move.l	d0, body_lba
+	move.l	d1, body_total
 	bset	#2, (MEMMODE+1).l
 stream_start:
-	/* Loop entry.  The boot prefix and the timed FRAMES region use separate
-	   sequential reads: load everything needed for frame 0, stop and build it,
-	   then start one uninterrupted read at FRAMES. */
-	clr.l	prev_msf
+	/* Every replay reloads the immutable startup file, builds frame 0 while the
+	   timed reader is idle, then starts BODY.DAT from its own ISO extent. */
 	clr.w	slip_count
 	clr.w	desync_count
 	clr.w	(COMSTAT1).l
 	clr.w	drain_frame
 	bsr	init_pcm
-	bsr	issue_rom_readn			/* ファイル全体を連続読み(以降シーク無し) */
+	clr.l	prev_msf			/* HEADER first sector establishes the disc MSF base */
+	clr.l	base_msf
+	move.l	header_lba, d0
+	move.l	header_total, d1
+	bsr	issue_file_readn		/* complete startup file */
 	/* ヘッダ1secをSTAGEへ取り込み、マジック "TTRC" を検証(MOVIE.md) */
 	move.w	#HEADER_SECTORS, d0
 	lea	PAD_SCR, a0
 	bsr	drain_lin
 	cmpi.l	#0x54545243, (PAD_SCR).l	/* "TTRC" */
+	bne	bad_header_magic
+	cmpi.w	#6, (PAD_SCR+4).l
 	beq	1f
+	move.w	#0xBAD6, (COMSTAT1).l		/* split-file format required */
+	bra	bad_header
+bad_header_magic:
 	move.w	#0xBAD0, (COMSTAT1).l		/* 不一致: 診断マーカーを出して停止 */
-bad_magic:
-	bra	bad_magic
+bad_header:
+	bra	bad_header
 1:
 	/* ヘッダ解析(>4sHHHHHHHHH + >LLLL + mode@38)。焼き込み定数を廃し実行時に読む */
 	lea	PAD_SCR, a0
@@ -262,9 +274,6 @@ pm_set:
 	move.w	60(a0), h_audio_pre_sec
 	clr.w	sec_acc
 	clr.w	lead
-	/* v4: h_stream_total は find_file がファイルサイズ(実セクタ数)から初期化済み。可変フレーム
-	   では frames*fsec 計算は過大(=paddingぶん多い)なので、ここでの上書きは行わない。
-	   ROM_READN の連続読み長・スリップ回復の残量は find_file のファイルサイズ値を使う。 */
 	/* MDへヘッダ写しを渡す(frame0と同じバンクに書く=swap後にMDが読める) */
 	lea	(O_HDR).l, a1
 	moveq	#32-1, d1			/* 64B */
@@ -342,13 +351,8 @@ pb_lp:
 	subq.w	#1, d7
 	bne	pb_lp
 pb_done:
-	/* The complete boot prefix is resident now.  Stop before expanding frame 0
-	   so its full-screen pattern copy cannot race an already-running FRAMES
-	   stream.  stream_remaining is exactly the size of the unread FRAMES tail. */
-	bsr	stop_rom_readn
-	/* Prepare the steady-state queues while drain_frame remains zero.  Any
-	   pump_poll inside frame-0 expansion returns immediately because the CD is
-	   deliberately idle. */
+	/* HEADER.DAT is exhausted here.  Prepare the steady-state queues and expand
+	   frame 0 before starting the independent timed BODY.DAT read. */
 	move.l	#APPLY_BASE, apply_tail
 	move.l	#APPLY_BASE, apply_cur
 	clr.w	drain_k
@@ -363,15 +367,26 @@ pb_done:
 	move.w	#1, frame_idx			/* frame0処理済み(旧playerと同じframe_idx=1) */
 	bsr	expand_frame
 	clr.w	f0_expand
-	/* Start the timed stream at FRAMES, not at the file header.  Pre-drain frame
-	   1 completely before releasing frame 0, so both its control block and its
-	   prebuffered patterns are ready when playback begins. */
+	/* Start one continuous read at BODY.DAT's actual ISO extent.  Rebase slip
+	   recovery there because HEADER.DAT and BODY.DAT need not be adjacent.
+	   Pre-drain frame 1 completely before releasing frame 0. */
 	move.w	#1, drain_frame
 	cmpi.w	#2, h_frames
 	blo	stream_armed
-	tst.l	stream_remaining
+	tst.l	body_total
 	beq	stream_armed
-	bsr	issue_frames_readn
+	/* Detect a missing first BODY sector even when ISO extents are non-adjacent
+	   or BODY sorts before HEADER.  ISO LBA and linear MSF share the same signed
+	   sector delta, so anchor BODY before issuing its read. */
+	move.l	body_lba, d0
+	sub.l	header_lba, d0
+	add.l	base_msf, d0			/* expected BODY first-sector MSF */
+	move.l	d0, base_msf
+	subq.l	#1, d0
+	move.l	d0, prev_msf
+	move.l	body_lba, d0
+	move.l	body_total, d1
+	bsr	issue_file_readn
 arm_frame1:
 	bsr	pump1_core
 	cmpi.w	#2, drain_frame
@@ -609,56 +624,20 @@ movie_end:
 	bne	3b
 	bra	stream_start
 
-issue_rom_readn:
-	movem.l	d0-d7/a0-a6, -(sp)
+/* Start one finite ISO file read. d0=absolute LBA, d1=sector count.  The caller
+   establishes base_msf/prev_msf first so the very first sector is verifiable.
+   Callers need no registers preserved. */
+issue_file_readn:
 	lea	bios_packet, a5
-	move.l	stream_lba, d0
 	move.l	d0, read_lba
-	move.l	d0, (a5)
-	move.l	h_stream_total, d1		/* find_file initializes this from file size */
 	move.l	d1, read_total
+	move.l	d0, (a5)
 	move.l	d1, 4(a5)
 	move.l	#SUB_BANK_1M, 8(a5)
 	movea.l	a5, a0
 	BIOSCALL BIOS_CDC_STOP
 	BIOSCALL BIOS_ROM_READN
 	move.l	read_total, stream_remaining
-	movem.l	(sp)+, d0-d7/a0-a6
-	rts
-
-/* Stop after the boot prefix has been drained.  Frame 0 is expanded while the
-   CDC is idle, so no timed-stream sectors can be lost during its large copy. */
-stop_rom_readn:
-	movem.l	d0-d7/a0-a6, -(sp)
-	BIOSCALL BIOS_CDC_STOP
-	movem.l	(sp)+, d0-d7/a0-a6
-	rts
-
-/* Restart at the first unread sector, which is exactly the start of FRAMES.
-   Keep stream_lba/h_stream_total as immutable file metadata for the next loop;
-   read_lba/read_total describe the active read for slip recovery. */
-issue_frames_readn:
-	movem.l	d0-d7/a0-a6, -(sp)
-	move.l	h_stream_total, d0
-	sub.l	stream_remaining, d0		/* boot-prefix sectors already consumed */
-	add.l	stream_lba, d0			/* absolute LBA of FRAMES */
-	move.l	d0, read_lba
-	move.l	stream_remaining, d1
-	move.l	d1, read_total
-	lea	bios_packet, a5
-	move.l	d0, (a5)
-	move.l	d1, 4(a5)
-	move.l	#SUB_BANK_1M, 8(a5)
-	movea.l	a5, a0
-	/* The last prefix sector is physically adjacent to FRAMES.  Keep prev_msf so
-	   a missing first FRAMES sector is detectable, but rebase recovery offsets
-	   to that expected first sector. */
-	move.l	prev_msf, d2
-	addq.l	#1, d2
-	move.l	d2, base_msf
-	BIOSCALL BIOS_ROM_READN
-	move.l	read_total, stream_remaining
-	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
 /* 滑り回復用の再シーク: d0=絶対LBA, d1=残セクタ数 で CDC_STOP+ROM_READN 再発行。
@@ -787,48 +766,6 @@ dls_loop:
 	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
-/* d0=セクタ数。ring_tail へ CDC_TRN(循環)。 */
-drain_ring:
-	movem.l	d0-d7/a0-a6, -(sp)
-	move.w	d0, d7
-	subq.w	#1, d7
-dr_loop:
-	movea.l	ring_tail, a0
-	movem.l	d7, -(sp)
-	bsr	drain1
-	movem.l	(sp)+, d7
-	movea.l	ring_tail, a0
-	lea	0x800(a0), a0
-	cmpa.l	#RING_END, a0
-	blo	1f
-	movea.l	#RING_BASE, a0
-1:
-	move.l	a0, ring_tail
-	dbra	d7, dr_loop
-	movem.l	(sp)+, d0-d7/a0-a6
-	rts
-
-/* d0=セクタ数。apply_tail へ CDC_TRN(循環)。 */
-drain_apply:
-	movem.l	d0-d7/a0-a6, -(sp)
-	move.w	d0, d7
-	subq.w	#1, d7
-da_loop:
-	movea.l	apply_tail, a0
-	movem.l	d7, -(sp)
-	bsr	drain1
-	movem.l	(sp)+, d7
-	movea.l	apply_tail, a0
-	lea	0x800(a0), a0
-	cmpa.l	#APPLY_END, a0
-	blo	1f
-	movea.l	#APPLY_BASE, a0
-1:
-	move.l	a0, apply_tail
-	dbra	d7, da_loop
-	movem.l	(sp)+, d0-d7/a0-a6
-	rts
-
 /* ---- ポンプ方式ドレイン ----
    CDは止まらず75セクタ/秒を吐き続けるので、取り込みをフレーム処理のテンポに縛ると
    MD側が重いフレームでCDC内部バッファが溢れセクタが失われる(以降ずっとズレる)。
@@ -836,7 +773,7 @@ da_loop:
    MD待ちループ中も pump_poll で吸い上げ、受け側(リング/apply)の余裕だけ確認する。 */
 
 /* 1セクタを取り込む(ブロッキング)。CD→常にWord-RAM STAGE(実績ある経路)→
-   CPUコピーで routing に従い PRG(リング/apply)へ振り分け。
+   BODYの control→payload→pad 順に apply/PRG ring/捨て場へ振り分け。
    (CDC_TRN→PRG直行はリトライ中にセクタが滑る事故が起きる: 実測+1/2フレーム) */
 /* v4 レートマッチpadding。各フレーム = fsec = max(n_pay+n_ctrl, ratedelta) セクタ。
    ratedelta = CD 1x(75 sec/s)を fps で割った整数割当(累積器 sec_acc)= ディスク読み速度を
@@ -860,8 +797,8 @@ p1_top:
 	andi.w	#0xFF, d1
 	move.b	1(a0,d0.w), d2			/* n_ctrl */
 	andi.w	#0xFF, d2
+	move.w	d2, cur_n_ctrl
 	add.w	d1, d2				/* d2 = total = n_pay+n_ctrl */
-	move.w	d1, cur_n_pay
 	move.w	d2, cur_total
 	/* ratedelta = floor((acc+75)/fps).  75/fps quotient and remainder were
 	   computed once at header load, so the per-frame path needs no DIVU. */
@@ -893,13 +830,13 @@ p1_top:
 p1_read:
 	lea	PAD_SCR, a0			/* STAGE = Word-RAM */
 	bsr	drain1				/* 1セクタ取り込み(d1/d2破壊) */
-	move.w	cur_n_pay, d1
+	move.w	cur_n_ctrl, d1
 	move.w	cur_total, d4			/* stage_copy preserves cached routing in memory */
 	move.w	drain_k, d3
 	cmp.w	d1, d3
-	blo	p1_ring				/* k < n_pay */
+	blo	p1_apply			/* k < n_ctrl: BODY control comes first */
 	cmp.w	d4, d3
-	blo	p1_apply			/* k < total */
+	blo	p1_ring				/* n_ctrl <= k < total: payload */
 	bra	p1_adv				/* k >= total: pad セクタ(捨て) */
 p1_ring:
 	movea.l	ring_tail, a1
@@ -996,13 +933,24 @@ pump_poll_core:
 pp_done:
 	rts
 
-/* 1フレーム: frame_idx のセクタが全部届くまでポンプ → control取り出し → expand → 音声。 */
+/* 1フレーム: BODY先頭側の control sector が揃うまでポンプ → control取り出し
+   → expand → 音声。payload/pad はpattern tankを先行充填しながら後続処理と並走する。 */
 process_frame:
 pf_pump:
 	move.w	frame_idx, d0			/* pump1_core may trash d0; reload each pass */
 	cmp.w	drain_frame, d0
-	blo	pf_ready			/* drain_frame > frame_idx = このフレーム分完了 */
-	bsr	pump1_core			/* 呼び出し元退避済み: 保存なしcoreでブロッキング取込 */
+	blo	pf_ready			/* drain_frame > frame_idx: full frame already drained */
+	bhi	pf_need_pump			/* BODY is still draining an older frame */
+	/* Same frame: control-first means drain_k>=n_ctrl is sufficient.  n_ctrl=0
+	   is intentionally ready immediately because its bytes arrived earlier. */
+	add.w	d0, d0
+	lea	ROUTING, a0
+	moveq	#0, d1
+	move.b	1(a0,d0.w), d1
+	cmp.w	drain_k, d1
+	bls	pf_ready
+pf_need_pump:
+	bsr	pump1_core			/* non-preserving blocking sector pump */
 	bra	pf_pump
 pf_ready:
 	addq.w	#1, frame_idx
@@ -1354,9 +1302,7 @@ get_info:
 	move.b	8(a2), d0
 	lsl.l	#8, d0
 	move.b	9(a2), d0
-	/* ファイルサイズ(BE @14) → 総セクタ数を h_stream_total に初期化。
-	   ROM_READN はヘッダ解析より先に走るため、初回はこの値を使う
-	   (解析後に同値で再計算される)。 */
+	/* Return file size as a rounded-up sector count in d1. */
 	moveq	#0, d1
 	move.b	14(a2), d1
 	lsl.l	#8, d1
@@ -1368,7 +1314,6 @@ get_info:
 	add.l	#2047, d1
 	moveq	#11, d2
 	lsr.l	d2, d1
-	move.l	d1, h_stream_total
 	movem.l	(sp)+, a1-a2/a6
 	rts
 
@@ -1598,18 +1543,26 @@ sp_user:
 
 drv_init_tracklist:
 	.byte	1, 0xFF
-file_stream:
-	.asciz	"MOVIE.DAT"
+file_header:
+	.asciz	"HEADER.DAT"
+file_body:
+	.asciz	"BODY.DAT"
 	.align	2
 
 bios_packet:
 	.long	0, 0, 0, 0, 0
-stream_lba:
+header_lba:
+	.long	0
+header_total:
+	.long	0
+body_lba:
+	.long	0
+body_total:
 	.long	0
 stream_remaining:
 	.long	0
 read_lba:
-	.long	0				/* base LBA of the active prefix or FRAMES read */
+	.long	0				/* base LBA of the active HEADER/BODY read */
 read_total:
 	.long	0				/* sector count of the active read */
 dr_dest:
@@ -1667,15 +1620,13 @@ sec_acc:
 	.space 2				/* v4: CD 1x レート累積器の余り(0..fps-1) */
 cur_fsec:
 	.space 2				/* v4: 現コマのディスクセクタ数 fsec=max(total,ratedelta-lead) */
-cur_n_pay:
-	.space 2				/* 現コマrouting cache: payload sectors */
+cur_n_ctrl:
+	.space 2				/* 現コマrouting cache: leading control sectors */
 cur_total:
 	.space 2				/* 現コマrouting cache: payload+control sectors */
 lead:
 	.space 2				/* v4: ディスクがCD 1x予定より先行しているセクタ数(≥0) */
 f0_pat_addr:
-	.space 4
-h_stream_total:
 	.space 4
 drain_k:
 	.word	0

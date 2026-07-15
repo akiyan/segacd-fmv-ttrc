@@ -45,7 +45,7 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
     code), `p` = player (`boot/movieplay_*.s`). Bump `e` and/or `p` whenever
     that side's output-affecting params or code change; never decrease either.
     When bumping, set the date to today if it differs. This is the title build
-    version only — the `MOVIE.DAT` header version field is separate and must NOT
+    version only — the TTRC `HEADER.DAT` format-version field is separate and must NOT
     be touched. Update `tools/av_version.txt` whenever you bump.
   - Example: `SEGA-CD FMV of <Work> - mode4 max resolution 256x176/32x22 20260710.e1.p1`.
 - **Description structure** (in both languages, in this order):
@@ -91,7 +91,7 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 - These dedicated reference docs are sanctioned and must be kept current:
   - [`ANALYSIS.md`](ANALYSIS.md) - the analysis-overlay reference (every meter/category/metric).
     Updated via the `/analysis` skill together with the layout code.
-  - [`MOVIE.md`](MOVIE.md) - the `MOVIE.DAT` (TTRC) on-disc stream format. Keep in sync with
+  - [`MOVIE.md`](MOVIE.md) - the `HEADER.DAT` + `BODY.DAT` (TTRC) on-disc stream format. Keep in sync with
     `tools/pack_stream.py` and the `boot/movieplay_*.s` player.
   - [`CONFIG.md`](CONFIG.md) - the tunable settings, throttles and buffers (ring/tank,
     cold cap, audio sync, CD pump, DMA budget, encoder knobs, per-source env). Keep in
@@ -111,7 +111,10 @@ are kept generic). The current encoder/player path is:
 tools/sim.py -> tools/pack_stream.py -> boot/movieplay_*.s
 ```
 
-The stream output is `MOVIE.DAT` using the TTRC layout.
+The on-disc stream is split into `HEADER.DAT` (all startup state, including
+frame 0) and `BODY.DAT` (frame 1 onward) using the TTRC layout. The packer also
+writes a concatenated `MOVIE.DAT` compatibility container for offline tools;
+the player does not read it.
 
 Resolution, aspect, frame rate, and audio are **per-source encoder settings**
 within Sega CD limits, not fixed presets:
@@ -126,7 +129,8 @@ within Sega CD limits, not fixed presets:
   issue #13.
 
 The old `OP.STR` / RLE and `PROBE.BIN` bring-up paths have been removed.
-`make disc` builds the `MOVIE.DAT` disc played by `boot/movieplay_*.s`.
+`make disc` builds the `HEADER.DAT` + `BODY.DAT` disc played by
+`boot/movieplay_*.s`.
 
 ## Output Paths (videos/)
 
@@ -198,7 +202,7 @@ When playback breaks, do not guess from one symptom. Prove each layer
 innocent in order, with byte-level or frame-level evidence:
 
 1. **Data layer**: replay the exact writer/reader logic in a small Python
-   replica against the real `MOVIE.DAT` (all frames, not samples). If the
+   replica against the real `HEADER.DAT` + `BODY.DAT` pair (all frames, not samples). If the
    format walks cleanly, the data and format are innocent.
 2. **Logic layer**: when changing stream layout or allocation, prove display
    equivalence in Python first (old vs new must produce identical

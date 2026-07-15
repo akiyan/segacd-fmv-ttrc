@@ -26,7 +26,9 @@ Everything else is shaped by Sega CD hardware, not by video theory:
 - **CRAM palette budget.** The VDP shows at most 4 lines x 15 colours = 60
   colours at once. The codec trains those 60 colours, splits the movie into
   segments at safe (dark) cut points, and re-trains per segment via a single
-  CRAM reload during the cut.
+  CRAM reload during the cut. A lossless row/index permutation keeps the
+  globally brightest existing colour at P0/index15 without sacrificing any of
+  the 60 colours.
 - **VRAM tile pool + name table.** A persistent pool of resident tile patterns
   is kept in VRAM. Each frame the codec searches that pool for the best match to
   every changed cell and re-points name-table entries (2 bytes) instead of
@@ -70,7 +72,9 @@ Sega CD-specific compression is the "Encode" step.
 2. **Detect** fades / flashes as safe points for a palette change.
 3. **Build palettes** per segment, weighting the k-means so thin high-contrast
    edges (e.g. anime line art) keep palette slots despite tiny area — a general
-   image-quality trick, not a hardware one.
+   image-quality trick, not a hardware one. The encoder then canonicalizes the
+   palette rows and indices, remapping tile attributes and pixel indices so the
+   rendered RGB333 image stays exactly the same.
 4. **Quantize** each 8x8 tile to the chosen Genesis palettes (position-fixed
    Bayer dithering).
 5. **Encode (the codec):** maintain the resident VRAM tile pool; per frame,
@@ -78,7 +82,8 @@ Sega CD-specific compression is the "Encode" step.
    patterns only where needed, spend the CBR budget by priority, and bank/spend
    the VBV tank.
 6. **Pack** video control, tile payload, palettes, and PCM audio into the
-   constant-rate CD stream.
+   two-file CD stream: an armed startup `HEADER.DAT` and a continuously read
+   `BODY.DAT`.
 
 ## Analysis
 
@@ -93,8 +98,8 @@ meter and tile category.
   targets, and repository layout.
 - [ANALYSIS.md](ANALYSIS.md): the analysis-overlay reference, covering every
   panel, meter, timeline, and tile category drawn by `tools/render_analysis.py`.
-- [MOVIE.md](MOVIE.md): the exact `MOVIE.DAT` on-disc stream format written by
-  `tools/pack_stream.py` and read by the Sega CD player.
+- [MOVIE.md](MOVIE.md): the exact `HEADER.DAT` / `BODY.DAT` on-disc stream
+  format written by `tools/pack_stream.py` and read by the Sega CD player.
 - [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
   playback pipeline budgets used when choosing encoder targets.
 - [ADPCM.md](ADPCM.md): the 22.05 kHz ADPCM real-time-decode investigation and
@@ -108,9 +113,15 @@ meter and tile category.
 
 - `tools/sim.py`: the offline encoder simulator — makes every per-tile
   decision and emits the decision log plus analysis data.
-- `tools/pack_stream.py`: packs the decisions into the constant-rate CD stream.
+- `tools/pack_stream.py`: packs the decisions into `HEADER.DAT` and `BODY.DAT`,
+  and writes the matching canonical segment-0 `palettes.bin` used to build the
+  Main CPU player. It also writes their concatenation as an off-disc
+  `MOVIE.DAT` compatibility file for analysis and regression tools.
 - `tools/render_analysis.py` + `tools/layout_preview.py`: the analysis overlay.
-- `boot/`: the Sub/Main CPU playback runtime for real hardware.
+- `boot/`: the Sub/Main CPU playback runtime for real hardware. DEBUG builds
+  keep the contiguous 22-cell `FxxxxPxxSxxDxxRxxLxxxx` HUD on the top-row VDP
+  Window plane and upload its fixed P0/index15 font once, so video-plane flips
+  and palette switches do not recolour or blink the text.
 
 ## Build Targets
 
@@ -132,9 +143,12 @@ Required tools: Marsdev / `m68k-elf` toolchain, `mkisofs` or `genisoimage`,
 `ffmpeg` / `ffprobe`, `python3` with NumPy and Pillow, and a Sega CD BIOS for
 emulator testing.
 
-`make disc` (the default target) builds the `MOVIE.DAT` player disc as
-`out/MOVIEPLAY.iso` + `out/MOVIEPLAY.cue`. It expects an encoded stream at
-`out/movieplay/MOVIE.DAT` (produced by `tools/pack_stream.py`).
+`make disc` (the default target) builds the player disc as
+`out/MOVIEPLAY.iso` + `out/MOVIEPLAY.cue`. It expects the encoded pair at
+`out/movieplay/HEADER.DAT` and `out/movieplay/BODY.DAT`, produced together by
+`tools/pack_stream.py`, plus the `palettes.bin` written from the same decision
+log. `HEADER.DAT` contains all startup state, including frame 0 and the
+prebuffer; `BODY.DAT` starts at frame 1 and is read continuously.
 
 ## Recording
 

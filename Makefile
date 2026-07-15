@@ -25,7 +25,7 @@ all: disc
 setup:
 	@mkdir -p $(OUT_DIR) $(DISC_DIR)
 
-# 本番ディスク = movieplay(MOVIE.DAT)。旧PROBE.BIN/CD-DA画面パスは撤去済み。
+# 本番ディスク = movieplay(HEADER.DAT + BODY.DAT)。旧PROBE.BIN/CD-DA画面パスは撤去済み。
 disc: movieplay
 
 check-tools:
@@ -162,8 +162,8 @@ $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).cue: $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).iso
 	@rm -f $@
 	@printf 'FILE "DMABENCH_$(DMABENCH_TAG).iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
 
-# --- Phase B2: 差分ストリーム再生(単バッファ, MOVIE.DAT を連続供給) ---
-# MOVIE.DAT/palettes.bin は事前に: python3 tools/pack_stream.py --frames N --raw-dir out/movieplay
+# --- Phase B2: 差分ストリーム再生(単バッファ, BODY.DAT を連続供給) ---
+# HEADER.DAT/BODY.DAT は事前に: python3 tools/pack_stream.py --frames N --raw-dir out/movieplay
 MOVIEPLAY_DISC := $(OUT_DIR)/disc_movieplay
 
 movieplay: check-tools $(OUT_DIR)/MOVIEPLAY.iso $(OUT_DIR)/MOVIEPLAY.cue
@@ -203,10 +203,12 @@ $(OUT_DIR)/movieplay_boot.bin: $(OUT_DIR)/movieplay_ip.bin $(OUT_DIR)/movieplay_
 	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $(BOOT_DIR)/movieplay_boot.s -o $(OUT_DIR)/movieplay_boot.out
 	$(OBJCOPY) -O binary $(OUT_DIR)/movieplay_boot.out $@
 
-$(OUT_DIR)/MOVIEPLAY.iso: $(OUT_DIR)/movieplay_boot.bin out/movieplay/MOVIE.DAT
+$(OUT_DIR)/MOVIEPLAY.iso: $(OUT_DIR)/movieplay_boot.bin out/movieplay/HEADER.DAT out/movieplay/BODY.DAT
 	@mkdir -p $(MOVIEPLAY_DISC)
 	@printf "delta stream phase B2\n" > $(MOVIEPLAY_DISC)/README.TXT
-	cp out/movieplay/MOVIE.DAT $(MOVIEPLAY_DISC)/MOVIE.DAT
+	@rm -f $(MOVIEPLAY_DISC)/MOVIE.DAT $(MOVIEPLAY_DISC)/HEADER.DAT $(MOVIEPLAY_DISC)/BODY.DAT
+	cp out/movieplay/HEADER.DAT $(MOVIEPLAY_DISC)/HEADER.DAT
+	cp out/movieplay/BODY.DAT $(MOVIEPLAY_DISC)/BODY.DAT
 	@rm -f $@ $(OUT_DIR)/MOVIEPLAY.cue
 	$(MKISOFS) -iso-level 1 -G $< -pad -V "SCFMV_DLT" -o $@ $(MOVIEPLAY_DISC)
 

@@ -1,20 +1,24 @@
-# MOVIE.DAT binary format (TTRC)
+# HEADER.DAT / BODY.DAT binary format (TTRC)
 
-`MOVIE.DAT` is the on-disc stream of the **Tile Texture Reuse Codec** — the
-current encoder/player path. It is written by `tools/pack_stream.py` from the
-`tools/sim.py` decision log, and read by the Sega CD player (`boot/movieplay_sp.s`
-streams it, `boot/movieplay_ip.s` displays it). This document describes the
-on-disc byte layout exactly.
+`HEADER.DAT` and `BODY.DAT` are the two on-disc files of the **Tile Texture
+Reuse Codec**. They are written by `tools/pack_stream.py` from the `tools/sim.py`
+decision log and read by the Sega CD player (`boot/movieplay_sp.s` streams them,
+`boot/movieplay_ip.s` displays them). This document describes their byte layout
+exactly.
+
+The packer also writes `MOVIE.DAT = HEADER.DAT || BODY.DAT` as an off-disc
+compatibility container for analysis and regression tools. `make disc` places
+only `HEADER.DAT` and `BODY.DAT` on the disc.
 
 All multi-byte integers are **big-endian**. Every region is sector-aligned. The
-Sub CPU first reads the boot prefix through PREBUFFER, stops while frame 0 is
-expanded, then issues one continuous `ROM_READN` for the timed FRAMES region.
+Sub CPU reads all of `HEADER.DAT`, prepares frame 0 with no timed read active,
+then issues one continuous `ROM_READN` for `BODY.DAT`.
 
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 5               (bump when the header or a block layout changes)
-FRAME_SECTORS  = 5               (routing-byte maximum; v4 frames are variable)
+VERSION        = 6               (bump when the header or a block layout changes)
+FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = header field    (887 B at 15 fps; 443 B at 30 fps)
 BASE           = 1               (POOL_TILE_BASE: VRAM tile index = BASE + slot)
@@ -30,10 +34,15 @@ nominal-fps fields.
 into one sector each and written to wave RAM before playback starts. The normal
 control blocks stay self-contained; the player simply skips their duplicate
 writes for the preloaded frame count.
+**v6** split the boot prefix and timed stream into `HEADER.DAT` and `BODY.DAT`,
+put frame 0 entirely in `HEADER.DAT`, and changed each timed frame from
+payload-first to control-first. The `[n_pay_sec, n_ctrl_sec]` routing-byte order
+did not change.
 
 ## File layout
 
 ```
+HEADER.DAT
 +--------------------------------------------------+  sector 0
 | HEADER (1 sector, zero-padded)                   |
 +--------------------------------------------------+  sector 1
@@ -47,17 +56,24 @@ writes for the preloaded frame count.
 +--------------------------------------------------+
 | PREBUFFER (prebuf_sec sectors)                   |  frame-1 ring prefill (Bpat patterns)
 +--------------------------------------------------+
-| FRAME 1  (rate-matched variable sectors)         |
+                                                     end of HEADER.DAT
+
+BODY.DAT
++--------------------------------------------------+  sector 0
+| FRAME 1  (control, future payload, rate pad)     |
 | ...                                              |
 | FRAME nfr-1                                      |
 +--------------------------------------------------+
 ```
 
-The player drains the boot prefix, writing STARTUP_AUDIO to wave RAM while PCM
-is stopped, then stops the CDC and expands frame 0 with no active timed read.
-It starts FRAMES at its exact sector boundary and keeps that read continuous
-until the movie ends. Frame 0 therefore has no time budget and never competes
-with frame 1 delivery; the ring starts frame 1 pre-filled to `RING_CAP`.
+The player drains all of `HEADER.DAT`, writing STARTUP_AUDIO to wave RAM while
+PCM is stopped. After the header request has ended, it expands and prepares
+frame 0, starts `BODY.DAT` at its own first sector, and fully pre-drains frame 1.
+Only then does it release frame 0 to the Main CPU for display. PCM stays stopped
+until the Main CPU confirms that display; timed playback then begins while the
+`BODY.DAT` read remains continuous until the movie ends. Frame 0 therefore has
+no time budget and never competes with frame 1 delivery, while the ring starts
+frame 1 pre-filled to `RING_CAP`.
 
 ## Header (1 sector = 2048 bytes)
 
@@ -66,7 +82,7 @@ First 22 bytes: `struct ">4sHHHHHHHHH"`.
 | Off | Size | Field          | Meaning |
 |-----|------|----------------|---------|
 | 0   | 4    | magic          | `"TTRC"` |
-| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload) |
+| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body) |
 | 6   | 2    | frames         | total frame count (`nfr`) |
 | 8   | 2    | tcols          | tile grid columns |
 | 10  | 2    | trows          | tile grid rows |
@@ -91,8 +107,10 @@ Then:
   future player path. If absent or zero in old streams, the player treats it as
   H32.
 - byte 39: zero (pad);
-- offset 40: `u32 f0_ctrl_sec` — sectors of frame 0's control block (v2+);
-- offset 44: `u32 f0_pat_sec` — sectors of frame 0's cold patterns (v2+);
+- offset 40: `u32 f0_ctrl_sec` — sectors of frame 0's control block in
+  `HEADER.DAT` (v2+);
+- offset 44: `u32 f0_pat_sec` — sectors of frame 0's cold patterns in
+  `HEADER.DAT` (v2+);
 - offset 48: `u32 paltab_sec` — sectors of the PALTAB region (v3; 0 = none);
 - offset 52: `u16 vsync_n` (v4) — display VBlanks per frame `N = round(59.94/fps)`
   (15fps→4, 30fps→2). `0` in v2/v3 streams (player defaults to 4 = 15fps);
@@ -101,9 +119,10 @@ Then:
 - offset 56: `u16 fps_int` (v4) — nominal fps (15/30) used by both packer and
   player to compute the rate-matched per-frame sector count (see Routing/Frame).
   `0` in v2/v3 (player defaults to 15);
-- offset 58: `u16 audio_preload_frames` (v5) — number of leading control audio
+- offset 58: `u16 audio_preload_frames` (v5+) — number of leading control audio
   chunks already written during boot, including frame 0;
-- offset 60: `u16 audio_preload_sec` (v5) — sectors in STARTUP_AUDIO. v5 uses
+- offset 60: `u16 audio_preload_sec` (v5+) — sectors in STARTUP_AUDIO. v5+
+  uses
   one chunk per sector, so this equals `audio_preload_frames`;
 - bytes 62..63 are zero;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
@@ -120,9 +139,20 @@ A 128-byte CRAM block is 4 palette lines x 16 words; each word is
 `0000BBB0GGG0RRR0` (Genesis colour). Only 15 of the 16 entries per line are
 usable colour (entry 0 = transparent).
 
+Every v6 encoder palette is stored in a canonical, picture-preserving order.
+Among the 60 usable entries, the globally brightest existing RGB333 colour
+(largest `R + G + B`) is moved to palette line 0, index 15. The encoder first
+swaps its complete source palette line with line 0, then swaps its colour slot
+with index 15. Every tile palette attribute and 1..15 pixel index receives the
+same two permutations, so rendered RGB333 pixels and the complete 60-colour
+multiset are byte-identical before and after. Index 0 in all four lines stays
+zero and is never remapped. This is a representation invariant, not another
+stream-layout version.
+
 ## PALTAB (v3)
 
-`paltab_sec` sectors right after the header: all `n_seg` segment palettes,
+`paltab_sec` sectors right after the first sector of `HEADER.DAT`: all `n_seg`
+segment palettes,
 128 bytes each, back to back (16 per sector), zero-padded to a sector boundary.
 At boot the Sub CPU stages this region into Word-RAM (same bank as frame 0) and
 the Main CPU copies it **once** into a Main-RAM table (8 KB, capacity
@@ -130,10 +160,15 @@ the Main CPU copies it **once** into a Main-RAM table (8 KB, capacity
 player at build time). Every later palette switch just indexes this table via
 the control block's `pal` byte, so palettes are independent of stream delivery
 timing: a CD slip or re-seek can never corrupt the colours of a segment.
+The PALTAB already contains the canonical line/slot order described above; the
+packer rejects a stale decision log whose P0/index15 is not tied for the global
+maximum. This fixed entry lets a DEBUG player upload its font once using
+P0/index15. Palette switches require no colour search, glyph rewrite, font DMA,
+or extra VBlank wait.
 
 ## STARTUP_AUDIO (v5)
 
-Each sector begins with one normal `audio_bytes` PCM chunk and is zero-padded
+Each `HEADER.DAT` sector begins with one normal `audio_bytes` PCM chunk and is zero-padded
 to 2048 bytes. The chunks duplicate the leading control-block audio; they do
 not replace it on disc. During boot the Sub CPU drains one sector, appends its
 chunk to wave RAM at `SYNC_LEAD`, and repeats while PCM is stopped. PCM starts
@@ -146,15 +181,27 @@ ring's startup margin.
 
 ## Routing table
 
-`routing_sec` sectors of **2 bytes per frame**: `[n_pay_sec, n_ctrl_sec]` (one
-byte each). For frame `i` these say how many of its sectors are payload
-(cold tile patterns) and how many are control. The Sub CPU uses this to route
-the continuous read into the PRG-RAM ring (payload) and the apply buffer
-(control), staging each sector through Word RAM. `n_pay_sec + n_ctrl_sec <= 5`;
-any sectors beyond that up to the frame's total (`fsec`, below) are padding the
-player reads and discards. The table covers all `nfr` frames including frame 0, but
-in version 2 frame 0's entry is `(0, 0)` (it is delivered by the FRAME0 block,
-not the FRAMES region).
+`routing_sec` sectors in `HEADER.DAT`, holding **2 bytes per frame**:
+`[n_pay_sec, n_ctrl_sec]` (one byte each). The byte order remains payload count
+then control count for format compatibility, but v6 stores and reads the
+`n_ctrl_sec` control sectors first in each `BODY.DAT` frame slot. The following
+`n_pay_sec` sectors refill the PRG-RAM payload ring, and any sectors through the
+frame's total `fsec` are padding. `n_pay_sec + n_ctrl_sec <= 5`.
+
+The control and payload data are each continuous byte streams split at sector
+boundaries. A frame slot's sectors therefore do not necessarily belong only to
+that numbered frame: one control sector can finish several future control
+blocks, and payload is normally a forward prefetch for later frames. The packer
+guarantees both of these before writing v6:
+
+- after frame `i`'s complete control-sector prefix has arrived, control block
+  `i` is present in the apply ring; `n_ctrl_sec = 0` is valid when an earlier
+  sector already carried that block;
+- before frame `i`'s control prefix is read, PREBUFFER plus payload sectors from
+  earlier frame slots already contain every cold pattern frame `i` consumes.
+
+The table covers all `nfr` frames. Frame 0's entry is `(0, 0)` because its
+control and patterns live entirely in `HEADER.DAT`, not in `BODY.DAT`.
 
 **Rate-matched frame size (v4).** A frame's total on-disc sectors is
 `fsec = max(n_pay_sec + n_ctrl_sec, ratedelta - lead)`. `ratedelta` is the number
@@ -171,23 +218,30 @@ the constant 5 and reproduces the old fixed-slot behaviour exactly.
 
 ## Prebuffer
 
-`prebuf_sec` sectors holding the first `Bpat` cold patterns (32 bytes each) of
-frames 1 onward (frame 0's patterns are in the FRAME0 block), loaded into the
-ring before playback. `Bpat` is sized to fill the usable ring (`RING_CAP`), so
-frame 1 starts with a full ring.
+The final `prebuf_sec` sectors of `HEADER.DAT` hold the first `Bpat` cold
+patterns (32 bytes each) of frames 1 onward. Frame 0's patterns are in the
+earlier FRAME 0 region. The prebuffer is loaded into the ring before playback
+and is sized to fill the usable ring (`RING_CAP`), so frame 1 starts fully
+armed.
 
 ## Frame (`fsec` sectors, rate-matched; frames 1..nfr-1)
 
 ```
-[ n_pay_sec sectors : payload  ]  cold tile patterns, 32 bytes each, back to back
-[ n_ctrl_sec sectors : control ]  one control block (below)
-[ pad to 5 sectors ]
+[ n_ctrl_sec sectors : control ]  next bytes of the continuous control stream
+[ n_pay_sec sectors : payload  ]  next bytes of the future cold-pattern stream
+[ pad to fsec sectors ]
 ```
 
-**Payload** is a run of 32-byte tile patterns (the *cold* = newly loaded tiles
-for this frame), consumed in order and DMA'd into ring slots. A pattern is
-`pack_key`-encoded: 8 rows x 4 bytes, each byte = two 4bpp pixels
-`(hi<<4)|lo`.
+**Control** comes first so the Sub CPU can begin the current frame as soon as
+its complete control prefix has arrived, without waiting for the future payload
+refill in the same slot. Readiness is based on all `n_ctrl_sec` sectors, not
+merely the first control sector.
+
+**Payload** is a run of 32-byte tile patterns (the *cold* = newly loaded tiles),
+consumed in order and DMA'd into ring slots. These sectors replenish later
+frames; patterns for the current frame were armed by PREBUFFER or earlier body
+slots. A pattern is `pack_key`-encoded: 8 rows x 4 bytes, each byte = two 4bpp
+pixels `(hi<<4)|lo`.
 
 **Control block** (a variable-length block, byte layout):
 
@@ -201,7 +255,7 @@ for this frame), consumed in order and DMA'd into ring slots. A pattern is
 | 22   | debug       | **present only if `dbg==1`**: fixed-length debug block (below) |
 | ceil(cells/8) | bitmap | one bit per cell; 1 = this cell is updated this frame |
 | n_upd x 2 | entries | one big-endian word per update, in cell order (see below) |
-| 887  | audio       | RF5C164 sign-magnitude PCM for this frame |
+| audio_bytes | audio | RF5C164 sign-magnitude PCM for this frame (header field; normally 887 B at 15 fps or 443 B at 30 fps) |
 | 0/1  | pad         | one zero byte if needed to make `total_len` even |
 
 **Debug block** (a fixed 22 bytes, present only when `dbg==1`). It sits at a
@@ -229,9 +283,9 @@ emitted is an encoder setting (`tools/pack_stream.py`: off by default, on with
 **Update entry** (2 bytes each), one per set bit in the bitmap, in ascending
 cell order:
 
-- bit 15 (`0x8000`) = **cold**: this cell loads a fresh pattern from this
-  frame's payload (into a ring slot). If clear, the cell only re-points its
-  name-table entry to a pattern already resident.
+- bit 15 (`0x8000`) = **cold**: this cell loads a fresh pattern from the
+  already-prefetched payload stream into a ring slot. If clear, the cell only
+  re-points its name-table entry to a pattern already resident.
 - bits 13..14 = the palette line (0..3).
 - bits 0..10 = the VDP tile index = `base + slot` (the player recovers the ring
   slot as `(entry & 0x07FF) - base`). Bits 11..12 are zero.
@@ -240,10 +294,10 @@ The entry's low 15 bits are written to the VDP name table as-is (priority and
 flip bits are unused). This is the core *tile texture reuse*: most cells cost
 just this 2-byte entry.
 
-**Audio**: 887 bytes/frame of RF5C164 sign-magnitude 8-bit PCM (positive =
-`0..0x7F`, negative = `0x80 | magnitude`, magnitude clamped to `0x7E` so the
-byte `0xFF` — the RF5C164 loop-stop marker — never appears), fed to the PCM
-chip in sync.
+**Audio**: `audio_bytes` per frame of RF5C164 sign-magnitude 8-bit PCM (positive
+= `0..0x7F`, negative = `0x80 | magnitude`, magnitude clamped to `0x7E` so the
+byte `0xFF` — the RF5C164 loop-stop marker — never appears), fed to the PCM chip
+in sync.
 
 ## How the player advances (and the extension points)
 
@@ -254,8 +308,8 @@ It parses by length, not by scanning to a fixed end, so `total_len` must stay
 even (odd desyncs by 1 byte per frame).
 
 **Slip detection and recovery.** Right after copying a block the player checks
-`frame_seq` against the frame it expects. A mismatch means the continuous CD read
-dropped a sector (the ring and control streams shifted). The player detects this
+`frame_seq` against the frame it expects. A mismatch means the continuous
+`BODY.DAT` read dropped a sector (the ring and control streams shifted). The player detects this
 at the source: `drain1` reads each sector's MSF header and, when it sees a gap
 (non-consecutive MSF), re-seeks (`CDC_STOP`+`ROM_READN`) to the lost sector and
 re-reads it — recovering the exact data with no quality loss. Slips are rare, so

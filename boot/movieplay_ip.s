@@ -20,6 +20,7 @@
 
 .equ VDP_DATA, 0x00C00000
 .equ VDP_CTRL, 0x00C00004
+.equ VDP_HV,   0x00C00008
 
 .equ GA_COMCMD0, 0x00A12010
 .equ GA_COMCMD1, 0x00A12012
@@ -33,6 +34,7 @@
 .equ STAT_END,   0x8004			/* SPからの映画終端通知(15秒待って再ループ) */
 
 .equ NT0, 0xC000
+.equ WIN_NT, 0xD000			/* DEBUG Window NT: H40 4KB / H32 2KB alignment both satisfied */
 .equ NT1, 0xE000
 
 /* VDP DMAの源は必ずMain-RAM。1フレームのタイルをここへステージしてからDMA。 */
@@ -43,8 +45,6 @@
 /* フォントVRAM位置はヘッダの base+pool 直上を実行時に計算(md_font_vtile/md_font_addr) */
 /* リリースビルドが既定。make movieplay DEBUG=1 でオーバーレイ一式を有効化
    (ストリーム側は CBRSIM_PACK_DEBUG=1 でデバッグ欄ありを生成) */
-.equ DBG_COL, 20			/* 右下オーバーレイの左端セル列 */
-.equ DBG_STAGE, 0x00FFA000		/* フォント色替えのステージ(Main-RAM) */
 /* CRAM pre-load: 全区間パレット表。boot時にWord-RAM(PALTAB_OFF, frame0バンク)から一度だけ
    コピーし、以降の区間切替はO_PALWの区間番号+1でこの表を引く(ストリーム到着に依存しない)。
    容量はav_config.PALTAB_MAX_SEGと一致必須(check_player_ring.pyがビルド時検証)。 */
@@ -69,7 +69,7 @@ ip_entry:
 	lea	STACK, sp
 
 	jsr	BIOS_LOAD_DEFAULT_VDP_REGS
-	jsr	BIOS_CLEAR_VRAM
+	jsr	BIOS_CLEAR_VRAM			/* WIN_NT D000-DFFFもここで一度だけzero初期化 */
 	jsr	BIOS_CLEAR_COMM
 
 	/* VDP: H32, autoinc=2, plane 64x32, VSRAM=0, HScroll/Sprite を安全域へ */
@@ -96,7 +96,6 @@ ip_entry:
 	move.w	#0x8174, (VDP_CTRL).l		/* reg1: 表示on+vint+DMA許可(M1)+mode5 */
 
 	clr.w	dbg_seg
-	clr.w	dbg_palattr
 
 	clr.w	back_idx			/* 裏=NT0(0) から構築, 表示=NT1 */
 
@@ -133,14 +132,21 @@ ip_entry:
 	move.w	#0x8C00, (VDP_CTRL).l		/* reg12 H32 */
 	move.w	#32, d2				/* screen_cols */
 	move.w	#VB_WORDS_H32, d3
-	move.w	#HUD_PITCH_H32, md_hud_pitch
 	cmpi.w	#1, md_mode
 	bne	1f					/* mode 0=H32; mode 2 is reserved */
 	move.w	#0x8C81, (VDP_CTRL).l		/* reg12 H40 */
 	move.w	#40, d2
 	move.w	#VB_WORDS_H40, d3
-	move.w	#HUD_PITCH_H40, md_hud_pitch
 1:
+	/* DEBUG HUDはPlane Aと独立したWindow name tableを使う。reg3=0x34は
+	   D000/0x400。D000はH40の4KB境界とH32の2KB境界の両方を満す。
+	   reg17=left,pos0で横Windowを空にし、reg18=top,pos1で上1タイル行だけ
+	   Windowにする。NT0/NT1のreg2 flipはWIN_NTに影響しない。 */
+.ifdef DEBUG
+	move.w	#0x8334, (VDP_CTRL).l		/* reg3: Window NT = 0xD000 */
+	move.w	#0x9100, (VDP_CTRL).l		/* reg17: left of column-pair 0 = no side strip */
+	move.w	#0x9201, (VDP_CTRL).l		/* reg18: rows above 1 = top row only */
+.endif
 	move.w	d3, md_vbudget
 	sub.w	md_tcols, d2			/* col0 = (screen_cols-tcols)/2 */
 	lsr.w	#1, d2
@@ -166,16 +172,34 @@ ip_entry:
 	move.w	(a1)+, (a2)+
 	dbra	d1, 1b
 2:
-	lea	palettes, a0			/* pal_write前のHUD色替え用の安全な初期値 */
-	move.l	a0, cur_pal_src
-	/* デバッグフォントをフォントVRAM位置へCPUロード(pal_write時にB案で色替え) */
+	/* デバッグフォントをフォントVRAM位置へ一度だけCPUロード。
+	   dbgfont.binの画素index 1をP0の固定色index 15へビット展開する。 */
 .ifdef DEBUG
 	move.l	md_font_addr, d0
 	bsr	set_vram_write
 	lea	dbgfont, a0
 	move.w	#DBGFONT_N*16-1, d1
 1:
-	move.w	(a0)+, (VDP_DATA).l
+	move.w	(a0)+, d0			/* each nibble is 0 or 1 */
+	move.w	d0, d2
+	lsl.w	#1, d2
+	or.w	d2, d0
+	lsl.w	#1, d2
+	or.w	d2, d0
+	lsl.w	#1, d2
+	or.w	d2, d0			/* 1 -> 0xF independently in every nibble */
+	move.w	d0, (VDP_DATA).l
+	dbra	d1, 1b
+	/* Initialize the maximum-width Window row once with the reserved blank glyph.
+	   H40 uses all 64 entries; H32 displays the first 32.  Per-frame code then
+	   overwrites only the 22 live HUD entries and never clears the row again. */
+	move.l	#WIN_NT, d0
+	bsr	set_vram_write
+	move.w	md_font_vtile, d0
+	add.w	#24, d0				/* dbgfont glyph 24 = blank */
+	move.w	#64-1, d1
+1:
+	move.w	d0, (VDP_DATA).l
 	dbra	d1, 1b
 .endif
 
@@ -359,12 +383,10 @@ bf_chunk:
 	bne	bf_run_lp
 bf_flip:
 .ifdef DEBUG
-	bsr	render_dbg			/* 上黒帯にデバッグ指標を描画(裏バッファ, flip直前) */
+	bsr	render_dbg			/* fixed Window最上段を更新(reg2 flipと独立) */
 .endif
 	/* パレット区間切替: CRAM総入替(64語≈0.1ms)→flip を新しいvblank頭で連続実行=
-	   同一VBLANK内で原子的。フォント色替え(CPU再着色~1.7ms+DMA)はvblankを
-	   食い潰してflipをactiveへ押し出す(=新パレット×旧フレームが上部に露出する
-	   再発バグ)ため、**flip後**に回し、そのDMAは次vblankで行う。
+	   同一VBLANK内で原子的。DEBUGフォントはP0/index15固定なので切替時作業はない。
 	   v3: pal = 区間番号+1。CRAM本体はboot時に積んだMain-RAMのPALTAB表から引く
 	   (ストリーム到着タイミング非依存=スリップ回復でも色が壊れない)。 */
 	move.w	(PROBE_BANK).l, d0		/* pal(=区間番号+1) @ +0 */
@@ -376,7 +398,6 @@ bf_flip:
 	lsl.w	#7, d0				/* *128B */
 	lea	PALTAB_RAM, a0
 	adda.w	d0, a0				/* src = 表[区間] (最大63*128=8064<32767でadda.w可) */
-	move.l	a0, cur_pal_src			/* HUD色替え(dbg_setbright)も同じ源を読む */
 	bsr	wait_vb_start			/* 頭から使える新しいvblank(CRAM+flipが確実に収まる) */
 	move.l	#0xC0000000, (VDP_CTRL).l	/* CRAM addr 0 */
 	move.w	#64-1, d1
@@ -384,9 +405,6 @@ bf_flip:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
 	bsr	do_flip				/* CRAM直後・同vblank内にflip */
-.ifdef DEBUG
-	bsr	dbg_setbright			/* フォント色替え(CPU=active可, DMAは内部で次vblank) */
-.endif
 	bra	bf_after_flip
 bf_doflip:
 	bsr	do_flip
@@ -580,149 +598,71 @@ wait_vblank:
 	move.w	(sp)+, d1
 	rts
 
-/* B案: 現区間CRAM(cur_pal_src, 64語=Main-RAMのPALTAB表)でRGB合計最大の色を探し、その
-   palette行を dbg_palattr に、その色index(B)へフォントの画素(index1)を塗り替えて予約VRAMへ
-   DMA。pal_write時に呼ぶ(vblank内)。 */
-dbg_setbright:
-	movem.l	d0-d7/a0-a3, -(sp)
-	movea.l	cur_pal_src, a0
-	moveq	#0, d3				/* best index */
-	moveq	#-1, d4				/* best sum */
-	moveq	#0, d2				/* i */
-dsb_scan:
-	move.w	(a0)+, d0			/* CRAM: 0000 BBB0 GGG0 RRR0 */
-	move.w	d0, d1
-	lsr.w	#1, d1
-	andi.w	#7, d1				/* R */
-	move.w	d0, d5
-	lsr.w	#5, d5
-	andi.w	#7, d5				/* G */
-	add.w	d5, d1
-	move.w	d0, d5
-	lsr.w	#8, d5
-	lsr.w	#1, d5
-	andi.w	#7, d5				/* B */
-	add.w	d5, d1				/* sum */
-	cmp.w	d4, d1
-	ble	1f
-	move.w	d1, d4
-	move.w	d2, d3
-1:
-	addq.w	#1, d2
-	cmp.w	#64, d2
-	blo	dsb_scan
-	move.w	d3, d5				/* palrow = idx/16 */
-	lsr.w	#4, d5
-	lsl.w	#8, d5
-	lsl.w	#5, d5				/* attr = palrow<<13 */
-	move.w	d5, dbg_palattr
-	move.w	d3, d6
-	andi.w	#0xF, d6			/* B = colidx */
-	/* フォント色替え: base(ROM) の nibble==1 を B へ → DBG_STAGE */
-	lea	dbgfont, a0
-	lea	DBG_STAGE, a1
-	move.w	#DBGFONT_N*16-1, d7
-dsb_rc:
-	move.w	(a0)+, d0
-	bsr	dbg_recolor_word
-	move.w	d0, (a1)+
-	dbra	d7, dsb_rc
-	/* DMA DBG_STAGE → フォントVRAM。CPU再着色でvblankを跨いでいるため、
-	   activeへのDMAはみ出しを避けて次のvblank頭で転送する(HUD色が1コマ遅れるだけ) */
-	bsr	wait_vb_start
-	move.w	#DBGFONT_N*16, d6
-	move.w	md_font_addr+2, d3		/* フォントVRAM(下位word, <64KB) */
-	lea	DBG_STAGE, a3
-	bsr	dma_chunk
-	movem.l	(sp)+, d0-d7/a0-a3
-	rts
-
-/* d0=1語(4ニブル)の index1 を d6(B) へ置換して返す。trashes d1,d2,d3 */
-dbg_recolor_word:
-	moveq	#0, d1
-	moveq	#3, d2
-1:
-	rol.w	#4, d0				/* 上位ニブル→下位へ */
-	move.w	d0, d3
-	andi.w	#0xF, d3
-	cmp.w	#1, d3
-	bne	2f
-	move.w	d6, d3
-2:
-	lsl.w	#4, d1
-	or.w	d3, d1
-	dbra	d2, 1b
-	move.w	d1, d0
-	rts
-
-/* 上黒帯(行2)にデバッグ表示。d5=back_base。裏バッファへ書く(flip直前)。
-   表示は F(rame) と P(区間) のみ・左上寄せ・スペース区切りの横並び(ユーザー指定)。
-   行0-1はオーバースキャンで切れうるため行2を使用。下黒帯は将来の
-   「黒帯走査中のDMA早期開始」用に空けておく。 */
-/* --- デバッグHUDレイアウト(左上端・1行) ---
-   H32は32列に収めるため pitch=5 (glyph+4桁、空け無し)、H40はpitch=6
-   (glyph+4桁+空け1)を使う。OCR側(tools/read_frameno.py)は録画幅から選ぶ。 */
-.equ HUD_ROW,   0			/* HUD行(0=最上段) */
-.equ HUD_PITCH_H32, 5
-.equ HUD_PITCH_H40, 6
-
+/* 独立Window planeの最上段1行にデバッグHUDを連続書きする。
+   Layout: FxxxxPxxSxxDxxRxxLxxxx = 22 words in both H32 and H40.
+   F/Lは16-bitの4桁、P/S/D/Rはlow byteの2桁でFF→00を自然wrapさせる。
+   WIN_NTは固定なのでNT0/NT1の裏表flipに影響されない。 */
 render_dbg:
-	movem.l	d0-d4/d6-d7/a0-a1, -(sp)
-	move.w	dbg_palattr, d7
-	move.w	md_hud_pitch, d6
-	add.w	d6, d6				/* pitch in name-table bytes */
-	move.w	#HUD_ROW*128, a1
-	move.w	a1, d2				/* F フレーム番号 */
+	movem.l	d0-d4, -(sp)
+	/* WIN_NT has no back buffer.  VBlank is safe immediately; during active
+	   display, only scanlines 0..7 can race this top-row update.  If currently
+	   there, wait just until V-counter reaches 8 instead of waiting a full frame. */
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	bne	1f
+0:
+	move.w	(VDP_HV).l, d0			/* V-counter is the high byte */
+	cmpi.w	#0x0800, d0
+	blo	0b
+1:
+	move.l	#WIN_NT, d0
+	bsr	set_vram_write			/* one address setup, then exactly 22 sequential writes */
+	/* F: frame number, 4 digits */
 	move.w	#15, d3				/* glyph 'F'(=hex F) */
 	move.w	frame_no, d4
-	bsr	dbg_put_row
-	add.w	d6, a1
-	move.w	a1, d2				/* P パレット区間 */
+	bsr	dbg_put4
+	/* P: palette segment, low byte */
 	move.w	#19, d3				/* glyph 'P' */
 	move.w	dbg_seg, d4
-	bsr	dbg_put_row
-	add.w	d6, a1
-	move.w	a1, d2				/* S 滑り=再シーク回復回数(グリッチマーカー) */
+	bsr	dbg_put2
+	/* S: slip/reseek count, low byte */
 	move.w	#23, d3				/* glyph 'S' */
 	move.w	(PROBE_BANK+0xAF00).l, d4
-	bsr	dbg_put_row
-	add.w	d6, a1
-	move.w	a1, d2				/* D desync検知回数(通常0) */
+	bsr	dbg_put2
+	/* D: desync count, low byte */
 	move.w	#13, d3				/* glyph 'D'(=hex D) */
 	move.w	(PROBE_BANK+0xAF7E).l, d4
-	bsr	dbg_put_row
-	add.w	d6, a1
-	move.w	a1, d2				/* R 音声re-sync回数(計測) */
+	bsr	dbg_put2
+	/* R: audio re-sync count, low byte */
 	move.w	#16, d3				/* glyph 'R' */
 	move.w	(PROBE_BANK+0xAF20).l, d4
-	bsr	dbg_put_row
-	add.w	d6, a1
-	move.w	a1, d2				/* L 現コマの音声リード(計測) */
+	bsr	dbg_put2
+	/* L: current audio lead, 4 digits */
 	move.w	#21, d3				/* glyph 'L' */
 	move.w	(PROBE_BANK+0xAF22).l, d4
-	bsr	dbg_put_row
-	movem.l	(sp)+, d0-d4/d6-d7/a0-a1
+	bsr	dbg_put4
+	movem.l	(sp)+, d0-d4
 	rts
 
-/* 1項目: d2=NT内オフセット(row*128+col*2), d3=ラベルglyph, d4=値(hex4桁), d5=back_base,
-   d7=palattr。trashes d0,d1,d2 */
-dbg_put_row:
-	moveq	#0, d1
-	move.w	d2, d1
-	add.l	d5, d1
-	move.l	d1, d0
-	bsr	set_vram_write			/* d0=dst; trashes d0,d2 */
-	move.w	d3, d1				/* ラベル */
+/* d3=label glyph, d4=value. Append label+4 digits to the current Window write. */
+dbg_put4:
+	moveq	#3, d2
+	bra	dbg_put_digits
+
+/* Append label+low-byte 2 digits. Rotate the low byte into the same high-to-low
+   nibble walk used by dbg_put4; no clamp or counter mutation is needed. */
+dbg_put2:
+	rol.w	#8, d4
+	moveq	#1, d2
+dbg_put_digits:
+	move.w	d3, d1				/* label */
 	add.w	md_font_vtile, d1
-	or.w	d7, d1
 	move.w	d1, (VDP_DATA).l
-	moveq	#3, d2				/* 4 hex桁(上位→下位) */
 1:
 	rol.w	#4, d4
 	move.w	d4, d1
 	andi.w	#0xF, d1
 	add.w	md_font_vtile, d1
-	or.w	d7, d1
 	move.w	d1, (VDP_DATA).l
 	dbra	d2, 1b
 	rts
@@ -739,8 +679,6 @@ dbgfont:
 shadow:
 	.space 1120*2				/* 最大グリッド(H40 40x28)ぶん */
 md_mode:
-	.space 2
-md_hud_pitch:
 	.space 2
 md_vsync_n:
 	.space 2				/* v4: 1コマの表示VBLANK数(15fps=4, 30fps=2) */
@@ -772,9 +710,5 @@ n_runs:
 	.space 2
 dbg_seg:
 	.space 2
-dbg_palattr:
-	.space 2
 md_nseg:
 	.space 2				/* PALTAB区間数(表コピー時にクランプ済み) */
-cur_pal_src:
-	.space 4				/* 現区間パレットのMain-RAM位置(HUD色替えが読む) */
