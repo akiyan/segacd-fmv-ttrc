@@ -70,8 +70,8 @@ STATUS_XY = (40, 982); STATUS_W, STATUS_H = 1227, 84   # メイン枠(下端978)
 # par = 1ドットの横長比。1VBLANK DMA理論値 = bpl × (262 - active) [NTSC 262行]。
 # 表示アスペクト = sw × par / sh。低アクティブ行モードほどVBLANKが増えDMA理論値が上がる。
 MODES = {
-    "H32":   dict(sw=256, sh=224, active=224, bpl=167, par=1.167),  # 4:3,   6346 B/VBLANK
-    "H40":   dict(sw=320, sh=224, active=224, bpl=205, par=0.933),  # 4:3,   7790 B/VBLANK
+    "H32":   dict(sw=256, sh=224, active=224, bpl=167, par=8 / 7),   # 64:49, 6346 B/VBLANK
+    "H40":   dict(sw=320, sh=224, active=224, bpl=205, par=32 / 35), # 64:49, 7790 B/VBLANK
     "mode4": dict(sw=256, sh=192, active=192, bpl=167, par=1.167),  # 14:9, 11690 B/VBLANK
 }
 
@@ -580,8 +580,9 @@ def main():
     d.text((tx, ty), lab_t, fill=COL_TXT, font=f_tf)
     d.text((tx + _w(f_tf, lab_t), ty), fhex, fill=COL_TXT, font=f_tf)
 
-    # メイン映像: 実機同様、画面いっぱいに拡大せず 実機画面(H32 256x224, 表示4:3)へ中央配置。
-    # ダミーのコンテンツ解像度(例 22x18=176x144)を画面に中央配置し、画面をパネル(4:3)へ。
+    # メイン映像: 実機同様、画面いっぱいに拡大せず、HAR込みの実機画面
+    # (H32 256x224 = 64:49表示)へ中央配置する。
+    # ダミーのコンテンツ解像度(例 22x18=176x144)を画面に中央配置する。
     cW, cH = 176, 144
     SW, SH = max(256, cW), max(224, cH)
     bw = MAIN_FRAME[2] - MAIN_FRAME[0] - 2 * PAD; bh = MAIN_FRAME[3] - MAIN_FRAME[1] - 2 * PAD

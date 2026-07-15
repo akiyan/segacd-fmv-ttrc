@@ -42,10 +42,11 @@ _T = {v: np.array([[1.0 if c == "#" else 0.0 for c in r] for r in rows]) for v, 
 _Fg = _T[0xF]
 
 # --- HUDレイアウト(boot/movieplay_ip.s の HUD_* と一致させる) ---
-CELL = 8                 # 1 HUDセル = 8px (native 320x224 キャプチャ)
-HUD_PITCH = 6            # 値ごとのセル間隔(glyph1+hex4+gap1)。ip.s の HUD_PITCH と一致
+CELL = 8                 # 1 HUDセル = 8px
+HUD_PITCH_H32 = 5        # native 256px H32: glyph+4 digits, no gap
+HUD_PITCH_H40 = 6        # native 320px H40: glyph+4 digits+one gap
 HUD_ROW = 0              # HUD行(0=最上段)。ip.s の HUD_ROW と一致
-HUD_FIELDS = ["F", "P", "S", "D", "R", "L"]   # 左から順(col 0,6,12,18,24,30)
+HUD_FIELDS = ["F", "P", "S", "D", "R", "L"]   # H32: col 0,5,10,15,20,25; H40: 0,6,12,18,24,30
 DIGITS = 4               # 各値の16進桁数
 
 
@@ -64,7 +65,7 @@ def _gray(img):
 
 def _calib_origin(gray):
     """先頭 'F' glyph を左上窓で探し、その (x, y) を原点として返す。
-    HUD は左上端(col0,row0)。H32 旧録画(x=8)にも当たるよう窓は少し広めに。"""
+    HUD は左上端(col0,row0)。"""
     best, bx, by = -2.0, 0, HUD_ROW * CELL
     h, w = gray.shape[:2]
     for y in range(0, min(17, h - 7)):
@@ -104,9 +105,10 @@ def read_hud(img):
     先頭Fで原点較正し、以降は HUD_PITCH セル間隔で各値の hex4桁を読む。"""
     gray = _gray(img)
     x0, y, fconf = _calib_origin(gray)
+    pitch = HUD_PITCH_H32 if gray.shape[1] < 300 else HUD_PITCH_H40
     out = {}
     for k, name in enumerate(HUD_FIELDS):
-        gx = x0 + k * HUD_PITCH * CELL           # この値の glyph x
+        gx = x0 + k * pitch * CELL               # この値の glyph x
         val, minsc = _read_hex(gray, gx + CELL, y)   # hex は glyph の1セル後ろ
         out[name] = (val, round(min(fconf, minsc), 3))
     return out

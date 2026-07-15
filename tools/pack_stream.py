@@ -11,8 +11,9 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v3): Header(1sec) + PALTAB(全区間パレット n_seg×128B, boot時Main-RAM表へ)
-              + frame0(control+patterns) + routing(2B/frame: n_pay_sec,n_ctrl_sec)
+TTRCレイアウト(v5): Header(1sec) + PALTAB(全区間パレット n_seg×128B, boot時Main-RAM表へ)
+              + startup audio(1 sector/frame) + frame0(control+patterns)
+              + routing(2B/frame: n_pay_sec,n_ctrl_sec)
               + prebuffer(payload先頭Bpat) + frames(各5sec = [payload][control][pad])
 control block: >H total_len >H frame_seq >H n_upd >B pal >B dbg [DEBUG if dbg]
                ceil(cells/8) bitmap n_upd*(>H entry) 887 audio [pad偶数]
@@ -46,6 +47,19 @@ PAT_PER_SEC = SECTOR // PAT  # 64
 # 1コマの音声バイトは fps由来。15fps=887(13.3kHz/15), 30fps=443(13.3kHz/30)。
 # 旧: 887固定=15fps専用だった(30fpsで2倍消費し disc が CD 1x を8%超過する主因だった)。
 AUDIO = int(round(AUDIO_RATE / FPS))   # AUDIO_RATE, FPS は sim から import
+# PCM開始直後はエミュレータ/実機の立上がり位相で一時的にSubの供給が遅れる。先頭音声を
+# ディスクのboot prefixへ複製し、PCMを開始する前にwave RAMへ並べておく。frame0を含む
+# Requested startup arming depth.  The player now stops the CD while expanding
+# frame 0, then pre-drains frame 1 before enabling PCM.  Only those two control
+# chunks need to be duplicated in the boot prefix; keeping a long (45-frame)
+# skip window starves the live writer while the dense opening frames are being
+# expanded and drives the audio lead into SYNC_MIN (R re-syncs around F=0x2f).
+# Leave the setting overridable for old stream/player combinations.
+STARTUP_AUDIO_FRAMES = max(0, int(os.environ.get("CBRSIM_STARTUP_AUDIO_FRAMES", "2")))
+PCM_SYNC_LEAD = 0x4800
+PCM_SYNC_MAX = 0x6800
+PCM_WAVE_RING_END = 0x8000
+PCM_STARTUP_MARGIN = 0x0200
 # リング諸元は tools/av_config.py の単一真実源から取る(sim/pack/playerで二重管理しない)。
 # RING_SIZE はプレイヤの実 .equ RING_SIZE と一致(ビルド時 check_player_ring.py が検証)。
 # RING_CAP(スケジュール上限)と sim の TANK は RING_SIZE から導出され必ず一致する。
@@ -246,6 +260,17 @@ def build_control(log, per, n_upd, pal_w, audio_path):
     return blocks
 
 
+def control_audio(block):
+    """Return the fixed-size PCM chunk embedded in one control block."""
+    n_upd = struct.unpack_from(">H", block, 4)[0]
+    dbg = block[7]
+    pos = 8 + (DBG_LEN if dbg else 0) + ((C_CELLS + 7) // 8) + n_upd * 2
+    chunk = block[pos:pos + AUDIO]
+    if len(chunk) != AUDIO:
+        raise ValueError(f"control audio truncated: got {len(chunk)}, expected {AUDIO}")
+    return chunk
+
+
 def schedule(per, n_load, blocks):
     """control JIT(前向き)で nc[i] を決め、payload は cap=(5-nc)*64 でセクタ単位の後ろ向き最小占有。"""
     nfr = len(per)
@@ -404,8 +429,8 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
 
 def write_stream(path, log, per, blocks, Plist, sc, POOL):
     """TTRC MOVIE.DAT を書き出す。
-    F0_HEADER(既定)レイアウト(VERSION 3):
-      Header(1sec) | PALTAB(paltab_sec) | FRAME0(control+patterns)
+    F0_HEADER(既定)レイアウト(VERSION 5):
+      Header(1sec) | PALTAB(paltab_sec) | STARTUP_AUDIO | FRAME0(control+patterns)
                    | ROUTING(0..N-1,[0]=0,0) | PREBUF1(frame1用RING_CAP) | FRAMES(1..N-1)
     frame0 はストリーミングのリングを経由せず boot 中に VRAM 直ロードするので、リングは
     常に RING_CAP 以下=back-pressure非接触。frame1以降が満タンリングで始まる。
@@ -441,18 +466,38 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     prebuf_bytes = stream_pay[:Bpat * PAT]           # frame1用プリバッファ(RING_CAP)
     prebuf_sec = -(-len(prebuf_bytes) // SECTOR)
     ring_peak = int(sc["ring_peak"])
-    _mode = {"H32": 0, "H40": 1, "mode4": 2}.get(
-        os.environ.get("CBRSIM_MODE", "").strip(), 1 if TCOLS == 40 else 0)
+    # The sim decision log is the source of truth.  Falling back to the
+    # environment keeps old logs readable, but never let a case mismatch or a
+    # changed shell environment silently turn an H32 stream into H40.
+    mode_name = str(log.get("mode") or os.environ.get("CBRSIM_MODE", "")).strip().upper()
+    if not mode_name:
+        mode_name = "H40" if TCOLS == 40 else "H32"
+    if mode_name not in {"H32", "H40", "MODE4"}:
+        raise SystemExit(f"pack: unsupported display mode in decision log: {mode_name!r}")
+    _mode = {"H32": 0, "H40": 1, "MODE4": 2}[mode_name]
     # PALTAB: 全区間パレットをヘッダ直後に一括配置(セクタ整列)。boot時にMain-RAM表へ。
     paltab = b"".join(pals_to_bytes_128(p) for p in log["seg_pals"])
     paltab_sec = -(-len(paltab) // SECTOR)
+    # v5 startup audio: one PCM chunk per sector. Sector-per-frame is deliberate:
+    # the Sub CPU can drain one sector and write one complete chunk immediately,
+    # without a cross-sector staging buffer. The data is a duplicate; controls stay
+    # self-contained and older analysis/verification paths remain unchanged.
+    safe_audio_preload = max(0, min(
+        (PCM_SYNC_MAX - PCM_SYNC_LEAD) // max(1, AUDIO),
+        (PCM_WAVE_RING_END - PCM_SYNC_LEAD - PCM_STARTUP_MARGIN) // max(1, AUDIO)))
+    audio_preload_frames = min(nfr, STARTUP_AUDIO_FRAMES, safe_audio_preload) if f0_header else 0
+    audio_preload = b"".join(
+        control_audio(blocks[i]).ljust(SECTOR, b"\0")
+        for i in range(audio_preload_frames)
+    )
+    audio_preload_sec = audio_preload_frames
     # v4: 可変フレーム(5セクタ固定paddingを廃止=各frameは n_pay+n_ctrl セクタ)＋ vsync/コマ N。
     # これで fps がセクタ境界から解放され、表示は N vsync/コマでペーシング(N4=14.985, N2=29.97)。
     # AUDIO も fps由来。FRAME_SECTORS(=5)は最大スロット(routingバイトの上限)としてのみ残す。
     NTSC_VSYNC = 59.94
     vsync_n = int(round(NTSC_VSYNC / FPS))            # N: 1コマの表示VBLANK数(30fps→2, 15fps→4)
     fps_int = int(round(FPS))                         # 名目fps(15/30)。レートマッチpadding用(下記)
-    _ver = 4 if f0_header else VERSION
+    _ver = 5 if f0_header else VERSION
     header = struct.pack(">4sHHHHHHHHH", MAGIC, _ver, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
@@ -462,6 +507,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     header += struct.pack(">L", paltab_sec)          # offset 48: PALTABセクタ数(v3)
     header += struct.pack(">HH", vsync_n, AUDIO)     # offset 52: N(vsync/コマ), 54: AUDIO(1コマ音声B) (v4)
     header += struct.pack(">H", fps_int)             # offset 56: 名目fps(レートマッチpadding用) (v4)
+    header += struct.pack(">HH", audio_preload_frames, audio_preload_sec)  # offset 58,60 (v5)
     header += b"\0" * (64 - len(header)) + seg0
     header += b"\0" * (SECTOR - len(header))
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
@@ -470,6 +516,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     with Path(path).open("wb") as f:
         f.write(header)
         f.write(paltab.ljust(paltab_sec * SECTOR, b"\0"))  # PALTAB(v3)
+        f.write(audio_preload)                         # STARTUP_AUDIO(v5), 1 chunk/sector
         if f0_header:
             f.write(frame0_blk)                       # FRAME0(control+patterns)
         f.write(bytes(routing).ljust(routing_sec * SECTOR, b"\0"))
@@ -506,9 +553,10 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
             fr = fr.ljust(fsec * SECTOR, b"\0")       # レートマッチpad(超過ぶんは捨てセクタ)
             f.write(fr)
     frames_stream_sec = int(sum(fsec_list))
-    total = (1 + paltab_sec + f0_ctrl_sec + f0_pat_sec + routing_sec + prebuf_sec
+    total = (1 + paltab_sec + audio_preload_sec + f0_ctrl_sec + f0_pat_sec + routing_sec + prebuf_sec
              + frames_stream_sec)
-    print(f"wrote {path}  {total}sec (paltab {paltab_sec} frame0 {f0_ctrl_sec}+{f0_pat_sec} "
+    print(f"wrote {path}  {total}sec (mode {mode_name} paltab {paltab_sec} startup_audio {audio_preload_frames}f/"
+          f"{audio_preload_sec}s frame0 {f0_ctrl_sec}+{f0_pat_sec} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
           f"ring_peak {ring_peak*PAT/1024:.0f}KB  v4 N={vsync_n}(={NTSC_VSYNC/vsync_n:.3f}fps) AUDIO={AUDIO}")
     print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS}(最大スロット) PALTAB_SEC={paltab_sec} "

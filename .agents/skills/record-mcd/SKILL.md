@@ -41,8 +41,12 @@ OUTDIR=/home/akiyan/segacd-novel/videos
 
 ```sh
 tools/record_movie.sh [--disc CUE] [--out MP4] [--seconds N] [--trim SEC|--auto-audio-trim] \
-                      [--tag NAME] [--display :N] [--no-build]
+                      [--tag NAME] [--display :N] [--preset NAME] \
+                      [--record-size WxH] [--no-build]
 ```
+
+Before recording, run the shared-machine exclusion check from `AGENTS.md` and
+wait if a sim/render or another emulator is active. Never run two captures.
 
 Defaults and conventions:
 
@@ -50,9 +54,19 @@ Defaults and conventions:
 - Older scripts may default to `out/SCFMV_MCD.cue`; override the disc when
   recording the current player.
 - Use a realtime preset for synchronized A/V.
-- **When pixel-exact dither matters, record LOSSLESS**: `--preset ffv1-flac`
-  (writes an FFV1 mkv at `tmp/<tag>.mkv`) and analyze that mkv, not the
-  transcoded h264 mp4 — a lossy recording blurs the dither.
+- `tools/run_headless.sh` applies the SDL audio clock to **every** recording,
+  including `ffv1-flac`, and rejects a duration outside 0.60x--1.50x of the
+  requested wall-clock run. Do not bypass this guard with a direct RetroArch
+  command.
+- **The capture is RetroArch's own lossless recording; Xvfb only provides the
+  headless X display and does NOT record.** RetroArch's built-in FFmpeg recorder
+  writes the raw mkv at `tmp/<tag>.mkv`:
+  - Default (`--preset realtime` → `flac-fast`): x264 **CRF 0** video + **FLAC**
+    audio = lossless. This is the stable default used for verification/audio
+    recordings this project relies on.
+  - `--preset ffv1-flac`: FFV1 video + FLAC = fully lossless including chroma.
+    Use this **when pixel-exact dither matters** and analyze that mkv, not the
+    transcoded h264 mp4 — a 4:2:0 transcode blurs the dither.
 - Output goes under `videos/` (git-ignored), not `tmp/`. When the recording
   corresponds to a sim encode, name it `videos/<stem>_emu.mp4` (same
   `<stem> = <input-basename>_<mode>_<resolution>_<audio>` as the sim run; see
@@ -81,6 +95,38 @@ tools/record_movie.sh --disc out/MOVIEPLAY.cue --no-build --seconds 30 \
 tools/record_movie.sh --disc out/MOVIEPLAY.cue --seconds 180 \
   --out videos/<stem>_emu.mp4
 ```
+
+For a lossless H32 debug/HUD verification, use this exact low-freedom path:
+
+```sh
+ps -eo pid,etimes,args | grep -v grep \
+  | grep -iE "sim\.py|render_analysis\.py|retroarch|Xvfb|record_movie|run_headless"
+make disc DEBUG=1
+OUTDIR="$PWD/videos" tools/run_headless.sh out/MOVIEPLAY.cue \
+  --tag <stem>_debug --record --record-preset ffv1-flac \
+  --record-size 256x224 --audio-min-rms 1 \
+  --shots 68 --interval 2 --display :NNN
+```
+
+Do not omit audio synchronization options when composing a lower-level command.
+The script now supplies them automatically, but the post-run timing check remains
+mandatory evidence. For H32, keep the raw core surface at native 256x224. The
+player uses a compact 5-cell HUD pitch so F/P/S/D/R/L all fit in the 32-column
+plane. H40 remains native 320x224 with the 6-cell HUD pitch.
+
+After every verification capture, require all of the following before trusting it:
+
+- `ffprobe`: expected codec, 256x224 for H32 or 320x224 for H40, 60000/1001 fps, audio present.
+- `record timing:` is near the requested wall-clock duration; never accept a
+  multi-times-faster capture.
+- RetroArch log ends with normal core unload and `Average monitor Hz` near 60,
+  not about 300, and does not stop at `SET_GEOMETRY`.
+- Audio JSON exists with nonzero RMS and zero clip/jump candidates.
+- Extract a movie frame and confirm the DEBUG HUD is visible before starting a
+  long OCR scan. If it is absent, rebuild with `make disc DEBUG=1`; do not reuse
+  a stale release Main-IP object.
+- Read HUD fields from full-width frames and require the counters requested by
+  the task (normally `S=0`, `D=0`, and `R=0`) for the complete loop.
 
 ## Artifacts for `--tag rec_check`
 
@@ -162,6 +208,11 @@ are no audible clicks after a human has listened to the final MP4.
 - Recording is realtime synchronized. If `--seconds` is too short, the movie is
   cut off.
 - Outputs and intermediates belong under `tmp/` and `out/`, both gitignored.
+- **The raw lossless mkv can be large.** A full-length full-motion capture runs
+  to GBs (a mostly-static BIOS screen compresses tiny, so short checks are cheap).
+  Delete `tmp/<tag>.mkv` once you have extracted the wav / clip you need. A
+  runaway accumulation of large captures once filled the disk and killed the
+  session — keep captures bounded and clean up the mkv promptly.
 
 ## Failure Triage
 

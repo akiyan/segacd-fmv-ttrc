@@ -18,7 +18,7 @@ ASFLAGS := -m68000 --register-prefix-optional --bitwise-or
 CFLAGS_M68K := -m68000 -ffreestanding -fno-builtin -fomit-frame-pointer -O2 -Wall -Wextra
 LDFLAGS := -nostdlib --oformat binary
 
-.PHONY: all disc setup clean check-tools test1m cdcbench still256 movieplay dmabench streamtest pcmtest adpcmtest upscaletest asictest prgtest
+.PHONY: all disc setup clean check-tools test1m cdcbench still256 movieplay dmabench streamtest pcmtest adpcmtest upscaletest asictest prgtest movieplay-force
 
 all: disc
 
@@ -171,7 +171,12 @@ movieplay: check-tools $(OUT_DIR)/MOVIEPLAY.iso $(OUT_DIR)/MOVIEPLAY.cue
 # 既定はリリースビルド。DEBUG=1 でデバッグオーバーレイを有効化する。
 # ストリーム側のデバッグ欄は CBRSIM_PACK_DEBUG=1 で pack した時だけ載せる。
 DEBUG ?= 0
-$(OUT_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin out/movieplay/palettes.bin $(BOOT_DIR)/dbgfont.bin tools/av_config.py tools/check_player_ring.py | setup
+# DEBUG changes assembler flags without changing a source timestamp. Force this
+# small object to rebuild so `make disc DEBUG=1` can never reuse a release object
+# (or vice versa).
+movieplay-force:
+
+$(OUT_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin out/movieplay/palettes.bin $(BOOT_DIR)/dbgfont.bin tools/av_config.py tools/check_player_ring.py movieplay-force | setup
 	python3 tools/check_player_ring.py
 	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) -I$(BOOT_DIR) $< -o $@
 
@@ -187,6 +192,12 @@ $(OUT_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s tools/av_config.py tools/c
 
 $(OUT_DIR)/movieplay_sp.bin: $(OUT_DIR)/movieplay_sp.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/sp.ld -o $@ $<
+	@bytes=$$(wc -c < $@); \
+		if [ "$$bytes" -gt 4096 ]; then \
+			echo "ERROR: $@ is $$bytes bytes; the Sega CD boot SP area is limited to 4096 bytes" >&2; \
+			rm -f $@; \
+			exit 1; \
+		fi
 
 $(OUT_DIR)/movieplay_boot.bin: $(OUT_DIR)/movieplay_ip.bin $(OUT_DIR)/movieplay_sp.bin $(BOOT_DIR)/movieplay_boot.s
 	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $(BOOT_DIR)/movieplay_boot.s -o $(OUT_DIR)/movieplay_boot.out

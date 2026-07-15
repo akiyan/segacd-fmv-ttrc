@@ -2,12 +2,12 @@
 """OP動画(061.mp4)を対象にした 純CBR差分圧縮 + タイル重複排除のオフライン検証。
 
 方針(2026-07 更新):
-- 前処理でディザ除去: 元動画は低解像度+ディザなので、一度拡大してフルカラー化
-  しノイズ(ディザ斑点)を除去してから変換する。これに引っ張られて量子化が
-  荒れるのを防ぐ。実装は crop→3-4x lanczos→hqdn3d+gblur→256x144 の master。
-- 解像度: SEGA-CD側は H32 の幅 256px。高さ144(=32x18=576セル)。
-  表示アスペクトは 256/144 × H32 PAR(7:6) = 2.074 で、元動画 320:144 × Saturn
-  PAR(14:15) = 2.074 に一致する(=正しい表示比)。
+- 前処理でディザ除去: 元動画は低解像度+ディザなので、`video_geometry.py` が
+  H32/H40のHARに合わせて全画素を保持したpad変換を行い、一度拡大してフルカラー化、
+  hqdn3d+gblur後に出力ラスタへ縮小する。
+- 表示アスペクト: H32はHAR 8:7、H40は32:35。どちらも224ラインでは
+  64:49の可視比になる。`CBRSIM_GEOMETRY_FIT=crop`を明示した場合だけ
+  その比率へcropし、既定では黒帯が最小になるpadで情報を落とさない。
 - パレット: 4本×15色をクリップ全体から学習し固定・共有(per-frameではない)。
 - 分散が非常に低い(=ほぼ単色)タイルだけ平均色へ均して単純化(FLATTEN_STD)。
   ディザ除去済みなので閾値は低めでよい。
@@ -41,17 +41,24 @@ from quantize_md_video import (  # noqa: E402
 )
 from quantize_global4_tiles import tile_blocks, build_palettes, pals_to_bytes, TILE  # noqa: E402
 from cbr_paths import sim_work_dir  # noqa: E402
+from video_geometry import probe_source, parse_ratio, source_filter, raw_filter  # noqa: E402
 
 # 対象動画・寸法・fps は env で差し替え可(既定はサンプル動画)。
 # CBRSIM_OUT を指定しない場合は videos/<stem>/tmp に出力する。
 SRC = os.environ.get("CBRSIM_SRC", "movies/disc1/061.mp4")
-# master(量子化入力)の抽出フィルタ。既定はディザ除去(拡大→平滑→縮小)。末尾は W:H に一致させる。
-DEDITHER_VF = os.environ.get("CBRSIM_MASTER_VF",
-                             "crop=320:144:0:38,scale=1280:576:flags=lanczos,"
-                             "hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=256:144:flags=lanczos")
-RAW_VF = os.environ.get("CBRSIM_RAW_VF", "crop=320:144:0:38")   # 生オリジナル(Sourceパネル用)
-W = int(os.environ.get("CBRSIM_W", "256"))
+MODE = os.environ.get("CBRSIM_MODE", "H32")
+# Keep the historical 144-line codec height, but choose the matching native
+# horizontal raster when the mode changes (H32=256, H40=320).
+W = int(os.environ.get("CBRSIM_W", "320" if MODE.upper() == "H40" else "256"))
 H = int(os.environ.get("CBRSIM_H", "144"))
+GEOMETRY_FIT = os.environ.get("CBRSIM_GEOMETRY_FIT", "pad").lower()
+SOURCE_SAR_OVERRIDE = os.environ.get("CBRSIM_SOURCE_SAR")
+_MASTER_VF_OVERRIDE = os.environ.get("CBRSIM_MASTER_VF")
+_RAW_VF_OVERRIDE = os.environ.get("CBRSIM_RAW_VF")
+# Import-only users need not have the default sample video installed.  Resolve
+# the source geometry at run time in main() when no explicit filter was given.
+DEDITHER_VF = _MASTER_VF_OVERRIDE or ""
+RAW_VF = _RAW_VF_OVERRIDE or ""
 TCOLS, TROWS = W // TILE, H // TILE     # 既定 32 x 18 = 576 cells
 C_CELLS = TCOLS * TROWS
 # CBRSIM_FPS は整数 "15" でも分数 "30000/1001"(=59.94/2=29.97, NTSCソース準拠) でも受ける。
@@ -432,6 +439,20 @@ def precompute_quant(frames, seg_pals, frame_seg):
 
 
 def main():
+    global DEDITHER_VF, RAW_VF
+    if not DEDITHER_VF or not RAW_VF:
+        src_w, src_h, src_sar_num, src_sar_den = probe_source(SRC)
+        if SOURCE_SAR_OVERRIDE:
+            src_sar_num, src_sar_den = parse_ratio(SOURCE_SAR_OVERRIDE)
+        # H32/H40のHARを考慮した既定変換。明示的なVF指定は優先する。
+        DEDITHER_VF = DEDITHER_VF or source_filter(
+            MODE, W, H, src_w, src_h,
+            src_sar_num=src_sar_num, src_sar_den=src_sar_den,
+            fit=GEOMETRY_FIT)
+        RAW_VF = RAW_VF or raw_filter(
+            MODE, W, H, src_w, src_h,
+            src_sar_num=src_sar_num, src_sar_den=src_sar_den,
+            fit=GEOMETRY_FIT)
     # 各処理フェーズの所要時間を計測し、終了時にフレームあたり秒数付きで報告する。
     _t_all = time.perf_counter()
     _phases = []
@@ -1109,6 +1130,7 @@ def main():
         import pickle
         pickle.dump({
             "geom": (int(TCOLS), int(TROWS), int(C_CELLS), int(TILE)),
+            "mode": MODE.upper(),                              # header display mode
             "seg_pals": [np.asarray(p, np.uint8) for p in seg_pals],  # list of (4,15,3)
             "frame_seg": np.asarray(frame_seg, np.int32),
             "frames": dec_frames,                                     # [[(cell,pal,key),...], ...]

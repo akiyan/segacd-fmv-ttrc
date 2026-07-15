@@ -6,24 +6,30 @@ current encoder/player path. It is written by `tools/pack_stream.py` from the
 streams it, `boot/movieplay_ip.s` displays it). This document describes the
 on-disc byte layout exactly.
 
-All multi-byte integers are **big-endian**. The stream is sector-aligned so the
-Sub CPU can issue one continuous `ROM_READN` over the whole movie after the
-header.
+All multi-byte integers are **big-endian**. Every region is sector-aligned. The
+Sub CPU first reads the boot prefix through PREBUFFER, stops while frame 0 is
+expanded, then issues one continuous `ROM_READN` for the timed FRAMES region.
 
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 3               (bump when the header or a block layout changes)
-FRAME_SECTORS  = 5               (each frame occupies exactly 5 sectors)
+VERSION        = 5               (bump when the header or a block layout changes)
+FRAME_SECTORS  = 5               (routing-byte maximum; v4 frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
-AUDIO          = 887             (PCM bytes per frame; 13.3 kHz / 15 fps)
+AUDIO          = header field    (887 B at 15 fps; 443 B at 30 fps)
 BASE           = 1               (POOL_TILE_BASE: VRAM tile index = BASE + slot)
 ```
 
 Version history: **v2** moved frame 0 out of the frame stream into a dedicated
 block right after the header (loaded during boot, bypassing the streaming
 ring). **v3** added the **PALTAB** (all segment palettes pre-loaded at boot
-into a Main-RAM table) and dropped the per-frame in-stream CRAM payload.
+into a Main-RAM table) and dropped the per-frame in-stream CRAM payload. **v4**
+added rate-matched variable frame sectors plus per-stream VBlank, audio-byte and
+nominal-fps fields.
+**v5** added a boot-prefix PCM preload: the first audio chunks are duplicated
+into one sector each and written to wave RAM before playback starts. The normal
+control blocks stay self-contained; the player simply skips their duplicate
+writes for the preloaded frame count.
 
 ## File layout
 
@@ -33,22 +39,25 @@ into a Main-RAM table) and dropped the per-frame in-stream CRAM payload.
 +--------------------------------------------------+  sector 1
 | PALTAB (paltab_sec sectors)                      |  all n_seg palettes, 128 B each
 +--------------------------------------------------+
+| STARTUP_AUDIO (audio_preload_sec sectors)        |  one PCM chunk per sector
++--------------------------------------------------+
 | FRAME 0 (f0_ctrl_sec + f0_pat_sec sectors)       |  control, then patterns
 +--------------------------------------------------+
 | ROUTING (routing_sec sectors)                    |  2 bytes per frame
 +--------------------------------------------------+
 | PREBUFFER (prebuf_sec sectors)                   |  frame-1 ring prefill (Bpat patterns)
 +--------------------------------------------------+
-| FRAME 1  (FRAME_SECTORS = 5 sectors)             |
+| FRAME 1  (rate-matched variable sectors)         |
 | ...                                              |
-| FRAME nfr-1 (5 sectors)                          |
+| FRAME nfr-1                                      |
 +--------------------------------------------------+
 ```
 
-The whole thing is one contiguous CD read; the player never re-seeks mid-movie.
-Frame 0 lives in the header region (not the 5-sector stream): it is a full-screen
-load, so it is expanded during boot with no time budget and without touching the
-streaming ring (the ring then starts frame 1 pre-filled to `RING_CAP`).
+The player drains the boot prefix, writing STARTUP_AUDIO to wave RAM while PCM
+is stopped, then stops the CDC and expands frame 0 with no active timed read.
+It starts FRAMES at its exact sector boundary and keeps that read continuous
+until the movie ends. Frame 0 therefore has no time budget and never competes
+with frame 1 delivery; the ring starts frame 1 pre-filled to `RING_CAP`.
 
 ## Header (1 sector = 2048 bytes)
 
@@ -57,7 +66,7 @@ First 22 bytes: `struct ">4sHHHHHHHHH"`.
 | Off | Size | Field          | Meaning |
 |-----|------|----------------|---------|
 | 0   | 4    | magic          | `"TTRC"` |
-| 4   | 2    | version        | format version (3 = fixed 5-sector frames; 4 = rate-matched variable frames + N/audio/fps fields) |
+| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload) |
 | 6   | 2    | frames         | total frame count (`nfr`) |
 | 8   | 2    | tcols          | tile grid columns |
 | 10  | 2    | trows          | tile grid rows |
@@ -92,10 +101,20 @@ Then:
 - offset 56: `u16 fps_int` (v4) — nominal fps (15/30) used by both packer and
   player to compute the rate-matched per-frame sector count (see Routing/Frame).
   `0` in v2/v3 (player defaults to 15);
-- bytes 58..63 are zero;
+- offset 58: `u16 audio_preload_frames` (v5) — number of leading control audio
+  chunks already written during boot, including frame 0;
+- offset 60: `u16 audio_preload_sec` (v5) — sectors in STARTUP_AUDIO. v5 uses
+  one chunk per sector, so this equals `audio_preload_frames`;
+- bytes 62..63 are zero;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
 - remainder up to 2048 is zero.
+
+The player reads byte 38 while preparing frame 0, before entering `play_loop`.
+It sets VDP H32/H40, the screen-column origin, and the matching VBlank DMA
+budget once. The per-frame loop uses the cached values; it does not reread or
+branch on the mode, so carrying the mode in the header adds no playback-loop
+overhead.
 
 A 128-byte CRAM block is 4 palette lines x 16 words; each word is
 `0000BBB0GGG0RRR0` (Genesis colour). Only 15 of the 16 entries per line are
@@ -111,6 +130,16 @@ the Main CPU copies it **once** into a Main-RAM table (8 KB, capacity
 player at build time). Every later palette switch just indexes this table via
 the control block's `pal` byte, so palettes are independent of stream delivery
 timing: a CD slip or re-seek can never corrupt the colours of a segment.
+
+## STARTUP_AUDIO (v5)
+
+Each sector begins with one normal `audio_bytes` PCM chunk and is zero-padded
+to 2048 bytes. The chunks duplicate the leading control-block audio; they do
+not replace it on disc. During boot the Sub CPU drains one sector, appends its
+chunk to wave RAM, and repeats while PCM is stopped. Playback therefore begins
+with the normal `SYNC_LEAD` silence and additional future audio already queued,
+without changing the first sample's position or A/V start timing. As frames are
+expanded, the player skips exactly `audio_preload_frames` duplicate writes.
 
 ## Routing table
 

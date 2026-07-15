@@ -23,6 +23,8 @@
 #   --tag NAME     work prefix under tmp/ (default: rec_<disc basename>)
 #   --display :N   X display for Xvfb (default :236)
 #   --preset NAME  run_headless record preset, or realtime (default realtime)
+#   --record-size WxH
+#                  native recording surface (H32 verification: 320x224)
 #   --audio-jump-threshold N
 #                  pass through to run_headless (default: run_headless default)
 #   --audio-min-rms N
@@ -44,6 +46,7 @@ TRIM=8
 TAG=""
 DISPLAY_NUM=":236"
 PRESET="realtime"
+RECORD_SIZE=""
 BUILD=1
 AUDIO_CHECK_ARGS=()
 AUTO_AUDIO_TRIM=1
@@ -57,6 +60,7 @@ while [ $# -gt 0 ]; do
     --tag) TAG="$2"; shift 2;;
     --display) DISPLAY_NUM="$2"; shift 2;;
     --preset) PRESET="$2"; shift 2;;
+    --record-size) RECORD_SIZE="$2"; shift 2;;
     --audio-jump-threshold) AUDIO_CHECK_ARGS+=(--audio-jump-threshold "$2"); shift 2;;
     --audio-min-rms) AUDIO_CHECK_ARGS+=(--audio-min-rms "$2"); shift 2;;
     --auto-audio-trim) AUTO_AUDIO_TRIM=1; shift;;
@@ -84,15 +88,19 @@ INTERVAL=2
 SHOTS=$(( (TRIM + REC_SECS + 10 + INTERVAL - 1) / INTERVAL ))
 
 echo ">> recording ${REC_SECS}s of $DISC (preset $PRESET) ..."
+RECORD_SIZE_ARGS=()
+[ -n "$RECORD_SIZE" ] && RECORD_SIZE_ARGS=(--record-size "$RECORD_SIZE")
 if [ "$PRESET" = "realtime" ]; then
   tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record-realtime \
     --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
+    "${RECORD_SIZE_ARGS[@]}" \
     "${AUDIO_CHECK_ARGS[@]}"
 else
   tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record --record-preset "$PRESET" \
     --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
+    "${RECORD_SIZE_ARGS[@]}" \
     "${AUDIO_CHECK_ARGS[@]}"
 fi
 

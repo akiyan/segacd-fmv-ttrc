@@ -1,6 +1,6 @@
 ---
 name: sim
-description: Project skill for encoding an arbitrary video source with the delta stream codec in tools/sim.py and producing the standard full-length analysis video. Applies the four rules automatically: keep source fps, use resolution up to the DMA limit, crop black bars, and allow starvation. Then run simulation, compose the analysis video, and optionally upload. Use for requests like "make an analysis video for this mp4", "make one for Sakura", or "/sim <src.mp4>". Implementation: tools/sim.py for codec simulation, tools/layout_preview.py for the canonical analysis layout and dummy preview, and tools/render_analysis.py for full MP4 rendering with real data.
+description: Project skill for encoding an arbitrary video source with the delta stream codec in tools/sim.py and producing the standard full-length analysis video. Applies the four rules automatically: keep source fps, use resolution up to the DMA limit, preserve source pixels while removing only confirmed black bars, and allow starvation. Then run simulation, compose the analysis video, and optionally upload. Use for requests like "make an analysis video for this mp4", "make one for Sakura", or "/sim <src.mp4>". Implementation: tools/sim.py for codec simulation, tools/layout_preview.py for the canonical analysis layout and dummy preview, and tools/render_analysis.py for full MP4 rendering with real data.
 ---
 
 # /sim: Source Video -> Delta Codec -> Analysis Video
@@ -26,8 +26,9 @@ Argument: source MP4 path, optionally plus display name or upload instruction.
    (32 pattern bytes + 2 name-table bytes) plus 128 bytes of CRAM:
    `34*C + 128 <= 13000`, so `C <= about 390`.
    Match aspect to the source display aspect after crop.
-3. **Crop black bars**: if `cropdetect` finds black bars, crop them. If not,
-   do not crop.
+3. **Preserve source pixels**: `tools/video_geometry.py` uses HAR-aware
+   full-frame `pad` by default. Use `crop` only when inspection confirms that
+   the discarded outer margins are black bars, not picture content.
 4. **Allow starvation**: it is OK if CD supply is not enough and starvation
    appears. Prefer the DMA-limit resolution. Do not force starvation to 0%.
 
@@ -72,10 +73,10 @@ Rules:
 
 ### 2. Choose Resolution / Tile Grid
 
-- Let `A` be the display aspect of the cropped content: crop width / height for
-  square pixels, or DAR if the source has one.
-- H32 pixel aspect ratio makes stored pixels display about 1.167x wider, so the
-  tile-grid aspect is `r = A / 1.167`.
+- Let `A` be the displayed aspect of the source after applying its SAR. If the
+  file has no reliable SAR, set `CBRSIM_SOURCE_SAR` explicitly.
+- H32 stored pixels display at 8:7 and H40 stored pixels at 32:35. The tile-grid
+  aspect is `r = A / HAR` for the selected mode.
 - Aim for about `T = 390` total tiles:
 
 ```text
@@ -89,8 +90,10 @@ Wc = round(T / Hc)
 Examples:
 
 - 16:9 source: `A=1.778`, `r=1.52`, `24x16=384`, so `192x128`.
-- Sonic Jam-like source: `A=1.44`, `r=1.23`, `22x18=396`, so `176x144`.
-- 4:3 source: `A=1.333`, `r=1.14`, around `20x18=360`.
+- Sonic Jam-like source: use the source's declared display aspect; do not infer
+  4:3 from a 576x400 coded raster without an SAR override.
+- 4:3 source: H32 `r=1.167`, H40 `r=1.458` (choose the tile grid from the
+  selected mode and DMA budget).
 
 ### 3. Run Simulation
 
@@ -108,10 +111,12 @@ export CBRSIM_W=<W> CBRSIM_H=<H> CBRSIM_FPS=<fps> CBRSIM_DURATION=<sec>
 # CBRSIM_MODE flows into the analysis overlay AND the MOVIE.DAT header mode byte (via pack).
 export CBRSIM_MODE=H32 CBRSIM_AUDIO=pcm13
 
-# If there is crop, put it at the start of MASTER_VF / RAW_VF.
-# The final scale in the dedither chain must match W:H exactly.
-export CBRSIM_MASTER_VF="[crop=...,]scale=<~2x>:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=<W>:<H>:flags=lanczos"
-export CBRSIM_RAW_VF="[crop=...,]scale=<src panel>"
+# The geometry helper is automatic unless explicit filters are required.
+export CBRSIM_GEOMETRY_FIT=pad       # crop only confirmed black margins
+export CBRSIM_SOURCE_SAR=25:27       # example: 576x400 authored as 4:3
+# Optional explicit overrides remain available for unusual sources.
+# export CBRSIM_MASTER_VF="..."
+# export CBRSIM_RAW_VF="..."
 
 # Output convention (AGENTS.md "Output Paths"): one stem per encode,
 #   <stem> = <input-basename>_<mode>_<resolution>_<audio>

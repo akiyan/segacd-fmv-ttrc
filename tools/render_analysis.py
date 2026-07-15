@@ -99,7 +99,7 @@ RES = f"{W}x{H} ({TCOLS}x{TROWS})"
 # 実機画面(この解像度を画面いっぱいに拡大せず中央配置する)。
 SCREEN_W = max(_M["sw"], W)
 SCREEN_H = max(_M["sh"], H)
-SCREEN_A = L.screen_aspect(MODE)               # 画面の表示アスペクト(H32/H40=4:3, mode4≈14:9)
+SCREEN_A = L.screen_aspect(MODE)               # 画面の表示アスペクト(H32/H40=64:49, mode4≈14:9)
 BUF = np.load(f"{SIM}/buffer_remaining.npz")
 BUF_CAP = int(BUF["total"]); BUF_REM = BUF["remaining"].astype(np.int64)
 CD_USED = BUF["cd_used"].astype(np.int64) if "cd_used" in BUF else None   # 有効CD使用量(音声+全ヘッダ+映像+貯蓄)

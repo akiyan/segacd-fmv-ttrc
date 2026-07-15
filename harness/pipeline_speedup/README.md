@@ -1,10 +1,11 @@
 # Pipeline speedup (issue #15) — where the Sub actually spends time
 
-Goal: let a dense spec (Sonic H32, 256x208, 832 cells) play clean 30fps. Today it
-plays structurally correct (D=0, rate-matched disc) but the effective rate settles
-at ~16fps with CD sector slips.
+Goal: let a dense spec (Sonic H32, 256x208, 832 cells) play clean 29.97fps. The
+first rate-matched build was structurally correct (`D=0`) but ran at ~16fps with
+CD sector slips. The completed p11 path now saturates the 29.97 display cadence
+and finishes with `S=0`, `D=0` on the same e14 disc.
 
-## Diagnostic: it is NOT the cold cap / cold-pop
+## Initial diagnostic: it was NOT the cold cap / cold-pop
 
 The issue was framed around raising the per-VBlank cold draw limit. A direct test
 disproves that framing:
@@ -30,8 +31,8 @@ So the Sub saturates on the **per-cell decode loop** in `expand_frame` (`ef_byte
 `ef_bit`): the bitmap walk, per-updated-cell entry read, the two `O_UPDS` writes, the
 cold/reuse test, and the run-table (slot-run) building — plus the fixed costs that do
 not scale with cold: the CD drain (`drain1` + `stage_copy`, 75 sectors/s) and the PCM
-audio write (`write_wave_chunk`, ~13.3 kB/s, a per-byte wave-RAM loop). None of these
-shrink when you lower the cold cap.
+audio write (`write_wave_chunk`, ~13.3 kB/s, originally a per-byte wave-RAM loop).
+None of these shrink when you lower the cold cap.
 
 ## Implication for optimization
 
@@ -83,7 +84,58 @@ already holds: if the cell count is later reduced, fewer cells need cutting.
 **16 → 26fps (+63%)**, full movie D=0. The decode restructure preserved correctness and
 still gained via the nonlinear slip effect.
 
-### Remaining architectural floor
+## opt5: interleaved PCM writes reach 29.97fps
+
+An audio-disable diagnostic reached ~29.9fps, proving that the supposedly small
+RF5C164 fixed cost was the missing margin. The final writer reads four contiguous
+samples with `MOVE.L` and writes them to the every-other-byte wave-RAM window with
+`MOVEP.L`. A 16-byte unrolled core handles the common path; scalar code handles an
+odd source address and the final zero to three bytes.
+
+Exact A/B used the same e14 Sonic `MOVIE.DAT`, lossless GPGX A/V capture and HUD
+frame counter:
+
+| build | 80/60-second HUD window | effective fps | full-loop result |
+|---|---:|---:|---|
+| e14 baseline (opt4) | `F0221` -> `F0866` / 60s | 26.750 | `S=65 D=0 R=32` |
+| opt5 MOVEP | `F0282` -> `F098B` / 60s | ~30.02 | `S=1 D=0 R=3` |
+| opt5 + armed startup | `F0024` -> `F0981` / 80s | **29.9625** | **`S=0 D=0 R=2`** |
+
+The slight 30.02 reading is capture timestamp granularity; the wider final window
+matches the 29.97 display limit. Audio automation reports `clip_count=0` and
+`jump_candidate_count=0` for both baseline and final captures. This is an automated
+gate, not a claim of a completed listening test.
+
+### Startup arming removes the last `S=1`
+
+The remaining slip already existed on displayed frame 0 and never increased, then
+repeated once on the next loop. Frame 0 was being expanded while the continuous
+FRAMES read had already started. The player now:
+
+1. drains HEADER through PREBUFFER;
+2. stops the CDC and expands frame 0 completely;
+3. starts a new continuous read at the exact FRAMES sector;
+4. pre-drains frame 1 before enabling PCM and releasing frame 0.
+
+For the measured Sonic file the split is sector 211, leaving 6777 timed sectors.
+`S` is not cleared at that split: prefix slips remain visible, and the first FRAMES
+sector is checked against the prefix's final MSF. The observed zero is therefore a
+real zero, not a counter reset.
+
+### Boundary proof
+
+Run:
+
+```sh
+python3 harness/pipeline_speedup/verify_wave_chunk.py
+```
+
+The model compares the old byte loop with the chunked writer across pump positions,
+physical wave addresses, MOVEP stride, PCM bank changes, 0x8000 wrap and final write
+pointer. It covers a boundary matrix plus 5000 deterministic random cases, including
+odd source addresses.
+
+### Fixed costs that remain
 
 The two biggest fixed costs are hard to cut without an architecture change:
 - **32-byte pattern copy** (ring PRG → O_LOADS Word-RAM), 8x move.l per cold cell,
@@ -94,6 +146,64 @@ The two biggest fixed costs are hard to cut without an architecture change:
 - **CD drain** (drain1 BIOS CDC_TRN + stage_copy 2 KB/sector, 75 sectors/s) is fixed by
   CD 1x and unavoidable.
 
-These put a practical ceiling around ~27-28fps for 832 cells without reducing the pattern
-traffic (fewer cold tiles = the encoder cap, i.e. reducing cells) or a deeper redesign
-(e.g. moving the O_UPDS cell-walk to the Main CPU to halve the per-cell Sub writes).
+These still limit denser modes and higher cold caps, but they were not the final
+barrier for the 832-cell target. The old ~27-28fps ceiling estimate omitted how much
+time the scalar RF5C164 loop consumed.
+
+## p13/p14: full-height H32 (896 cells)
+
+Treating the 4:3 source as full-screen H32 increases the grid from 32x26 to
+32x28. The first p12 full-height run ended at `S=6 D=0 R=4`. p13 batches the
+75 Hz CDC stage copy with 48-byte MOVEM transfers and copies variable control
+blocks as longwords; the same 896-cell encode improved to `S=4 D=0 R=3`.
+
+p14 removes another per-cell loop cost without changing stream content. It
+shifts the bitmap one bit at a time and advances the cell cursor directly,
+instead of indexed `BTST`, `cell=base+bit`, and an add/cmp/branch loop tail.
+This targets the remaining sub-percent throughput gap measured over the full
+2714-frame loop.
+
+p14 produced the same `S=4 D=0 R=3` as p13. A 60fps HUD scan showed the first
+resync at lead `0x03C2`, just below the `0x0400` guard, but later decline proves
+that lowering the guard would only hide a real underrun. p15 instead halves two
+redundant poll cadences at 30fps (bitmap 64->128 bytes, PCM 256->512 bytes),
+while retaining the proven 15fps cadence.
+
+p15 improved the full loop to `S=3 D=0 R=3`. p16 removes a fixed per-sector
+cost: steady-state callers already preserve all registers, so they call a
+non-preserving `pump1_core` rather than duplicating a 15-register save/restore
+at up to 75 sectors/s. Boot arming keeps the preserving wrapper.
+
+p16 measured `S=4 D=0 R=3`, within the run-to-run slip variation and therefore
+not a useful speedup. p17 removes the larger per-cold occupancy calculation.
+`process_frame` has already drained all sectors assigned to the frame, sector
+loss recovery completes inside `drain1`, and the pack verifies `under=0`; the
+check therefore always succeeded on valid streams while costing several
+instructions for about 96 cold tiles per frame.
+
+p17 improved the result to `S=2 D=0 R=3`. With its occupancy temporary gone,
+p18 keeps the open run count in d3 instead of PRG RAM and derives the cold slot
+in d2 directly. This removes the memory increment and redundant register moves
+for every cold tile.
+
+p18 reached `S=1 D=0 R=3`. p19 removes the remaining mid-wave poll at 30fps:
+the 443-byte write is shorter than one CD-sector interval and is already
+bracketed by frame/expand polls. The <=20fps path retains its 256-byte cadence.
+
+p19 reproducibly regressed to `S=2 D=0 R=3` with both FFV1 and x264 CRF0
+recording, so p20 restores the p18 wave cadence. It instead unrolls the variable
+control-block copy from 16 to 32 bytes per loop, halving its loop branches.
+
+p20 remained `S=1 D=0 R=3`. p21 changes the copy operation itself: eleven
+registers carry 44 bytes per MOVEM batch, and the absent 22-byte debug block is
+cleared with five longs plus one word rather than an 11-iteration loop.
+
+p21 regressed to `S=2 D=0 R=3`; MOVEM is slower than the unrolled MOVE.L path
+on this bus, so p22 restores p20's copy. The R2/R3 window (frames 120--180)
+averages 854/896 updated cells, so p22 adds a 0xFF bitmap-byte path that handles
+eight consecutive updates without per-cell LSR/BCC.
+
+p22 reached `S=0 D=0 R=3` for the complete loop and into the next loop. e17
+extends boot-time PCM arming from 32 to 45 frames at 30fps, moving thirteen more
+PCM writes out of the live startup bottleneck. The pack derives a safe maximum
+from AUDIO and keeps a 0x200 lead margin, clamping 15fps content to 22 frames.

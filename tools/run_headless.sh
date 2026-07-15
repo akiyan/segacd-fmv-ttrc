@@ -22,13 +22,16 @@
 #   --display :N      X display for Xvfb (default :231)
 #   --record [FILE]   record video+audio with RetroArch's FFmpeg recorder.
 #                     If FILE is omitted, writes $OUTDIR/<tag>.mkv and also
-#                     extracts $OUTDIR/<tag>.wav for quick audio checks.
+#                     extracts $OUTDIR/<tag>.wav for quick audio checks. Every
+#                     recording is audio-synchronised; never runs uncapped.
 #   --recordconfig FILE
 #                     pass an explicit RetroArch FFmpeg recording config.
 #   --record-preset NAME
 #                     generate a recording config. Supported: flac-fast,
 #                     ffv1-flac.
 #   --record-size WxH pass RetroArch --size for recording output geometry.
+#                     H32 uses native 256x224 after compact-HUD initialization;
+#                     H40 uses native 320x224.
 #   --record-realtime
 #                     shorthand for synced emulator audio recording:
 #                     --record --record-preset flac-fast
@@ -123,6 +126,11 @@ fi
 COMMAND_PORT=$((55355 + DISPLAY_ID % 1000))
 if [ "$REALTIME_RECORD" -eq 1 ]; then
   [ -z "$RECORD_PRESET" ] && RECORD_PRESET="flac-fast"
+fi
+# A recording without a live audio clock runs the core about five times faster
+# under Xvfb. Apply the realtime clock to every recording preset, including
+# ffv1-flac, so callers cannot accidentally create an invalid verification run.
+if [ "$RECORD" -eq 1 ]; then
   [ "$AUDIO_DRIVER" = "null" ] && AUDIO_DRIVER="sdl2"
   [ -z "$SDL_AUDIO_DRIVER" ] && SDL_AUDIO_DRIVER="dummy"
 fi
@@ -322,6 +330,16 @@ if [ "$RECORD" -eq 1 ]; then
     echo "recording has no valid duration: $RECORD_PATH" >&2
     exit 1
   fi
+  EXPECTED_DURATION="$(awk -v boot="$BOOT_WAIT" -v presses="$PRESSES" -v gap="$PRESS_GAP" \
+    -v shots="$SHOTS" -v interval="$INTERVAL" \
+    'BEGIN { printf "%.3f", boot + presses * gap + shots * interval }')"
+  if ! awk -v got="$RECORD_DURATION" -v expected="$EXPECTED_DURATION" \
+    'BEGIN { exit !(got >= expected * 0.60 && got <= expected * 1.50) }'; then
+    echo "recording timing invalid: duration=${RECORD_DURATION}s expected about ${EXPECTED_DURATION}s" >&2
+    echo "check audio synchronisation before using this capture" >&2
+    exit 1
+  fi
+  echo "record timing: ${RECORD_DURATION}s (expected about ${EXPECTED_DURATION}s)"
   ffmpeg -y -hide_banner -loglevel error -i "$RECORD_PATH" -vn -ar 44100 "$WAV_PATH"
   echo "record: $RECORD_PATH"
   [ -n "$RECORD_CONFIG" ] && echo "record config: $RECORD_CONFIG"

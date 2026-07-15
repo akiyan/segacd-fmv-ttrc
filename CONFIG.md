@@ -65,9 +65,6 @@ exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 | `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
 | realized cold | == cap (e.g. op/ed 350, sonic 175) | pack (measured) | Equals the cap by construction (shared two-pass allocator). The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
-Chain: `CBRSIM_MAX_COLD` (sim 350) -> realized cold (~362) must be `<= COLD_CAP_REALIZED` (380).
-Per-source: lighter sources raise the ceiling via `CBRSIM_COLD_CAP_REALIZED` (machi_op ships uncapped).
-
 ## C. Audio sync throttles
 
 PCM is a fixed rate, so playback must trail the write pointer by a lead. If the
@@ -76,23 +73,26 @@ audible click). See the `R`/`L` HUD readouts below.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| `AUDIO_BYTES` / `AUDIO` | 887 B/frame | sp / pack | 13.3 kHz / 15 fps. PCM bytes written to wave RAM per frame. |
-| `SYNC_LEAD` | 0x1800 (6144 B, ~0.46 s) | sp | Write-ahead lead = the A/V lag and the startup silence. Re-sync resets the write here. |
-| `SYNC_MIN` | 0x400 (1024 B, ~1.15 frames) | sp | Lower lead bound. Below it -> re-sync. Lowered 0xC00 -> 0x400 (p4) so a brief heavy-scene dip no longer clicks. |
+| `AUDIO_BYTES` / `AUDIO` | 887 B at 15 fps; 443 B at 30 fps | sp / pack | Per-stream header value, rounded from 13.3 kHz / native fps. PCM bytes written to wave RAM per frame. |
+| `SYNC_LEAD` | 0x4800 (18432 B, ~1.38 s) | sp | Write-ahead lead = the A/V lag and the startup silence. The larger lead absorbs the initial heavy-frame startup without a pointer jump. |
+| `CBRSIM_STARTUP_AUDIO_FRAMES` | 2 (frame0 + frame1) | pack/sp | v5 boot-prefix audio preload. The player stops the CD while expanding frame0 and starts PCM only after frame0 is displayed; duplicating only the first two chunks avoids starving the live writer during startup. Matching control writes are skipped once; A/V sample positions are unchanged. |
+| `SYNC_MIN` | 0x400 (1024 B) | sp | Lower lead bound. Below it -> re-sync. The startup lead is increased instead, so this guard remains unchanged. |
 | `SYNC_MAX` | 0x6800 (26624 B, ~2.0 s) | sp | Upper lead bound. Above it -> re-sync. |
 | `WAVE_RING_END` | 0x8000 (32 KB) | sp | RF5C164 wave-RAM ring size. |
 
 ## D. CD pump throttles (keeping the Sub from dropping sectors)
 
-The CD never stops (75 sectors/s), so the Sub must drain the CDC continuously.
+Startup is deliberately two-phase: load the prefix through PREBUFFER, stop the
+CDC while frame 0 is fully expanded, then start one continuous FRAMES read. The
+steady read delivers 75 sectors/s, so the Sub must drain it continuously.
 `pump_poll` grabs one ready sector if the receivers have room.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| pump_poll frequency | **every 8 bitmap bytes** (`d7 & 7`) | sp `ef_byte` | **The p5 fix.** How often to poll during tile expansion. Old = every byte (~140x/frame, mostly empty polls). CD delivers 1 sector per ~166k cycles, so 8x is ample and frees the Sub -> higher cold ceiling. |
+| pump_poll frequency | 8 bitmap bytes at 15 fps; 128 at 30 fps | sp `ef_byte` | Runtime-selected cadence. The 30fps path keeps the Sub-CPU optimization cadence; frame 0 has no active CD read. |
 | ring-full skip | occ >= 416 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
-| `FRAME_SECTORS` | 5 | pack -> sp (`h_fsec`) | Sectors the CD delivers per frame (= CD 1x). Defined in pack; the player reads it from the MOVIE.DAT header at boot. Routing splits each into payload / control / pad. |
+| `FRAME_SECTORS` | max 5 | pack -> sp (`h_fsec`) | Routing-byte maximum. v4 uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; alternating 2/3 at 30 fps), split into payload / control / pad. |
 | `HEADER_SECTORS` | 1 | sp / pack | The 1-second TTRC header block at the start of MOVIE.DAT. |
 
 ## E. VDP DMA budget (Main CPU)
@@ -137,11 +137,13 @@ Set per encode; they select the output and the codec behavior for that source.
 |---|---|
 | `CBRSIM_W`, `CBRSIM_H` | Output resolution in pixels. |
 | `CBRSIM_MODE` | Display mode: `H32` / `H40` / `mode4`. |
+| `CBRSIM_MASTER_VF` / `CBRSIM_RAW_VF` | Optional ffmpeg overrides. If unset, `tools/video_geometry.py` probes the source and applies a full-frame, minimal-pad conversion using the mode HAR. H32 uses 8:7; H40 uses 32:35. |
+| `CBRSIM_GEOMETRY_FIT` | `pad` (default, preserves all source pixels) or `crop` (explicitly discard centered outer margins). |
+| `CBRSIM_SOURCE_SAR` | Optional input SAR override such as `25:27` when a 576x400 file is authored as 4:3 but has no SAR metadata. |
 | `CBRSIM_FPS` | Frame rate (= the source's native rate). |
 | `CBRSIM_SRC` | Source video path. |
 | `CBRSIM_DURATION` | Encode length in seconds. |
 | `CBRSIM_MAX_COLD` | Per-frame cold cap (section B). |
-| `CBRSIM_COLD_CAP_REALIZED` | Override the drop-safe ceiling per source (raises it for lighter sources; machi_op ships uncapped). |
 | `CBRSIM_RING_CAP_KB` / `CBRSIM_TANK_KB` | Override the ring cap / tank (normally derived from av_config). |
 | `CBRSIM_RATE_KIB` | CBR target rate (section F). |
 | `CBRSIM_REUSE`, `CBRSIM_GPU`, `CBRSIM_EMIT_DEC`, `CBRSIM_OUT` | Reuse decoded frames / use the GPU / save decisions.pkl / output dir. |
@@ -158,5 +160,5 @@ read back by `tools/read_frameno.py: read_hud`). Handy when tuning.
 | `P` | Palette segment. |
 | `S` | CD sector slips (re-seek recoveries). 0 = clean video. |
 | `D` | Stream desync count. 0 = clean. |
-| `R` | Audio re-sync count (lead left `[SYNC_MIN, SYNC_MAX]`). 1 = baseline (a startup sync). |
+| `R` | Audio re-sync count (lead left `[SYNC_MIN, SYNC_MAX]`). 0 is ideal; each increment is a write-pointer jump. |
 | `L` | Current audio lead (write - play), in bytes. Approaching `SYNC_MIN` = the buffer is draining. |

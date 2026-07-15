@@ -244,8 +244,10 @@ ffmpeg -i tmp/<tag>.mkv \
   -c:a aac -b:a 192k out.mp4
 ```
 
-- `1792x1152` = 7x horizontal, 6x vertical — this bakes the MD H32 PAR of 7:6
-  exactly with integer scaling (nearest neighbor, no resampling blur).
+- The old fixed `1792x1152` / 7:6 recipe is not a universal Mega Drive
+  conversion.  Use the mode-aware geometry harness: H32 is PAR 8:7 and H40
+  is PAR 32:35.  Keep the source raster integer-scaled and set the matching
+  SAR, or use the harness's display-sized output when baking square pixels.
 - Telegram's bot limit is 50MB; send a `896x576` crf20 preview and keep the
   full-quality file on disk (or upload to YouTube).
 

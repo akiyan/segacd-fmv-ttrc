@@ -11,6 +11,13 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p32 : Compact the DEBUG HUD to a 5-cell pitch in H32 so all F/P/S/D/R/L
+#        fields fit in the native 32-column plane; H40 retains 6-cell pitch.
+#   p31 : Select H32/H40 from the MOVIE.DAT mode byte. The previous branch
+#        tested the frame pacing N value, so every v4 stream switched to H40.
+#   e21 : mode-aware source geometry harness. Preserve full source pixels with
+#        HAR-aware fit/pad conversion; explicit input SAR overrides support
+#        anamorphic 4:3 sources for H32/H40 encodes.
 #   e1 : Flbk improve-mode default; baseline encoder.
 #   e2 : streaming ring fixes — TANK below RING_SIZE (jitter margin), pack
 #        forward-fill (use all 5 sectors, prefetch the ring reserve), RING_CAP
@@ -134,6 +141,52 @@
 #        このコマの流用タイルを先に保護→coldスロット割当が追い出さない→再ロード消滅=realized=cap。
 #        cap は cold_cap_for_fps 自動導出・全ソース共有(手動env/uncapped/COLD_CAP_REALIZED廃止)。
 #        画質は op/ed とも旧と同一(Miss不変)、Sonic 30fps は realized 200→175 で ~25→27fps に改善。
-date=20260714
-e=14
-p=10
+#   p11: Sub-CPU 29.97 fps completion. opt4 tightens the per-cell decode path;
+#        opt5 batches RF5C164 writes as MOVE.L + MOVEP.L (four interleaved PCM
+#        samples per operation). On the same e14 Sonic H32 832-cell disc, a
+#        lossless GPGX capture rises from 26.75 fps to the 29.97 display limit.
+#        Startup is armed in two phases: load the boot prefix, stop while frame
+#        0 is expanded, then continuously read FRAMES after pre-draining frame
+#        1. This removes the one startup sector slip: full loop S=0, D=0 (old
+#        baseline ended S=65), with audio clip/jump gates at zero.
+#   e15/p12: MOVIE.DAT v5 startup PCM arming. The first 17 audio chunks are
+#        duplicated in the boot prefix and queued before PCM starts; matching
+#        control writes are skipped. This preserves the first-sample position
+#        while absorbing the startup phase dip, so R can remain zero.
+#   e16/p13: Extend startup PCM arming to 32 chunks and reduce Sub-CPU fixed
+#        copy cost. The 75 Hz CDC stage copy uses 48-byte MOVEM batches, and
+#        variable control blocks use longword batches instead of word copies.
+#        The stream content and decoded output are unchanged.
+#   p14: Tighten the 896-cell bitmap walk. Shift one bitmap bit per iteration
+#        and advance the cell cursor directly, replacing indexed BTST plus the
+#        add/cmp/branch loop tail. Entry order and O_UPDS output are unchanged.
+#   p15: Reduce redundant CDC readiness polls only at 30fps: one per 128 bitmap
+#        bytes and 512 PCM bytes. The <=20fps path retains its proven 8/256-byte
+#        cadence. Required sectors are still drained synchronously per frame.
+#   p16: Split pump1 into preserving wrapper and non-preserving core. Steady
+#        process_frame/pump_poll callers already save all registers, so they no
+#        longer repeat a 15-register save/restore for every drained sector.
+#   p17: Remove the per-cold ring occupancy calculation. process_frame has
+#        already drained every sector assigned to the frame and pack_stream
+#        proves schedule under=0, so the check always succeeded on valid data.
+#   p18: Keep cold-run count in d3 and strip/derive the cold entry directly in
+#        d2. This removes a PRG-RAM read/write increment and redundant register
+#        moves for every cold tile.
+#   p19: Disable mid-wave CDC polls only at 30fps. The 443-byte PCM write is
+#        bracketed by frame/expand polls and shorter than a sector interval;
+#        <=20fps retains the proven 256-byte wave cadence.
+#   p20: Restore the p18 512-byte 30fps wave poll (p19 regressed S=1 to S=2)
+#        and unroll control-block copying from 16 to 32 bytes per loop. This
+#        halves the branch overhead while preserving the exact byte stream.
+#   p21: Copy control blocks in 44-byte MOVEM batches and clear the absent
+#        22-byte debug block with five longs plus one word. This reduces the
+#        per-frame PRG-to-Word-RAM copy cost without changing output bytes.
+#   p22: Restore p20's faster MOVE.L control copy and add a full-bitmap-byte
+#        path. A 0xFF byte processes eight consecutive updated cells without
+#        per-cell LSR/BCC, targeting the 854/896-update startup frames.
+#   e17: Raise requested startup PCM arming from 32 to 45 frames. The pack
+#        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
+#        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
+date=20260715
+e=21
+p=31

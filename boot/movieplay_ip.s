@@ -108,6 +108,9 @@ ip_entry:
 	lea	(PROBE_BANK+0xAF80), a0
 	move.w	8(a0), md_tcols
 	move.w	10(a0), md_trows
+	move.w	12(a0), d0			/* cells; supported grids are multiples of 8 */
+	lsr.w	#3, d0
+	move.w	d0, md_bmbytes
 	move.w	14(a0), d1			/* pool */
 	add.w	16(a0), d1			/* +base */
 	move.w	d1, md_font_vtile
@@ -124,13 +127,19 @@ ip_entry:
 	moveq	#4, d0
 1:
 	move.w	d0, md_vsync_n
+	/* Select the VDP width from the stream's mode byte, not from N.
+	   N is the frame pacing interval (2 at 30fps, 4 at 15fps), so testing
+	   it here made every v4 stream fall through to H40. */
+	move.w	#0x8C00, (VDP_CTRL).l		/* reg12 H32 */
 	move.w	#32, d2				/* screen_cols */
 	move.w	#VB_WORDS_H32, d3
-	tst.w	d0
-	beq	1f
+	move.w	#HUD_PITCH_H32, md_hud_pitch
+	cmpi.w	#1, md_mode
+	bne	1f					/* mode 0=H32; mode 2 is reserved */
 	move.w	#0x8C81, (VDP_CTRL).l		/* reg12 H40 */
 	move.w	#40, d2
 	move.w	#VB_WORDS_H40, d3
+	move.w	#HUD_PITCH_H40, md_hud_pitch
 1:
 	move.w	d3, md_vbudget
 	sub.w	md_tcols, d2			/* col0 = (screen_cols-tcols)/2 */
@@ -247,18 +256,38 @@ bf_stage_done:
 bf_none:
 	move.w	d4, n_runs			/* このフレームのDMAラン数(0可) */
 bf_upd:
-	/* シャドウへ反映 shadow[cell]=entry。n_upd @ +0x7000, upds @ +0x7002 */
-	lea	(PROBE_BANK+0x9800), a0
+	/* Read bitmap+entries directly from the linear control block in the swapped
+	   Word-RAM bank.  The Sub already walks them to build cold runs; rewriting
+	   every (cell,entry) pair was duplicate work on the bottleneck CPU. */
+	lea	(PROBE_BANK+0x10000+4), a0	/* skip total_len + frame_seq */
 	move.w	(a0)+, d7			/* n_upd */
 	beq	bf_blit
-	subq.w	#1, d7
+	move.w	(a0)+, d0			/* pal(hi), dbg flag(lo) */
+	tst.b	d0
+	beq	1f
+	adda.w	#22, a0				/* optional debug block */
+1:
+	movea.l	a0, a2				/* bitmap */
+	adda.w	md_bmbytes, a0			/* entries */
 	lea	shadow, a1
-bf_uloop:
-	move.w	(a0)+, d0			/* cell */
-	move.w	(a0)+, d3			/* entry */
-	add.w	d0, d0				/* cell*2 */
-	move.w	d3, (a1,d0.w)
-	dbra	d7, bf_uloop
+	moveq	#0, d6				/* cell */
+	move.w	md_bmbytes, d5
+	subq.w	#1, d5
+bf_ubyte:
+	move.b	(a2)+, d0
+	moveq	#7, d4
+bf_ubit:
+	lsr.b	#1, d0
+	bcc	1f
+	move.w	(a0)+, d3
+	andi.w	#0x7FFF, d3			/* strip the on-disc cold flag */
+	move.w	d6, d2
+	add.w	d2, d2				/* cell*2 */
+	move.w	d3, (a1,d2.w)
+1:
+	addq.w	#1, d6
+	dbra	d4, bf_ubit
+	dbra	d5, bf_ubyte
 bf_blit:
 	/* シャドウ全体(18行x32)を裏NTへ blit (裏は非表示=active可) */
 	moveq	#0, d5
@@ -631,42 +660,44 @@ dbg_recolor_word:
    行0-1はオーバースキャンで切れうるため行2を使用。下黒帯は将来の
    「黒帯走査中のDMA早期開始」用に空けておく。 */
 /* --- デバッグHUDレイアウト(左上端・1行) ---
-   各値 = glyph 1セル + hex4桁 4セル + 空け 1セル = 6セル間隔(HUD_PITCH)。
-   F/P/S/D/R/L を HUD_ROW の col 0/6/12/18/24/30 に横一列(末尾col34, H40の40列に収まる)。
-   OCR側(tools/read_frameno.py の HUD_*)はこの定義と一致させること。 */
+   H32は32列に収めるため pitch=5 (glyph+4桁、空け無し)、H40はpitch=6
+   (glyph+4桁+空け1)を使う。OCR側(tools/read_frameno.py)は録画幅から選ぶ。 */
 .equ HUD_ROW,   0			/* HUD行(0=最上段) */
-.equ HUD_PITCH, 6			/* 値ごとのセル間隔(glyph1+hex4+gap1) */
-.equ HUD_COL_F, 0
-.equ HUD_COL_P, HUD_COL_F+HUD_PITCH	/* 6 */
-.equ HUD_COL_S, HUD_COL_P+HUD_PITCH	/* 12 */
-.equ HUD_COL_D, HUD_COL_S+HUD_PITCH	/* 18 */
-.equ HUD_COL_R, HUD_COL_D+HUD_PITCH	/* 24 */
-.equ HUD_COL_L, HUD_COL_R+HUD_PITCH	/* 30 */
+.equ HUD_PITCH_H32, 5
+.equ HUD_PITCH_H40, 6
 
 render_dbg:
 	movem.l	d0-d4/d6-d7/a0-a1, -(sp)
 	move.w	dbg_palattr, d7
-	move.w	#HUD_ROW*128+HUD_COL_F*2, d2	/* F フレーム番号 */
+	move.w	md_hud_pitch, d6
+	add.w	d6, d6				/* pitch in name-table bytes */
+	move.w	#HUD_ROW*128, a1
+	move.w	a1, d2				/* F フレーム番号 */
 	move.w	#15, d3				/* glyph 'F'(=hex F) */
 	move.w	frame_no, d4
 	bsr	dbg_put_row
-	move.w	#HUD_ROW*128+HUD_COL_P*2, d2	/* P パレット区間 */
+	add.w	d6, a1
+	move.w	a1, d2				/* P パレット区間 */
 	move.w	#19, d3				/* glyph 'P' */
 	move.w	dbg_seg, d4
 	bsr	dbg_put_row
-	move.w	#HUD_ROW*128+HUD_COL_S*2, d2	/* S 滑り=再シーク回復回数(グリッチマーカー) */
+	add.w	d6, a1
+	move.w	a1, d2				/* S 滑り=再シーク回復回数(グリッチマーカー) */
 	move.w	#23, d3				/* glyph 'S' */
 	move.w	(PROBE_BANK+0xAF00).l, d4
 	bsr	dbg_put_row
-	move.w	#HUD_ROW*128+HUD_COL_D*2, d2	/* D desync検知回数(通常0) */
+	add.w	d6, a1
+	move.w	a1, d2				/* D desync検知回数(通常0) */
 	move.w	#13, d3				/* glyph 'D'(=hex D) */
 	move.w	(PROBE_BANK+0xAF7E).l, d4
 	bsr	dbg_put_row
-	move.w	#HUD_ROW*128+HUD_COL_R*2, d2	/* R 音声re-sync回数(計測) */
+	add.w	d6, a1
+	move.w	a1, d2				/* R 音声re-sync回数(計測) */
 	move.w	#16, d3				/* glyph 'R' */
 	move.w	(PROBE_BANK+0xAF20).l, d4
 	bsr	dbg_put_row
-	move.w	#HUD_ROW*128+HUD_COL_L*2, d2	/* L 現コマの音声リード(計測) */
+	add.w	d6, a1
+	move.w	a1, d2				/* L 現コマの音声リード(計測) */
 	move.w	#21, d3				/* glyph 'L' */
 	move.w	(PROBE_BANK+0xAF22).l, d4
 	bsr	dbg_put_row
@@ -709,6 +740,8 @@ shadow:
 	.space 1120*2				/* 最大グリッド(H40 40x28)ぶん */
 md_mode:
 	.space 2
+md_hud_pitch:
+	.space 2
 md_vsync_n:
 	.space 2				/* v4: 1コマの表示VBLANK数(15fps=4, 30fps=2) */
 vsync_acc:
@@ -717,6 +750,8 @@ md_tcols:
 	.space 2
 md_trows:
 	.space 2
+md_bmbytes:
+	.space 2				/* ceil(cells/8); supported grids divide exactly */
 md_row0:
 	.space 2
 md_col0:
