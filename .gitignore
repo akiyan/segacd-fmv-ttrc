@@ -8,6 +8,9 @@
 __pycache__/
 .claude/settings.local.json
 .codex/
+!.codex/
+.codex/*
+!.codex/skills
 .DS_Store
 ._*
 *.o
