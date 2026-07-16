@@ -44,6 +44,7 @@ if [ -z "$OUT_PREFIX" ]; then
 fi
 WAV="${OUT_PREFIX}_verify.wav"
 JSON="${OUT_PREFIX}_verify.json"
+mkdir -p "$(dirname "$OUT_PREFIX")"
 
 ffmpeg -y -hide_banner -loglevel error -i "$RECORDING" -vn -ar 44100 "$WAV"
 python3 tools/analyze_recorded_audio.py "$RECORDING" \

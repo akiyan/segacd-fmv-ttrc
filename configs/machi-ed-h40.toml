@@ -1,0 +1,46 @@
+schema_version = 1
+
+[source]
+path = "assets/machi_ed.mp4"
+fps = "15"
+duration = "266.533333"
+sar = "1:1"
+
+[video]
+mode = "H40"
+width = 320
+height = 224
+fit = "pad"
+
+[audio]
+kind = "pcm13"
+
+[output]
+directory = "videos/machi_ed_H40_320x224_pcm/tmp"
+reuse = true
+emit_decisions = true
+
+[encoder]
+gpu = true
+rate_kib = 144
+vram_tiles = 1400
+dither = true
+segment_palettes = true
+near = true
+coa = true
+
+[palette]
+algorithm = "mosaic-gm"
+map_weight = 1.0
+seam_weight = 8.0
+seam_iterations = 2
+sample_counts = [120, 240, 480]
+validate_frames = 120
+segment_train_frames = 240
+segment_validate_frames = 60
+
+[pack]
+debug = true
+fill = true
+startup_audio_frames = 30
+output = "out/movieplay/MOVIE.DAT"

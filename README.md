@@ -137,13 +137,86 @@ meter and tile category.
 | `prgtest` | PRG-RAM write and streaming interaction test. |
 | `asictest` / `upscaletest` | Graphics ASIC and CPU upscale experiments. |
 
+## Workstation Setup (Ubuntu)
+
+Install the host-side encoder, disc, video, and headless-recording tools:
+
+```sh
+sudo apt update
+sudo apt install \
+  ffmpeg fonts-ipafont-gothic genisoimage imagemagick \
+  libretro-genesisplusgx \
+  python3 python3-numpy python3-pil python3-pip python3-venv \
+  retroarch rsync xdotool xvfb
+```
+
+`fonts-ipafont-gothic` supplies the exact font used by
+`tools/layout_preview.py` and `tools/render_analysis.py`.
+
+For NVIDIA GPU acceleration, create a separate CuPy environment. The `ctk`
+extra is required on machines that have an NVIDIA driver but no system CUDA
+Toolkit headers:
+
+```sh
+python3 -m venv ~/.config/cbrsim-gpu/venv
+~/.config/cbrsim-gpu/venv/bin/pip install \
+  numpy pillow 'cupy-cuda12x[ctk]'
+~/.config/cbrsim-gpu/venv/bin/python -c \
+  'import cupy as cp; assert int(cp.arange(16).sum()) == 120'
+```
+
+Use this GPU Python for `tools/sim.py` and `tools/render_analysis.py`. Use the
+system `python3` for `tools/pack_stream.py`; the packer does not use the GPU or
+need the much larger CUDA environment.
+
+Install a Marsdev `m68k-elf` toolchain at `~/toolchains/mars`. The Makefile
+expects these executables by default:
+
+```text
+~/toolchains/mars/m68k-elf/bin/m68k-elf-as
+~/toolchains/mars/m68k-elf/bin/m68k-elf-gcc
+~/toolchains/mars/m68k-elf/bin/m68k-elf-ld
+~/toolchains/mars/m68k-elf/bin/m68k-elf-objcopy
+```
+
+Set `MARSDEV=/another/path` or `M68K_PREFIX=/another/prefix/m68k-elf-` when
+using a different location. Run `make check-tools
+CONFIG=configs/PROFILE.toml` to verify the toolchain and ISO writer before a
+full build.
+
+The Japanese Mega-CD BIOS used for local testing is a user-supplied,
+git-ignored file at `original/jp_mcd1_9111.bin`; it is not distributed by this
+repository. Install that project-local copy for Genesis Plus GX as follows:
+
+```sh
+install -d -m 700 ~/.config/retroarch/system
+install -m 600 original/jp_mcd1_9111.bin \
+  ~/.config/retroarch/system/bios_CD_J.bin
+```
+
+The recording harness uses the distro Genesis Plus GX core at
+`/usr/lib/x86_64-linux-gnu/libretro/genesis_plus_gx_libretro.so`. Override
+`CORE` or `SYSTEM_DIR` only when the distro or BIOS layout differs.
+
 ## Build
 
 Required tools: Marsdev / `m68k-elf` toolchain, `mkisofs` or `genisoimage`,
 `ffmpeg` / `ffprobe`, `python3` with NumPy and Pillow, and a Sega CD BIOS for
 emulator testing.
 
-`make disc CONFIG=configs/PROFILE.toml` builds the player disc as
+For a new encode, run the pipeline in this order:
+
+```sh
+PY=~/.config/cbrsim-gpu/venv/bin/python
+[ -x "$PY" ] || PY=python3
+"$PY" tools/sim.py --config configs/PROFILE.toml
+python3 tools/pack_stream.py --config configs/PROFILE.toml --verify
+make disc CONFIG=configs/PROFILE.toml DEBUG=1
+```
+
+The pack step is required after sim: it writes `HEADER.DAT`, `BODY.DAT`, and
+the `palettes.bin` that the player build consumes. `make disc` then builds the
+player disc as
 `out/PROFILE.iso` + `out/PROFILE.cue`. The packer writes `HEADER.DAT`,
 `BODY.DAT`, `MOVIE.DAT`, and `palettes.bin` under `out/PROFILE/`, using the
 TOML filename as the artifact identity. Transient assembler files, disc staging,
@@ -167,6 +240,35 @@ The high-level recorder defaults to a native-size FFV1/FLAC lossless MKV under
 `--preset realtime` capture uses 4:2:0 chroma and is not an upload master.
 The default keeps the Mega-CD startup screens. Trimming is an explicit
 movie-only option, not part of the normal recording or upload path.
+
+## YouTube Upload Setup
+
+Upload automation intentionally keeps OAuth credentials and its Python
+environment outside the public repository. The project automation currently
+expects this user-local layout:
+
+```text
+~/.claude/skills/youtube/youtube.py
+~/.claude/skills/youtube/client_secret.json
+~/.config/youtube/youtube_token.json
+~/.config/youtube/venv/
+```
+
+Create the Python environment on each workstation instead of copying a venv
+from another Python version:
+
+```sh
+python3 -m venv ~/.config/youtube/venv
+~/.config/youtube/venv/bin/pip install \
+  google-api-python-client google-auth-oauthlib google-auth-httplib2
+chmod 600 ~/.claude/skills/youtube/client_secret.json \
+  ~/.config/youtube/youtube_token.json
+```
+
+If no reusable token is available, run the helper's `auth` command once on the
+new workstation. A copied token is usable only when it carries the full
+`youtube` scope and its refresh token remains valid. Never commit the client
+secret, token, BIOS, source media, generated videos, or their upload sidecars.
 
 ## Repository Layout
 
