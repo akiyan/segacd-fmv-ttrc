@@ -43,6 +43,7 @@ from encode_config import consume_config_arg, profile_identity  # noqa: E402
 # evaluated.  The internal environment remains compatible with older scripts,
 # but TOML values always win over an inherited shell environment.
 CONFIG_PROFILE = consume_config_arg(sys.argv)
+import av_config  # noqa: E402
 
 from quantize_md_video import (  # noqa: E402
     rgb888_to_rgb333, rgb333_to_rgb888, run, prepare_dir, MD_LEVELS,
@@ -191,7 +192,6 @@ VBV_ON = True
 # タンク容量は tools/av_config.py の単一真実源(=実機の使えるリング RING_CAP)から取る。
 # 旧既定414や実行時440はリング物理容量を超えており、simが実機より広いバッファを仮定して
 # 実機で枯渇していた。envで上書き可(実験用)だが、既定はconfigから導出=pack/playerと一致。
-import av_config
 TANK_KB = int(os.environ.get("CBRSIM_TANK_KB", str(av_config.TANK_KB)))
 TANK_CAP_BYTES = TANK_KB * 1024
 # 格上げパス(既定ON): 余ったCD + タンクの余剰で、近似(Near/Coa/Flbk)や持ち越しをRaw/Bufに格上げ。
