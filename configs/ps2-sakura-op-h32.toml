@@ -1,0 +1,48 @@
+schema_version = 1
+
+[source]
+path = "assets/ps2_sakura_op.mp4"
+fps = "30"
+duration = "102.524400"
+sar = "1:1"
+
+[video]
+mode = "H32"
+width = 256
+height = 224
+fit = "pad"
+master_filter = "setsar=1,crop=640:376:0:52,scale=1280:752:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=256:172:flags=lanczos,pad=256:224:0:26:color=black,setsar=1"
+raw_filter = "setsar=1,crop=640:376:0:52,scale=256:172:flags=lanczos,pad=256:224:0:26:color=black,setsar=1"
+
+[audio]
+kind = "pcm13"
+
+[output]
+directory = "videos/ps2_sakura_op_H32_256x224_pcm/tmp"
+reuse = true
+emit_decisions = true
+
+[encoder]
+gpu = true
+rate_kib = 144
+vram_tiles = 1400
+dither = true
+segment_palettes = true
+near = true
+coa = true
+
+[palette]
+algorithm = "mosaic-gm"
+map_weight = 1.0
+seam_weight = 8.0
+seam_iterations = 2
+sample_counts = [120, 240, 480]
+validate_frames = 120
+segment_train_frames = 240
+segment_validate_frames = 60
+
+[pack]
+debug = true
+fill = true
+startup_audio_frames = 30
+output = "out/movieplay/MOVIE.DAT"
