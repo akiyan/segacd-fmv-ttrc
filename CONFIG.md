@@ -5,6 +5,11 @@ Reference for the numeric knobs of the Tile Texture Reuse Codec pipeline
 register addresses and memory-map constants are intentionally omitted; this lists
 the values you actually *tune*.
 
+`CONFIG.md` describes the shared model, defaults, and profile schema; it does
+not hold settings for a particular movie. Per-source values belong in a versioned
+TOML file under [`configs/`](configs/). This keeps documentation stable while
+making every encode reproducible.
+
 **Single source of truth.** The streaming-buffer geometry lives in
 [`tools/av_config.py`](tools/av_config.py) and is *derived*, so the sim, the
 packer and the player cannot drift apart. The player's `.equ RING_SIZE` is
@@ -91,7 +96,7 @@ audible click). See the `R`/`L` HUD readouts below.
 |---|---|---|---|
 | `AUDIO_BYTES` / `AUDIO` | 888 B at N4 (~15 fps); 444 B at N2 (~30 fps) | sp / pack | Fixed PCM bytes per frame, rounded up against the actual NTSC VBlank cadence. FD=0x0345 consumes about 13,303.76 samples/s while either chunk size supplies about 13,306.69 samples/s, so the reserve grows by only about 2.94 B/s. The packer evenly retimes the source WAV to this fixed-chunk length instead of padding only the tail. |
 | `SYNC_LEAD` | 0x3000 (12288 B, ~0.92 s) | sp | Write-ahead lead in wave RAM. PCM starts at this address; the ring's initial silence is not played, so the first source sample aligns with the first visible movie frame. |
-| `CBRSIM_STARTUP_AUDIO_FRAMES` | 30 | pack/sp | Persistent audio prefetch. `HEADER.DAT` queues source chunks 0-29; control frame 0 carries chunk 30, frame 1 carries 31, and so on. Playback still begins with chunk 0 at frame 0, while the writer remains about 30 frames ahead instead of consuming the reserve by skipping duplicate chunks. |
+| `pack.startup_audio_frames` | 30 | TOML -> decision log -> pack/sp | Persistent audio prefetch. `HEADER.DAT` queues source chunks 0-29; control frame 0 carries chunk 30, frame 1 carries 31, and so on. Playback still begins with chunk 0 at frame 0, while the writer remains about 30 frames ahead instead of consuming the reserve by skipping duplicate chunks. |
 | `SYNC_MIN` | 0 (0 B) | sp | Lower lead bound. The persistent prefetch should keep the writer far above it; reaching zero indicates a real supply or clock problem. |
 | `SYNC_MAX` | 0x6800 (26624 B, ~2.0 s) | sp | Upper lead bound. Above it -> re-sync. |
 | `WAVE_RING_END` | 0x8000 (32 KB) | sp | RF5C164 wave-RAM ring size. |
@@ -128,57 +133,73 @@ continuously.
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | `CD_RATE` | 153600 B/s | sim | CD 1x — the absolute delivery ceiling. |
-| `TARGET_RATE` (`CBRSIM_RATE_KIB`) | 144 KiB/s | sim (env) | The CBR target rate. |
+| `TARGET_RATE` (`encoder.rate_kib`) | 144 KiB/s | TOML -> sim | The CBR target rate. |
 | `FRAME_BYTES` | `TARGET_RATE / FPS` (~10 KB) | sim | Fixed per-frame CBR byte budget. |
 | `SECTOR` / `PAT` / `PAT_PER_SEC` | 2048 / 32 / 64 | pack | Sector = 2 KB, one tile pattern = 32 B, so 64 tiles per sector. |
 
-## G. Encoder quality knobs (sim decisions; the `CBRSIM_*` ones are env-overridable)
+## G. Encoder quality knobs
 
 Per-cell the sim picks: Raw (fresh CD load), Same, Near/Coa/Flbk (reuse a
 resident tile), Buf (prefetched), or Miss. These thresholds steer that choice.
+Frequently changed profile values use their TOML names below. The remaining
+`CBRSIM_*` variables are advanced shared experiments; do not put per-movie
+values in this document.
 
 | Name | Default | Meaning |
 |---|---|---|
-| `CBRSIM_VRAM_TILES` | 1400 | Resident tile pool size (LRU). |
+| `encoder.vram_tiles` | 1400 | Resident tile pool size (LRU). |
 | `CBRSIM_COA_DETAIL` / `_MEAN` / `_MAX` / `_K` | 0.7 / 4 / 8 / 24 | Coa = reuse a resident tile whose low-frequency look matches a flat cold tile (detail below DETAIL; 2x2 mean color diff within MEAN/MAX; check K newest candidates). |
 | `CBRSIM_NEAR_YM` / `_YP` / `_C` | 10 / 28 / 24 | Near = reuse an almost-identical resident tile (mean/max luma diff, mean chroma diff). |
 | `CBRSIM_FLBK_IMPROVE_ONLY` / `_MIN_IMPROVE` | 1 / 0 | Flbk = fill a Miss with a resident tile only if it improves the picture. |
 | `CBRSIM_TFLBK_YM` / `_YP` / `_C` | 120 / 252 / 200 | Flbk match thresholds (loose — a coarse fill beats a hole). |
 | `AGING_ALPHA` / `WAIT_CAP` | 0.6 / 10 | Priority boost per waited frame, saturating at WAIT_CAP frames. |
 | `UPGRADE_NEAR_RESERVE` | 0.7 | Apply Near only when 70%+ of the tile budget is still free. |
-| `CBRSIM_DITHER` / `CBRSIM_SEGPAL` | on / on | Dithering / per-segment palette swaps. |
-| `CBRSIM_PAL_ALGO` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. A selected one-line candidate receives a complete flattened-RGB333 histogram refinement and all-frame error proof before segment palettes are considered. |
-| `CBRSIM_PAL_MAP_WEIGHT` | 1.0 | MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |
-| `CBRSIM_PAL_SEAM_WEIGHT` / `_ITERATIONS` | 8.0 / 2 | MOSAIC-GM spatial assignment cost for a quantization discontinuity introduced at an 8x8 boundary, and deterministic checkerboard passes. Real source edges are excluded from the cost. |
+| `encoder.dither` / `encoder.segment_palettes` | on / on | Dithering / per-segment palette swaps. |
+| `palette.algorithm` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. A selected one-line candidate receives a complete flattened-RGB333 histogram refinement and all-frame error proof before segment palettes are considered. |
+| `palette.map_weight` | 1.0 | MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |
+| `palette.seam_weight` / `palette.seam_iterations` | 8.0 / 2 | MOSAIC-GM spatial assignment cost for a quantization discontinuity introduced at an 8x8 boundary, and deterministic checkerboard passes. Real source edges are excluded from the cost. |
 | `CBRSIM_PAL_GROW_REL` / `_ABS` / `_MIN_USAGE` | 0.005 / 0.002 / 0.002 | Minimum relative gain, gain per pixel, and tile-use fraction required to add another MOSAIC-GM line. |
 | `CBRSIM_PAL_CORE_SIZES` | `4,6,8,10,12,14` | Shared-colour counts tried when a specialist line grows. The remaining slots are line-specific. |
-| `CBRSIM_PAL_SAMPLE_COUNTS` / `_VALIDATE_FRAMES` | `120,240,480` / 120 | Whole-movie learning candidates and the separate validation sample used to select among them. |
-| `CBRSIM_PAL_SEG_TRAIN_FRAMES` / `_SEG_VALIDATE_FRAMES` | 240 / 60 | Maximum learning/validation frames per dark or uniform CRAM-segment candidate. |
-| `CBRSIM_PAL_SEG_GAIN_REL` / `_ABS` | 0.005 / 0.002 | Improvement required before a local segment palette replaces the selected global palette. Adjacent identical choices are merged. |
+| `palette.sample_counts` / `palette.validate_frames` | `[120,240,480]` / 120 | Whole-movie learning candidates and the separate validation sample used to select among them. |
+| `palette.segment_train_frames` / `palette.segment_validate_frames` | 240 / 60 | Maximum learning/validation frames per dark or uniform CRAM-segment candidate. |
+| `palette.segment_gain_relative` / `palette.segment_gain_per_pixel` | 0.005 / 0.002 | Improvement required before a local segment palette replaces the selected global palette. Adjacent identical choices are merged. |
 
-## H. Per-source env vars (`CBRSIM_*`)
+## H. Per-source TOML profiles
 
-Set per encode; they select the output and the codec behavior for that source.
+Use one `schema_version = 1` TOML file per source/mode combination. Examples are
+[`configs/bad-apple-h32.toml`](configs/bad-apple-h32.toml) and
+[`configs/bad-apple-h40.toml`](configs/bad-apple-h40.toml). The profile is the
+human-edited input; `CBRSIM_*` is only the encoder's internal compatibility
+layer.
 
-| Env | Meaning |
-|---|---|
-| `CBRSIM_W`, `CBRSIM_H` | Output resolution in pixels. |
-| `CBRSIM_MODE` | Display mode: `H32` / `H40` / `mode4`. |
-| `CBRSIM_MASTER_VF` / `CBRSIM_RAW_VF` | Optional ffmpeg overrides. If unset, `tools/video_geometry.py` probes the source and applies a full-frame, minimal-pad conversion using the mode HAR. H32 uses 8:7; H40 uses 32:35. |
-| `CBRSIM_GEOMETRY_FIT` | `pad` (default, preserves all source pixels) or `crop` (explicitly discard centered outer margins). |
-| `CBRSIM_SOURCE_SAR` | Optional input SAR override such as `25:27` when a 576x400 file is authored as 4:3 but has no SAR metadata. |
-| `CBRSIM_FPS` | Frame rate (= the source's native rate). |
-| `CBRSIM_SRC` | Source video path. |
-| `CBRSIM_DURATION` | Encode length in seconds. |
-| `CBRSIM_MAX_COLD` | Per-frame cold cap (section B). |
-| `CBRSIM_RING_CAP_KB` / `CBRSIM_TANK_KB` | Override the ring cap / tank (normally derived from av_config). |
-| `CBRSIM_RATE_KIB` | CBR target rate (section F). |
-| `CBRSIM_PACK_FILL` | Packer payload scheduling. Default `1` replaces CD-1x rate padding with useful future payload while space is available, but sends more only when a future deadline requires it. `0` selects the backwards-minimum diagnostic schedule. |
-| `CBRSIM_REUSE` | Reuse decoded frames. |
-| `CBRSIM_GPU` | GPU quantization is on by default (`1`). Set `0`, `off`, `false`, or `no` only to force CPU execution. If CuPy/CUDA cannot be initialized, the encoder reports the reason and falls back to CPU. |
-| `CBRSIM_PAL_ALGO` | `stl4` preserves the current encoder; `mosaic-gm` enables automatic shared-core Grow/Merge selection while it is being tuned. |
-| `CBRSIM_PAL_SEAM_WEIGHT` / `_ITERATIONS` | MOSAIC-GM spatial tile assignment. The visual-quality defaults are weight 8 and two converged checkerboard passes. |
-| `CBRSIM_EMIT_DEC`, `CBRSIM_OUT` | Save the decision log / output dir. `CBRSIM_EMIT_DEC=1` writes `CBRSIM_OUT/decisions.pkl`; an explicit path is also accepted. |
+```sh
+python tools/sim.py --config configs/bad-apple-h32.toml
+python tools/render_analysis.py --config configs/bad-apple-h32.toml
+python tools/pack_stream.py --config configs/bad-apple-h32.toml --verify
+```
+
+`sim.py` resolves the profile once and stores the exact geometry, timing, audio,
+stream, hardware, palette, and pack settings plus the TOML SHA-256 in
+`decisions.pkl`. `pack_stream.py` then uses that frozen configuration only. It
+does not import `sim.py` and does not read per-source `CBRSIM_*` values. When
+`--config` is supplied to the packer, its hash must match the one recorded by
+the sim; editing a TOML after simulation requires a new sim run.
+
+| TOML table | Keys | Meaning |
+|---|---|---|
+| `[source]` | `path`, `fps`, `duration`, optional `sar` | Input identity and native timing. `sar` repairs missing/wrong source metadata; it does not crop. |
+| `[video]` | `mode`, `width`, `height`, `fit`, optional `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `fit="pad"` preserves every source pixel; use `crop` only for confirmed black margins. H32 uses PAR 8:7 and H40 uses 32:35. |
+| `[audio]` | `kind` | `pcm13` is the shipping RF5C164 path. |
+| `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. Normal hardware work sets `emit_decisions=true`. |
+| `[encoder]` | `gpu`, `rate_kib`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `coa` | Common codec controls. GPU is the default; CPU fallback remains automatic. |
+| `[palette]` | `algorithm`, sampling/validation keys, MOSAIC-GM seam keys | Palette-selection algorithm and its training controls. |
+| `[pack]` | `debug`, `fill`, `startup_audio_frames`, `output` | Disc-generation choices frozen with the encode. `debug=true` is the normal recording build. `fill=true` replaces CD-1x padding with useful future payload where proven safe. |
+
+The profile loader is strict: misspelled sections/keys, unsupported display
+modes, and non-tile-aligned dimensions fail immediately. Profile values replace
+inherited per-source environment values unconditionally. Shared hardware limits
+such as ring size, tank size, and the automatic cold cap stay in
+`tools/av_config.py`; they are deliberately not per-source TOML fields.
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 

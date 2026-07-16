@@ -23,11 +23,10 @@ control block: >H total_len >H frame_seq >H n_upd >B pal >B dbg [DEBUG if dbg]
   pal = 区間番号+1(0=切替なし)。実機はMain-RAMのPALTAB表を引く(in-stream CRAM廃止)。
   dbg=1 のとき諸元ヘッダ直後に固定長DEBUGブロック(前方固定=新プレイヤーは固定offsetで一発読み):
   7×>H カテゴリ数[raw,same,near,coa,flbk,buf,miss] + 4×>H 予約 = 22B(偶数)。
-  既定OFF(CBRSIM_PACK_DEBUG=1 で有効=デバッグ時だけ載せる)。
+  既定OFF。TOML の pack.debug=true でデバッグ時だけ載せる。
 """
 import argparse
 import math
-import os
 import pickle
 import struct
 import sys
@@ -37,9 +36,10 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import sim as sim
-from sim import C_CELLS, TCOLS, TROWS, TILE, PATTERN_BYTES, AUDIO_RATE, FPS
+from encode_config import load_profile
 from cbr_paths import sim_work_dir
+from quantize_global4_tiles import pals_to_bytes
+from quantize_md_video import rgb333_to_rgb888
 
 SECTOR = 2048
 MAGIC = b"TTRC"             # Tile Texture Reuse Codec
@@ -48,24 +48,22 @@ BASE = 1                     # POOL_TILE_BASE (VRAM tile index = BASE+slot)
 FRAME_SECTORS = 5
 PAT = 32
 PAT_PER_SEC = SECTOR // PAT  # 64
-# Keep the PCM writer very slightly ahead of the RF5C164 clock. Playback is
-# paced by integer NTSC VBlanks (60000/1001 Hz), not nominal 15/30 exactly.
-# Ceil(13.3k / actual playback fps) gives 888 B at N4 and 444 B at N2. With
-# FD=0x0345 (about 13303.76 samples/s), either writes about 13306.69 samples/s:
-# a deliberate reserve gain of only about 2.94 B/s. Non-PCM experiments retain
-# their historical nominal-fps calculation.
 NTSC_VSYNC = 60_000 / 1001
-VSYNC_N = int(round(NTSC_VSYNC / FPS))
-PLAYBACK_FPS = NTSC_VSYNC / VSYNC_N
-AUDIO = (int(math.ceil(AUDIO_RATE / PLAYBACK_FPS))
-         if sim.AUDIO_KIND == "pcm13" else int(round(AUDIO_RATE / FPS)))
-# PCM開始直後はエミュレータ/実機の立上がり位相で一時的にSubの供給が遅れる。先頭音声を
-# ディスクのboot prefixへ複製し、PCMを開始する前にwave RAMへ並べておく。frame0を含む
-# Startup PCM prefetch depth. HEADER queues chunks 0..N-1 before playback;
-# control frame 0 carries chunk N, frame 1 carries N+1, and so on. This keeps a
-# real N-frame reserve instead of consuming the reserve while duplicate control
-# chunks are skipped. The existing environment name remains for compatibility.
-STARTUP_AUDIO_FRAMES = max(0, int(os.environ.get("CBRSIM_STARTUP_AUDIO_FRAMES", "30")))
+# These values are populated from the decision log by configure_from_log().
+# They are intentionally not read from CBRSIM_*: the log is the frozen encoder
+# contract, and an unrelated inherited shell must not change the packed disc.
+TCOLS = TROWS = C_CELLS = 0
+TILE = 8
+PATTERN_BYTES = 32
+FPS = 0.0
+VSYNC_N = 0
+PLAYBACK_FPS = 0.0
+AUDIO_KIND = "pcm13"
+AUDIO_RATE = 0
+AUDIO = 0
+STARTUP_AUDIO_FRAMES = 30
+PACK_DEBUG = False
+PACK_FILL = True
 PCM_SYNC_LEAD = 0x3000
 PCM_SYNC_MAX = 0x6800
 PCM_WAVE_RING_END = 0x8000
@@ -75,23 +73,8 @@ PCM_STARTUP_MARGIN = 0x0200
 # RING_CAP(スケジュール上限)と sim の TANK は RING_SIZE から導出され必ず一致する。
 import av_config
 RING_SIZE_KB = av_config.RING_SIZE_KB
-RING_CAP_KB = int(os.environ.get("CBRSIM_RING_CAP_KB", str(av_config.RING_CAP_KB)))
-if RING_CAP_KB > av_config.BACKPRESSURE_KB:
-    raise SystemExit(
-        f"CBRSIM_RING_CAP_KB={RING_CAP_KB} exceeds player back-pressure "
-        f"{av_config.BACKPRESSURE_KB}KB — the pump would stall and drop sectors. "
-        f"Lower it (default {av_config.RING_CAP_KB} from av_config.py).")
+RING_CAP_KB = av_config.RING_CAP_KB
 RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
-
-# コールド上限(=1コマの新規タイル数の上限)は「エンコーダ=sim」だけの責務。
-# ここ(pack段)で cap すると、(1)simが出す解析の絵とディスクの絵が食い違い、(2)cell昇順で
-# 下段を打ち切り前コマ保持(stale)になって sim の賢い流用(reuse)より画質が劣る。
-# よって pack では絶対に cap しない。指定されたら「simへ移せ」と明示エラーにする。
-if os.environ.get("CBRSIM_PACK_MAXCOLD"):
-    raise SystemExit(
-        "CBRSIM_PACK_MAXCOLD is removed: the cold cap belongs to the encoder. "
-        "Set CBRSIM_MAX_COLD in the sim and re-sim, so the analysis matches the "
-        "disc and capped cells reuse (not go stale). See tools/av_config.py.")
 
 # --- デバッグブロック(control先頭ヘッダ直後・固定長) ---
 DBG_NCAT = 7                 # カテゴリ数 [raw,same,near,coa,flbk,buf,miss]
@@ -122,6 +105,68 @@ def load_log(path):
         return pickle.load(f)
 
 
+def configure_from_log(log, *, debug=None, fill=None, startup_audio_frames=None):
+    """Populate pack constants from one frozen decision log.
+
+    Legacy logs are accepted through their existing top-level fields.  No
+    CBRSIM_* value participates in this function.
+    """
+    global TCOLS, TROWS, C_CELLS, TILE, PATTERN_BYTES
+    global FPS, VSYNC_N, PLAYBACK_FPS, AUDIO_KIND, AUDIO_RATE, AUDIO
+    global STARTUP_AUDIO_FRAMES, PACK_DEBUG, PACK_FILL
+
+    cfg = log.get("config") or {}
+    video = cfg.get("video") or {}
+    timing = cfg.get("timing") or {}
+    audio = cfg.get("audio") or {}
+    hardware = cfg.get("hardware") or {}
+    pack = cfg.get("pack") or {}
+    geom = log.get("geom")
+    if geom is None:
+        geom = (video.get("cols"), video.get("rows"), video.get("cells"), video.get("tile"))
+    if not geom or any(value is None for value in geom):
+        raise SystemExit("decision log has no complete geometry")
+    TCOLS, TROWS, C_CELLS, TILE = map(int, geom)
+    if TILE != 8 or C_CELLS != TCOLS * TROWS:
+        raise SystemExit(
+            f"invalid decision geometry: {TCOLS}x{TROWS} cells={C_CELLS} tile={TILE}")
+    PATTERN_BYTES = 32
+
+    FPS = float(timing.get("fps", log.get("fps", 0)))
+    if FPS <= 0:
+        raise SystemExit("decision log has no valid fps")
+    expected_vsync_n = int(round(NTSC_VSYNC / FPS))
+    VSYNC_N = int(timing.get("vsync_n", expected_vsync_n))
+    if VSYNC_N != expected_vsync_n:
+        raise SystemExit(
+            f"decision log vsync_n={VSYNC_N} disagrees with fps={FPS} ({expected_vsync_n})")
+    PLAYBACK_FPS = NTSC_VSYNC / VSYNC_N
+
+    AUDIO_KIND = str(audio.get("kind", log.get("audio_kind", "pcm13")))
+    AUDIO_RATE = int(audio.get("rate", log.get("audio_rate", 0)))
+    AUDIO = int(audio.get("frame_bytes", log.get("audio_frame_bytes", 0)))
+    if AUDIO_RATE <= 0 or AUDIO <= 0:
+        raise SystemExit("decision log has no valid audio rate/frame size")
+    expected_audio = (int(math.ceil(AUDIO_RATE / PLAYBACK_FPS))
+                      if AUDIO_KIND == "pcm13" else int(round(AUDIO_RATE / FPS)))
+    if AUDIO != expected_audio:
+        raise SystemExit(
+            f"decision log audio_frame_bytes={AUDIO} disagrees with its own "
+            f"{AUDIO_KIND}/{AUDIO_RATE}Hz/{FPS:g}fps settings ({expected_audio})")
+
+    sim_tank = int(hardware.get("tank_kb", log.get("tank_kb", RING_CAP_KB)))
+    if sim_tank != RING_CAP_KB:
+        raise SystemExit(
+            f"decision log tank_kb={sim_tank} != hardware RING_CAP_KB={RING_CAP_KB}; "
+            "re-run sim with the current tools/av_config.py")
+    PACK_DEBUG = bool(pack.get("debug", False)) if debug is None else bool(debug)
+    PACK_FILL = bool(pack.get("fill", True)) if fill is None else bool(fill)
+    startup = pack.get("startup_audio_frames", 30)
+    if startup_audio_frames is not None:
+        startup = startup_audio_frames
+    STARTUP_AUDIO_FRAMES = max(0, int(startup))
+
+
 def require_canonical_p0_debug_colours(log):
     """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
@@ -145,7 +190,7 @@ def require_canonical_p0_debug_colours(log):
 
 
 def pals_to_bytes_128(pal_4x15):
-    b = sim.pals_to_bytes([np.asarray(pal_4x15[p], np.uint8) for p in range(4)])
+    b = pals_to_bytes([np.asarray(pal_4x15[p], np.uint8) for p in range(4)])
     assert len(b) == 128, len(b)
     return b
 
@@ -252,8 +297,8 @@ def build_control(log, per, n_upd, pal_w, audio_path):
     seg_cram = [pals_to_bytes_128(p) for p in log["seg_pals"]]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
     cats_list = log.get("cats")                     # per-frame [raw,same,near,coa,flbk,buf,miss]
-    # デバッグ欄: 既定OFF。CBRSIM_PACK_DEBUG=1 でデバッグ向けに載せる。
-    dbg_on = bool(cats_list) and os.environ.get("CBRSIM_PACK_DEBUG", "0") == "1"
+    # デバッグ欄: decision log に固定された pack.debug を使う。
+    dbg_on = bool(cats_list) and PACK_DEBUG
     aud = b""
     if audio_path:
         # WAV(pcm_u8, 中心=128)を読む。wave で data チャンクだけ取り出す(ヘッダを
@@ -411,8 +456,6 @@ def schedule(per, n_load, blocks):
     # v6 always arms frame 0 from HEADER.DAT.  Keeping a switch here would
     # produce a file whose layout disagrees with its version, so reject the
     # removed legacy mode explicitly instead of silently emitting it.
-    if os.environ.get("CBRSIM_F0_HEADER", "1") == "0":
-        raise SystemExit("pack v6 requires frame0 in HEADER.DAT; CBRSIM_F0_HEADER=0 is unsupported")
     F0_HEADER = True
     nc = np.zeros(nfr, np.int64)
     ctrl_deliv = 0
@@ -447,7 +490,7 @@ def schedule(per, n_load, blocks):
     # the schedule may use up to FRAME_SECTORS and the normal bounded lead logic
     # repays that burst later.  Thus this remains forward prefetch, but never
     # creates an avoidable above-1x startup burst merely to keep a full ring full.
-    if os.environ.get("CBRSIM_PACK_FILL", "1") != "0":
+    if PACK_FILL:
         ring_sec = RING_CAP_PAT // PAT_PER_SEC             # リング上限(セクタ)
         # frame0はDAT冒頭の専用ヘッダブロックとしてboot中にVRAM直ロードする(=ストリーミングの
         # リングを一切経由しない)。よってframe0のcoldはストリームの累積d(=リングpop)から除外し、
@@ -632,7 +675,7 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
                 continue
             a = np.frombuffer(pat, np.uint8); idx = np.zeros(64, np.uint8)
             idx[0::2] = a >> 4; idx[1::2] = a & 0xF
-            img[c] = sim.rgb333_to_rgb888(full16[nt_pal[c], idx].reshape(8, 8, 3))
+            img[c] = rgb333_to_rgb888(full16[nt_pal[c], idx].reshape(8, 8, 3))
         fr = img.reshape(TROWS, TCOLS, TILE, TILE, 3).transpose(0, 2, 1, 3, 4).reshape(
             TROWS * TILE, TCOLS * TILE, 3)
         if sample_dir is not None and i in samples:
@@ -732,10 +775,9 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     prebuf_bytes = stream_pay[:Bpat * PAT]           # frame1用プリバッファ(RING_CAP)
     prebuf_sec = -(-len(prebuf_bytes) // SECTOR)
     ring_peak = int(sc["ring_peak"])
-    # The sim decision log is the source of truth.  Falling back to the
-    # environment keeps old logs readable, but never let a case mismatch or a
-    # changed shell environment silently turn an H32 stream into H40.
-    mode_name = str(log.get("mode") or os.environ.get("CBRSIM_MODE", "")).strip().upper()
+    # The sim decision log is the source of truth. Never let a changed shell
+    # environment silently turn an H32 stream into H40.
+    mode_name = str(log.get("mode") or (log.get("config") or {}).get("video", {}).get("mode", "")).strip().upper()
     if not mode_name:
         mode_name = "H40" if TCOLS == 40 else "H32"
     if mode_name not in {"H32", "H40", "MODE4"}:
@@ -866,34 +908,66 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
 
 def main():
     ap = argparse.ArgumentParser()
-    sim_dir = sim_work_dir()
-    ap.add_argument("--dec-log", default=str(sim_dir / "decisions.pkl"))
+    ap.add_argument("--config", help="per-source TOML profile (used to locate and authenticate decisions.pkl)")
+    ap.add_argument("--dec-log", default="")
     ap.add_argument("--pool-slots", type=int, default=0)
     ap.add_argument("--alloc", choices=["lru", "contig"], default="contig",
                     help="スロット割当: contig=フレーム内cold連番(MD大DMA向け, 既定) / lru=旧方式")
-    ap.add_argument("--output", default="out/movieplay/MOVIE.DAT")
+    ap.add_argument("--output", default="")
     ap.add_argument("--audio", default="")
     ap.add_argument("--verify", action="store_true")
-    ap.add_argument("--compare", default=str(sim_dir / "preview"))
+    ap.add_argument("--compare", default="")
+    ap.add_argument("--debug", action=argparse.BooleanOptionalAction, default=None,
+                    help="override the frozen pack.debug value")
+    ap.add_argument("--fill", action=argparse.BooleanOptionalAction, default=None,
+                    help="override the frozen pack.fill value")
+    ap.add_argument("--startup-audio-frames", type=int, default=None,
+                    help="override the frozen startup prefetch depth")
     ap.add_argument("--no-write", action="store_true")
     args = ap.parse_args()
 
-    log = load_log(args.dec_log)
+    profile = None
+    if args.config:
+        try:
+            profile = load_profile(args.config)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"invalid encode profile: {exc}") from exc
+    dec_log = Path(args.dec_log) if args.dec_log else (
+        profile.decision_log if profile else sim_work_dir() / "decisions.pkl")
+    log = load_log(dec_log)
+    if profile is not None:
+        recorded = ((log.get("config") or {}).get("profile") or {})
+        if not recorded:
+            raise SystemExit(
+                f"{dec_log}: decision log predates TOML profile authentication; re-run sim")
+        if recorded.get("sha256") != profile.sha256:
+            raise SystemExit(
+                f"{dec_log}: profile hash mismatch; the TOML changed after sim. "
+                "Re-run sim before packing.")
+    configure_from_log(
+        log, debug=args.debug, fill=args.fill,
+        startup_audio_frames=args.startup_audio_frames)
     require_canonical_p0_debug_colours(log)
     # 単一真実源チェック: sim が焼いた tank と、この pack の RING_CAP は同じ実機リングを
     # モデルするので一致すべき。ズレていたら二重管理の兆候なので警告。
     sim_tank = log.get("tank_kb")
     sim_cold = log.get("max_cold")
-    sim_audio = log.get("audio_frame_bytes")
-    if sim_tank is not None and sim_tank != RING_CAP_KB:
-        print(f"  [warn] sim tank_kb={sim_tank} != pack RING_CAP_KB={RING_CAP_KB} "
-              f"(should match: both model the usable ring, av_config.py)")
-    if sim_audio is not None and int(sim_audio) != AUDIO:
-        raise SystemExit(
-            f"decision log audio_frame_bytes={sim_audio} != pack AUDIO={AUDIO}; "
-            "re-run sim with the current encoder")
     print(f"  encode params from sim: max_cold={sim_cold} tank_kb={sim_tank}  "
-          f"pack RING_CAP_KB={RING_CAP_KB} (RING_SIZE {RING_SIZE_KB})")
+          f"pack RING_CAP_KB={RING_CAP_KB} (RING_SIZE {RING_SIZE_KB})  "
+          f"{TCOLS*8}x{TROWS*8} {FPS:g}fps AUDIO={AUDIO} DEBUG={int(PACK_DEBUG)}")
+    output = args.output or str(
+        ((log.get("config") or {}).get("pack") or {}).get("output", "out/movieplay/MOVIE.DAT"))
+    audio_path = args.audio
+    if not audio_path:
+        audio_name = ((log.get("config") or {}).get("audio") or {}).get("file")
+        if not audio_name:
+            audio_name = "audio_13k3_u8_mono.wav" if AUDIO_KIND == "pcm13" else "audio_22k05_adpcm_mono.wav"
+        candidate = dec_log.parent / str(audio_name)
+        if not candidate.exists():
+            raise SystemExit(
+                f"decision audio is missing: {candidate}; re-run sim or pass --audio explicitly")
+        audio_path = str(candidate)
+    compare = args.compare or str(dec_log.parent / "preview")
     POOL = args.pool_slots or int(log["vram_tiles"])
     per, n_load, n_upd, pal_w, Plist, tearing = resolve(log, POOL, mode=args.alloc)
     print(f"resolve[{args.alloc}]: tearing={tearing} M(payload)={len(Plist)} frames={len(per)}")
@@ -909,7 +983,7 @@ def main():
             f"共有 TileAllocator では realized=cap のはず=想定外。sim/pack の割り当て食い違いを疑う。")
     print(f"  realized cold: max={realized_max} == cap {cold_ceiling} (共有割り当て)")
     run_stats(per)
-    blocks = build_control(log, per, n_upd, pal_w, args.audio)
+    blocks = build_control(log, per, n_upd, pal_w, audio_path)
     sc = schedule(per, n_load, blocks)
     st = ("OK" if sc["feasible"] else
           f"INFEASIBLE(over {sc['over']} under {sc.get('under',0)} "
@@ -936,10 +1010,10 @@ def main():
             f"ready_min={sc['ready_min']} ctrl_min={sc['ctrl_min']} "
             f"rate_lead_end={sc.get('rate_lead_end', 0)})")
     if args.verify:
-        decode_verify(log, per, blocks, Plist, sc, compare_dir=args.compare or None,
-                      sample_dir=Path(args.output).parent / "decoded")
+        decode_verify(log, per, blocks, Plist, sc, compare_dir=compare or None,
+                      sample_dir=Path(output).parent / "decoded")
     if not args.no_write:
-        write_stream(args.output, log, per, blocks, Plist, sc, POOL)
+        write_stream(output, log, per, blocks, Plist, sc, POOL)
 
 
 if __name__ == "__main__":

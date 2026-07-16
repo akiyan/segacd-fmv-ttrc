@@ -27,6 +27,12 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).parent))
+from encode_config import consume_config_arg
+
+# Match the sim invocation exactly without requiring callers to repeat its
+# resolved CBRSIM_* environment by hand.
+CONFIG_PROFILE = consume_config_arg(sys.argv)
+
 import layout_preview as L
 from cbr_paths import artifact_path, sim_work_dir
 

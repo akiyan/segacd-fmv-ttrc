@@ -83,16 +83,16 @@ Rules:
   crop. Preserve the complete source instead.
 - Crop only the confirmed fixed black margins. Never crop active picture just
   to fill H32/H40; fit/pad the remaining active picture with the mode HAR.
-- Read the exact full duration from `ffprobe` and always export it as
-  `CBRSIM_DURATION`. Do not rely on `sim.py`'s diagnostic default or unset the
-  variable for a full-length encode.
+- Read the exact full duration from `ffprobe` and put it in
+  `source.duration` in the TOML profile. Do not rely on `sim.py`'s diagnostic
+  default for a full-length encode.
 
 ### 2. Choose Resolution / Tile Grid
 
 - Use the full valid raster for the selected display mode: H32 is 256x224
   (32x28, 896 cells), and H40 is 320x224 (40x28, 1120 cells).
 - Let `A` be the displayed aspect of the source after applying its SAR. If the
-  file has no reliable SAR, set `CBRSIM_SOURCE_SAR` explicitly.
+  file has no reliable SAR, set `source.sar` explicitly in the TOML profile.
 - Fit the complete source into that raster using H32 HAR 8:7 or H40 HAR 32:35.
   This normally leaves no border or only a small border. Do not reduce the
   grid merely because fewer tiles can change in one frame; the encoder's
@@ -104,37 +104,23 @@ Rules:
 
 This can take about 10-13 minutes for 2700-3100 frames.
 
+Create one strict `schema_version = 1` profile under `configs/` for each
+source/mode combination. Use the schema in `CONFIG.md`; the checked-in Bad
+Apple H32/H40 profiles are complete examples. The profile must name the source,
+native fps, exact duration, full mode raster, HAR-aware `fit`, PCM audio,
+output directory, encoder/palette settings, and DEBUG pack settings.
+
 ```sh
-export CBRSIM_SRC=SRC
-export CBRSIM_W=<W> CBRSIM_H=<H> CBRSIM_FPS=<fps> CBRSIM_DURATION=<sec>
-
-# Display mode & audio format:
-#   CBRSIM_MODE = H32 (256 wide, default) / H40 (320 wide → set CBRSIM_W=320, 40 cols)
-#                 / mode4 (256x192 — RESERVED: packer tile format not ready, do not ship)
-#   CBRSIM_AUDIO = pcm13 (13.3kHz mono 8bit PCM, RF5C164 — the shipping audio path, and
-#                  the code default). ADPCM (adpcm22) was investigated but shelved; see ADPCM.md.
-# CBRSIM_MODE flows into the analysis overlay AND the MOVIE.DAT header mode byte (via pack).
-export CBRSIM_MODE=H32 CBRSIM_AUDIO=pcm13
-
-# The geometry helper is automatic unless explicit filters are required.
-export CBRSIM_GEOMETRY_FIT=pad       # crop only confirmed black margins
-export CBRSIM_SOURCE_SAR=25:27       # example: 576x400 authored as 4:3
-# Optional explicit overrides remain available for unusual sources.
-# export CBRSIM_MASTER_VF="..."
-# export CBRSIM_RAW_VF="..."
-
-# Output convention (AGENTS.md "Output Paths"): one stem per encode,
-#   <stem> = <input-basename>_<mode>_<resolution>_<audio>
-#            e.g. OP1_ps2_H32_256x224_pcm  (resolution = output WxH px)
-# All artifacts go under videos/ (git-ignored), never tmp/.
-export CBRSIM_OUT=videos/<stem>
-export CBRSIM_DITHER=1 CBRSIM_SEGPAL=1 CBRSIM_NEAR=1 CBRSIM_VBV=1 CBRSIM_COA=1
-
 PY=~/.config/cbrsim-gpu/venv/bin/python
 [ -x "$PY" ] || PY=python3
-mkdir -p videos/<stem>
-nohup "$PY" tools/sim.py >videos/<stem>/sim.log 2>&1 &
+"$PY" tools/sim.py --config configs/<source>-<mode>.toml
 ```
+
+TOML values replace inherited per-source `CBRSIM_*` values. `sim.py` freezes
+the resolved settings and profile SHA-256 in `decisions.pkl`; do not hand-copy
+the geometry or fps to the packer later. Existing `CBRSIM_*` variables are an
+internal compatibility layer and remain useful only for one-off experiments
+that intentionally have no profile.
 
 After completion:
 
@@ -161,11 +147,9 @@ must change, change it there first. `render_analysis.py` uses the same drawing
 function on real data.
 
 ```sh
-CBRSIM_OUT=videos/<stem> \
 CBRSIM_SRCLABEL="Source (<source name>, <platform/year>)" \
-CBRSIM_MODE=H32 \
 ANALYSIS_OUT=videos/<stem>_analysis.mp4 \
-"$PY" tools/render_analysis.py
+"$PY" tools/render_analysis.py --config configs/<source>-<mode>.toml
 ```
 
 The full render generates all PNG frames in parallel (`nproc-2`) and then calls
@@ -174,7 +158,7 @@ FFmpeg, usually with `h264_nvenc`, `-r 60`, and audio.
 Frame-range check only:
 
 ```sh
-python3 tools/render_analysis.py <A> <B>
+python3 tools/render_analysis.py --config configs/<source>-<mode>.toml <A> <B>
 ```
 
 Important rendering notes:

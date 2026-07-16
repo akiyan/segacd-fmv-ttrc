@@ -11,6 +11,12 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e34/p41 : Add strict per-source TOML encode profiles. sim.py resolves a
+#        profile before encoder constants are initialized and freezes the exact
+#        geometry, timing, audio, hardware, palette and pack settings plus the
+#        profile hash in decisions.pkl. pack_stream.py no longer imports sim.py
+#        or reads per-source CBRSIM values; it reconstructs its contract from
+#        that decision log and rejects a TOML edited after simulation.
 #   e33/p41 : Add spatially coherent MOSAIC-GM tile assignment. A deterministic
 #        two-pass checkerboard optimizer compares quantization residuals only
 #        across shared 8x8 edges, reducing palette-created boundary seams while
@@ -271,5 +277,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260716
-e=33
+e=34
 p=41

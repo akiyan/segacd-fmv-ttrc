@@ -37,6 +37,13 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from encode_config import consume_config_arg, profile_identity  # noqa: E402
+
+# Apply a per-source TOML profile before any CBRSIM-backed module constants are
+# evaluated.  The internal environment remains compatible with older scripts,
+# but TOML values always win over an inherited shell environment.
+CONFIG_PROFILE = consume_config_arg(sys.argv)
+
 from quantize_md_video import (  # noqa: E402
     rgb888_to_rgb333, rgb333_to_rgb888, run, prepare_dir, MD_LEVELS,
 )
@@ -837,6 +844,8 @@ def precompute_quant(frames, seg_pals, frame_seg):
 
 def main():
     global DEDITHER_VF, RAW_VF
+    if CONFIG_PROFILE is not None:
+        print(f"encode profile: {CONFIG_PROFILE.path} sha256={CONFIG_PROFILE.sha256}")
     if not DEDITHER_VF or not RAW_VF:
         src_w, src_h, src_sar_num, src_sar_den = probe_source(SRC)
         if SOURCE_SAR_OVERRIDE:
@@ -872,11 +881,11 @@ def main():
         prepare_dir(OUT, clean=True)
         for d in (master_dir, raw_dir):
             prepare_dir(d, clean=True)
-        print("extracting de-dithered master (256x144) ...")
+        print(f"extracting de-dithered master ({W}x{H}) ...")
         run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-ss", "0", "-t", DURATION, "-i", SRC,
              "-vf", f"{DEDITHER_VF},fps={FPS_STR}", str(master_dir / "%05d.png")])
-        print("extracting raw original (320x144) ...")
+        print(f"extracting raw comparison frames ({W}x{H} raster) ...")
         run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-ss", "0", "-t", DURATION, "-i", SRC,
              "-vf", f"{RAW_VF},fps={FPS_STR}", str(raw_dir / "%05d.png")])
@@ -1556,9 +1565,44 @@ def main():
     # すべてこのログに畳み込まれる=pack_streamは再生するだけでmp4と同じ画を出せる(唯一の真実源)。
     if EMIT_DEC:
         import pickle
+        frozen_config = {
+            "schema_version": 1,
+            "profile": profile_identity(CONFIG_PROFILE),
+            "source": {
+                "path": str(SRC), "fps": str(FPS_STR), "duration": str(DURATION),
+                "sar": SOURCE_SAR_OVERRIDE,
+            },
+            "video": {
+                "mode": MODE.upper(), "width": int(W), "height": int(H),
+                "cols": int(TCOLS), "rows": int(TROWS), "cells": int(C_CELLS),
+                "tile": int(TILE), "fit": GEOMETRY_FIT,
+            },
+            "timing": {
+                "content_fps": str(FPS_STR), "fps": float(FPS),
+                "vsync_n": int(VSYNC_N), "playback_fps": float(PLAYBACK_FPS),
+            },
+            "audio": {
+                "kind": AUDIO_KIND, "rate": int(AUDIO_RATE),
+                "frame_bytes": int(AUDIO_FRAME_BYTES), "file": AUDIO_FILE,
+            },
+            "stream": {
+                "target_rate": int(TARGET_RATE), "frame_bytes": int(FRAME_BYTES),
+            },
+            "hardware": {
+                "vram_tiles": int(VRAM_TILES), "tank_kb": int(TANK_KB),
+                "max_cold": int(MAX_COLD),
+            },
+            "palette": {
+                "algorithm": PAL_ALGO, "seam_weight": float(PAL_SEAM_WEIGHT),
+                "seam_iterations": int(PAL_SEAM_ITERATIONS),
+            },
+            "pack": dict(CONFIG_PROFILE.section("pack") if CONFIG_PROFILE else {}),
+        }
         pickle.dump({
+            "config": frozen_config,
             "geom": (int(TCOLS), int(TROWS), int(C_CELLS), int(TILE)),
             "mode": MODE.upper(),                              # header display mode
+            "fps_str": str(FPS_STR), "audio_kind": AUDIO_KIND,
             "pal_algo": PAL_ALGO,
             "pal_stats": palette_stats,
             "seg_pals": [np.asarray(p, np.uint8) for p in seg_pals],  # list of (4,15,3)
