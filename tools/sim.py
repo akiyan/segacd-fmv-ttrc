@@ -45,7 +45,7 @@ from quantize_global4_tiles import (  # noqa: E402
 )
 from palette_algorithms import (  # noqa: E402
     MOSAIC_GM, STL4, PaletteEvaluator, build_mosaic_palettes,
-    normalize_palette_algo, score_palettes,
+    normalize_palette_algo, refine_one_line_palette, score_palettes,
 )
 from cbr_paths import sim_work_dir  # noqa: E402
 from video_geometry import probe_source, parse_ratio, source_filter, raw_filter  # noqa: E402
@@ -398,19 +398,28 @@ def segment_and_train(frames):
         }
         return pals_arr, [pals_arr], frame_seg, [], stats
 
-    # A one-line zero-error validation candidate receives an exact all-frame
-    # proof. This is a rendered-result decision, not a source-colour-count rule.
+    # A one-line candidate receives an exact all-frame histogram and local slot
+    # refinement. This is a rendered-error optimization, not a colour-count
+    # shortcut; sources over 15 colours use the same decreasing-error swaps.
     exact_global = False
-    if global_active == 1 and global_stats["validation"]["pixel_error_per_pixel"] == 0:
-        cost, _index = palette_lut(pals_arr[0], squared=True)
-        exact_global = True
-        for frame, path in enumerate(frames):
+    if global_active == 1:
+        full_histogram = np.zeros(512, dtype=np.int64)
+        for path in frames:
             tiles = tile_blocks(to_rgb333(np.asarray(Image.open(path).convert("RGB"))))
             flat, _detail = flatten_low_detail(tiles)
-            if np.any(cost[rgb333_keys(flat)]):
-                exact_global = False
-                print(f"[MOSAIC-GM] global one-line proof stopped at frame {frame}")
-                break
+            full_histogram += np.bincount(
+                rgb333_keys(flat).reshape(-1), minlength=512)
+        refined, refinement_stats = refine_one_line_palette(
+            pals_arr[0], full_histogram)
+        pals_arr = np.stack([refined.copy() for _line in range(4)]).astype(np.uint8)
+        global_stats["full_histogram_refinement"] = refinement_stats
+        exact_global = bool(refinement_stats["exact"])
+        print(
+            f"[MOSAIC-GM] global one-line full histogram: "
+            f"colours={refinement_stats['source_colours']} "
+            f"error={refinement_stats['before_error']}->{refinement_stats['after_error']} "
+            f"swaps={len(refinement_stats['swaps'])}"
+        )
         if exact_global:
             print(f"[MOSAIC-GM] global one-line RGB333 identity proved for all {n} frames")
 

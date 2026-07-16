@@ -147,7 +147,7 @@ resident tile), Buf (prefetched), or Miss. These thresholds steer that choice.
 | `AGING_ALPHA` / `WAIT_CAP` | 0.6 / 10 | Priority boost per waited frame, saturating at WAIT_CAP frames. |
 | `UPGRADE_NEAR_RESERVE` | 0.7 | Apply Near only when 70%+ of the tile budget is still free. |
 | `CBRSIM_DITHER` / `CBRSIM_SEGPAL` | on / on | Dithering / per-segment palette swaps. |
-| `CBRSIM_PAL_ALGO` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. |
+| `CBRSIM_PAL_ALGO` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. A selected one-line candidate receives a complete flattened-RGB333 histogram refinement and all-frame error proof before segment palettes are considered. |
 | `CBRSIM_PAL_MAP_WEIGHT` | 1.0 | MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |
 | `CBRSIM_PAL_GROW_REL` / `_ABS` / `_MIN_USAGE` | 0.005 / 0.002 / 0.002 | Minimum relative gain, gain per pixel, and tile-use fraction required to add another MOSAIC-GM line. |
 | `CBRSIM_PAL_CORE_SIZES` | `4,6,8,10,12,14` | Shared-colour counts tried when a specialist line grows. The remaining slots are line-specific. |

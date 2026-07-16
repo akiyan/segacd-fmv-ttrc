@@ -12,7 +12,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-from palette_algorithms import MOSAIC_GM, build_mosaic_palettes  # noqa: E402
+from palette_algorithms import (  # noqa: E402
+    MOSAIC_GM, build_mosaic_palettes, refine_one_line_palette,
+)
 
 
 def tiled(colors, count, seed):
@@ -37,6 +39,18 @@ def main() -> int:
         brightness = row.astype(np.int16).sum(1)
         assert brightness[0] == brightness.min()
         assert brightness[14] == brightness.max()
+
+    # A full-stream histogram can reveal colours missed by every sample. Spare
+    # duplicate slots absorb them without changing already exact colours.
+    counts = np.zeros(512, dtype=np.int64)
+    for r, g, b in grayscale:
+        counts[(r << 6) | (g << 3) | b] = 100
+    missed_key = (7 << 6) | (0 << 3) | 7
+    counts[missed_key] = 1
+    refined, refinement = refine_one_line_palette(palettes[0], counts)
+    assert refinement["exact"], refinement
+    assert refinement["after_error"] == 0
+    assert any(np.array_equal(color, (7, 0, 7)) for color in refined)
 
     # Two families share a grayscale spine but each needs more specialist
     # colours than one 15-colour line can retain without visible error.

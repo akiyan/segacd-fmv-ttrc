@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e32/p41 : Refine a one-line MOSAIC-GM candidate against the complete
+#        flattened RGB333 movie histogram. Full-error-decreasing slot swaps
+#        fill spare duplicates with sample-missed colours (Bad Apple becomes
+#        exact) and use the same bounded search for sources over 15 colours.
 #   e31/p41 : Add the optional MOSAIC-GM palette selector. It starts with one
 #        global RGB333 line, grows shared-core specialist lines only when a
 #        held-out sample improves, prunes redundant lines, and keeps local CRAM
@@ -262,5 +266,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260716
-e=31
+e=32
 p=41

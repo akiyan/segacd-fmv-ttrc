@@ -26,6 +26,9 @@ _RGB333 = np.stack([
     (_KEYS >> 3) & 7,
     _KEYS & 7,
 ], axis=1).astype(np.uint8)
+_RGB333_DISTANCE2 = (
+    (_RGB333.astype(np.int16)[:, None, :] - _RGB333.astype(np.int16)[None, :, :]) ** 2
+).sum(2).astype(np.int16)
 
 
 def normalize_palette_algo(value: str | None = None) -> str:
@@ -101,6 +104,73 @@ def _force_source_extremes(colors, source_counts):
     while len(result) < size:
         result.append(np.asarray(darkest, dtype=np.uint8))
     return np.asarray(result[:size], dtype=np.uint8)
+
+
+def refine_one_line_palette(palette, source_counts, candidate_limit=64):
+    """Improve one line against a complete RGB333 histogram by slot swaps.
+
+    Duplicate/low-value slots are naturally replaced first.  The same local
+    search remains valid when the source uses more than 15 colours: a swap is
+    accepted only when its full-histogram squared error decreases.
+    """
+    counts = np.asarray(source_counts, dtype=np.float64).reshape(512)
+    current = np.asarray(palette, dtype=np.uint8).copy()
+
+    def palette_keys(value):
+        return rgb333_keys(value).astype(np.int16)
+
+    def error_for(keys):
+        nearest = _RGB333_DISTANCE2[:, keys].min(1)
+        return int(np.dot(counts, nearest)), nearest
+
+    current_keys = palette_keys(current)
+    before, nearest = error_for(current_keys)
+    swaps = []
+    for _iteration in range(15):
+        current_set = set(int(key) for key in current_keys)
+        missing = np.asarray([
+            key for key in np.flatnonzero(counts)
+            if int(key) not in current_set
+        ], dtype=np.int16)
+        if not len(missing):
+            break
+        priority = counts[missing] * nearest[missing]
+        if len(missing) > candidate_limit:
+            keep = np.argpartition(priority, -candidate_limit)[-candidate_limit:]
+            missing = missing[keep]
+
+        distance = _RGB333_DISTANCE2[:, current_keys]
+        best_error = before if not swaps else error_for(current_keys)[0]
+        best = None
+        for slot in range(15):
+            other = np.delete(distance, slot, axis=1).min(1)
+            candidate_distance = _RGB333_DISTANCE2[:, missing]
+            score = (counts[:, None] * np.minimum(
+                other[:, None], candidate_distance
+            )).sum(0)
+            choice = int(score.argmin())
+            value = int(score[choice])
+            if value < best_error:
+                best_error = value
+                best = slot, int(missing[choice])
+        if best is None:
+            break
+        slot, key = best
+        old_key = int(current_keys[slot])
+        current[slot] = _RGB333[key]
+        current_keys[slot] = key
+        swaps.append({"slot": slot + 1, "old": old_key, "new": key})
+        _score, nearest = error_for(current_keys)
+
+    current = _force_source_extremes(current, counts)
+    after, _nearest = error_for(palette_keys(current))
+    return current, {
+        "source_colours": int(np.count_nonzero(counts)),
+        "before_error": before,
+        "after_error": after,
+        "swaps": swaps,
+        "exact": after == 0,
+    }
 
 
 class PaletteEvaluator:

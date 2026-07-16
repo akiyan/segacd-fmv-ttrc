@@ -77,3 +77,9 @@ mapping-noise weight still selected 240 on validation (0.403955 versus 0.447055
 at 480 and 0.439887 at 960). Production sampling should therefore train the
 120/240/480 candidates and select on a small fixed validation set instead of
 blindly choosing the largest sample.
+
+The selected one-line candidate is then refined against the complete flattened
+RGB333 movie histogram. On the full 6576-frame Bad Apple encode, the histogram
+contained 10 colours. Two sample-missed colours replaced duplicate slots,
+reducing the complete pre-codec palette error from 13 to exactly zero. The
+result uses one active palette line, one CRAM segment, and no CRAM switches.
