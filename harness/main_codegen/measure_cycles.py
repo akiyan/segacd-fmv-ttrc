@@ -30,9 +30,14 @@ MOVE_W_POSTINC_DN = 8       # Table 8-2: MOVE.W (An)+,Dn
 MOVE_W_DN_INDIRECT = 8      # Table 8-2: MOVE.W Dn,(An)/(An)+
 MOVE_W_DN_DISP = 12         # Table 8-2: MOVE.W Dn,(d16,An)
 MOVE_W_INDEX_DN = 14        # Table 8-2: MOVE.W (d8,An,Xn),Dn
+MOVE_L_POSTINC_DN = 12      # Table 8-3: MOVE.L (An)+,Dn
+MOVE_L_DN_INDIRECT = 12     # Table 8-3: MOVE.L Dn,(An)+
+MOVE_L_IMMEDIATE_DN = 12    # Table 8-3: MOVE.L #data,Dn
 MOVEQ = 4                   # Table 8-5
 CMPI_B_DN = 8               # Table 8-5
 ANDI_W_DN = 8               # Table 8-5
+AND_W_DN_DN = 4             # Table 8-4
+AND_L_DN_DN = 8             # Table 8-4 register-direct long special case
 ADD_W_DN_DN = 4             # Table 8-4
 ADDQ_L_AN = 8               # Table 8-5
 LSR_B_ONE = 8               # Table 8-7: 6+2n, n=1
@@ -74,12 +79,22 @@ def reference_byte_cycles(mask: int) -> int:
 
 
 def generated_byte_cycles(mask: int) -> int:
-    """Cycles for dispatch plus one generated handler, excluding outer DBRA."""
-    cycles = MOVEQ + MOVE_B_POSTINC_DN + ADD_W_DN_DN
+    """Cycles for one generated-path bitmap byte, excluding outer DBRA."""
+    cycles = MOVE_B_POSTINC_DN
+    if mask == 0:
+        return cycles + BCC_W_TAKEN + LEA_DISP + BRA_W
+
+    cycles += BCC_W_NOT_TAKEN + CMPI_B_DN
+    if mask == 0xFF:
+        cycles += BCC_W_TAKEN
+        cycles += 4 * (MOVE_L_POSTINC_DN + AND_L_DN_DN + MOVE_L_DN_INDIRECT)
+        return cycles
+
+    cycles += BCC_W_NOT_TAKEN + ANDI_W_DN + ADD_W_DN_DN
     cycles += MOVE_W_INDEX_DN + JMP_INDEX
     for bit in range(8):
         if mask & (1 << bit):
-            cycles += MOVE_W_POSTINC_DN + ANDI_W_DN
+            cycles += MOVE_W_POSTINC_DN + AND_W_DN_DN
             cycles += MOVE_W_DN_INDIRECT if bit == 0 else MOVE_W_DN_DISP
     return cycles + LEA_DISP + BRA_W
 
@@ -95,7 +110,9 @@ def frame_cycles(bitmap: bytes, has_entries: bool) -> tuple[int, int]:
 
     # Once per non-empty frame: prove md_codegen, load the table base, then
     # branch around the legacy loop after the final generated handler returns.
-    generated_setup = TST_W_ABS_LONG + BCC_W_NOT_TAKEN + LEA_ABS_LONG
+    generated_setup = (
+        TST_W_ABS_LONG + BCC_W_NOT_TAKEN + LEA_ABS_LONG + MOVE_L_IMMEDIATE_DN
+    )
     generated = (
         generated_setup
         + sum(generated_byte_cycles(mask) for mask in bitmap)
@@ -128,6 +145,7 @@ def main() -> None:
     generated = [item[1] for item in measured]
     saved = [old - new for old, new in measured]
     average_saved = statistics.mean(saved)
+    regressed = sum(value < 0 for value in saved)
 
     mask_counts = [0, 0, 0]
     for block in stream.controls:
@@ -154,8 +172,10 @@ def main() -> None:
     )
     print(
         f"average Main-CPU time saved: {average_saved / args.clock_hz * 1000:.3f} ms "
-        f"at {args.clock_hz} Hz; regressed frames={sum(value < 0 for value in saved)}"
+        f"at {args.clock_hz} Hz; regressed frames={regressed}"
     )
+    if regressed:
+        raise AssertionError(f"generated path regressed {regressed} packed frames")
 
 
 if __name__ == "__main__":

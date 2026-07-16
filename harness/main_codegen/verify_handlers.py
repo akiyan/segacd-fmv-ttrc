@@ -26,8 +26,9 @@ CONTINUE_ADDRESS = 0x00FF1000
 PLAYER_SOURCE = Path("boot/movieplay_ip.s")
 
 OP_MOVE_ENTRY_D3 = 0x3618       # move.w (a0)+,d3
-OP_STRIP_COLD_D3 = 0x0243       # andi.w #imm,d3
+OP_STRIP_COLD_D6_D3 = 0xC646    # and.w d6,d3
 IMM_ENTRY_MASK = 0x7FFF
+ENTRY_MASK_LONG = 0x7FFF7FFF
 OP_STORE_D3_A1 = 0x3283         # move.w d3,(a1)
 OP_STORE_D3_D16_A1 = 0x3343     # move.w d3,disp(a1)
 OP_ADVANCE_SHADOW = 0x43E9      # lea 16(a1),a1
@@ -37,11 +38,11 @@ OP_BRA_W = 0x6000
 PLAYER_CONSTANTS = {
     "MAIN_CODEGEN_BASE": CODEGEN_BASE,
     "MAIN_CODEGEN_TABLE_BYTES": TABLE_BYTES,
-    "MAIN_CODEGEN_HANDLER_MAX": 86,
-    "MAIN_CODEGEN_EXPECTED_END": 0x00FF5100,
+    "MAIN_CODEGEN_HANDLER_MAX": 70,
+    "MAIN_CODEGEN_EXPECTED_END": 0x00FF4900,
     "CG_OP_MOVE_ENTRY_D3": OP_MOVE_ENTRY_D3,
-    "CG_OP_STRIP_COLD_D3": OP_STRIP_COLD_D3,
-    "CG_IMM_ENTRY_MASK": IMM_ENTRY_MASK,
+    "CG_OP_STRIP_COLD_D6_D3": OP_STRIP_COLD_D6_D3,
+    "CG_ENTRY_MASK_LONG": ENTRY_MASK_LONG,
     "CG_OP_STORE_D3_A1": OP_STORE_D3_A1,
     "CG_OP_STORE_D3_D16_A1": OP_STORE_D3_D16_A1,
     "CG_OP_ADVANCE_SHADOW": OP_ADVANCE_SHADOW,
@@ -89,8 +90,7 @@ def emit_handlers(continue_address: int = CONTINUE_ADDRESS) -> tuple[bytes, tupl
             if not (mask & (1 << bit)):
                 continue
             append_word(image, OP_MOVE_ENTRY_D3)
-            append_word(image, OP_STRIP_COLD_D3)
-            append_word(image, IMM_ENTRY_MASK)
+            append_word(image, OP_STRIP_COLD_D6_D3)
             if bit == 0:
                 append_word(image, OP_STORE_D3_A1)
             else:
@@ -135,12 +135,9 @@ def verify_instruction_bytes(
             if read_word(image, pos) != OP_MOVE_ENTRY_D3:
                 raise AssertionError(f"mask {handler.mask:02X}: missing entry read at bit {bit}")
             pos += 2
-            if (
-                read_word(image, pos) != OP_STRIP_COLD_D3
-                or read_word(image, pos + 2) != IMM_ENTRY_MASK
-            ):
+            if read_word(image, pos) != OP_STRIP_COLD_D6_D3:
                 raise AssertionError(f"mask {handler.mask:02X}: missing cold strip at bit {bit}")
-            pos += 4
+            pos += 2
             if bit == 0:
                 if read_word(image, pos) != OP_STORE_D3_A1:
                     raise AssertionError(f"mask {handler.mask:02X}: bad bit-0 shadow write")
@@ -197,6 +194,18 @@ def apply_generated(mask: int, entries: list[int], shadow: list[int], cursor: in
     return entry_pos, cursor + SHADOW_BYTE_ADVANCE // 2
 
 
+def apply_full_longwords(entries: list[int], shadow: list[int], cursor: int) -> tuple[int, int]:
+    """Model bf_cg_ufull's four big-endian masked longword writes."""
+    if len(entries) != 8:
+        raise AssertionError(f"full path needs 8 entries, got {len(entries)}")
+    for pair in range(4):
+        packed = (entries[pair * 2] << 16) | entries[pair * 2 + 1]
+        packed &= ENTRY_MASK_LONG
+        shadow[cursor + pair * 2] = packed >> 16
+        shadow[cursor + pair * 2 + 1] = packed & 0xFFFF
+    return 8, cursor + 8
+
+
 def verify_semantics(cases_per_mask: int = 64) -> int:
     rng = random.Random(0xFF2000)
     checked_entries = 0
@@ -224,6 +233,14 @@ def verify_semantics(cases_per_mask: int = 64) -> int:
                     f"mask {mask:02X}: cursor mismatch entries {gen_entry}/{ref_entry}, "
                     f"shadow {gen_cursor}/{ref_cursor}"
                 )
+            if mask == 0xFF:
+                full_shadow = initial.copy()
+                full_entry, full_cursor = apply_full_longwords(entries, full_shadow, 8)
+                if full_shadow != reference or (full_entry, full_cursor) != (
+                    ref_entry,
+                    ref_cursor,
+                ):
+                    raise AssertionError("mask FF: four-longword path differs from reference")
             checked_entries += count
     return checked_entries
 
@@ -284,7 +301,7 @@ def verify_objdump(image: bytes, handlers: tuple[Handler, ...], objdump: Path | 
         expected_updates = mask.bit_count()
         if disassembly.count("%a0@+,%d3") != expected_updates:
             raise AssertionError(f"mask {mask:02X}: objdump entry-read count differs")
-        if disassembly.count("andiw #32767,%d3") != expected_updates:
+        if disassembly.count("andw %d6,%d3") != expected_updates:
             raise AssertionError(f"mask {mask:02X}: objdump cold-strip count differs")
         if "lea %a1@(16),%a1" not in disassembly or "braw" not in disassembly:
             raise AssertionError(f"mask {mask:02X}: objdump missing handler tail")
@@ -303,14 +320,14 @@ def main() -> None:
     checked_entries = verify_semantics()
     objdump_result = verify_objdump(image, handlers, find_objdump(args.objdump))
 
-    expected_size = 0x3100
+    expected_size = 0x2900
     if len(image) != expected_size:
         raise AssertionError(f"generated size {len(image)} != expected {expected_size}")
-    if CODEGEN_BASE + len(image) != 0x00FF5100:
+    if CODEGEN_BASE + len(image) != 0x00FF4900:
         raise AssertionError("unexpected generated end address")
     maximum = max(handler.size for handler in handlers)
-    if maximum != 86:
-        raise AssertionError(f"maximum handler size {maximum} != 86")
+    if maximum != 70:
+        raise AssertionError(f"maximum handler size {maximum} != 70")
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

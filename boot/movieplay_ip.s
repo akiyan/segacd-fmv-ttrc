@@ -44,14 +44,14 @@
 .equ RUN_TABLE,          0x00FF8000	/* (dst.w,len.w,src.l) runs (max ~128) */
 .equ MAIN_CODEGEN_LIMIT, RUN_TABLE
 .equ MAIN_CODEGEN_TABLE_BYTES, 0x0200	/* 256 signed word offsets */
-.equ MAIN_CODEGEN_HANDLER_MAX, 86	/* mask FF: guarded before writing */
-.equ MAIN_CODEGEN_EXPECTED_END, 0x00FF5100
+.equ MAIN_CODEGEN_HANDLER_MAX, 70	/* mask FF: guarded before writing */
+.equ MAIN_CODEGEN_EXPECTED_END, 0x00FF4900
 
 /* Exact 68000 words emitted by init_main_codegen.  Keep synchronized with
    harness/main_codegen/verify_handlers.py. */
 .equ CG_OP_MOVE_ENTRY_D3,      0x3618	/* move.w (a0)+,d3 */
-.equ CG_OP_STRIP_COLD_D3,      0x0243	/* andi.w #0x7FFF,d3 */
-.equ CG_IMM_ENTRY_MASK,        0x7FFF
+.equ CG_OP_STRIP_COLD_D6_D3,   0xC646	/* and.w d6,d3 */
+.equ CG_ENTRY_MASK_LONG,       0x7FFF7FFF
 .equ CG_OP_STORE_D3_A1,        0x3283	/* move.w d3,(a1) */
 .equ CG_OP_STORE_D3_D16_A1,    0x3343	/* move.w d3,disp(a1) */
 .equ CG_OP_ADVANCE_SHADOW,     0x43E9	/* lea 16(a1),a1 */
@@ -297,8 +297,7 @@ init_main_codegen:
 	btst	d5, d7
 	beq	4f
 	move.w	#CG_OP_MOVE_ENTRY_D3, (a0)+
-	move.w	#CG_OP_STRIP_COLD_D3, (a0)+
-	move.w	#CG_IMM_ENTRY_MASK, (a0)+
+	move.w	#CG_OP_STRIP_COLD_D6_D3, (a0)+
 	tst.w	d5
 	bne	3f
 	move.w	#CG_OP_STORE_D3_A1, (a0)+
@@ -411,12 +410,25 @@ bf_upd:
 	tst.w	md_codegen
 	beq	bf_ubyte			/* runtime overflow/geometry fallback */
 	lea	MAIN_CODEGEN_BASE, a3
+	move.l	#CG_ENTRY_MASK_LONG, d6		/* shared word/long cold-flag mask */
 bf_cg_ubyte:
-	moveq	#0, d0
 	move.b	(a2)+, d0
+	beq	bf_cg_uzero			/* keep the already-cheap zero path */
+	cmpi.b	#0xFF, d0
+	beq	bf_cg_ufull			/* four masked longwords, not eight words */
+	andi.w	#0x00FF, d0			/* MOVE.B leaves the upper byte unchanged */
 	add.w	d0, d0				/* signed-word table index */
 	move.w	(a3,d0.w), d4
 	jmp	(a3,d4.w)				/* prefetch starts generated handler */
+bf_cg_uzero:
+	lea	16(a1), a1
+	bra	bf_cg_unext
+bf_cg_ufull:
+	.rept 4
+	move.l	(a0)+, d3
+	and.l	d6, d3				/* strip both packed cold flags */
+	move.l	d3, (a1)+
+	.endr
 bf_cg_unext:
 	dbra	d5, bf_cg_ubyte
 	bra	bf_blit
