@@ -117,12 +117,15 @@ Then:
 - offset 44: `u32 f0_pat_sec` — sectors of frame 0's cold patterns in
   `HEADER.DAT` (v2+);
 - offset 48: `u32 paltab_sec` — sectors of the PALTAB region (v3; 0 = none);
-- offset 52: `u16 vsync_n` (v4) — display VBlanks per frame `N = round(59.94/fps)`
-  (15fps→4, 30fps→2). `0` in v2/v3 streams (player defaults to 4 = 15fps);
-- offset 54: `u16 audio_bytes` (v4) — fixed PCM bytes per actual NTSC-paced
-  frame, rounded up to keep a tiny positive reserve (N4→888, N2→444).
+- offset 52: `u16 vsync_n` (v4) — nearest display-VBlank interval
+  `N = round(59.94/fps)` (15fps→4, 24/30fps→2). This is a cadence/performance
+  hint, not a request to round delivery-paced 24fps to 29.97fps. `0` in v2/v3
+  streams (player defaults to 4 = 15fps);
+- offset 54: `u16 audio_bytes` (v4) — fixed PCM bytes per effective playback
+  frame, rounded up to keep a positive reserve (15fps→888, 24fps→555,
+  30fps→444).
   `0` in v2/v3 (player defaults to 887);
-- offset 56: `u16 fps_int` (v4) — nominal fps (15/30) used by both packer and
+- offset 56: `u16 fps_int` (v4) — nominal fps (15/24/30) used by both packer and
   player to compute the rate-matched per-frame sector count (see Routing/Frame).
   `0` in v2/v3 (player defaults to 15);
 - offset 58: `u16 audio_preload_frames` (v5+) — legacy count of leading control

@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e35/p41 : Keep non-integer-VBlank content rates such as 24 fps delivery-
+#        paced instead of rounding their PCM chunk sizing to N2/29.97 fps.
+#        24 fps now uses 555 B/frame while existing 15/30 fps output is unchanged.
 #   e34/p41 : Add strict per-source TOML encode profiles. sim.py resolves a
 #        profile before encoder constants are initialized and freezes the exact
 #        geometry, timing, audio, hardware, palette and pack settings plus the
@@ -277,5 +280,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260716
-e=34
+e=35
 p=41

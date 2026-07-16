@@ -94,7 +94,7 @@ audible click). See the `R`/`L` HUD readouts below.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| `AUDIO_BYTES` / `AUDIO` | 888 B at N4 (~15 fps); 444 B at N2 (~30 fps) | sp / pack | Fixed PCM bytes per frame, rounded up against the actual NTSC VBlank cadence. FD=0x0345 consumes about 13,303.76 samples/s while either chunk size supplies about 13,306.69 samples/s, so the reserve grows by only about 2.94 B/s. The packer evenly retimes the source WAV to this fixed-chunk length instead of padding only the tail. |
+| `AUDIO_BYTES` / `AUDIO` | 888 B at ~15 fps; 555 B at delivery-paced 24 fps; 444 B at ~30 fps | sp / pack | Fixed PCM bytes per frame, rounded up against the effective playback cadence. Integer-VBlank rates use the exact NTSC cadence (14.985/29.97); rates such as 24 fps stay CD-delivery-paced and are not rounded to 29.97. FD=0x0345 consumes about 13,303.76 samples/s. The packer evenly retimes the source WAV to the fixed-chunk total instead of padding only the tail. |
 | `SYNC_LEAD` | 0x3000 (12288 B, ~0.92 s) | sp | Write-ahead lead in wave RAM. PCM starts at this address; the ring's initial silence is not played, so the first source sample aligns with the first visible movie frame. |
 | `pack.startup_audio_frames` | 30 | TOML -> decision log -> pack/sp | Persistent audio prefetch. `HEADER.DAT` queues source chunks 0-29; control frame 0 carries chunk 30, frame 1 carries 31, and so on. Playback still begins with chunk 0 at frame 0, while the writer remains about 30 frames ahead instead of consuming the reserve by skipping duplicate chunks. |
 | `SYNC_MIN` | 0 (0 B) | sp | Lower lead bound. The persistent prefetch should keep the writer far above it; reaching zero indicates a real supply or clock problem. |
@@ -111,10 +111,10 @@ continuously.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| pump_poll frequency | every 64 entries at <=20 fps; one end poll for a non-empty 30 fps descriptor frame | sp `expand_frame` | Runtime-selected cadence. A 30fps block with at most 1024 updates consumes packed cold-run descriptors directly and preserves the old end-of-frame poll. Larger H40 blocks and <=20fps streams retain the entry walker. Frame 0 has no active `BODY.DAT` read. |
+| pump_poll frequency | every 64 entries at <=20 fps; one end poll for a non-empty 24-30 fps descriptor frame | sp `expand_frame` | Runtime-selected cadence. A high-fps block with at most 1024 updates consumes packed cold-run descriptors directly and preserves the old end-of-frame poll. Larger H40 blocks and <=20fps streams retain the entry walker. Frame 0 has no active `BODY.DAT` read. |
 | ring-full skip | occ >= 416 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
-| `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. v4+ uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; alternating 2/3 at 30 fps). In v6 each `BODY.DAT` slot is control / future payload / pad. |
+| `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. v4+ uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; 3.125 at 24 fps; alternating 2/3 at 30 fps). In v6 each `BODY.DAT` slot is control / future payload / pad. |
 | `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
 | `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. The 30fps Sub copies patterns by these runs instead of scanning every update entry again. Old streams use the entry fallback; old players ignore the suffix via `total_len`. |
 | Word-RAM swap completion | DMNA bit 1 | sp `swap_settle` | Poll the hardware's 1M bank-switch busy flag. The former fixed `0x400` loop burned about 0.82 ms after every frame even when the switch was already complete. |

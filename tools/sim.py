@@ -95,14 +95,12 @@ if AUDIO_KIND == "pcm13":
 else:
     AUDIO_RATE = 22_050; AUDIO_BPS = 0.5; AUDIO_FFCODEC = "adpcm_ima_wav"
     AUDIO_LABEL = "22.05kHz mono ADPCM"; AUDIO_FILE = "audio_22k05_adpcm_mono.wav"
-# The player advances on integer NTSC VBlanks. PCM deliberately rounds the
-# fixed chunk up against that actual cadence, yielding 444 B at N2 and 888 B at
-# N4. This is about 2.94 B/s above FD=0x0345, so lead grows slightly instead of
-# slowly draining. The packer uses the same calculation.
-NTSC_VSYNC = 60_000 / 1001
-VSYNC_N = int(round(NTSC_VSYNC / FPS))
-PLAYBACK_FPS = NTSC_VSYNC / VSYNC_N
-AUDIO_FRAME_BYTES = (int(math.ceil(AUDIO_RATE / PLAYBACK_FPS))
+# Integer-VBlank rates use their exact NTSC cadence (N4=14.985, N2=29.97).
+# Delivery-paced rates such as 24 fps keep their nominal long-term rate instead
+# of being rounded to N2. The packer shares these helpers through av_config.
+VSYNC_N = av_config.vsync_n_for_fps(FPS)
+PLAYBACK_FPS = av_config.playback_fps_for_content(FPS)
+AUDIO_FRAME_BYTES = (av_config.pcm_frame_bytes(FPS, AUDIO_RATE)
                      if AUDIO_KIND == "pcm13" else 0)
 PATTERN_BYTES = 32              # 4bpp 8x8 パターン
 NAME_BYTES = 2                  # ネームテーブル1エントリ(tile index + palette + priority)
@@ -1097,7 +1095,7 @@ def main():
         order = [int(c) for c in order if changed[c] and not near[c]]
 
         if AUDIO_KIND == "pcm13":
-            audio_due = AUDIO_FRAME_BYTES             # fixed 444B@N2 / 888B@N4, packと一致
+            audio_due = AUDIO_FRAME_BYTES             # fixed 888B@15 / 555B@24 / 444B@30, packと一致
         else:
             audio_due = round((i + 1) * AUDIO_RATE * AUDIO_BPS / FPS) - audio_sent_total
             audio_sent_total += audio_due

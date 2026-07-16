@@ -36,6 +36,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import av_config
 from encode_config import load_profile
 from cbr_paths import sim_work_dir
 from quantize_global4_tiles import pals_to_bytes
@@ -48,7 +49,7 @@ BASE = 1                     # POOL_TILE_BASE (VRAM tile index = BASE+slot)
 FRAME_SECTORS = 5
 PAT = 32
 PAT_PER_SEC = SECTOR // PAT  # 64
-NTSC_VSYNC = 60_000 / 1001
+NTSC_VSYNC = av_config.NTSC_VSYNC
 # These values are populated from the decision log by configure_from_log().
 # They are intentionally not read from CBRSIM_*: the log is the frozen encoder
 # contract, and an unrelated inherited shell must not change the packed disc.
@@ -71,7 +72,6 @@ PCM_STARTUP_MARGIN = 0x0200
 # リング諸元は tools/av_config.py の単一真実源から取る(sim/pack/playerで二重管理しない)。
 # RING_SIZE はプレイヤの実 .equ RING_SIZE と一致(ビルド時 check_player_ring.py が検証)。
 # RING_CAP(スケジュール上限)と sim の TANK は RING_SIZE から導出され必ず一致する。
-import av_config
 RING_SIZE_KB = av_config.RING_SIZE_KB
 RING_CAP_KB = av_config.RING_CAP_KB
 RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
@@ -135,19 +135,24 @@ def configure_from_log(log, *, debug=None, fill=None, startup_audio_frames=None)
     FPS = float(timing.get("fps", log.get("fps", 0)))
     if FPS <= 0:
         raise SystemExit("decision log has no valid fps")
-    expected_vsync_n = int(round(NTSC_VSYNC / FPS))
+    expected_vsync_n = av_config.vsync_n_for_fps(FPS)
     VSYNC_N = int(timing.get("vsync_n", expected_vsync_n))
     if VSYNC_N != expected_vsync_n:
         raise SystemExit(
             f"decision log vsync_n={VSYNC_N} disagrees with fps={FPS} ({expected_vsync_n})")
-    PLAYBACK_FPS = NTSC_VSYNC / VSYNC_N
+    expected_playback_fps = av_config.playback_fps_for_content(FPS)
+    PLAYBACK_FPS = float(timing.get("playback_fps", expected_playback_fps))
+    if not math.isclose(PLAYBACK_FPS, expected_playback_fps, rel_tol=0, abs_tol=1e-9):
+        raise SystemExit(
+            f"decision log playback_fps={PLAYBACK_FPS} disagrees with fps={FPS} "
+            f"({expected_playback_fps})")
 
     AUDIO_KIND = str(audio.get("kind", log.get("audio_kind", "pcm13")))
     AUDIO_RATE = int(audio.get("rate", log.get("audio_rate", 0)))
     AUDIO = int(audio.get("frame_bytes", log.get("audio_frame_bytes", 0)))
     if AUDIO_RATE <= 0 or AUDIO <= 0:
         raise SystemExit("decision log has no valid audio rate/frame size")
-    expected_audio = (int(math.ceil(AUDIO_RATE / PLAYBACK_FPS))
+    expected_audio = (av_config.pcm_frame_bytes(FPS, AUDIO_RATE)
                       if AUDIO_KIND == "pcm13" else int(round(AUDIO_RATE / FPS)))
     if AUDIO != expected_audio:
         raise SystemExit(
@@ -418,7 +423,8 @@ def rate_deltas(nfr):
 
     Frame 0 lives in HEADER.DAT, so its allowance is zero.  The accumulator is
     intentionally identical to the player and to the BODY writer: at 30 fps it
-    emits 2,3,2,3... sectors, while 15 fps emits five every frame.
+    emits 2,3,2,3... sectors, at 24 fps it averages 3.125 sectors, and at 15 fps
+    it emits five every frame.
     """
     fps_int = int(round(FPS))
     if fps_int <= 0:
@@ -797,10 +803,10 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     audio_preload_frames = 0
     audio_preload_sec = audio_prefetch_frames
     # v4: 可変フレーム(5セクタ固定paddingを廃止=各frameは n_pay+n_ctrl セクタ)＋ vsync/コマ N。
-    # これで fps がセクタ境界から解放され、表示は N vsync/コマでペーシング(N4=14.985, N2=29.97)。
-    # AUDIO も fps由来。FRAME_SECTORS(=5)は最大スロット(routingバイトの上限)としてのみ残す。
-    vsync_n = VSYNC_N                                  # N: 1コマの表示VBLANK数(30fps→2, 15fps→4)
-    fps_int = int(round(FPS))                         # 名目fps(15/30)。レートマッチpadding用(下記)
+    # CDレート累積器が実際のfpsを決める。Nは整数VBlank cadenceのヒントで、24fpsのN2を
+    # 29.97fpsへ丸める指定ではない。AUDIOも実効fps由来。FRAME_SECTORS(=5)は最大スロット。
+    vsync_n = VSYNC_N                                  # N: 近似VBLANK間隔(30/24→2, 15→4)
+    fps_int = int(round(FPS))                         # 名目fps(15/24/30)。レートマッチpadding用
     if not f0_header:
         raise SystemExit("pack v6 requires frame0 in HEADER.DAT")
     header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,

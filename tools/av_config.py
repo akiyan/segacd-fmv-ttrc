@@ -19,6 +19,8 @@ Makefile). The per-source *cold cap* is deliberately NOT here: it belongs to the
 encoder alone (``CBRSIM_MAX_COLD`` in the sim). The packer refuses to re-cap.
 """
 
+import math
+
 # Physical PRG-RAM ring in the player. MUST equal boot/movieplay_sp.s
 # `.equ RING_SIZE` (0x67000 = 412 KB). Build-time assertion enforces it.
 # The adjacent 16 KB routing table supports 8192 frames without overwriting the
@@ -60,6 +62,43 @@ PALTAB_MAX_SEG = 64
 
 assert PALTAB_MAX_SEG <= 160, "PALTAB staging (Word-RAM O_PALTAB) holds 160 segments max"
 assert PALTAB_MAX_SEG <= 255, "pal byte = seg+1 addresses at most 255 segments"
+
+# --- Content timing shared by sim and pack ---
+# The player is ultimately synchronized by the CD-1x rate-matched BODY stream.
+# Content close to an integer NTSC VBlank divisor (15/30/60 fps) settles on
+# that exact display cadence. Other rates such as 24 fps remain delivery-paced
+# at their nominal rate and naturally alternate the number of VBlanks between
+# frames. Keep this decision in one place so the sim's audio budget and the
+# packer's fixed PCM chunk cannot disagree.
+NTSC_VSYNC = 60_000 / 1001
+_INTEGER_VBLANK_TOLERANCE = 0.01
+
+
+def vsync_n_for_fps(fps):
+    """Nearest integer VBlank interval used as the player's cadence hint."""
+    value = float(fps)
+    if value <= 0:
+        raise ValueError(f"fps must be positive, got {fps!r}")
+    return max(1, int(round(NTSC_VSYNC / value)))
+
+
+def playback_fps_for_content(fps):
+    """Effective long-term playback rate for audio chunk sizing.
+
+    Integer-VBlank rates use the exact NTSC-derived cadence. Delivery-paced
+    rates such as 24 fps use the content rate; they are not rounded to 29.97.
+    """
+    value = float(fps)
+    n = vsync_n_for_fps(value)
+    ratio = NTSC_VSYNC / value
+    if abs(ratio - n) <= _INTEGER_VBLANK_TOLERANCE:
+        return NTSC_VSYNC / n
+    return value
+
+
+def pcm_frame_bytes(fps, audio_rate=13_300):
+    """Fixed mono u8 PCM bytes per frame, rounded up to avoid underrun."""
+    return int(math.ceil(int(audio_rate) / playback_fps_for_content(fps)))
 
 # --- Realized cold == cap, by construction ---
 # The sim (tools/sim.py) and the pack (tools/pack_stream.py) now share ONE tile-slot
