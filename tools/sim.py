@@ -1231,8 +1231,13 @@ def main():
                     return (None, 1e9, 1e9, 1e9)
                 arr = np.stack([pat_rgb[k] for k in cand]).astype(np.float64)   # (N,8,8,3)
                 dY = np.abs(arr @ _LWv - tl)
-                dYm = dY.mean((1, 2)); dYp = dY.max((1, 2))
-                dCm = np.sqrt((arr @ _CBv - tcb) ** 2 + (arr @ _CRv - tcr) ** 2).mean((1, 2))
+                # Keep one scalar per candidate even if a cached tile carries
+                # an extra singleton dimension from an accelerated path.
+                dYm = dY.reshape(len(cand), -1).mean(1)
+                dYp = dY.reshape(len(cand), -1).max(1)
+                dCm = np.sqrt(
+                    (arr @ _CBv - tcb) ** 2 + (arr @ _CRv - tcr) ** 2
+                ).reshape(len(cand), -1).mean(1)
                 j = int(np.argmin(dYm + 0.3 * dYp + 0.5 * dCm))
                 return (cand[j], float(dYm[j]), float(dYp[j]), float(dCm[j]))
 
