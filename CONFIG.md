@@ -149,6 +149,7 @@ resident tile), Buf (prefetched), or Miss. These thresholds steer that choice.
 | `CBRSIM_DITHER` / `CBRSIM_SEGPAL` | on / on | Dithering / per-segment palette swaps. |
 | `CBRSIM_PAL_ALGO` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. A selected one-line candidate receives a complete flattened-RGB333 histogram refinement and all-frame error proof before segment palettes are considered. |
 | `CBRSIM_PAL_MAP_WEIGHT` | 1.0 | MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |
+| `CBRSIM_PAL_SEAM_WEIGHT` / `_ITERATIONS` | 8.0 / 2 | MOSAIC-GM spatial assignment cost for a quantization discontinuity introduced at an 8x8 boundary, and deterministic checkerboard passes. Real source edges are excluded from the cost. |
 | `CBRSIM_PAL_GROW_REL` / `_ABS` / `_MIN_USAGE` | 0.005 / 0.002 / 0.002 | Minimum relative gain, gain per pixel, and tile-use fraction required to add another MOSAIC-GM line. |
 | `CBRSIM_PAL_CORE_SIZES` | `4,6,8,10,12,14` | Shared-colour counts tried when a specialist line grows. The remaining slots are line-specific. |
 | `CBRSIM_PAL_SAMPLE_COUNTS` / `_VALIDATE_FRAMES` | `120,240,480` / 120 | Whole-movie learning candidates and the separate validation sample used to select among them. |
@@ -176,6 +177,7 @@ Set per encode; they select the output and the codec behavior for that source.
 | `CBRSIM_REUSE` | Reuse decoded frames. |
 | `CBRSIM_GPU` | GPU quantization is on by default (`1`). Set `0`, `off`, `false`, or `no` only to force CPU execution. If CuPy/CUDA cannot be initialized, the encoder reports the reason and falls back to CPU. |
 | `CBRSIM_PAL_ALGO` | `stl4` preserves the current encoder; `mosaic-gm` enables automatic shared-core Grow/Merge selection while it is being tuned. |
+| `CBRSIM_PAL_SEAM_WEIGHT` / `_ITERATIONS` | MOSAIC-GM spatial tile assignment. The visual-quality defaults are weight 8 and two converged checkerboard passes. |
 | `CBRSIM_EMIT_DEC`, `CBRSIM_OUT` | Save the decision log / output dir. `CBRSIM_EMIT_DEC=1` writes `CBRSIM_OUT/decisions.pkl`; an explicit path is also accepted. |
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)

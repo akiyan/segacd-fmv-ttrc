@@ -45,7 +45,8 @@ from quantize_global4_tiles import (  # noqa: E402
 )
 from palette_algorithms import (  # noqa: E402
     MOSAIC_GM, STL4, PaletteEvaluator, build_mosaic_palettes,
-    normalize_palette_algo, refine_one_line_palette, score_palettes,
+    coherent_assign_idx, normalize_palette_algo, refine_one_line_palette,
+    score_palettes,
 )
 from cbr_paths import sim_work_dir  # noqa: E402
 from video_geometry import probe_source, parse_ratio, source_filter, raw_filter  # noqa: E402
@@ -224,6 +225,8 @@ DITHER_ON = os.environ.get("CBRSIM_DITHER", "1") != "0"   # 既定ON。OFFは CB
 # 深い暗転で区切り、暗転の瞬間に区間別60色パレットへ差し替える(CRAM総入替)。
 SEGPAL_ON = os.environ.get("CBRSIM_SEGPAL", "1") != "0"   # 既定ON。OFFは CBRSIM_SEGPAL=0（例外時のみ）
 PAL_ALGO = normalize_palette_algo()                          # stl4 (legacy) / mosaic-gm (opt-in while tuning)
+PAL_SEAM_WEIGHT = float(os.environ.get("CBRSIM_PAL_SEAM_WEIGHT", "8.0"))
+PAL_SEAM_ITERATIONS = max(1, int(os.environ.get("CBRSIM_PAL_SEAM_ITERATIONS", "2")))
 PAL_WRITE_BYTES = 0             # CRAM pre-load(PALTAB): 全区間パレットはヘッダ直後のPALTAB領域で
                                 # 一括配送しMain-RAM表から引くので、切替フレームの予算控除は無し
                                 # (ストリームには1Bの区間参照だけ。旧: in-stream 128B/切替)
@@ -759,8 +762,13 @@ def _quant_one(i):
     cur_pals = _WG["seg_pals"][int(_WG["frame_seg"][i])]
     m333 = to_rgb333(np.asarray(Image.open(_WG["frames"][i]).convert("RGB")))
     flat, detail = flatten_low_detail(tile_blocks(m333))
-    assign = assign_palette(flat, cur_pals)
-    pidx = idx_for(flat, assign, cur_pals)
+    if PAL_ALGO == MOSAIC_GM and PAL_SEAM_WEIGHT > 0:
+        assign, pidx = coherent_assign_idx(
+            flat, cur_pals, TROWS, TCOLS,
+            seam_weight=PAL_SEAM_WEIGHT, iterations=PAL_SEAM_ITERATIONS)
+    else:
+        assign = assign_palette(flat, cur_pals)
+        pidx = idx_for(flat, assign, cur_pals)
     return detail.astype(np.float32), assign, pidx
 
 
@@ -799,14 +807,20 @@ def precompute_quant(frames, seg_pals, frame_seg):
                 for i, (det, flat) in enumerate(pool.imap(_quant_one_flat, range(n), chunksize=8)):
                     details[i] = det
                     assigns[i], pidxs[i] = gpu_quant.assign_idx_one(
-                        flat, int(frame_seg[i]), seg_pals, cache)
+                        flat, int(frame_seg[i]), seg_pals, cache,
+                        coherent_shape=((TROWS, TCOLS) if PAL_ALGO == MOSAIC_GM else None),
+                        seam_weight=PAL_SEAM_WEIGHT,
+                        seam_iterations=PAL_SEAM_ITERATIONS)
         else:
             _quant_init(frames, seg_pals, frame_seg)
             for i in range(n):
                 det, flat = _quant_one_flat(i)
                 details[i] = det
                 assigns[i], pidxs[i] = gpu_quant.assign_idx_one(
-                    flat, int(frame_seg[i]), seg_pals, cache)
+                    flat, int(frame_seg[i]), seg_pals, cache,
+                    coherent_shape=((TROWS, TCOLS) if PAL_ALGO == MOSAIC_GM else None),
+                    seam_weight=PAL_SEAM_WEIGHT,
+                    seam_iterations=PAL_SEAM_ITERATIONS)
         return (details, assigns, pidxs)
 
     print(f"precompute quantization: {n} frames on {w} workers ...", flush=True)
@@ -890,6 +904,11 @@ def main():
 
     print(f"training palettes ({PAL_ALGO})  DITHER={DITHER_ON} SEGPAL={SEGPAL_ON} NEAR={NEAR_ON} ...")
     _global_pals, seg_pals, frame_seg, seg_bounds, palette_stats = segment_and_train(frames)
+    palette_stats["spatial_assignment"] = {
+        "enabled": bool(PAL_ALGO == MOSAIC_GM and PAL_SEAM_WEIGHT > 0),
+        "seam_weight": float(PAL_SEAM_WEIGHT),
+        "iterations": int(PAL_SEAM_ITERATIONS),
+    }
     if SEGPAL_ON:
         print(f"  per-segment palettes: {len(seg_pals)}区間, CRAM差替 {len(seg_bounds)}点 "
               f"(candidates={palette_stats['candidate_segments']})")

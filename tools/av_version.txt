@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e33/p41 : Add spatially coherent MOSAIC-GM tile assignment. A deterministic
+#        two-pass checkerboard optimizer compares quantization residuals only
+#        across shared 8x8 edges, reducing palette-created boundary seams while
+#        leaving real source edges unpenalized. The CPU reference and vectorized
+#        CuPy path are bit-identical; the visual-quality default weight is 8.
 #   e32/p41 : Refine a one-line MOSAIC-GM candidate against the complete
 #        flattened RGB333 movie histogram. Full-error-decreasing slot swaps
 #        fill spare duplicates with sample-missed colours (Bad Apple becomes
@@ -266,5 +271,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260716
-e=32
+e=33
 p=41

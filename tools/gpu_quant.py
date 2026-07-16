@@ -64,22 +64,78 @@ class PalCache:
             distance = ((rgb[None, :, None, :] - pals[:, None, :, :]) ** 2).sum(3)
             index = distance.argmin(2).astype(cp.uint8)                        # (4,512)
             error = cp.take_along_axis(distance, index[:, :, None], axis=2)[:, :, 0]
-            g = error.astype(cp.int16), index
+            g = error.astype(cp.int16), index, pals
             self._d[seg] = g
         return g
 
 
-def assign_idx_one(flat, seg, seg_pals, cache):
+def _coherent_assignment(cp, perr, keys, index, pals, rows, cols,
+                         seam_weight, iterations):
+    """Vectorized checkerboard equivalent of coherent_assign_idx()."""
+    lines = len(pals)
+    assignment = perr.argmin(1).reshape(rows, cols)
+    quantized = cp.stack([
+        pals[line][index[line, keys]]
+        for line in range(lines)
+    ]).astype(cp.int16)
+    source = cp.stack((
+        (keys >> 6) & 7,
+        (keys >> 3) & 7,
+        keys & 7,
+    ), axis=-1).astype(cp.int16)
+    residual = (quantized - source[None]).reshape(
+        lines, rows, cols, 8, 8, 3)
+    base_energy = perr.reshape(rows, cols, lines).astype(cp.float64)
+    grid_row = cp.arange(rows)[:, None]
+    grid_col = cp.arange(cols)[None, :]
+    checkerboard = (grid_row + grid_col) & 1
+
+    for _iteration in range(max(1, int(iterations))):
+        for parity in (0, 1):
+            energy = base_energy.copy()
+            if rows > 1:
+                rr = cp.arange(rows - 1)[:, None]
+                cc = cp.arange(cols)[None, :]
+                top = residual[assignment[:-1], rr, cc, 7]
+                delta = residual[:, 1:, :, 0] - top[None]
+                energy[1:] += seam_weight * (delta * delta).sum((-1, -2)).transpose(1, 2, 0)
+                bottom = residual[assignment[1:], rr + 1, cc, 0]
+                delta = residual[:, :-1, :, 7] - bottom[None]
+                energy[:-1] += seam_weight * (delta * delta).sum((-1, -2)).transpose(1, 2, 0)
+            if cols > 1:
+                rr = cp.arange(rows)[:, None]
+                cc = cp.arange(cols - 1)[None, :]
+                left = residual[assignment[:, :-1], rr, cc, :, 7]
+                delta = residual[:, :, 1:, :, 0] - left[None]
+                energy[:, 1:] += seam_weight * (delta * delta).sum((-1, -2)).transpose(1, 2, 0)
+                right = residual[assignment[:, 1:], rr, cc + 1, :, 0]
+                delta = residual[:, :, :-1, :, 7] - right[None]
+                energy[:, :-1] += seam_weight * (delta * delta).sum((-1, -2)).transpose(1, 2, 0)
+            candidate = energy.argmin(2)
+            assignment = cp.where(checkerboard == parity, candidate, assignment)
+    return assignment.reshape(-1)
+
+
+def assign_idx_one(flat, seg, seg_pals, cache, coherent_shape=None,
+                   seam_weight=0.0, seam_iterations=2):
     """1コマ分。flat (C,64,3) uint8 rgb333 -> (assign int8 (C,), pidx uint8 (C,64) 1..15)。
 
     CPU版 assign_palette/idx_for と同一結果(argmin の最初の最小=同じtie挙動)。
     """
     cp = _STATE["cp"]
-    error, index = cache.get(cp, seg, seg_pals)               # each (4,512)
+    error, index, pals = cache.get(cp, seg, seg_pals)         # LUTs (4,512), colours (4,15,3)
     f = cp.asarray(flat, dtype=cp.uint16)
     keys = ((f[..., 0] << 6) | (f[..., 1] << 3) | f[..., 2])  # (C,64)
     perr = error[:, keys].sum(2).T                             # (C,4)
-    a = perr.argmin(1)                                        # (C,) 最良パレット
+    if coherent_shape is not None and seam_weight > 0 and len(pals) > 1:
+        rows, cols = map(int, coherent_shape)
+        if len(flat) != rows * cols:
+            raise ValueError(f"tile count {len(flat)} differs from {rows}x{cols}")
+        a = _coherent_assignment(
+            cp, perr, keys, index, pals, rows, cols,
+            float(seam_weight), int(seam_iterations))
+    else:
+        a = perr.argmin(1)                                    # (C,) 最良パレット
     p = index[a[:, None], keys] + 1                            # (C,64) 1..15
     return cp.asnumpy(a).astype(np.int8), cp.asnumpy(p).astype(np.uint8)
 

@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from quantize_global4_tiles import (  # noqa: E402
     build_palettes, edge_weights, palette15, palette_lut, rgb333_keys, tile_errors,
 )
+from palette_algorithms import coherent_assign_idx  # noqa: E402
 
 
 def direct_tile_errors(tiles, pal):
@@ -97,6 +98,9 @@ def main() -> int:
     actual_assign, actual_index = lut_assign_idx(tiles, palettes)
     np.testing.assert_array_equal(actual_assign, expected_assign)
     np.testing.assert_array_equal(actual_index, expected_index)
+    frame_tiles = tiles[:896]
+    coherent_assign, coherent_index = coherent_assign_idx(
+        frame_tiles, palettes, 28, 32, seam_weight=8, iterations=2)
 
     training_tiles = tiles[:768]
     np.testing.assert_array_equal(
@@ -116,7 +120,20 @@ def main() -> int:
             gpu_assign, gpu_index = gpu_quant.assign_idx_one(tiles, 0, [palettes], cache)
             np.testing.assert_array_equal(gpu_assign, expected_assign)
             np.testing.assert_array_equal(gpu_index, expected_index)
-            print("GPU exact: assignment and indices match the direct CPU reference")
+            gpu_coherent_assign, gpu_coherent_index = gpu_quant.assign_idx_one(
+                frame_tiles, 0, [palettes], cache, coherent_shape=(28, 32),
+                seam_weight=8, seam_iterations=2)
+            np.testing.assert_array_equal(gpu_coherent_assign, coherent_assign)
+            np.testing.assert_array_equal(gpu_coherent_index, coherent_index)
+            gpu_independent_s = timed(lambda: gpu_quant.assign_idx_one(
+                frame_tiles, 0, [palettes], cache))
+            gpu_coherent_s = timed(lambda: gpu_quant.assign_idx_one(
+                frame_tiles, 0, [palettes], cache, coherent_shape=(28, 32),
+                seam_weight=8, seam_iterations=2))
+            print("GPU exact: independent and coherent assignment match CPU references")
+            print(
+                f"GPU frame: 896 tiles independent={gpu_independent_s:.4f}s "
+                f"coherent={gpu_coherent_s:.4f}s")
         else:
             print("GPU skipped: CuPy/CUDA unavailable")
     except Exception as exc:  # keep the CPU proof useful on non-GPU systems
