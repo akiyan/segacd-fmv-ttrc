@@ -83,3 +83,23 @@ RGB333 movie histogram. On the full 6576-frame Bad Apple encode, the histogram
 contained 10 colours. Two sample-missed colours replaced duplicate slots,
 reducing the complete pre-codec palette error from 13 to exactly zero. The
 result uses one active palette line, one CRAM segment, and no CRAM switches.
+
+Compare the actual segmented palettes stored in two decision logs on the same
+fixed source frames. In addition to pixel and mapping errors, `seam` measures
+how much quantization residual changes specifically across 8x8 boundaries:
+
+```sh
+python3 harness/palette_algo/compare_decisions.py \
+  videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/master \
+  videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl \
+  videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/decisions.pkl
+```
+
+On the fixed 240-frame validation set, full Bad Apple improved from pixel /
+mapping / seam `0.031240 / 0.035559 / 0.073406` under STL4 to exact zero for
+all three under MOSAIC-GM. Sonic's pixel error rose slightly from `0.096713` to
+`0.100739`, while line-dependent mapping noise fell from `0.105189` to
+`0.048295`; the combined score improved 26.2%. Its boundary seam metric moved
+from `0.190608` to `0.192575` (+1.0%), showing that shared colours solve line
+mapping inconsistency but spatially coherent tile assignment still needs its
+own optimization stage.
