@@ -63,8 +63,14 @@ def channel_samples(samples, channel, channels):
 def sample_stats(samples):
     if not samples:
         return {"peak_abs": 0, "rms": 0}
-    peak_abs = max(abs(sample) for sample in samples)
-    rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+    peak_abs = 0
+    sum_squares = 0
+    for sample in samples:
+        magnitude = abs(sample)
+        if magnitude > peak_abs:
+            peak_abs = magnitude
+        sum_squares += sample * sample
+    rms = math.sqrt(sum_squares / len(samples))
     return {"peak_abs": peak_abs, "rms": rms}
 
 
@@ -77,20 +83,29 @@ def wav_stats(path, seconds, jump_threshold):
     overall = sample_stats(samples)
     for channel in range(wav["channels"]):
         current = channel_samples(samples, channel, wav["channels"])
-        jumps = [abs(current[i] - current[i - 1]) for i in range(1, len(current))]
+        jumps = []
+        previous = current[0] if current else 0
+        for sample in current[1:]:
+            jumps.append(abs(sample - previous))
+            previous = sample
         jumps_sorted = sorted(jumps)
-        candidates = [
-            {
-                "channel": channel,
-                "frame_index": i,
-                "time_seconds": i / wav["rate"],
-                "jump": jump,
-                "from": current[i - 1],
-                "to": current[i],
-            }
-            for i, jump in enumerate(jumps, start=1)
-            if jump >= jump_threshold
-        ]
+        # Keep this as an explicit loop.  Python 3.14.4 has produced spurious,
+        # non-deterministic matches for this large filtered comprehension on
+        # multi-minute captures, including values below jump_threshold.
+        candidates = []
+        for i, jump in enumerate(jumps, start=1):
+            if jump < jump_threshold:
+                continue
+            candidates.append(
+                {
+                    "channel": channel,
+                    "frame_index": i,
+                    "time_seconds": i / wav["rate"],
+                    "jump": jump,
+                    "from": current[i - 1],
+                    "to": current[i],
+                }
+            )
         per_channel.append(
             {
                 "channel": channel,
@@ -106,7 +121,10 @@ def wav_stats(path, seconds, jump_threshold):
         jump_candidates.extend(candidates)
     jumps_sorted = sorted(all_jumps)
     prefix_bytes = wav["rate"] * seconds * wav["channels"] * 2
-    clip_count = sum(1 for sample in samples if sample in (-32768, 32767))
+    clip_count = 0
+    for sample in samples:
+        if sample in (-32768, 32767):
+            clip_count += 1
     return {
         "path": str(path),
         "seconds": len(samples) / (wav["rate"] * wav["channels"]),

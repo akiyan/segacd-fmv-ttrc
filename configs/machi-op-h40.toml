@@ -1,0 +1,47 @@
+schema_version = 1
+
+[source]
+path = "assets/machi_op.mp4"
+fps = "15"
+duration = "152.866667"
+sar = "1:1"
+
+[video]
+mode = "H40"
+width = 320
+height = 224
+fit = "pad"
+master_filter = "setsar=1,crop=320:144:0:38,scale=640:260:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=320:130:flags=lanczos,pad=320:224:0:47:color=black,setsar=1"
+raw_filter = "setsar=1,crop=320:144:0:38,scale=320:130:flags=lanczos,pad=320:224:0:47:color=black,setsar=1"
+
+[audio]
+kind = "pcm13"
+
+[output]
+directory = "videos/machi_op_H40_320x224_pcm/tmp"
+emit_decisions = true
+
+[encoder]
+gpu = true
+rate_kib = 144
+vram_tiles = 1400
+dither = true
+segment_palettes = true
+near = true
+coa = true
+
+[palette]
+algorithm = "mosaic-gm"
+map_weight = 1.0
+seam_weight = 8.0
+seam_iterations = 2
+sample_counts = [120, 240, 480]
+validate_frames = 120
+segment_train_frames = 240
+segment_validate_frames = 60
+
+[pack]
+debug = true
+fill = true
+startup_audio_frames = 30
+output = "out/movieplay/MOVIE.DAT"

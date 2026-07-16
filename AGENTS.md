@@ -361,3 +361,21 @@ ps -eo pid,etimes,args | grep -v grep \
 
 Any match on the *other* kind of work means wait. This extends the sim-only
 coordination rule (previously in the `/sim` skill) to cover the emulator too.
+
+### NVIDIA/CUDA in the Codex sandbox
+
+The normal Codex workspace sandbox can hide `/dev/nvidia*` even when the host
+driver and GPU are healthy. Inside that sandbox, `nvidia-smi` then reports that
+it cannot communicate with the driver and CuPy reports `cudaErrorNoDevice`.
+Do not treat those sandbox-only symptoms as proof that the NVIDIA driver is
+broken, and do not reinstall the driver or reboot the workstation on that
+evidence alone.
+
+- Check `nvidia-smi` and a small CuPy allocation outside the sandbox first.
+- Run GPU `tools/sim.py` and `tools/render_analysis.py` outside the sandbox so
+  they can access the NVIDIA device nodes.
+- If `/sbin/ub-device-create --verbose` says the `/dev/nvidia*` nodes already
+  exist with correct permissions outside the sandbox, the host device setup is
+  healthy; the missing nodes seen inside the sandbox are an isolation artifact.
+- Reboot only when the outside-sandbox checks also fail and host kernel logs or
+  device state support it.
