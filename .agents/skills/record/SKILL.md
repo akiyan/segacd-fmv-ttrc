@@ -1,6 +1,6 @@
 ---
 name: record
-description: Record a built Sega CD disc with RetroArch and Genesis Plus GX from emulator launch through the Mega-CD startup screens and playback, preserving synchronized A/V and producing a native-resolution lossless MKV plus a verification preview. Use for "record it", "capture playback as video", "record the OP", "verify the recording", or "/record". Use DEBUG HUD OCR only for requested diagnostics, never for default head cueing. This skill records and verifies; compilation produces the final upload MP4 and publishes it.
+description: Build a DEBUG Sega CD disc by default, then record it with RetroArch and Genesis Plus GX from emulator launch through the Mega-CD startup screens and playback, preserving synchronized A/V and producing a native-resolution lossless MKV plus a verification preview. Use for "record it", "capture playback as video", "record the OP", "verify the recording", or "/record". Build release only when the user explicitly requests it. Use DEBUG HUD OCR only for requested diagnostics, never for default head cueing. This skill records and verifies; compilation produces the final upload MP4 and publishes it.
 ---
 
 # record: Sega CD Playback Recording
@@ -15,7 +15,7 @@ Run every command from the repository root.
 
 Use this skill to:
 
-- build the disc when requested or needed;
+- build a DEBUG disc by default, or release only when explicitly requested;
 - launch RetroArch, send START, and record synchronized A/V;
 - validate timing, video, audio, logs, and optional diagnostic counters;
 - return the raw lossless MKV, sidecars, and verification preview.
@@ -47,18 +47,24 @@ Use `tools/record_movie.sh`, which owns the high-level recording workflow:
 ```sh
 tools/record_movie.sh [--disc CUE] [--out MP4] [--seconds N] \
   [--trim SEC | --auto-audio-trim] [--tag NAME] [--display :N] \
-  [--preset realtime|ffv1-flac] [--record-size WxH] [--no-build]
+  [--preset realtime|ffv1-flac] [--record-size WxH] [--no-build] \
+  [--release-build]
 ```
 
 Defaults and rules:
 
 - Use `out/MOVIEPLAY.cue` for the current player.
+- Build with `DEBUG=1` by default. The Window HUD is part of the normal recording artifact.
+- Use `--release-build` only when the user explicitly asks for a release build. It changes the
+  harness build to `make disc DEBUG=0`.
 - Keep the startup sequence. The default is `--trim 0`; omitting `--trim` has the same result.
 - Treat `--seconds` as the final duration from emulator launch. Include enough time for the
   startup screens, the full movie, and a short tail.
 - Use `--trim SEC` or `--auto-audio-trim` only when the user explicitly requests a
   movie-only clip. Neither mode may be used for a normal `compilation` input.
-- Use `--no-build` only after confirming the disc already represents the requested code/data.
+- Use `--no-build` only after confirming in the current work that the disc represents the
+  requested code/data and build mode. Unless release was explicitly requested, it must be a
+  `DEBUG=1` disc; do not trust an unknown pre-existing image.
 - Use `--record-size 256x224` for H32 and `--record-size 320x224` for H40.
 - Use an unused display such as `--display :269`.
 - Keep the preview MP4 under `videos/`. `OUTDIR` selects the raw MKV and sidecar directory;
@@ -71,7 +77,7 @@ Canonical full capture for later upload:
 
 ```sh
 OUTDIR="$PWD/videos" tools/record_movie.sh \
-  --disc out/MOVIEPLAY.cue --no-build --seconds 180 \
+  --disc out/MOVIEPLAY.cue --seconds 180 \
   --tag STEM_emu --preset ffv1-flac --record-size 256x224 \
   --display :269 --out videos/STEM_emu_preview.mp4
 ```
@@ -84,7 +90,7 @@ Do not delete it before `compilation` finishes.
 For a short boot/playback check:
 
 ```sh
-tools/record_movie.sh --disc out/MOVIEPLAY.cue --no-build \
+tools/record_movie.sh --disc out/MOVIEPLAY.cue \
   --seconds 30 --tag rec_check --display :269 \
   --out videos/rec_check_preview.mp4
 ```
@@ -116,15 +122,17 @@ Check the raw MKV and reports before trusting a capture:
 4. Confirm the audio JSON exists, has nonzero RMS when required, and reports zero clip/jump
    candidates at the selected thresholds.
 5. Inspect frames from the MKV and confirm that the Mega-CD startup appears first, playback
-   begins later, and the movie advances. Do not use the HUD to seek the movie start.
+   begins later, the DEBUG Window HUD is visible, and the movie advances. Do not use the HUD
+   to seek the movie start.
 
 The JSON report is a mechanical gate, not a substitute for listening. Claim that no audible
 clicks exist only after listening to the final file.
 
-## Optional DEBUG diagnostics
+## Optional HUD diagnostics
 
-Require DEBUG only when the task asks to inspect `F/P/S/D/R/L/C/W/M/A`. Keep this separate from the
-normal capture and upload path:
+The standard capture already builds DEBUG. Parse `F/P/S/D/R/L/C/W/M/A` only when the task asks
+for those diagnostics; otherwise leave the visible HUD unparsed. Keep OCR work separate from
+ordinary recording and publication head cueing:
 
 ```sh
 ps -eo pid,etimes,args | grep -v grep \

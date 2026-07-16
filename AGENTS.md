@@ -312,10 +312,13 @@ ffmpeg -i videos/<stem>_emu_lossless.mkv \
 
 - Use emulator-synchronized A/V output for verification.
 - Do not verify playback by replacing audio with an offline source.
+- Real/emulator recordings use a `DEBUG=1` disc by default, including the Window HUD. Build
+  release only when the user explicitly requests it. `tools/record_movie.sh` enforces this;
+  its `--release-build` option is the explicit release override.
 - Prefer:
 
 ```sh
-tools/record_movie.sh --disc out/MOVIEPLAY.cue --no-build \
+tools/record_movie.sh --disc out/MOVIEPLAY.cue \
   --seconds 180 --tag STEM_emu --out videos/STEM_emu_preview.mp4
 ```
 

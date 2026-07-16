@@ -34,6 +34,8 @@
 #   --no-audio-check
 #                  pass through to run_headless
 #   --no-build     do not run `make disc` first
+#   --release-build
+#                  build with DEBUG=0 instead of the recording default DEBUG=1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,6 +50,7 @@ DISPLAY_NUM=":236"
 PRESET="ffv1-flac"
 RECORD_SIZE=""
 BUILD=1
+BUILD_DEBUG=1
 AUDIO_CHECK_ARGS=()
 AUTO_AUDIO_TRIM=0
 
@@ -66,7 +69,8 @@ while [ $# -gt 0 ]; do
     --auto-audio-trim) AUTO_AUDIO_TRIM=1; shift;;
     --no-audio-check) AUDIO_CHECK_ARGS+=(--no-audio-check); shift;;
     --no-build) BUILD=0; shift;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0;;
+    --release-build) BUILD_DEBUG=0; shift;;
+    -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d'; exit 0;;
     *) echo "unknown option: $1" >&2; exit 2;;
   esac
 done
@@ -79,8 +83,12 @@ command -v ffmpeg >/dev/null 2>&1 || { echo "missing ffmpeg" >&2; exit 1; }
 command -v ffprobe >/dev/null 2>&1 || { echo "missing ffprobe" >&2; exit 1; }
 
 if [ "$BUILD" -eq 1 ]; then
-  echo ">> make disc"
-  make disc >/dev/null
+  if [ "$BUILD_DEBUG" -eq 1 ]; then
+    echo ">> make disc DEBUG=1 (recording default)"
+  else
+    echo ">> make disc DEBUG=0 (explicit release build)"
+  fi
+  make disc DEBUG="$BUILD_DEBUG" >/dev/null
 fi
 [ -f "$DISC" ] || { echo "disc not found: $DISC (drop --no-build or build it)" >&2; exit 1; }
 
