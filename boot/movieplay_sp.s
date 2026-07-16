@@ -236,18 +236,13 @@ bad_header:
 	moveq	#10, d0
 1:
 	move.w	d0, h_paltab_sec
-	/* v4: 可変フレーム。N(vsync/コマ)@52, AUDIO(1コマ音声B)@54。v2/v3(=0)なら15fps既定へ */
-	move.w	52(a0), d0			/* N */
-	bne	1f
-	moveq	#4, d0				/* v2/v3(0)は15fps=N4 */
-1:
-	/* Adapt both mid-expand and wave-writer polls to fps. The Sub walks the entry
-	   list directly: poll every 1024 entries at 30fps (normally once at the end;
-	   H40's 1120-cell maximum needs two polls) or every 64 entries at <=20fps. */
+	/* Adapt both mid-expand and wave-writer polls to nominal fps.  24fps also
+	   needs the cold-run fast path; lower rates use the proven dense cadence. */
 	move.w	#0x03FF, d1
 	move.w	#0x01FF, d2
-	cmp.w	#3, d0
-	blo	pm_set
+	move.w	56(a0), d0			/* nominal fps; zero safely selects dense polling */
+	cmp.w	#24, d0
+	bhs	pm_set
 	moveq	#63, d1
 	move.w	#0x00FF, d2
 pm_set:
@@ -1172,14 +1167,14 @@ ef_ring_count:
 ef_count_ready:
 	moveq	#0, d4				/* n_load */
 	/* New v6 streams append the packer's already-known cold slot runs after the
-	   padded audio chunk.  At 30 fps and n_upd<=1024 the legacy entry walker has
+	   padded audio chunk.  At 24fps or above and n_upd<=1024 the entry walker has
 	   exactly one CDC poll at the end, so the descriptor path preserves that
 	   cadence while removing the duplicate entry scan and run reconstruction. */
 	move.w	h_features, d0
 	btst	#0, d0
 	beq	ef_entries
 	cmpi.w	#0x03FF, pump_mask
-	bne	ef_entries			/* <=20 fps retains its proven 64-entry cadence */
+	bne	ef_entries			/* lower rates retain their proven 64-entry cadence */
 	cmpi.w	#1024, d5
 	bhi	ef_entries			/* H40 >1024 needs the legacy intermediate poll */
 	movea.l	a5, a0				/* audio start */
@@ -1201,18 +1196,18 @@ ef_count_ready:
 ef_run:
 	move.w	(a0)+, d2			/* zero-based slot_start */
 	move.w	(a0)+, d3			/* pattern count */
-	move.w	d5, d0
-	sub.w	d4, d0				/* remaining cold count cannot exceed n_upd */
-	cmp.w	d0, d3
+	move.w	d5, d1
+	sub.w	d4, d1				/* remaining cold count cannot exceed n_upd */
+	cmp.w	d1, d3
 	bls	1f
-	move.w	d0, d3
+	move.w	d1, d3
 1:
-	move.w	h_pool, d0
-	sub.w	d2, d0				/* slots available from slot_start */
+	move.w	h_pool, d1
+	sub.w	d2, d1				/* slots available from slot_start */
 	bls	ef_run_next			/* corrupt slot outside the pool */
-	cmp.w	d0, d3
+	cmp.w	d1, d3
 	bls	1f
-	move.w	d0, d3
+	move.w	d1, d3
 1:
 	tst.w	d3
 	beq	ef_run_next
@@ -1221,14 +1216,9 @@ ef_run:
 	add.w	d3, d4
 	subq.w	#1, d3
 ef_run_pattern:
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
-	move.l	(a4)+, (a1)+
+	movem.l	(a4)+, d0-d2/a2-a6		/* 32-byte PRG→Word-RAM copy */
+	movem.l	d0-d2/a2-a6, (a1)
+	lea	32(a1), a1
 	subq.w	#1, d6
 	bne	1f
 	movea.l	#RING_BASE, a4

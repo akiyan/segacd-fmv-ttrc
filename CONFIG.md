@@ -116,7 +116,7 @@ continuously.
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
 | `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. v4+ uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; 3.125 at 24 fps; alternating 2/3 at 30 fps). In v6 each `BODY.DAT` slot is control / future payload / pad. |
 | `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
-| `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. The 30fps Sub copies patterns by these runs instead of scanning every update entry again. Old streams use the entry fallback; old players ignore the suffix via `total_len`. |
+| `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. At 24fps or above, the Sub copies eligible blocks by these runs instead of scanning every update entry again. Old streams use the entry fallback; old players ignore the suffix via `total_len`. |
 | Word-RAM swap completion | DMNA bit 1 | sp `swap_settle` | Poll the hardware's 1M bank-switch busy flag. The former fixed `0x400` loop burned about 0.82 ms after every frame even when the switch was already complete. |
 
 ## E. VDP DMA budget (Main CPU)

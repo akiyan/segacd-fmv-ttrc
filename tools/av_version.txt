@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p43 : Select the packed cold-run fast path from nominal fps so 24fps N2
+#        streams no longer fall through future N-based cadence changes. Copy
+#        each descriptor pattern with one 32-byte MOVEM pair instead of eight
+#        separate long moves, reducing Sub-CPU work without changing output.
 #   p42 : Generate 256 straight bitmap handlers plus fixed NT0/NT1 blitters once
 #        after stream-header setup. Runtime code removes the per-bit bitmap loop
 #        and per-row name-table address/loop work while retaining exact zero/full
@@ -287,4 +291,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260716
 e=35
-p=42
+p=43
