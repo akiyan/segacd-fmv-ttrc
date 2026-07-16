@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import re
 import shutil
 import struct
 import subprocess
@@ -26,6 +27,21 @@ OP_MOVE_L_IMM_ABS = 0x23FC      # move.l #command,(VDP_CTRL).l
 OP_MOVE_L_A1_ABS = 0x23D9       # move.l (a1)+,(VDP_DATA).l
 OP_MOVE_W_A1_ABS = 0x33D9       # move.w (a1)+,(VDP_DATA).l
 OP_RTS = 0x4E75
+PLAYER_SOURCE = Path("boot/movieplay_ip.s")
+PLAYER_CONSTANTS = {
+    "RUN_TABLE": CODEGEN_LIMIT,
+    "MAIN_CODEGEN_EXPECTED_END": CODEGEN_START,
+    "MAIN_CODEGEN_BLITTER_MAX": 7296,
+    "NT0": NT0,
+    "NT1": NT1,
+    "VDP_DATA": VDP_DATA,
+    "VDP_CTRL": VDP_CTRL,
+    "CG_OP_LEA_SHADOW_A1": OP_LEA_SHADOW_A1,
+    "CG_OP_MOVE_L_IMM_ABS": OP_MOVE_L_IMM_ABS,
+    "CG_OP_MOVE_L_A1_ABS": OP_MOVE_L_A1_ABS,
+    "CG_OP_MOVE_W_A1_ABS": OP_MOVE_W_A1_ABS,
+    "CG_OP_RTS": OP_RTS,
+}
 
 
 @dataclass(frozen=True)
@@ -236,6 +252,24 @@ def verify_invalid_geometry() -> None:
         raise AssertionError(f"invalid geometry accepted: {case}")
 
 
+def verify_player_constants(path: Path = PLAYER_SOURCE) -> None:
+    source = path.read_text()
+    found = {
+        name: int(value, 0)
+        for name, value in re.findall(
+            r"^\.equ\s+([A-Z0-9_]+),\s*(0x[0-9A-Fa-f]+|[0-9]+)\b",
+            source,
+            flags=re.MULTILINE,
+        )
+    }
+    for name, expected in PLAYER_CONSTANTS.items():
+        actual = found.get(name)
+        if actual != expected:
+            raise AssertionError(
+                f"{path}: {name}={actual!r}, Python contract expects {expected:#x}"
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="optional H40 pair binary output")
@@ -243,6 +277,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cases = ((32, 32, 28, 0, 0), (40, 40, 28, 0, 0), (40, 17, 13, 7, 1), (32, 1, 1, 27, 31))
+    verify_player_constants()
     objdump = find_objdump(args.objdump)
     for case in cases:
         image, blitters = emit_pair(*case)
@@ -258,6 +293,7 @@ def main() -> None:
     h40_image, _ = emit_pair(40, 40, 28, 0, 0)
     if len(h40_image) != 7296 or CODEGEN_START + len(h40_image) != 0x00FF6580:
         raise AssertionError("unexpected maximum H40 generated size")
+    print(f"assembly emitter constants: OK ({PLAYER_SOURCE})")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(h40_image)
