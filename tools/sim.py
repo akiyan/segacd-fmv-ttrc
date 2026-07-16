@@ -1052,10 +1052,24 @@ def main():
     _png_pool = None if NO_PANELS else ThreadPoolExecutor(max_workers=6)
     _png_futs = _collections.deque()
 
+    def _write_png(arr, path):
+        """Write one complete, decodable PNG before replacing the old frame."""
+        temp = path.with_name(path.name + ".tmp")
+        try:
+            Image.fromarray(arr, "RGB").save(temp, format="PNG")
+            with Image.open(temp) as check:
+                check.load()
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+
     def _save_png(arr, path):
         if len(_png_futs) >= 96:          # 背圧: 生成が速すぎてもメモリ膨張を防ぐ
             _png_futs.popleft().result()
-        _png_futs.append(_png_pool.submit(lambda a=arr, p=path: Image.fromarray(a, "RGB").save(p)))
+        # cells_to_image can return a view into live frame state.  Freeze it
+        # before the worker starts so the next frame cannot mutate its buffer.
+        frozen = np.ascontiguousarray(arr).copy()
+        _png_futs.append(_png_pool.submit(_write_png, frozen, path))
 
     for i in range(n):
         pal_swap = SEGPAL_ON and i > 0 and int(frame_seg[i]) != int(frame_seg[i - 1])

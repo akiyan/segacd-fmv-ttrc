@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e38 : Freeze analysis-panel arrays before threaded PNG encoding, validate
+#        each completed PNG, and atomically replace the old frame. Parallel
+#        rendering can no longer leave a corrupt or cross-frame preview file.
 #   e37 : Make the physical cold cap display-mode aware. H32 remains 350 at
 #        15fps (219 at 24fps); full-raster H40 uses 320 at 15fps and 200 at
 #        24fps, where Lunar playback changes from repeatable S=2 to S=0.
@@ -296,5 +299,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260716
-e=37
+e=38
 p=43
