@@ -27,3 +27,17 @@ implementation for:
 
 The benchmark is informational. Correctness is always checked before timings
 are printed.
+
+The MOSAIC-GM structural checks cover automatic one-line stopping, shared-core
+growth for a source with more than 15 useful colours, and fixed HUD extrema:
+
+```sh
+python3 harness/palette_algo/verify_mosaic.py
+```
+
+Compare both algorithms on evenly sampled Bad Apple and Sonic master frames:
+
+```sh
+~/.config/cbrsim-gpu/venv/bin/python \
+  harness/palette_algo/compare_sources.py --frames 60
+```

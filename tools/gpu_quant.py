@@ -42,6 +42,13 @@ def enabled():
     return _STATE["on"]
 
 
+def cupy():
+    """Return the initialized CuPy module for shared palette GPU evaluators."""
+    if not enabled():
+        raise RuntimeError("CuPy/CUDA is not available")
+    return _STATE["cp"]
+
+
 class PalCache:
     """区間パレットのRGB333二乗誤差/index LUTをGPU上にキャッシュする。"""
 
