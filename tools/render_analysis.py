@@ -403,7 +403,7 @@ def frame_data(i):
                 raw_bytes=int(RAW_BYTES[i]), buf_bytes=int(BUF_BYTES[i]), ovh_bytes=int(OVH_BYTES[i]),
                 band_kbps=int(BAND[i]), cd1x_bpf=CD1X_BPF,
                 cold=cn["Raw"] + cn["Buf"], cold_raw=cn["Raw"], cold_buf=cn["Buf"],
-                cold_cap=L.av_config.cold_cap_for_fps(FPS),   # realized=cap(共有割り当て)=Coldバー満スケール
+                cold_cap=L.av_config.cold_cap_for_fps(FPS, MODE),
                 tank_delta=int(TANK_DELTA[i]), max_raw=MAX_RAW,
                 pl_info=frame_plinfo(i),
                 frame=i, total_frames=NF, time_s=i / FPS, palettes=frame_palettes(i),

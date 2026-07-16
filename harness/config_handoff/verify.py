@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 from encode_config import apply_profile_env, load_profile  # noqa: E402
+import av_config  # noqa: E402
 
 
 PER_SOURCE_ENV = {
@@ -66,6 +67,18 @@ def check_profiles() -> None:
     print("TOML mapping: OK (profile values replace polluted environment)")
 
 
+def check_cold_caps() -> None:
+    expected = {
+        "H32": {15: 350, 24: 219, 30: 175},
+        "H40": {15: 320, 24: 200, 30: 160},
+    }
+    for mode, values in expected.items():
+        for fps, cap in values.items():
+            assert av_config.cold_cap_for_fps(fps, mode) == cap
+            assert av_config.cold_realized_ceiling_for_fps(fps, mode) == cap
+    print("Cold caps: OK (mode/fps sim and pack limits agree)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("decision", type=Path,
@@ -75,6 +88,7 @@ def main() -> None:
     if not decision.exists():
         raise SystemExit(f"not found: {decision}")
     check_profiles()
+    check_cold_caps()
 
     clean = {key: value for key, value in os.environ.items() if key not in PER_SOURCE_ENV}
     polluted = dict(clean)

@@ -115,29 +115,38 @@ def pcm_frame_bytes(fps, audio_rate=13_300):
 # This project ships to real hardware, so the sim MUST model what the player can
 # actually DRAW per frame, not just what the CD/tank can deliver. The player renders
 # at most a fixed number of fresh (cold) 8x8 tiles per VBLANK (raw-share DMA + buffer
-# drain). The ONE confirmed data point is 15fps: cap 350 plays clean on hardware with
-# the p5 player (realized ~362, S=0). 15fps content spans 4 VBLANks/frame, and the cap
-# scales inversely with fps (higher fps = fewer VBLANks/frame = fewer drawable cold):
-#   cap(fps) = COLD_CAP_15FPS x 15 / fps   ->   15->350, 30->175, 24->219.
+# drain). H32's confirmed 15fps point is 350.  Full-raster H40 has more control and
+# name-table work; Lunar 24fps measured 219 as S=2 and 200 as S=0, establishing a
+# 320-at-15fps reference for that mode.  The cap scales inversely with fps:
+#   H32: 15->350, 24->219, 30->175
+#   H40: 15->320, 24->200, 30->160
 # Uncapped is no longer allowed — an uncapped sim shows impossible bursts (Sonic H32
 # 30fps wanted 600-738 cold on the opening frames, far above what the hardware draws)
 # that would collapse live.
 #
-# COLD_CAP_15FPS is the single knob. The pipeline-speedup work (issue #15: MOVEM block
-# copies, padding, table lookups) will raise it; everything below derives from it so
-# the whole pipeline (per-fps caps, the drop-safe realized ceiling) tracks the change.
-COLD_CAP_15FPS = 350        # confirmed drop-safe at 15fps (p5 player). Raised by issue #15.
+# Keep mode references explicit: H40's wider full raster costs more CPU per frame.
+COLD_CAP_15FPS_BY_MODE = {
+    "H32": 350,             # confirmed drop-safe at 15fps (p5 player)
+    "H40": 320,             # Lunar 24fps: 200 clean; 219 slips
+    "MODE4": 350,           # retained until mode4 has its own hardware measurement
+}
 _CAP_REF_FPS = 15
 
 
-def cold_cap_for_fps(fps):
-    """Per-frame cold cap, scaled inversely with fps from the confirmed 15fps value.
-    frame0 is exempt (loaded from the header at boot, no VBLANK limit)."""
-    return int(round(COLD_CAP_15FPS * _CAP_REF_FPS / float(fps)))
+def cold_cap_for_fps(fps, mode="H32"):
+    """Mode-aware per-frame cold cap, scaled from its 15fps reference.
+
+    Frame 0 is exempt because the header loads it before timed playback.
+    """
+    mode_key = str(mode).upper()
+    if mode_key not in COLD_CAP_15FPS_BY_MODE:
+        raise ValueError(f"unsupported display mode for cold cap: {mode!r}")
+    return int(round(
+        COLD_CAP_15FPS_BY_MODE[mode_key] * _CAP_REF_FPS / float(fps)))
 
 
-def cold_realized_ceiling_for_fps(fps):
+def cold_realized_ceiling_for_fps(fps, mode="H32"):
     """Pack-time realized-cold ceiling. Now == the cap: the shared two-pass allocator
     makes the pack's realized cold equal the sim's cap exactly, so the ceiling is the
     cap itself (the assert `realized <= ceiling` holds by construction)."""
-    return cold_cap_for_fps(fps)
+    return cold_cap_for_fps(fps, mode)

@@ -75,16 +75,19 @@ four rows. Frames are then quantised against this final palette grouping.
 resident tile). More cold = sharper picture, but a heavy frame that loads too
 many can overrun the CDC (a sector slip).
 
-The cap is **auto-derived** from `av_config.cold_cap_for_fps` (15fps→350, 30fps→175)
-and shared by the sim and the pack — no manual per-source env. The sim and pack use
+The cap is **auto-derived** from `av_config.cold_cap_for_fps` by display mode and
+fps, and shared by the sim and the pack — no manual per-source env. H32 keeps
+15fps→350 / 24fps→219 / 30fps→175. Full-raster H40 uses
+15fps→320 / 24fps→200 / 30fps→160; Lunar H40 24fps measured S=2 at 219 and S=0
+at 200. The sim and pack use
 ONE tile allocator (`tools/tile_alloc.py`), so the pack's **realized cold == the cap
 exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| cap `cold_cap_for_fps` | 15fps→350, 30fps→175 | cfg (auto) | **Per-frame cold cap** = `COLD_CAP_15FPS(350)·15/fps`. Applied by the sim; the pack ships exactly this. All sources (op/ed/sonic) use it — none uncapped. |
+| cap `cold_cap_for_fps` | H32: 350/219/175; H40: 320/200/160 at 15/24/30fps | cfg (auto) | **Per-frame cold cap** = the mode's 15fps reference scaled by `15/fps`. Applied by the sim; the pack ships exactly this. |
 | `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
-| realized cold | == cap (e.g. op/ed 350, sonic 175) | pack (measured) | Equals the cap by construction (shared two-pass allocator). The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
+| realized cold | at most the mode/fps cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
 ## C. Audio sync throttles
 

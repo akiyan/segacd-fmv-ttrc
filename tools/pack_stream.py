@@ -984,13 +984,16 @@ def main():
     # sim のモデル cap が pack の連続スロット割当に対して高すぎる兆候(=解析は合うが実機で滑る)。
     # frame0(完全ロードのヘッダ)は除外。
     # realized == cap(共有 TileAllocator で構成上保証)。上限=cap を自動取得(手動env廃止)。
-    cold_ceiling = av_config.cold_realized_ceiling_for_fps(FPS)   # = cold_cap_for_fps(FPS)
+    stream_mode = str(
+        (((log.get("config") or {}).get("video") or {}).get("mode"))
+        or log.get("mode") or "H32")
+    cold_ceiling = av_config.cold_realized_ceiling_for_fps(FPS, stream_mode)
     realized_max = max([int(x) for x in n_load[1:]], default=0)
     if realized_max > cold_ceiling:
         raise SystemExit(
             f"pack: realized per-frame cold max={realized_max} > cap={cold_ceiling}. "
             f"共有 TileAllocator では realized=cap のはず=想定外。sim/pack の割り当て食い違いを疑う。")
-    print(f"  realized cold: max={realized_max} == cap {cold_ceiling} (共有割り当て)")
+    print(f"  realized cold: max={realized_max} <= {stream_mode} cap {cold_ceiling} (共有割り当て)")
     run_stats(per)
     blocks = build_control(log, per, n_upd, pal_w, audio_path)
     sc = schedule(per, n_load, blocks)
