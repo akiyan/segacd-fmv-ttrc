@@ -46,6 +46,7 @@
 .equ MAIN_CODEGEN_TABLE_BYTES, 0x0200	/* 256 signed word offsets */
 .equ MAIN_CODEGEN_HANDLER_MAX, 70	/* mask FF: guarded before writing */
 .equ MAIN_CODEGEN_EXPECTED_END, 0x00FF4900
+.equ MAIN_CODEGEN_BLITTER_MAX, 7296	/* H40 40x28, NT0+NT1 */
 
 /* Exact 68000 words emitted by init_main_codegen.  Keep synchronized with
    harness/main_codegen/verify_handlers.py. */
@@ -57,6 +58,11 @@
 .equ CG_OP_ADVANCE_SHADOW,     0x43E9	/* lea 16(a1),a1 */
 .equ CG_SHADOW_BYTE_ADVANCE,   16
 .equ CG_OP_BRA_W,              0x6000
+.equ CG_OP_LEA_SHADOW_A1,      0x43F9	/* lea shadow.l,a1 */
+.equ CG_OP_MOVE_L_IMM_ABS,     0x23FC	/* move.l #cmd,(VDP_CTRL).l */
+.equ CG_OP_MOVE_L_A1_ABS,      0x23D9	/* move.l (a1)+,(VDP_DATA).l */
+.equ CG_OP_MOVE_W_A1_ABS,      0x33D9	/* move.w (a1)+,(VDP_DATA).l */
+.equ CG_OP_RTS,                0x4E75
 /* デバッグオーバーレイ: フォントは予約VRAM(プール1360の直上 tile1361)。 */
 .equ DBGFONT_N, 28			/* dbgfont.bin のタイル数 */
 /* フォントVRAM位置はヘッダの base+pool 直上を実行時に計算(md_font_vtile/md_font_addr) */
@@ -274,7 +280,10 @@ movie_end_md:
 init_main_codegen:
 	movem.l	d0-d7/a0-a2, -(sp)
 	clr.w	md_codegen
+	clr.w	md_codegen_blit
 	clr.l	md_codegen_end
+	clr.l	md_codegen_blit_addr
+	clr.l	md_codegen_blit_addr+4
 	lea	MAIN_CODEGEN_BASE, a1		/* jump table cursor */
 	lea	(MAIN_CODEGEN_BASE+MAIN_CODEGEN_TABLE_BYTES), a0 /* emitted code cursor */
 	moveq	#0, d7				/* mask 0..255 */
@@ -337,11 +346,103 @@ init_main_codegen:
 	bhi	9f
 	move.l	d0, md_codegen_end
 	move.w	#1, md_codegen
+
+	/* Phase 2 needs a valid H32/H40 aperture.  Reject before emitting so the
+	   existing generic blitter remains an untouched fallback. */
+	move.w	md_mode, d0
+	cmpi.w	#1, d0
+	bhi	10f
+	move.w	#32, d1
+	tst.w	d0
+	beq	11f
+	move.w	#40, d1
+11:
+	move.w	md_tcols, d0
+	beq	10f
+	cmp.w	d1, d0
+	bhi	10f
+	move.w	md_col0, d2
+	add.w	d0, d2
+	cmp.w	d1, d2
+	bhi	10f
+	move.w	md_trows, d0
+	beq	10f
+	cmpi.w	#28, d0
+	bhi	10f
+	move.w	md_row0, d2
+	add.w	d0, d2
+	cmpi.w	#28, d2
+	bhi	10f
+	move.l	a0, d0
+	addi.l	#MAIN_CODEGEN_BLITTER_MAX, d0
+	cmpi.l	#MAIN_CODEGEN_LIMIT, d0
+	bhi	10f
+
+	move.l	a0, md_codegen_blit_addr
+	move.l	#NT0, d6
+	bsr	emit_main_blitter
+	move.l	a0, md_codegen_blit_addr+4
+	move.l	#NT1, d6
+	bsr	emit_main_blitter
+	move.l	a0, d0
+	cmpi.l	#MAIN_CODEGEN_LIMIT, d0
+	bhi	10f				/* preflight above makes this defensive only */
+	move.l	d0, md_codegen_end
+	move.w	#1, md_codegen_blit
 	bra	10f
 9:
 	move.l	a0, md_codegen_end		/* diagnostic only; fallback stays selected */
 10:
 	movem.l	(sp)+, d0-d7/a0-a2
+	rts
+
+/* Emit one fixed-geometry name-table blitter at a0.  d6 is NT0 or NT1.
+   The caller has already proved the H40 maximum pair fits below RUN_TABLE. */
+emit_main_blitter:
+	move.w	#CG_OP_LEA_SHADOW_A1, (a0)+
+	move.l	#shadow, (a0)+
+	move.w	md_row0, d4
+	move.w	md_trows, d5
+	subq.w	#1, d5
+1:
+	/* Precompute the exact command produced by set_vram_write for this row. */
+	moveq	#0, d0
+	move.w	d4, d0
+	lsl.w	#7, d0				/* plane row * 128 bytes */
+	move.w	md_col0, d1
+	add.w	d1, d1				/* centered column * 2 bytes */
+	add.w	d1, d0
+	add.l	d6, d0				/* NT0/NT1 base */
+	move.l	d0, d1
+	andi.l	#0x3FFF, d0
+	swap	d0
+	ori.l	#0x40000000, d0
+	lsr.w	#7, d1
+	lsr.w	#7, d1
+	andi.w	#3, d1
+	or.w	d1, d0
+	move.w	#CG_OP_MOVE_L_IMM_ABS, (a0)+
+	move.l	d0, (a0)+
+	move.l	#VDP_CTRL, (a0)+
+
+	move.w	md_tcols, d2
+	lsr.w	#1, d2				/* two name-table words per MOVE.L */
+	beq	3f
+	subq.w	#1, d2
+2:
+	move.w	#CG_OP_MOVE_L_A1_ABS, (a0)+
+	move.l	#VDP_DATA, (a0)+
+	dbra	d2, 2b
+3:
+	move.w	md_tcols, d2
+	andi.w	#1, d2
+	beq	4f
+	move.w	#CG_OP_MOVE_W_A1_ABS, (a0)+
+	move.l	#VDP_DATA, (a0)+
+4:
+	addq.w	#1, d4
+	dbra	d5, 1b
+	move.w	#CG_OP_RTS, (a0)+
 	rts
 .endif
 
@@ -474,6 +575,17 @@ bf_blit:
 	lsl.l	#8, d5
 	lsl.l	#5, d5				/* back_idx*0x2000 */
 	add.l	#NT0, d5			/* back_base = 0xC000 or 0xE000 (flipまで保持) */
+.ifdef MAIN_CODEGEN
+	move.w	md_codegen_blit(pc), d0
+	beq	bf_blit_reference
+	move.w	back_idx(pc), d0
+	lsl.w	#2, d0
+	lea	md_codegen_blit_addr(pc), a3
+	movea.l	(a3,d0.w), a3
+	jsr	(a3)
+	bra	bf_dma
+bf_blit_reference:
+.endif
 	lea	shadow, a1
 	move.w	md_row0, d4			/* plane_row = (screen_rows-trows)/2 */
 	move.w	md_trows, d6
@@ -917,6 +1029,10 @@ md_nseg:
 .ifdef MAIN_CODEGEN
 md_codegen:
 	.space 2				/* 1 only after the complete runtime proof succeeds */
+md_codegen_blit:
+	.space 2				/* Phase 2 geometry/range proof succeeded */
+md_codegen_blit_addr:
+	.space 8				/* NT0 and NT1 generated entry addresses */
 md_codegen_end:
 	.space 4				/* generated end address, including failed attempts */
 .endif
