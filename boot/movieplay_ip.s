@@ -407,31 +407,11 @@ bf_upd:
 	move.w	md_bmbytes, d5
 	subq.w	#1, d5
 .ifdef MAIN_CODEGEN
-	tst.w	md_codegen
-	beq	bf_ubyte			/* runtime overflow/geometry fallback */
-	lea	MAIN_CODEGEN_BASE, a3
-	move.l	#CG_ENTRY_MASK_LONG, d6		/* shared word/long cold-flag mask */
-bf_cg_ubyte:
-	move.b	(a2)+, d0
-	beq	bf_cg_uzero			/* keep the already-cheap zero path */
-	cmpi.b	#0xFF, d0
-	beq	bf_cg_ufull			/* four masked longwords, not eight words */
-	andi.w	#0x00FF, d0			/* MOVE.B leaves the upper byte unchanged */
-	add.w	d0, d0				/* signed-word table index */
-	move.w	(a3,d0.w), d4
-	jmp	(a3,d4.w)				/* prefetch starts generated handler */
-bf_cg_uzero:
-	lea	16(a1), a1
-	bra	bf_cg_unext
-bf_cg_ufull:
-	.rept 4
-	move.l	(a0)+, d3
-	and.l	d6, d3				/* strip both packed cold flags */
-	move.l	d3, (a1)+
-	.endr
-bf_cg_unext:
-	dbra	d5, bf_cg_ubyte
-	bra	bf_blit
+	/* PC-relative flag check is the only fixed success-path overhead.  The
+	   fallback branches around the generated loop; the successful loop falls
+	   directly into bf_blit. */
+	move.w	md_codegen(pc), d0
+	bne	bf_cg_start
 .endif
 bf_ubyte:
 	move.b	(a2)+, d0
@@ -460,6 +440,33 @@ bf_ufull:
 	.endr
 bf_unext:
 	dbra	d5, bf_ubyte
+.ifdef MAIN_CODEGEN
+	bra	bf_blit				/* failed generator: safe reference fallback */
+bf_cg_uzero:
+	lea	16(a1), a1
+	bra	bf_cg_unext
+bf_cg_ufull:
+	.rept 4
+	move.l	(a0)+, d3
+	and.l	d6, d3				/* strip two packed cold flags */
+	move.l	d3, (a1)+
+	.endr
+	bra	bf_cg_unext
+bf_cg_start:
+	lea	MAIN_CODEGEN_BASE, a3
+	move.l	#CG_ENTRY_MASK_LONG, d6		/* shared word/long cold-flag mask */
+bf_cg_ubyte:
+	move.b	(a2)+, d0
+	beq	bf_cg_uzero			/* exactly the reference zero-mask path */
+	cmpi.b	#0xFF, d0
+	beq	bf_cg_ufull
+	andi.w	#0x00FF, d0			/* MOVE.B leaves the upper byte unchanged */
+	add.w	d0, d0				/* signed-word table index */
+	move.w	(a3,d0.w), d4
+	jmp	(a3,d4.w)				/* prefetch starts generated handler */
+bf_cg_unext:
+	dbra	d5, bf_cg_ubyte
+.endif
 bf_blit:
 	/* シャドウ全体を裏NTへ blit (裏は非表示=active可) */
 	moveq	#0, d5

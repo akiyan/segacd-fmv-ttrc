@@ -49,7 +49,7 @@ DBRA_EXPIRED = 14           # Table 8-9: condition false, counter expired
 LEA_DISP = 8                # Table 8-10: LEA (d16,An),An
 LEA_ABS_LONG = 12           # Table 8-10: LEA (xxx).L,An
 JMP_INDEX = 14              # Table 8-10: JMP (d8,An,Xn)
-TST_W_ABS_LONG = 16         # Table 8-6 base 4 + Table 8-1 absolute-long EA 12
+MOVE_W_PC_DISP_DN = 12      # Table 8-2: MOVE.W (d16,PC),Dn
 
 
 def reference_byte_cycles(mask: int) -> int:
@@ -88,7 +88,7 @@ def generated_byte_cycles(mask: int) -> int:
     if mask == 0xFF:
         cycles += BCC_W_TAKEN
         cycles += 4 * (MOVE_L_POSTINC_DN + AND_L_DN_DN + MOVE_L_DN_INDIRECT)
-        return cycles
+        return cycles + BRA_W
 
     cycles += BCC_W_NOT_TAKEN + ANDI_W_DN + ADD_W_DN_DN
     cycles += MOVE_W_INDEX_DN + JMP_INDEX
@@ -108,16 +108,18 @@ def frame_cycles(bitmap: bytes, has_entries: bool) -> tuple[int, int]:
     outer_loop = DBRA_CONTINUE * (len(bitmap) - 1) + DBRA_EXPIRED
     reference = sum(reference_byte_cycles(mask) for mask in bitmap) + outer_loop
 
-    # Once per non-empty frame: prove md_codegen, load the table base, then
-    # branch around the legacy loop after the final generated handler returns.
+    # Once per non-empty frame: check the success flag, load the table base and
+    # shared cold-flag mask.  The generated loop falls directly into bf_blit.
     generated_setup = (
-        TST_W_ABS_LONG + BCC_W_NOT_TAKEN + LEA_ABS_LONG + MOVE_L_IMMEDIATE_DN
+        MOVE_W_PC_DISP_DN
+        + BCC_W_TAKEN
+        + LEA_ABS_LONG
+        + MOVE_L_IMMEDIATE_DN
     )
     generated = (
         generated_setup
         + sum(generated_byte_cycles(mask) for mask in bitmap)
         + outer_loop
-        + BRA_W
     )
     return reference, generated
 
