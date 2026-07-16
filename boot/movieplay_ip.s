@@ -37,9 +37,12 @@
 .equ WIN_NT, 0xD000			/* DEBUG Window NT: H40 4KB / H32 2KB alignment both satisfied */
 .equ NT1, 0xE000
 
-/* VDP DMAの源は必ずMain-RAM。1フレームのタイルをここへステージしてからDMA。 */
-.equ DMA_STAGE, 0x00FF2000		/* タイルステージ(24KB, ~768タイル) */
-.equ RUN_TABLE, 0x00FF8000		/* (dst.w,len.w) ラン表(最大~128ラン) */
+/* 0xFF2000..0xFF7FFF is no longer a tile staging buffer: pattern DMA reads
+   Word RAM directly and repairs the first destination word on the CPU.  Keep
+   the whole 24 KiB range reserved for boot-time Main-CPU code generation. */
+.equ MAIN_CODEGEN_BASE,  0x00FF2000
+.equ RUN_TABLE,          0x00FF8000	/* (dst.w,len.w,src.l) runs (max ~128) */
+.equ MAIN_CODEGEN_LIMIT, RUN_TABLE
 /* デバッグオーバーレイ: フォントは予約VRAM(プール1360の直上 tile1361)。 */
 .equ DBGFONT_N, 28			/* dbgfont.bin のタイル数 */
 /* フォントVRAM位置はヘッダの base+pool 直上を実行時に計算(md_font_vtile/md_font_addr) */
@@ -244,11 +247,9 @@ movie_end_md:
 	bra	play_loop
 
 /* ---- 1フレーム分をデコードし裏へ描画してflip ----
-   タイル転送はDMA(VDPが自走=CPUを空ける)。**VDP DMAの源は必ずMain-RAM**
-   (Word-RAM直DMAは化ける)。手順を2パスに分離:
-     Pass1(active可): 全ランのタイルをWord-RAM→Main-RAMステージへコピー+(dst,len)表を作る
-     Pass2(vblank内): 表を順にDMA。**stageのCPUコピーでvblankを食い潰してDMAがactiveに
-     はみ出すと化ける**ので、コピー(遅い)とDMA発行(vblank厳守)を分ける。 */
+   タイル転送はWord-RAM直DMA(VDPが自走=CPUを空ける)。手順を2パスに分離:
+     Pass1(active可): 全ランの(dst,len,src)表だけを作る
+     Pass2(vblank内): 表を順にDMAし、Word-RAM DMAの欠落先頭wordをCPUで修復する */
 build_frame:
 	movem.l	d0-d7/a0-a3, -(sp)
 .ifdef DEBUG

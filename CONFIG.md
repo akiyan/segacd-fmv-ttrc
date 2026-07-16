@@ -125,7 +125,7 @@ continuously.
 |---|---|---|---|
 | `VB_WORDS_H40` | 3400 words/VBlank | ip | H40 per-VBlank DMA word budget (conservative vs. ~3895 theoretical). |
 | `VB_WORDS_H32` | 2800 words/VBlank | ip | H32 per-VBlank DMA word budget. |
-| `DMA_STAGE` | 24 KB (~768 tiles) | ip | Tile DMA staging area. |
+| `MAIN_CODEGEN_BASE..LIMIT` | 24 KB (`0xFF2000..0xFF7FFF`) | ip | Reserved for Main-CPU code generated once after header setup. The former tile staging use is obsolete because pattern DMA reads Word RAM directly. |
 | `RUN_TABLE` | up to ~128 runs | ip | `(dst, len, src)` table of contiguous-slot runs, one big DMA per run. |
 
 ## F. CBR / transfer rate
