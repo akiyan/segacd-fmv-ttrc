@@ -143,12 +143,14 @@ Required tools: Marsdev / `m68k-elf` toolchain, `mkisofs` or `genisoimage`,
 `ffmpeg` / `ffprobe`, `python3` with NumPy and Pillow, and a Sega CD BIOS for
 emulator testing.
 
-`make disc` (the default target) builds the player disc as
-`out/MOVIEPLAY.iso` + `out/MOVIEPLAY.cue`. It expects the encoded pair at
-`out/movieplay/HEADER.DAT` and `out/movieplay/BODY.DAT`, produced together by
-`tools/pack_stream.py`, plus the `palettes.bin` written from the same decision
-log. `HEADER.DAT` contains all startup state, including frame 0 and the
-prebuffer; `BODY.DAT` starts at frame 1 and is read continuously.
+`make disc CONFIG=configs/PROFILE.toml` builds the player disc as
+`out/PROFILE.iso` + `out/PROFILE.cue`. The packer writes `HEADER.DAT`,
+`BODY.DAT`, `MOVIE.DAT`, and `palettes.bin` under `out/PROFILE/`, using the
+TOML filename as the artifact identity. Transient assembler files, disc staging,
+and the default direct-emulator scratch area are separated under `tmp/PROFILE/`.
+`HEADER.DAT` contains all startup state, including frame 0 and the prebuffer;
+`BODY.DAT` starts at frame 1 and is read continuously. Their on-disc names
+remain fixed because the player opens those TTRC format names.
 
 ## Recording
 
@@ -156,7 +158,7 @@ Use the headless RetroArch harness (emulator-synchronized A/V output; do not
 remux offline audio when verifying playback):
 
 ```sh
-tools/record_movie.sh --disc out/MOVIEPLAY.cue --no-build \
+tools/record_movie.sh --config configs/PROFILE.toml \
   --seconds 180 --tag STEM_emu --out videos/STEM_emu_preview.mp4
 ```
 

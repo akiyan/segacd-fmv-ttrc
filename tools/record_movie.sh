@@ -10,12 +10,13 @@
 # audio the build produces) - not an offline re-mux of PROBE.BIN.
 #
 # Usage:
-#   tools/record_movie.sh                      # record out/MOVIEPLAY.cue, ~160s
-#   tools/record_movie.sh --seconds 30         # short clip
-#   tools/record_movie.sh --disc out/MOVIEPLAY.cue --out videos/op.mp4 --seconds 160
+#   tools/record_movie.sh --config configs/bad-apple-h32.toml --seconds 160
+#   tools/record_movie.sh --config configs/bad-apple-h32.toml --seconds 30
+#   tools/record_movie.sh --disc out/bad-apple-h32.cue --no-build --seconds 160
 #
 # Options:
-#   --disc CUE     disc image to boot (default out/MOVIEPLAY.cue)
+#   --config TOML  profile used by make; also derives out/<toml-stem>.cue
+#   --disc CUE     explicit disc image to boot (normally derived from --config)
 #   --out MP4      verification preview (default videos/<tag>_preview.mp4)
 #   --seconds N    seconds to keep in the bounded native MKV/preview (default 160)
 #   --trim SEC     seconds to drop from the front; disables auto-audio-trim
@@ -41,7 +42,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-DISC="out/MOVIEPLAY.cue"
+CONFIG=""
+DISC=""
 OUT=""
 REC_SECS=160
 TRIM=0
@@ -56,6 +58,7 @@ AUTO_AUDIO_TRIM=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --config) CONFIG="$2"; shift 2;;
     --disc) DISC="$2"; shift 2;;
     --out) OUT="$2"; shift 2;;
     --seconds) REC_SECS="$2"; shift 2;;
@@ -75,6 +78,25 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -n "$CONFIG" ]; then
+  CONFIG_STEM="$(python3 tools/encode_config.py "$CONFIG" --print-stem)"
+  CONFIG_DISC="out/${CONFIG_STEM}.cue"
+  if [ -z "$DISC" ]; then
+    DISC="$CONFIG_DISC"
+  elif [ "$BUILD" -eq 1 ] && [ "$DISC" != "$CONFIG_DISC" ]; then
+    echo "--disc $DISC does not match --config output $CONFIG_DISC" >&2
+    exit 2
+  fi
+fi
+if [ "$BUILD" -eq 1 ] && [ -z "$CONFIG" ]; then
+  echo "--config is required when building; use --disc CUE --no-build for an existing disc" >&2
+  exit 2
+fi
+if [ -z "$DISC" ]; then
+  echo "provide --config TOML, or --disc CUE together with --no-build" >&2
+  exit 2
+fi
+
 [ -z "$TAG" ] && TAG="rec_$(basename "${DISC%.*}")"
 [ -z "$OUT" ] && OUT="videos/${TAG}_preview.mp4"
 CAPTURE_DIR="${OUTDIR:-$ROOT/videos}"
@@ -84,11 +106,11 @@ command -v ffprobe >/dev/null 2>&1 || { echo "missing ffprobe" >&2; exit 1; }
 
 if [ "$BUILD" -eq 1 ]; then
   if [ "$BUILD_DEBUG" -eq 1 ]; then
-    echo ">> make disc DEBUG=1 (recording default)"
+    echo ">> make disc CONFIG=$CONFIG DEBUG=1 (recording default)"
   else
-    echo ">> make disc DEBUG=0 (explicit release build)"
+    echo ">> make disc CONFIG=$CONFIG DEBUG=0 (explicit release build)"
   fi
-  make disc DEBUG="$BUILD_DEBUG" >/dev/null
+  make disc CONFIG="$CONFIG" DEBUG="$BUILD_DEBUG" >/dev/null
 fi
 [ -f "$DISC" ] || { echo "disc not found: $DISC (drop --no-build or build it)" >&2; exit 1; }
 

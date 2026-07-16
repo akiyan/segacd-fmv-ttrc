@@ -955,8 +955,11 @@ def main():
     print(f"  encode params from sim: max_cold={sim_cold} tank_kb={sim_tank}  "
           f"pack RING_CAP_KB={RING_CAP_KB} (RING_SIZE {RING_SIZE_KB})  "
           f"{TCOLS*8}x{TROWS*8} {FPS:g}fps AUDIO={AUDIO} DEBUG={int(PACK_DEBUG)}")
+    # A configured build is always namespaced by the TOML filename.  The old
+    # pack.output value remains readable in schema v1 decision logs, but it no
+    # longer controls configured output and cannot mix two profiles in one dir.
     output = args.output or str(
-        ((log.get("config") or {}).get("pack") or {}).get("output", "out/movieplay/MOVIE.DAT"))
+        profile.pack_output if profile is not None else "out/movieplay/MOVIE.DAT")
     audio_path = args.audio
     if not audio_path:
         audio_name = ((log.get("config") or {}).get("audio") or {}).get("file")

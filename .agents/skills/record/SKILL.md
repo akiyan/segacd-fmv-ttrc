@@ -45,7 +45,7 @@ two captures together.
 Use `tools/record_movie.sh`, which owns the high-level recording workflow:
 
 ```sh
-tools/record_movie.sh [--disc CUE] [--out MP4] [--seconds N] \
+tools/record_movie.sh [--config TOML | --disc CUE --no-build] [--out MP4] [--seconds N] \
   [--trim SEC | --auto-audio-trim] [--tag NAME] [--display :N] \
   [--preset realtime|ffv1-flac] [--record-size WxH] [--no-build] \
   [--release-build]
@@ -53,10 +53,12 @@ tools/record_movie.sh [--disc CUE] [--out MP4] [--seconds N] \
 
 Defaults and rules:
 
-- Use `out/MOVIEPLAY.cue` for the current player.
+- Pass the same `--config configs/PROFILE.toml` used by sim and pack. The
+  harness derives `out/PROFILE.cue` from the TOML filename.
+- Use an explicit `--disc CUE --no-build` only for a previously verified image.
 - Build with `DEBUG=1` by default. The Window HUD is part of the normal recording artifact.
 - Use `--release-build` only when the user explicitly asks for a release build. It changes the
-  harness build to `make disc DEBUG=0`.
+  harness build to `make disc CONFIG=configs/PROFILE.toml DEBUG=0`.
 - Keep the startup sequence. The default is `--trim 0`; omitting `--trim` has the same result.
 - Treat `--seconds` as the final duration from emulator launch. Include enough time for the
   startup screens, the full movie, and a short tail.
@@ -69,6 +71,9 @@ Defaults and rules:
 - Use an unused display such as `--display :269`.
 - Keep the preview MP4 under `videos/`. `OUTDIR` selects the raw MKV and sidecar directory;
   the high-level harness defaults it to `videos/`.
+- A direct `tools/run_headless.sh out/PROFILE.cue` call defaults its screenshots,
+  logs, PID files, and raw diagnostic capture to `tmp/PROFILE/record/`; do not
+  put multiple profile runs directly in the shared `tmp/` root.
 - `ffv1-flac` is the pixel-lossless default and the only normal input to `compilation`.
   Explicit `realtime` uses H.264 with 4:2:0 chroma for a faster synchronized check, writes
   `_native.mkv` rather than `_lossless.mkv`, and must not feed an upload compilation.
@@ -77,7 +82,7 @@ Canonical full capture for later upload:
 
 ```sh
 OUTDIR="$PWD/videos" tools/record_movie.sh \
-  --disc out/MOVIEPLAY.cue --seconds 180 \
+  --config configs/PROFILE.toml --seconds 180 \
   --tag STEM_emu --preset ffv1-flac --record-size 256x224 \
   --display :269 --out videos/STEM_emu_preview.mp4
 ```
@@ -90,7 +95,7 @@ Do not delete it before `compilation` finishes.
 For a short boot/playback check:
 
 ```sh
-tools/record_movie.sh --disc out/MOVIEPLAY.cue \
+tools/record_movie.sh --config configs/PROFILE.toml \
   --seconds 30 --tag rec_check --display :269 \
   --out videos/rec_check_preview.mp4
 ```
@@ -137,8 +142,8 @@ ordinary recording and publication head cueing:
 ```sh
 ps -eo pid,etimes,args | grep -v grep \
   | grep -iE "sim\.py|render_analysis\.py|retroarch|Xvfb|record_movie|run_headless"
-make disc DEBUG=1
-OUTDIR="$PWD/videos" tools/run_headless.sh out/MOVIEPLAY.cue \
+make disc CONFIG=configs/PROFILE.toml DEBUG=1
+OUTDIR="$PWD/videos" tools/run_headless.sh out/PROFILE.cue \
   --tag STEM_debug --record --record-preset ffv1-flac \
   --record-size 256x224 --audio-min-rms 1 \
   --shots 68 --interval 2 --display :NNN
@@ -154,13 +159,13 @@ Verify an existing file without recording again:
 
 ```sh
 tools/verify_recording.sh videos/rec_check_preview.mp4 \
-  --out-prefix tmp/rec_check_postcheck
+  --out-prefix tmp/PROFILE/verify/rec_check_postcheck
 ```
 
 Run a headless smoke test without video recording:
 
 ```sh
-tools/run_headless.sh out/MOVIEPLAY.cue \
+tools/run_headless.sh out/PROFILE.cue \
   --tag smoke --shots 8 --interval 1 --display :250
 ```
 

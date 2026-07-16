@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -20,6 +21,9 @@ from typing import Any, MutableMapping
 
 
 SCHEMA_VERSION = 1
+ARTIFACT_ROOT = Path("out")
+TEMP_ROOT = Path("tmp")
+_ARTIFACT_STEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 # (section, key): legacy internal variable.  Keeping this table in one place is
 # deliberate: TOML is the user interface; CBRSIM_* is an implementation detail.
@@ -100,6 +104,44 @@ class EncodeProfile:
     def decision_log(self) -> Path:
         return self.output_dir / "decisions.pkl"
 
+    @property
+    def artifact_stem(self) -> str:
+        """Stable build name derived only from the TOML filename."""
+        stem = self.path.stem
+        if not _ARTIFACT_STEM_RE.fullmatch(stem):
+            raise ValueError(
+                f"{self.path}: TOML filename stem must match "
+                "[A-Za-z0-9][A-Za-z0-9._-]*")
+        return stem
+
+    @property
+    def artifact_dir(self) -> Path:
+        return ARTIFACT_ROOT / self.artifact_stem
+
+    @property
+    def pack_output(self) -> Path:
+        return self.artifact_dir / "MOVIE.DAT"
+
+    @property
+    def temp_dir(self) -> Path:
+        return TEMP_ROOT / self.artifact_stem
+
+    @property
+    def build_dir(self) -> Path:
+        return self.temp_dir / "build"
+
+    @property
+    def disc_staging_dir(self) -> Path:
+        return self.temp_dir / "disc"
+
+    @property
+    def disc_iso(self) -> Path:
+        return ARTIFACT_ROOT / f"{self.artifact_stem}.iso"
+
+    @property
+    def disc_cue(self) -> Path:
+        return ARTIFACT_ROOT / f"{self.artifact_stem}.cue"
+
 
 def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
     profile_path = Path(path).expanduser().resolve()
@@ -132,7 +174,10 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         raise ValueError(f"{profile_path}: video width and height must be multiples of 8")
     if str(data["video"]["fit"]).lower() not in {"pad", "crop"}:
         raise ValueError(f"{profile_path}: video.fit must be 'pad' or 'crop'")
-    return EncodeProfile(profile_path, data, hashlib.sha256(raw).hexdigest())
+    profile = EncodeProfile(profile_path, data, hashlib.sha256(raw).hexdigest())
+    # Validate the filename while loading so every consumer agrees on paths.
+    profile.artifact_stem
+    return profile
 
 
 def apply_profile_env(
@@ -198,7 +243,10 @@ def profile_identity(profile: EncodeProfile | None) -> dict[str, Any] | None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config")
-    parser.add_argument("--print-env", action="store_true")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--print-env", action="store_true")
+    output.add_argument("--print-stem", action="store_true")
+    output.add_argument("--print-artifacts", action="store_true")
     args = parser.parse_args()
     try:
         profile = load_profile(args.config)
@@ -206,9 +254,23 @@ def main() -> None:
         raise SystemExit(str(exc)) from exc
     if args.print_env:
         print(json.dumps(apply_profile_env(profile, {}), indent=2, sort_keys=True))
+    elif args.print_stem:
+        print(profile.artifact_stem)
+    elif args.print_artifacts:
+        print(json.dumps({
+            "stem": profile.artifact_stem,
+            "directory": str(profile.artifact_dir),
+            "pack": str(profile.pack_output),
+            "temporary": str(profile.temp_dir),
+            "build": str(profile.build_dir),
+            "disc_staging": str(profile.disc_staging_dir),
+            "iso": str(profile.disc_iso),
+            "cue": str(profile.disc_cue),
+        }, indent=2, sort_keys=True))
     else:
         print(json.dumps({"path": str(profile.path), "sha256": profile.sha256,
-                          "output": str(profile.output_dir)}, indent=2))
+                          "output": str(profile.output_dir),
+                          "artifacts": str(profile.artifact_dir)}, indent=2))
 
 
 if __name__ == "__main__":

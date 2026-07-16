@@ -63,12 +63,12 @@ Region:
 	.ascii "J               "
 
 IPStart:
-	.incbin "out/movieplay_ip.bin"
+	.incbin "movieplay_ip.bin"
 IPEnd:
 
 	.org 0x7000
 SPStart:
-	.incbin "out/movieplay_sp.bin"
+	.incbin "movieplay_sp.bin"
 SPEnd:
 
 	.align 0x8000

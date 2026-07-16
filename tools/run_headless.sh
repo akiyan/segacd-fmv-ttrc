@@ -53,7 +53,7 @@
 # Env overrides:
 #   CORE         libretro core .so (default: system genesis_plus_gx)
 #   SYSTEM_DIR   RetroArch system dir holding bios_CD_J.bin
-#   OUTDIR       capture output dir (default: <repo>/tmp)
+#   OUTDIR       capture output dir (default: <repo>/tmp/<disc-stem>/record)
 #
 # Outputs: $OUTDIR/<tag>_NN.png, $OUTDIR/<tag>_sheet.jpg, plus retroarch/xvfb logs.
 set -euo pipefail
@@ -117,7 +117,8 @@ done
 
 [ -n "$DISC" ] || { echo "usage: $0 <disc.cue> [options]" >&2; exit 2; }
 [ -f "$DISC" ] || { echo "disc not found: $DISC" >&2; exit 1; }
-[ -z "$TAG" ] && TAG="$(basename "${DISC%.*}")"
+DISC_STEM="$(basename "${DISC%.*}")"
+[ -z "$TAG" ] && TAG="$DISC_STEM"
 DISPLAY_ID="${DISPLAY_NUM#:}"
 DISPLAY_ID="${DISPLAY_ID%%.*}"
 if [[ ! "$DISPLAY_ID" =~ ^[0-9]+$ ]]; then
@@ -137,7 +138,7 @@ fi
 
 CORE="${CORE:-/usr/lib/x86_64-linux-gnu/libretro/genesis_plus_gx_libretro.so}"
 SYSTEM_DIR="${SYSTEM_DIR:-$HOME/.config/retroarch/system}"
-OUTDIR="${OUTDIR:-$ROOT/tmp}"
+OUTDIR="${OUTDIR:-$ROOT/tmp/$DISC_STEM/record}"
 mkdir -p "$OUTDIR"
 
 for tool in Xvfb retroarch xdotool import montage; do

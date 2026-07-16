@@ -4,6 +4,38 @@ DISC_DIR := $(OUT_DIR)/disc
 BOOT_DIR := boot
 CFG_DIR := cfg
 SECURITY_REGION ?= jp
+CONFIG ?=
+
+# A movie build is identified by its TOML filename.  Keep packed streams under
+# out/<toml-stem>/, transient build/staging files under tmp/<toml-stem>/, and
+# the bootable pair at out/<toml-stem>.iso + .cue.  Standalone hardware tests
+# keep their fixed names.
+ifeq ($(strip $(MAKECMDGOALS)),)
+MOVIEPLAY_REQUESTED := all
+else
+MOVIEPLAY_REQUESTED := $(filter all disc movieplay test1m,$(MAKECMDGOALS))
+endif
+ifneq ($(strip $(MOVIEPLAY_REQUESTED)),)
+ifeq ($(strip $(CONFIG)),)
+$(error CONFIG is required; for example: make disc CONFIG=configs/bad-apple-h32.toml)
+endif
+endif
+
+ifneq ($(strip $(CONFIG)),)
+CONFIG_STEM := $(shell python3 tools/encode_config.py "$(CONFIG)" --print-stem)
+ifeq ($(strip $(CONFIG_STEM)),)
+$(error invalid CONFIG: $(CONFIG))
+endif
+else
+CONFIG_STEM := movieplay
+endif
+
+MOVIEPLAY_STREAM_DIR := $(OUT_DIR)/$(CONFIG_STEM)
+MOVIEPLAY_TMP_DIR := tmp/$(CONFIG_STEM)
+MOVIEPLAY_BUILD_DIR := $(MOVIEPLAY_TMP_DIR)/build
+MOVIEPLAY_DISC := $(MOVIEPLAY_TMP_DIR)/disc
+MOVIEPLAY_ISO := $(OUT_DIR)/$(CONFIG_STEM).iso
+MOVIEPLAY_CUE := $(OUT_DIR)/$(CONFIG_STEM).cue
 
 MARSDEV ?= $(HOME)/toolchains/mars
 M68K_PREFIX ?= $(MARSDEV)/m68k-elf/bin/m68k-elf-
@@ -18,12 +50,15 @@ ASFLAGS := -m68000 --register-prefix-optional --bitwise-or
 CFLAGS_M68K := -m68000 -ffreestanding -fno-builtin -fomit-frame-pointer -O2 -Wall -Wextra
 LDFLAGS := -nostdlib --oformat binary
 
-.PHONY: all disc setup clean check-tools test1m cdcbench still256 movieplay dmabench streamtest pcmtest adpcmtest upscaletest asictest prgtest movieplay-force
+.PHONY: all disc setup movieplay-setup clean check-tools test1m cdcbench still256 movieplay dmabench streamtest pcmtest adpcmtest upscaletest asictest prgtest movieplay-force
 
 all: disc
 
 setup:
 	@mkdir -p $(OUT_DIR) $(DISC_DIR)
+
+movieplay-setup: setup
+	@mkdir -p $(MOVIEPLAY_STREAM_DIR) $(MOVIEPLAY_BUILD_DIR) $(MOVIEPLAY_DISC)
 
 # 本番ディスク = movieplay(HEADER.DAT + BODY.DAT)。旧PROBE.BIN/CD-DA画面パスは撤去済み。
 disc: movieplay
@@ -59,10 +94,10 @@ $(OUT_DIR)/test1m_boot.bin: $(OUT_DIR)/test1m_ip.bin $(OUT_DIR)/test1m_sp.bin $(
 	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $(BOOT_DIR)/test1m_boot.s -o $(OUT_DIR)/test1m_boot.out
 	$(OBJCOPY) -O binary $(OUT_DIR)/test1m_boot.out $@
 
-$(OUT_DIR)/TEST1M.iso: $(OUT_DIR)/test1m_boot.bin out/movieplay/MOVIE.DAT
+$(OUT_DIR)/TEST1M.iso: $(OUT_DIR)/test1m_boot.bin $(MOVIEPLAY_STREAM_DIR)/MOVIE.DAT
 	@mkdir -p $(TEST1M_DISC)
 	@printf "1M Word RAM swap self-test\n" > $(TEST1M_DISC)/README.TXT
-	@cp out/movieplay/MOVIE.DAT $(TEST1M_DISC)/MOVIE.DAT
+	@cp $(MOVIEPLAY_STREAM_DIR)/MOVIE.DAT $(TEST1M_DISC)/MOVIE.DAT
 	@rm -f $@ $(OUT_DIR)/TEST1M.cue
 	$(MKISOFS) -iso-level 1 -G $< -pad -V "SCFMV_T1M" -o $@ $(TEST1M_DISC)
 
@@ -163,10 +198,9 @@ $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).cue: $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).iso
 	@printf 'FILE "DMABENCH_$(DMABENCH_TAG).iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
 
 # --- Phase B2: 差分ストリーム再生(単バッファ, BODY.DAT を連続供給) ---
-# HEADER.DAT/BODY.DAT は事前に: python3 tools/pack_stream.py --frames N --raw-dir out/movieplay
-MOVIEPLAY_DISC := $(OUT_DIR)/disc_movieplay
+# HEADER.DAT/BODY.DAT は事前に同じ CONFIG で pack する。
 
-movieplay: check-tools $(OUT_DIR)/MOVIEPLAY.iso $(OUT_DIR)/MOVIEPLAY.cue
+movieplay: check-tools $(MOVIEPLAY_ISO) $(MOVIEPLAY_CUE)
 
 # 既定はリリースビルド。DEBUG=1 でデバッグオーバーレイを有効化する。
 # ストリーム側のデバッグ欄は CBRSIM_PACK_DEBUG=1 で pack した時だけ載せる。
@@ -177,21 +211,21 @@ ISO_HOLD_N ?= 0
 # (or vice versa).
 movieplay-force:
 
-$(OUT_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin out/movieplay/palettes.bin $(BOOT_DIR)/dbgfont.bin tools/av_config.py tools/check_player_ring.py movieplay-force | setup
+$(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin $(MOVIEPLAY_STREAM_DIR)/palettes.bin $(BOOT_DIR)/dbgfont.bin tools/av_config.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
 	python3 tools/check_player_ring.py
-	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) -I$(BOOT_DIR) $< -o $@
+	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
 
 $(BOOT_DIR)/dbgfont.bin: tools/gen_debugfont.py
 	python3 tools/gen_debugfont.py
 
-$(OUT_DIR)/movieplay_ip.bin: $(OUT_DIR)/movieplay_ip.o
+$(MOVIEPLAY_BUILD_DIR)/movieplay_ip.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/ip.ld -o $@ $<
 
-$(OUT_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s tools/av_config.py tools/check_player_ring.py movieplay-force | setup
+$(MOVIEPLAY_BUILD_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s tools/av_config.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
 	python3 tools/check_player_ring.py
 	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter-out 0,$(ISO_HOLD_N)),--defsym ISO_HOLD_N=$(ISO_HOLD_N)) -I$(BOOT_DIR) $< -o $@
 
-$(OUT_DIR)/movieplay_sp.bin: $(OUT_DIR)/movieplay_sp.o
+$(MOVIEPLAY_BUILD_DIR)/movieplay_sp.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/sp.ld -o $@ $<
 	@bytes=$$(wc -c < $@); \
 		if [ "$$bytes" -gt 4096 ]; then \
@@ -200,22 +234,22 @@ $(OUT_DIR)/movieplay_sp.bin: $(OUT_DIR)/movieplay_sp.o
 			exit 1; \
 		fi
 
-$(OUT_DIR)/movieplay_boot.bin: $(OUT_DIR)/movieplay_ip.bin $(OUT_DIR)/movieplay_sp.bin $(BOOT_DIR)/movieplay_boot.s
-	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $(BOOT_DIR)/movieplay_boot.s -o $(OUT_DIR)/movieplay_boot.out
-	$(OBJCOPY) -O binary $(OUT_DIR)/movieplay_boot.out $@
+$(MOVIEPLAY_BUILD_DIR)/movieplay_boot.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.bin $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.bin $(BOOT_DIR)/movieplay_boot.s
+	$(AS) $(ASFLAGS) -I$(MOVIEPLAY_BUILD_DIR) -I$(BOOT_DIR) $(BOOT_DIR)/movieplay_boot.s -o $(MOVIEPLAY_BUILD_DIR)/movieplay_boot.out
+	$(OBJCOPY) -O binary $(MOVIEPLAY_BUILD_DIR)/movieplay_boot.out $@
 
-$(OUT_DIR)/MOVIEPLAY.iso: $(OUT_DIR)/movieplay_boot.bin out/movieplay/HEADER.DAT out/movieplay/BODY.DAT
+$(MOVIEPLAY_ISO): $(MOVIEPLAY_BUILD_DIR)/movieplay_boot.bin $(MOVIEPLAY_STREAM_DIR)/HEADER.DAT $(MOVIEPLAY_STREAM_DIR)/BODY.DAT | movieplay-setup
 	@mkdir -p $(MOVIEPLAY_DISC)
 	@printf "delta stream phase B2\n" > $(MOVIEPLAY_DISC)/README.TXT
 	@rm -f $(MOVIEPLAY_DISC)/MOVIE.DAT $(MOVIEPLAY_DISC)/HEADER.DAT $(MOVIEPLAY_DISC)/BODY.DAT
-	cp out/movieplay/HEADER.DAT $(MOVIEPLAY_DISC)/HEADER.DAT
-	cp out/movieplay/BODY.DAT $(MOVIEPLAY_DISC)/BODY.DAT
-	@rm -f $@ $(OUT_DIR)/MOVIEPLAY.cue
+	cp $(MOVIEPLAY_STREAM_DIR)/HEADER.DAT $(MOVIEPLAY_DISC)/HEADER.DAT
+	cp $(MOVIEPLAY_STREAM_DIR)/BODY.DAT $(MOVIEPLAY_DISC)/BODY.DAT
+	@rm -f $@ $(MOVIEPLAY_CUE)
 	$(MKISOFS) -iso-level 1 -G $< -pad -V "SCFMV_DLT" -o $@ $(MOVIEPLAY_DISC)
 
-$(OUT_DIR)/MOVIEPLAY.cue: $(OUT_DIR)/MOVIEPLAY.iso
+$(MOVIEPLAY_CUE): $(MOVIEPLAY_ISO)
 	@rm -f $@
-	@printf 'FILE "MOVIEPLAY.iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
+	@printf 'FILE "$(notdir $(MOVIEPLAY_ISO))" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
 
 # --- Continuous-stream self-test (standalone, IP+SP only, STREAM.DAT on disc) ---
 # NOTE: STREAM_FRAMES / STREAM_FRAME_SECTORS must match NUM_FRAMES / FRAME_SECTORS

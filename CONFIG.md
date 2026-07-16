@@ -176,6 +176,7 @@ layer.
 python tools/sim.py --config configs/bad-apple-h32.toml
 python tools/render_analysis.py --config configs/bad-apple-h32.toml
 python tools/pack_stream.py --config configs/bad-apple-h32.toml --verify
+make disc CONFIG=configs/bad-apple-h32.toml DEBUG=1
 ```
 
 `sim.py` resolves the profile once and stores the exact geometry, timing, audio,
@@ -185,6 +186,16 @@ does not import `sim.py` and does not read per-source `CBRSIM_*` values. When
 `--config` is supplied to the packer, its hash must match the one recorded by
 the sim; editing a TOML after simulation requires a new sim run.
 
+The TOML filename is also the build-artifact identity. For example,
+`configs/bad-apple-h32.toml` writes the packed stream under
+`out/bad-apple-h32/`, keeps assembler objects, binaries, disc staging, and the
+default headless-emulator scratch area under `tmp/bad-apple-h32/`, then builds
+`out/bad-apple-h32.iso` and `out/bad-apple-h32.cue`. The CUE references that
+same ISO basename. This is derived rather than configurable, so two profiles
+cannot silently overwrite one shared image or one shared temporary directory.
+`HEADER.DAT` and `BODY.DAT` keep their fixed names inside the artifact directory
+and on the disc because those are TTRC format names read by the player.
+
 | TOML table | Keys | Meaning |
 |---|---|---|
 | `[source]` | `path`, `fps`, `duration`, optional `sar` | Input identity and native timing. `sar` repairs missing/wrong source metadata; it does not crop. |
@@ -193,10 +204,15 @@ the sim; editing a TOML after simulation requires a new sim run.
 | `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. Normal hardware work sets `emit_decisions=true`. |
 | `[encoder]` | `gpu`, `rate_kib`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `coa` | Common codec controls. GPU is the default; CPU fallback remains automatic. |
 | `[palette]` | `algorithm`, sampling/validation keys, MOSAIC-GM seam keys | Palette-selection algorithm and its training controls. |
-| `[pack]` | `debug`, `fill`, `startup_audio_frames`, `output` | Disc-generation choices frozen with the encode. `debug=true` is the normal recording build. `fill=true` replaces CD-1x padding with useful future payload where proven safe. |
+| `[pack]` | `debug`, `fill`, `startup_audio_frames` | Disc-generation choices frozen with the encode. `debug=true` is the normal recording build. `fill=true` replaces CD-1x padding with useful future payload where proven safe. Output paths are derived from the TOML filename. |
+
+Schema v1 still accepts the old `pack.output` key so existing authenticated
+profiles and decision logs remain usable, but configured pack runs ignore its
+value. New path selection always uses the TOML filename.
 
 The profile loader is strict: misspelled sections/keys, unsupported display
-modes, and non-tile-aligned dimensions fail immediately. Profile values replace
+modes, non-tile-aligned dimensions, and unsafe TOML filename characters fail
+immediately. Profile values replace
 inherited per-source environment values unconditionally. Shared hardware limits
 such as ring size, tank size, and the automatic cold cap stay in
 `tools/av_config.py`; they are deliberately not per-source TOML fields.

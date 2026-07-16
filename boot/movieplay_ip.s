@@ -736,7 +736,7 @@ dbg_put_digits:
 	.data
 	.align 2
 palettes:
-	.incbin "out/movieplay/palettes.bin"
+	.incbin "palettes.bin"
 dbgfont:
 	.incbin "dbgfont.bin"
 

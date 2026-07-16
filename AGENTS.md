@@ -133,8 +133,11 @@ within Sega CD limits, not fixed presets:
   issue #13.
 
 The old `OP.STR` / RLE and `PROBE.BIN` bring-up paths have been removed.
-`make disc` builds the `HEADER.DAT` + `BODY.DAT` disc played by
-`boot/movieplay_*.s`.
+`make disc CONFIG=configs/PROFILE.toml` builds the `HEADER.DAT` + `BODY.DAT`
+disc played by `boot/movieplay_*.s`. The TOML filename is the artifact identity:
+packed stream files live under `out/PROFILE/`, transient build, disc-staging,
+and direct-emulator scratch files live under `tmp/PROFILE/`, and the bootable
+pair is `out/PROFILE.iso` + `out/PROFILE.cue`.
 
 ## Output Paths (videos/)
 
@@ -318,7 +321,7 @@ ffmpeg -i videos/<stem>_emu_lossless.mkv \
 - Prefer:
 
 ```sh
-tools/record_movie.sh --disc out/MOVIEPLAY.cue \
+tools/record_movie.sh --config configs/PROFILE.toml \
   --seconds 180 --tag STEM_emu --out videos/STEM_emu_preview.mp4
 ```
 

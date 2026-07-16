@@ -216,8 +216,9 @@ ps -eo pid,etimes,args | grep -E "sim\\.py|render_analysis\\.py" | grep -v grep
 - If another user's simulation is running, wait until it finishes.
 - Never kill another session's process. Kill only jobs you started.
 - Other simulations can often be identified through env choices, for example
-  `CBRSIM_EMIT_DEC`, `NOPANELS`, or default `OUT=tmp/sim` for player
-  decision emit. See `[[shared-machine-sim-coordination]]`.
+  `CBRSIM_EMIT_DEC` or `NOPANELS`, and through their profile-specific
+  `videos/<stem>/tmp` working directory. Do not use a shared `tmp/sim` for
+  player decision output. See `[[shared-machine-sim-coordination]]`.
 - The analysis layout is consolidated into:
   - `tools/layout_preview.py`: canonical layout
   - `tools/render_analysis.py`: render real data using that layout
