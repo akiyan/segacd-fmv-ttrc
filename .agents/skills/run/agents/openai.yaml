@@ -1,0 +1,4 @@
+interface:
+  display_name: "Full FMV Run"
+  short_description: "Run sim, record, compile, and upload"
+  default_prompt: "Use $run to process a source video through analysis, recording, compilation, verification, and both uploads."
