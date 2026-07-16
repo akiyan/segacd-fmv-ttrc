@@ -37,6 +37,36 @@ from quantize_md_video import (  # noqa: E402
 
 TILE = 8
 
+# RGB333 has only 512 possible input colours.  Build nearest-colour tables when
+# a palette changes, then score millions of pixels with compact table lookups.
+# This is also the common hot-path foundation for STL4 and MOSAIC-GM.
+_RGB333_GRID = np.stack([
+    (np.arange(512, dtype=np.uint16) >> 6) & 7,
+    (np.arange(512, dtype=np.uint16) >> 3) & 7,
+    np.arange(512, dtype=np.uint16) & 7,
+], axis=1).astype(np.int16)
+
+
+def rgb333_keys(pixels):
+    """Pack an RGB333 array ending in (...,3) into 9-bit colour keys."""
+    value = np.asarray(pixels, dtype=np.uint16)
+    return ((value[..., 0] << 6) | (value[..., 1] << 3) | value[..., 2])
+
+
+def palette_lut(pal, squared=False):
+    """Return nearest error/index tables for all 512 RGB333 colours.
+
+    ``squared=False`` matches STL4's L1 training metric.  ``squared=True``
+    matches the player's per-tile assignment and nearest-index metric.  NumPy's
+    first-minimum tie behaviour is retained in the returned zero-based index.
+    """
+    palette = np.asarray(pal, dtype=np.int16)
+    delta = _RGB333_GRID[:, None, :] - palette[None, :, :]
+    distance = (delta * delta).sum(2) if squared else np.abs(delta).sum(2)
+    index = distance.argmin(1).astype(np.uint8)
+    error = distance[np.arange(512), index].astype(np.int16)
+    return error, index
+
 
 def extract_frames(args, work_dir):
     prepare_dir(work_dir, clean=True)
@@ -110,9 +140,9 @@ def palette15(pixels, colors=15, weights=None):
 
 def tile_errors(tiles, pal):
     """Min quantisation error per tile against one 15-colour palette. tiles (T,64,3)."""
-    px = tiles.reshape(-1, 3).astype(int)				# (T*64,3)
-    d = np.abs(px[:, None, :] - pal[None, :, :].astype(int)).sum(2)	# (T*64,15)
-    return d.min(1).reshape(tiles.shape[0], 64).sum(1)			# (T,)
+    error, _index = palette_lut(pal, squared=False)
+    keys = rgb333_keys(tiles).reshape(tiles.shape[0], 64)
+    return error[keys].sum(1, dtype=np.int64)
 
 
 def pals_to_bytes(pals):

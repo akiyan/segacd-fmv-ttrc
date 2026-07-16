@@ -43,7 +43,7 @@ def enabled():
 
 
 class PalCache:
-    """区間パレット(4,15,3)を GPU 上に (1,1,4,15,3) int32 でキャッシュする。"""
+    """区間パレットのRGB333二乗誤差/index LUTをGPU上にキャッシュする。"""
 
     def __init__(self):
         self._d = {}
@@ -51,7 +51,13 @@ class PalCache:
     def get(self, cp, seg, seg_pals):
         g = self._d.get(seg)
         if g is None:
-            g = cp.asarray(np.asarray(seg_pals[seg], dtype=np.int32)).reshape(1, 1, 4, 15, 3)
+            pals = cp.asarray(np.asarray(seg_pals[seg], dtype=np.int16))       # (4,15,3)
+            key = cp.arange(512, dtype=cp.int16)
+            rgb = cp.stack(((key >> 6) & 7, (key >> 3) & 7, key & 7), axis=1)
+            distance = ((rgb[None, :, None, :] - pals[:, None, :, :]) ** 2).sum(3)
+            index = distance.argmin(2).astype(cp.uint8)                        # (4,512)
+            error = cp.take_along_axis(distance, index[:, :, None], axis=2)[:, :, 0]
+            g = error.astype(cp.int16), index
             self._d[seg] = g
         return g
 
@@ -62,26 +68,22 @@ def assign_idx_one(flat, seg, seg_pals, cache):
     CPU版 assign_palette/idx_for と同一結果(argmin の最初の最小=同じtie挙動)。
     """
     cp = _STATE["cp"]
-    pals = cache.get(cp, seg, seg_pals)                       # (1,1,4,15,3)
-    f = cp.asarray(flat.astype(np.int32)).reshape(-1, 64, 1, 1, 3)  # (C,64,1,1,3)
-    d = ((f - pals) ** 2).sum(4)                             # (C,64,4,15) 各色との二乗誤差
-    perr = d.min(3).sum(1)                                    # (C,4) パレット毎の最近傍誤差合計
+    error, index = cache.get(cp, seg, seg_pals)               # each (4,512)
+    f = cp.asarray(flat, dtype=cp.uint16)
+    keys = ((f[..., 0] << 6) | (f[..., 1] << 3) | f[..., 2])  # (C,64)
+    perr = error[:, keys].sum(2).T                             # (C,4)
     a = perr.argmin(1)                                        # (C,) 最良パレット
-    dsel = cp.take_along_axis(d, a.reshape(a.shape[0], 1, 1, 1), axis=2)[:, :, 0, :]  # (C,64,15)
-    p = dsel.argmin(2) + 1                                    # (C,64) 1..15
+    p = index[a[:, None], keys] + 1                            # (C,64) 1..15
     return cp.asnumpy(a).astype(np.int8), cp.asnumpy(p).astype(np.uint8)
 
 
-def _tile_err(cp, px, pal, T, chunk=3_000_000):
-    """GPU上の px (T*64,3) int32 と 15色パレット pal から タイル毎の最小量子化誤差和 (T,)。
-    CPU版 tile_errors と同一(L1距離・最小・タイル内合計)。巨大中間を避けチャンク分割。"""
-    P = cp.asarray(np.asarray(pal, dtype=np.int32))          # (15,3)
-    N = px.shape[0]
-    emin = cp.empty(N, cp.int32)
-    for s in range(0, N, chunk):
-        g = px[s:s + chunk]                                  # (c,3)
-        emin[s:s + chunk] = cp.abs(g[:, None, :] - P[None, :, :]).sum(2).min(1)
-    return cp.asnumpy(emin.reshape(T, 64).sum(1))            # (T,)
+def _tile_err(cp, keys, pal, T):
+    """RGB333 LUTでSTL4のL1タイル誤差をGPU計算する。CPU版と同一。"""
+    P = cp.asarray(np.asarray(pal, dtype=np.int16))          # (15,3)
+    key = cp.arange(512, dtype=cp.int16)
+    rgb = cp.stack(((key >> 6) & 7, (key >> 3) & 7, key & 7), axis=1)
+    lut = cp.abs(rgb[:, None, :] - P[None, :, :]).sum(2).min(1)
+    return cp.asnumpy(lut[keys].reshape(T, 64).sum(1))       # (T,)
 
 
 def build_palettes(train_tiles, palette15, n_pal=4, iters=6, edge_w=None):
@@ -97,12 +99,13 @@ def build_palettes(train_tiles, palette15, n_pal=4, iters=6, edge_w=None):
     order = np.argsort(means.sum(1))
     groups = np.array_split(order, n_pal)
     pals = [palette15(train_tiles[g].reshape(-1, 3), weights=_w(g)) for g in groups]
-    px = cp.asarray(train_tiles.reshape(-1, 3).astype(np.int32))   # (T*64,3) 常駐
+    flat = np.asarray(train_tiles, dtype=np.uint16).reshape(-1, 3)
+    keys = cp.asarray((flat[:, 0] << 6) | (flat[:, 1] << 3) | flat[:, 2])
     for _ in range(iters):
-        err = np.stack([_tile_err(cp, px, pl, T) for pl in pals], axis=1)   # (T,n_pal)
+        err = np.stack([_tile_err(cp, keys, pl, T) for pl in pals], axis=1)  # (T,n_pal)
         assign = err.argmin(1)
         pals = [pals[p] if not (assign == p).any()
                 else palette15(train_tiles[assign == p].reshape(-1, 3), weights=_w(assign == p))
                 for p in range(n_pal)]
-    del px
+    del keys
     return pals

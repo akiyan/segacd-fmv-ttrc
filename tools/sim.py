@@ -40,7 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from quantize_md_video import (  # noqa: E402
     rgb888_to_rgb333, rgb333_to_rgb888, run, prepare_dir, MD_LEVELS,
 )
-from quantize_global4_tiles import tile_blocks, build_palettes, pals_to_bytes, TILE  # noqa: E402
+from quantize_global4_tiles import (  # noqa: E402
+    tile_blocks, build_palettes, pals_to_bytes, palette_lut, rgb333_keys, TILE,
+)
 from cbr_paths import sim_work_dir  # noqa: E402
 from video_geometry import probe_source, parse_ratio, source_filter, raw_filter  # noqa: E402
 
@@ -343,22 +345,17 @@ def flatten_low_detail(tiles):
 
 def assign_palette(flat_tiles, pals_arr):
     """flat_tiles (C,64,3) rgb333 -> assign (C,) 最良パレット(RGB二乗誤差が最小の面)。"""
-    C = flat_tiles.shape[0]
-    px = flat_tiles.reshape(C, 64, 1, 3).astype(np.int64)      # (C,64,1,3)
-    err = np.stack([
-        ((px - pals_arr[p].reshape(1, 1, 15, 3).astype(np.int64)) ** 2)
-        .sum(3).min(2).sum(1)                                  # (C,)
-        for p in range(4)], axis=1)                            # (C,4)
+    keys = rgb333_keys(flat_tiles)
+    cost = np.stack([palette_lut(pal, squared=True)[0] for pal in pals_arr])
+    err = cost[:, keys].sum(2, dtype=np.int64).T               # (C,4)
     return err.argmin(1).astype(np.int8)
 
 
 def idx_for(pixels, assign, pals_arr):
     """pixels (C,64,3) を、各セルの assign パレットで最近傍量子化 -> idx (C,64) 1..15"""
-    C = pixels.shape[0]
-    pal_per_cell = pals_arr[assign]                              # (C,15,3)
-    d = ((pixels.reshape(C, 64, 1, 3).astype(np.int64)
-          - pal_per_cell.reshape(C, 1, 15, 3).astype(np.int64)) ** 2).sum(3)  # (C,64,15)
-    return (d.argmin(2) + 1).astype(np.uint8)
+    keys = rgb333_keys(pixels)
+    index = np.stack([palette_lut(pal, squared=True)[1] for pal in pals_arr])
+    return (index[assign[:, None], keys] + 1).astype(np.uint8)
 
 
 def render_cells(idx, assign, pals_arr):
