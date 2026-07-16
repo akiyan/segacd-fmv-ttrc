@@ -41,3 +41,18 @@ python3 harness/main_codegen/verify_handlers.py \
 The runtime assembly generator must emit byte-for-byte the same table and
 handlers. Keep this harness synchronized whenever that instruction template
 changes.
+
+Measure the per-frame instruction cost against a real packed stream with:
+
+```sh
+python3 harness/main_codegen/measure_cycles.py \
+  --header out/lunar-sss-op-h32/HEADER.DAT \
+  --body out/lunar-sss-op-h32/BODY.DAT
+```
+
+The cycle model follows the actual word-displacement branches and indexed jump
+shown by `m68k-elf-objdump`. Its timings come from the official
+[MC68000 User's Manual](https://www.nxp.com/docs/en/reference-manual/MC68000UM.pdf),
+Section 8, Tables 8-1, 8-2, 8-4, 8-5, 8-6, 8-7, 8-9, and 8-10. It measures the
+packed mask distribution for every frame and excludes the one-time startup
+generator. Platform wait states are also outside this instruction-cycle model.
