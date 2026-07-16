@@ -10,6 +10,8 @@ import subprocess
 import wave
 from pathlib import Path
 
+import numpy as np
+
 
 def run(cmd):
     return subprocess.check_output(cmd, text=True)
@@ -75,16 +77,20 @@ def sample_stats(samples):
 
 
 def adjacent_jumps(samples):
-    """Return absolute adjacent deltas in an isolated interpreter frame.
+    """Return absolute adjacent deltas without a long Python scalar loop.
 
     Python 3.14.4 has occasionally substituted an unrelated outer local into
-    long-running loops in this script.  Keeping the two sample locals in this
-    small helper avoids sharing the WAV/path frame while retaining a plain loop.
+    long-running loops in this script.  NumPy performs the complete subtraction
+    and absolute-value pass in compiled code.
     """
-    jumps = []
-    for before, after in zip(samples, samples[1:]):
-        jumps.append(abs(int(after) - int(before)))
-    return jumps
+    values = np.asarray(samples, dtype=np.int32)
+    return np.abs(np.diff(values)).tolist()
+
+
+def candidate_indices(jumps, threshold):
+    """Return one-based sample indices whose delta reaches the threshold."""
+    values = np.asarray(jumps, dtype=np.int32)
+    return (np.flatnonzero(values >= threshold) + 1).tolist()
 
 
 def wav_stats(path, seconds, jump_threshold):
@@ -98,13 +104,9 @@ def wav_stats(path, seconds, jump_threshold):
         current = channel_samples(samples, channel, wav["channels"])
         jumps = adjacent_jumps(current)
         jumps_sorted = sorted(jumps)
-        # Keep this as an explicit loop.  Python 3.14.4 has produced spurious,
-        # non-deterministic matches for this large filtered comprehension on
-        # multi-minute captures, including values below jump_threshold.
         candidates = []
-        for i, jump in enumerate(jumps, start=1):
-            if jump < jump_threshold:
-                continue
+        for i in candidate_indices(jumps, jump_threshold):
+            jump = jumps[i - 1]
             candidates.append(
                 {
                     "channel": channel,
