@@ -179,6 +179,11 @@ python tools/pack_stream.py --config configs/bad-apple-h32.toml --verify
 make disc CONFIG=configs/bad-apple-h32.toml DEBUG=1
 ```
 
+`MAIN_CODEGEN=1` opts into the experimental issue #27 Main-CPU bitmap handler
+generator. It emits code once after header setup and falls back to the reference
+bit loop if its runtime size/range checks fail. The option remains disabled by
+default until H32/H40 playback and timing A/B validation is complete.
+
 `sim.py` resolves the profile once and stores the exact geometry, timing, audio,
 stream, hardware, palette, and pack settings plus the TOML SHA-256 in
 `decisions.pkl`. `pack_stream.py` then uses that frozen configuration only. It

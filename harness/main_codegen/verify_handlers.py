@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import re
 import shutil
 import struct
 import subprocess
@@ -22,6 +23,7 @@ CODEGEN_LIMIT = 0x00FF8000
 # below CODEGEN_BASE here so every generated BRA.W exercises the same backward
 # branch range required by the player.
 CONTINUE_ADDRESS = 0x00FF1000
+PLAYER_SOURCE = Path("boot/movieplay_ip.s")
 
 OP_MOVE_ENTRY_D3 = 0x3618       # move.w (a0)+,d3
 OP_STRIP_COLD_D3 = 0x0243       # andi.w #imm,d3
@@ -31,6 +33,21 @@ OP_STORE_D3_D16_A1 = 0x3343     # move.w d3,disp(a1)
 OP_ADVANCE_SHADOW = 0x43E9      # lea 16(a1),a1
 SHADOW_BYTE_ADVANCE = 16
 OP_BRA_W = 0x6000
+
+PLAYER_CONSTANTS = {
+    "MAIN_CODEGEN_BASE": CODEGEN_BASE,
+    "MAIN_CODEGEN_TABLE_BYTES": TABLE_BYTES,
+    "MAIN_CODEGEN_HANDLER_MAX": 86,
+    "MAIN_CODEGEN_EXPECTED_END": 0x00FF5100,
+    "CG_OP_MOVE_ENTRY_D3": OP_MOVE_ENTRY_D3,
+    "CG_OP_STRIP_COLD_D3": OP_STRIP_COLD_D3,
+    "CG_IMM_ENTRY_MASK": IMM_ENTRY_MASK,
+    "CG_OP_STORE_D3_A1": OP_STORE_D3_A1,
+    "CG_OP_STORE_D3_D16_A1": OP_STORE_D3_D16_A1,
+    "CG_OP_ADVANCE_SHADOW": OP_ADVANCE_SHADOW,
+    "CG_SHADOW_BYTE_ADVANCE": SHADOW_BYTE_ADVANCE,
+    "CG_OP_BRA_W": OP_BRA_W,
+}
 
 
 @dataclass(frozen=True)
@@ -211,6 +228,25 @@ def verify_semantics(cases_per_mask: int = 64) -> int:
     return checked_entries
 
 
+def verify_player_constants(path: Path = PLAYER_SOURCE) -> None:
+    """Keep the Python byte model tied to the assembly emitter constants."""
+    source = path.read_text()
+    found = {
+        name: int(value, 0)
+        for name, value in re.findall(
+            r"^\.equ\s+([A-Z0-9_]+),\s*(0x[0-9A-Fa-f]+|[0-9]+)\b",
+            source,
+            flags=re.MULTILINE,
+        )
+    }
+    for name, expected in PLAYER_CONSTANTS.items():
+        actual = found.get(name)
+        if actual != expected:
+            raise AssertionError(
+                f"{path}: {name}={actual!r}, Python contract expects {expected:#x}"
+            )
+
+
 def find_objdump(explicit: Path | None) -> Path | None:
     if explicit is not None:
         return explicit
@@ -262,6 +298,7 @@ def main() -> None:
     args = parser.parse_args()
 
     image, handlers = emit_handlers()
+    verify_player_constants()
     verify_instruction_bytes(image, handlers, CONTINUE_ADDRESS)
     checked_entries = verify_semantics()
     objdump_result = verify_objdump(image, handlers, find_objdump(args.objdump))
@@ -288,6 +325,7 @@ def main() -> None:
         f"({len(image)} bytes, max handler {maximum} bytes, "
         f"end={CODEGEN_BASE + len(image):#x}, free={CODEGEN_LIMIT - CODEGEN_BASE - len(image)} bytes)"
     )
+    print(f"assembly emitter constants: OK ({PLAYER_SOURCE})")
     print(f"68000 objdump: {objdump_result}")
     if args.output:
         print(f"wrote {args.output}")

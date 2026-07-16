@@ -43,6 +43,20 @@
 .equ MAIN_CODEGEN_BASE,  0x00FF2000
 .equ RUN_TABLE,          0x00FF8000	/* (dst.w,len.w,src.l) runs (max ~128) */
 .equ MAIN_CODEGEN_LIMIT, RUN_TABLE
+.equ MAIN_CODEGEN_TABLE_BYTES, 0x0200	/* 256 signed word offsets */
+.equ MAIN_CODEGEN_HANDLER_MAX, 86	/* mask FF: guarded before writing */
+.equ MAIN_CODEGEN_EXPECTED_END, 0x00FF5100
+
+/* Exact 68000 words emitted by init_main_codegen.  Keep synchronized with
+   harness/main_codegen/verify_handlers.py. */
+.equ CG_OP_MOVE_ENTRY_D3,      0x3618	/* move.w (a0)+,d3 */
+.equ CG_OP_STRIP_COLD_D3,      0x0243	/* andi.w #0x7FFF,d3 */
+.equ CG_IMM_ENTRY_MASK,        0x7FFF
+.equ CG_OP_STORE_D3_A1,        0x3283	/* move.w d3,(a1) */
+.equ CG_OP_STORE_D3_D16_A1,    0x3343	/* move.w d3,disp(a1) */
+.equ CG_OP_ADVANCE_SHADOW,     0x43E9	/* lea 16(a1),a1 */
+.equ CG_SHADOW_BYTE_ADVANCE,   16
+.equ CG_OP_BRA_W,              0x6000
 /* デバッグオーバーレイ: フォントは予約VRAM(プール1360の直上 tile1361)。 */
 .equ DBGFONT_N, 28			/* dbgfont.bin のタイル数 */
 /* フォントVRAM位置はヘッダの base+pool 直上を実行時に計算(md_font_vtile/md_font_addr) */
@@ -159,6 +173,11 @@ ip_entry:
 	sub.w	md_trows, d2			/* row0 = (screen_rows-trows)/2 */
 	lsr.w	#1, d2
 	move.w	d2, md_row0
+.ifdef MAIN_CODEGEN
+	/* Generate once, before playback.  A failed range/size proof leaves
+	   md_codegen=0 and the per-bit reference path remains active. */
+	bsr	init_main_codegen
+.endif
 	/* CRAM pre-load: PALTAB(全区間パレット)をWord-RAM(frame0バンク)からMain-RAM表へ
 	   一度だけコピー。n_seg=O_HDR+20。以降の区間切替はこの表を引くだけ(bf_flip)。 */
 	move.w	20(a0), d1			/* n_seg (a0=O_HDR) */
@@ -246,6 +265,87 @@ movie_end_md:
 	clr.w	dbg_seg
 	bra	play_loop
 
+.ifdef MAIN_CODEGEN
+/* Emit the 256 straight-line bitmap handlers once into Main RAM.
+   The table stores signed word offsets from MAIN_CODEGEN_BASE.  Every handler
+   reads only its set-bit entries, strips the cold flag, writes fixed shadow
+   displacements, advances a1 by one bitmap byte, and BRA.Ws to bf_cg_unext.
+   Nothing patches or rewrites this region after this routine returns. */
+init_main_codegen:
+	movem.l	d0-d7/a0-a2, -(sp)
+	clr.w	md_codegen
+	clr.l	md_codegen_end
+	lea	MAIN_CODEGEN_BASE, a1		/* jump table cursor */
+	lea	(MAIN_CODEGEN_BASE+MAIN_CODEGEN_TABLE_BYTES), a0 /* emitted code cursor */
+	moveq	#0, d7				/* mask 0..255 */
+1:
+	/* Refuse before writing this handler if even the largest template could
+	   cross into RUN_TABLE.  Partial generated data is harmless while the
+	   success flag remains clear. */
+	move.l	a0, d0
+	addi.l	#MAIN_CODEGEN_HANDLER_MAX, d0
+	cmpi.l	#MAIN_CODEGEN_LIMIT, d0
+	bhi	9f
+	move.l	a0, d0
+	subi.l	#MAIN_CODEGEN_BASE, d0
+	cmpi.l	#0x7FFF, d0			/* dispatch sign-extends d4.w */
+	bhi	9f
+	move.w	d0, (a1)+
+
+	moveq	#0, d5				/* source/shadow bit 0..7 */
+2:
+	btst	d5, d7
+	beq	4f
+	move.w	#CG_OP_MOVE_ENTRY_D3, (a0)+
+	move.w	#CG_OP_STRIP_COLD_D3, (a0)+
+	move.w	#CG_IMM_ENTRY_MASK, (a0)+
+	tst.w	d5
+	bne	3f
+	move.w	#CG_OP_STORE_D3_A1, (a0)+
+	bra	4f
+3:
+	move.w	#CG_OP_STORE_D3_D16_A1, (a0)+
+	move.w	d5, d0
+	add.w	d0, d0
+	move.w	d0, (a0)+
+4:
+	addq.w	#1, d5
+	cmpi.w	#8, d5
+	blo	2b
+
+	move.w	#CG_OP_ADVANCE_SHADOW, (a0)+
+	move.w	#CG_SHADOW_BYTE_ADVANCE, (a0)+
+	move.w	#CG_OP_BRA_W, (a0)+
+	/* BRA.W displacement is relative to the PC after its extension word.
+	   a0 currently points at that extension word. */
+	move.l	#bf_cg_unext, d0
+	sub.l	a0, d0
+	subq.l	#2, d0
+	cmpi.l	#-32768, d0
+	blt	9f
+	cmpi.l	#32767, d0
+	bgt	9f
+	move.w	d0, (a0)+
+
+	addq.w	#1, d7
+	cmpi.w	#256, d7
+	blo	1b
+
+	move.l	a0, d0
+	cmpi.l	#MAIN_CODEGEN_EXPECTED_END, d0
+	bne	9f
+	cmpi.l	#MAIN_CODEGEN_LIMIT, d0
+	bhi	9f
+	move.l	d0, md_codegen_end
+	move.w	#1, md_codegen
+	bra	10f
+9:
+	move.l	a0, md_codegen_end		/* diagnostic only; fallback stays selected */
+10:
+	movem.l	(sp)+, d0-d7/a0-a2
+	rts
+.endif
+
 /* ---- 1フレーム分をデコードし裏へ描画してflip ----
    タイル転送はWord-RAM直DMA(VDPが自走=CPUを空ける)。手順を2パスに分離:
      Pass1(active可): 全ランの(dst,len,src)表だけを作る
@@ -307,6 +407,20 @@ bf_upd:
 	lea	shadow, a1
 	move.w	md_bmbytes, d5
 	subq.w	#1, d5
+.ifdef MAIN_CODEGEN
+	tst.w	md_codegen
+	beq	bf_ubyte			/* runtime overflow/geometry fallback */
+	lea	MAIN_CODEGEN_BASE, a3
+bf_cg_ubyte:
+	moveq	#0, d0
+	move.b	(a2)+, d0
+	add.w	d0, d0				/* signed-word table index */
+	move.w	(a3,d0.w), d4
+	jmp	(a3,d4.w)				/* prefetch starts generated handler */
+bf_cg_unext:
+	dbra	d5, bf_cg_ubyte
+	bra	bf_blit
+.endif
 bf_ubyte:
 	move.b	(a2)+, d0
 	beq	bf_uzero			/* no entries: advance eight shadow words at once */
@@ -781,3 +895,9 @@ sub_wait_lines:
 	.space 2				/* DEBUG HUD W: Main wait for Sub at last bank swap */
 md_nseg:
 	.space 2				/* PALTAB区間数(表コピー時にクランプ済み) */
+.ifdef MAIN_CODEGEN
+md_codegen:
+	.space 2				/* 1 only after the complete runtime proof succeeds */
+md_codegen_end:
+	.space 4				/* generated end address, including failed attempts */
+.endif

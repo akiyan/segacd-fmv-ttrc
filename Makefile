@@ -206,6 +206,9 @@ movieplay: check-tools $(MOVIEPLAY_ISO) $(MOVIEPLAY_CUE)
 # ストリーム側のデバッグ欄は CBRSIM_PACK_DEBUG=1 で pack した時だけ載せる。
 DEBUG ?= 0
 ISO_HOLD_N ?= 0
+# Experimental issue #27 Main-CPU straight-line bitmap handlers. Keep disabled
+# by default until H32/H40 A/B playback and timing validation are complete.
+MAIN_CODEGEN ?= 0
 # DEBUG changes assembler flags without changing a source timestamp. Force this
 # small object to rebuild so `make disc DEBUG=1` can never reuse a release object
 # (or vice versa).
@@ -213,7 +216,7 @@ movieplay-force:
 
 $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin $(MOVIEPLAY_STREAM_DIR)/palettes.bin $(BOOT_DIR)/dbgfont.bin tools/av_config.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
 	python3 tools/check_player_ring.py
-	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
+	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter 1,$(MAIN_CODEGEN)),--defsym MAIN_CODEGEN=1) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
 
 $(BOOT_DIR)/dbgfont.bin: tools/gen_debugfont.py
 	python3 tools/gen_debugfont.py
