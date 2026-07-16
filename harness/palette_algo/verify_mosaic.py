@@ -33,6 +33,10 @@ def main() -> int:
     np.testing.assert_array_equal(palettes[0], palettes[1])
     np.testing.assert_array_equal(palettes[0], palettes[2])
     np.testing.assert_array_equal(palettes[0], palettes[3])
+    for row in palettes:
+        brightness = row.astype(np.int16).sum(1)
+        assert brightness[0] == brightness.min()
+        assert brightness[14] == brightness.max()
 
     # Two families share a grayscale spine but each needs more specialist
     # colours than one 15-colour line can retain without visible error.

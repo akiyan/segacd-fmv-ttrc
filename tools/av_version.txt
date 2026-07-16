@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e31/p41 : Add the optional MOSAIC-GM palette selector. It starts with one
+#        global RGB333 line, grows shared-core specialist lines only when a
+#        held-out sample improves, prunes redundant lines, and keeps local CRAM
+#        segments only when they beat the global palette. RGB333 LUT scoring is
+#        bit-identical for the legacy STL4 path and GPU accelerated.
 #   e30/p41 : Round fixed PCM chunks up against the actual NTSC cadence: 444 B
 #        at N2 and 888 B at N4. FD=0x0345 consumes about 13303.76 samples/s;
 #        either schedule supplies about 13306.69 samples/s, retaining a small
@@ -256,6 +261,6 @@
 #   e17: Raise requested startup PCM arming from 32 to 45 frames. The pack
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
-date=20260715
-e=30
+date=20260716
+e=31
 p=41

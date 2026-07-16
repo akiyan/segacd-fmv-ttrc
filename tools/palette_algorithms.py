@@ -94,9 +94,12 @@ def _force_source_extremes(colors, source_counts):
     elif size == 1:
         result = [darkest]
     else:
-        result = [darkest, *middle[:size - 2], brightest]
+        result = [darkest, *middle[:size - 2]]
+        while len(result) < size - 1:
+            result.append(np.asarray(darkest, dtype=np.uint8))
+        result.append(brightest)
     while len(result) < size:
-        result.append(np.asarray(result[0], dtype=np.uint8))
+        result.append(np.asarray(darkest, dtype=np.uint8))
     return np.asarray(result[:size], dtype=np.uint8)
 
 

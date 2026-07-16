@@ -43,6 +43,10 @@ from quantize_md_video import (  # noqa: E402
 from quantize_global4_tiles import (  # noqa: E402
     tile_blocks, build_palettes, pals_to_bytes, palette_lut, rgb333_keys, TILE,
 )
+from palette_algorithms import (  # noqa: E402
+    MOSAIC_GM, STL4, PaletteEvaluator, build_mosaic_palettes,
+    normalize_palette_algo, score_palettes,
+)
 from cbr_paths import sim_work_dir  # noqa: E402
 from video_geometry import probe_source, parse_ratio, source_filter, raw_filter  # noqa: E402
 
@@ -219,6 +223,7 @@ NEAR_KEEP_ACCURATE_ONLY = os.environ.get("CBRSIM_NEAR_ACCURATE_ONLY", "1") != "0
 DITHER_ON = os.environ.get("CBRSIM_DITHER", "1") != "0"   # 既定ON。OFFは CBRSIM_DITHER=0（例外時のみ）
 # 深い暗転で区切り、暗転の瞬間に区間別60色パレットへ差し替える(CRAM総入替)。
 SEGPAL_ON = os.environ.get("CBRSIM_SEGPAL", "1") != "0"   # 既定ON。OFFは CBRSIM_SEGPAL=0（例外時のみ）
+PAL_ALGO = normalize_palette_algo()                          # stl4 (legacy) / mosaic-gm (opt-in while tuning)
 PAL_WRITE_BYTES = 0             # CRAM pre-load(PALTAB): 全区間パレットはヘッダ直後のPALTAB領域で
                                 # 一括配送しMain-RAM表から引くので、切替フレームの予算控除は無し
                                 # (ストリームには1Bの区間参照だけ。旧: in-stream 128B/切替)
@@ -240,76 +245,255 @@ def to_rgb333(img888):
     return np.clip(base + (frac > _BAYER_T[..., None]), 0, 7).astype(np.uint8)   # Bayerディザ
 
 
+def detect_palette_segments(frames):
+    """Return the legacy dark/uniform candidate ranges without training them."""
+    n = len(frames)
+    LWv = np.array([.299, .587, .114])
+    SEG_GAP = int(os.environ.get("CBRSIM_SEG_GAP", "24"))
+    SEG_MIN = int(os.environ.get("CBRSIM_SEG_MIN", "2"))
+    DARK_THR = float(os.environ.get("CBRSIM_SEG_DARK", "0.90"))
+    UNI_THR = float(os.environ.get("CBRSIM_SEG_UNIFORM", "0.88"))
+    UNI_TOL = float(os.environ.get("CBRSIM_SEG_UNIFORM_TOL", "24"))
+    UNI_NEAR = int(os.environ.get("CBRSIM_SEG_UNIFORM_NEAR", "8"))
+    dark = np.zeros(n)
+    uniform = np.zeros(n)
+    for i in range(n):
+        image = np.asarray(Image.open(frames[i]).convert("RGB")).astype(float)
+        dark[i] = ((image @ LWv) < 32).mean()
+        distance = np.sqrt(((image - image.reshape(-1, 3).mean(0)) ** 2).sum(2))
+        uniform[i] = (distance < UNI_TOL).mean()
+
+    def cluster(metric, hit):
+        hits = np.where(hit)[0]
+        bounds = []
+        if len(hits):
+            start = previous = int(hits[0])
+            for value in hits[1:]:
+                value = int(value)
+                if value - previous <= SEG_GAP:
+                    previous = value
+                else:
+                    bounds.append(start + int(np.argmax(metric[start:previous + 1])))
+                    start = previous = value
+            bounds.append(start + int(np.argmax(metric[start:previous + 1])))
+        return bounds
+
+    dark_bounds = cluster(dark, dark >= DARK_THR)
+    uniform_bounds = cluster(uniform, uniform >= UNI_THR)
+    additions = [value for value in uniform_bounds
+                 if min([abs(value - dark_value) for dark_value in dark_bounds] + [1 << 30]) > UNI_NEAR]
+    edges = sorted(set([0, *dark_bounds, *additions, n]))
+    return [
+        (edges[index], edges[index + 1])
+        for index in range(len(edges) - 1)
+        if edges[index + 1] - edges[index] >= SEG_MIN
+    ]
+
+
 def segment_and_train(frames):
-    """frames: list[Path]。区間分割とパレット学習を sim/先読みパッチ生成で共有する。
-    returns (pals_arr_global(4,15,3), seg_pals[list of (4,15,3)], frame_seg(n,), seg_bounds[list])。
-    SEGPAL_ON=False なら seg_pals=[全体], frame_seg=全0。DITHER_ON/SEGPAL_ON は env で決まる。"""
+    """Train STL4 unchanged or select MOSAIC-GM lines and useful CRAM segments."""
     n = len(frames)
 
-    def _train(idxs):
-        tr = np.concatenate(
-            [tile_blocks(to_rgb333(np.asarray(Image.open(frames[i]).convert("RGB"))))
-             for i in idxs], axis=0)
-        return np.stack(build_palettes(tr, n_pal=4)).astype(np.uint8)   # (4,15,3)
+    def load_tiles(indices):
+        return np.concatenate([
+            tile_blocks(to_rgb333(np.asarray(Image.open(frames[int(index)]).convert("RGB"))))
+            for index in indices
+        ], axis=0)
 
-    pals_arr = _train(range(0, n, 6))                            # 全体1本(既定/palettes.bin用)
+    def sample_indices(start, end, count, half_step=False):
+        length = end - start
+        count = min(length, max(1, int(count)))
+        if count == length:
+            return np.arange(start, end, dtype=np.int64)
+        offset = 0.5 if half_step else 0.0
+        return np.unique(np.clip(
+            start + ((np.arange(count) + offset) * length / count).astype(np.int64),
+            start, end - 1,
+        ))
+
+    if PAL_ALGO == STL4:
+        def train_stl4(indices):
+            return np.stack(build_palettes(load_tiles(indices), n_pal=4)).astype(np.uint8)
+
+        pals_arr = train_stl4(range(0, n, 6))
+        frame_seg = np.zeros(n, np.int32)
+        seg_pals = [pals_arr]
+        seg_bounds = []
+        if SEGPAL_ON:
+            segments = detect_palette_segments(frames)
+            seg_pals = [
+                train_stl4(range(start, end, max(1, (end - start) // 60)))
+                for start, end in segments
+            ]
+            frame_seg[:] = -1
+            for segment, (start, end) in enumerate(segments):
+                frame_seg[start:end] = segment
+            current = 0
+            for frame in range(n):
+                if frame_seg[frame] < 0:
+                    frame_seg[frame] = current
+                else:
+                    current = int(frame_seg[frame])
+            seg_bounds = [
+                frame for frame in range(1, n)
+                if frame_seg[frame] != frame_seg[frame - 1]
+            ]
+        stats = {
+            "algo": STL4,
+            "global": {"active_lines": 4, "training_stride": 6},
+            "candidate_segments": len(seg_pals),
+            "selected_segments": len(seg_pals),
+        }
+        return pals_arr, seg_pals, frame_seg, seg_bounds, stats
+
+    sample_counts = sorted({
+        max(1, int(value))
+        for value in os.environ.get("CBRSIM_PAL_SAMPLE_COUNTS", "120,240,480").split(",")
+        if value.strip()
+    })
+    validation_count = int(os.environ.get("CBRSIM_PAL_VALIDATE_FRAMES", "120"))
+    validation_indices = sample_indices(0, n, validation_count, half_step=True)
+    validation_tiles = load_tiles(validation_indices)
+    validation_flat, _detail = flatten_low_detail(validation_tiles)
+    validation_evaluator = PaletteEvaluator(validation_flat)
+    candidates = []
+    seen_counts = set()
+    for requested in sample_counts:
+        indices = sample_indices(0, n, requested)
+        if len(indices) in seen_counts:
+            continue
+        seen_counts.add(len(indices))
+        training = load_tiles(indices)
+        palettes, train_stats = build_mosaic_palettes(training, n_pal=4, return_stats=True)
+        active = int(train_stats["active_lines"])
+        validation = score_palettes(
+            validation_flat, palettes[:active], evaluator=validation_evaluator,
+            core_colors=int(train_stats["core_colors"]),
+        )
+        record = {
+            **train_stats,
+            "training_frames": len(indices),
+            "validation_frames": len(validation_indices),
+            "validation": validation.summary(),
+            "validation_score": validation.score,
+        }
+        candidates.append((validation.score, active, len(indices), np.stack(palettes), record))
+        print(
+            f"[MOSAIC-GM] global sample={len(indices)} validation="
+            f"{validation.summary()['score_per_pixel']:.6f} active={active}"
+        )
+    _score, _active, _count, pals_arr, global_stats = min(
+        candidates, key=lambda item: (item[0], item[1], item[2]))
+    pals_arr = np.asarray(pals_arr, dtype=np.uint8)
+    global_active = int(global_stats["active_lines"])
+
     frame_seg = np.zeros(n, np.int32)
-    seg_pals = [pals_arr]
-    seg_bounds = []
-    if SEGPAL_ON:
-        LWv = np.array([.299, .587, .114])
-        SEG_GAP = int(os.environ.get("CBRSIM_SEG_GAP", "24"))  # 点滅フェードはこの範囲内なら1切替にまとめる
-        SEG_MIN = int(os.environ.get("CBRSIM_SEG_MIN", "2"))   # 最小区間長=2 → 1フレーム暗転でも切替を許す
-        DARK_THR = float(os.environ.get("CBRSIM_SEG_DARK", "0.90"))  # 暗転とみなす暗さ(画素割合)
-        # 一様(色不問)検知: 深い暗さの本質は「画面全体が一様=ほぼ1枚の平坦タイルの繰り返し=タイル
-        # 流用が最大=CRAM切替のキャッシュ損失ほぼ0・色ポップも隠れる」こと。黒はその一例にすぎず、
-        # 白飛びや任意のフラット色でも同じ。フレーム平均色から距離の近い画素の割合(uni)で「一様さ」を
-        # 測り、暗検知とは独立にクラスタリングして境界を出す(独立にしないと一様ヒットが既存の暗クラスタ
-        # を橋渡しして黒境界を併合してしまうため)。暗境界からUNI_NEAR以内の一様は重複として捨てる。
-        UNI_THR = float(os.environ.get("CBRSIM_SEG_UNIFORM", "0.88"))  # 一様とみなす割合。2以上で無効化
-        UNI_TOL = float(os.environ.get("CBRSIM_SEG_UNIFORM_TOL", "24"))  # 平均色に近いとみなすRGB距離
-        UNI_NEAR = int(os.environ.get("CBRSIM_SEG_UNIFORM_NEAR", "8"))   # 暗境界からこの範囲内は重複扱い
-        dark = np.zeros(n)
-        uni = np.zeros(n)
-        for i in range(n):
-            a = np.asarray(Image.open(frames[i]).convert("RGB")).astype(float)
-            dark[i] = ((a @ LWv) < 32).mean()
-            d = np.sqrt(((a - a.reshape(-1, 3).mean(0)) ** 2).sum(2))    # 各画素の平均色からの距離
-            uni[i] = (d < UNI_TOL).mean()                                # 平坦度(黒でも白でも高い)
+    if not SEGPAL_ON:
+        stats = {
+            "algo": MOSAIC_GM,
+            "global": global_stats,
+            "global_candidates": [record for *_head, record in candidates],
+            "candidate_segments": 1,
+            "selected_segments": 1,
+        }
+        return pals_arr, [pals_arr], frame_seg, [], stats
 
-        def _cluster(metric, hit):                      # 塊ごとに1境界(その塊で metric が最大=最も隠れる)
-            hi = np.where(hit)[0]
-            bb = []
-            if len(hi):
-                s = p = int(hi[0])
-                for h in hi[1:]:
-                    h = int(h)
-                    if h - p <= SEG_GAP:
-                        p = h
-                    else:
-                        bb.append(s + int(np.argmax(metric[s:p + 1]))); s = p = h
-                bb.append(s + int(np.argmax(metric[s:p + 1])))
-            return bb
+    # A one-line zero-error validation candidate receives an exact all-frame
+    # proof. This is a rendered-result decision, not a source-colour-count rule.
+    exact_global = False
+    if global_active == 1 and global_stats["validation"]["pixel_error_per_pixel"] == 0:
+        cost, _index = palette_lut(pals_arr[0], squared=True)
+        exact_global = True
+        for frame, path in enumerate(frames):
+            tiles = tile_blocks(to_rgb333(np.asarray(Image.open(path).convert("RGB"))))
+            flat, _detail = flatten_low_detail(tiles)
+            if np.any(cost[rgb333_keys(flat)]):
+                exact_global = False
+                print(f"[MOSAIC-GM] global one-line proof stopped at frame {frame}")
+                break
+        if exact_global:
+            print(f"[MOSAIC-GM] global one-line RGB333 identity proved for all {n} frames")
 
-        dark_bnds = _cluster(dark, dark >= DARK_THR)    # 既存の暗検知(独立=edの黒境界を不変に保つ)
-        uni_bnds = _cluster(uni, uni >= UNI_THR)        # 一様検知(新規: 白飛び/フラット)
-        add = [u for u in uni_bnds
-               if min([abs(u - d) for d in dark_bnds] + [1 << 30]) > UNI_NEAR]
-        bnds = sorted(set(dark_bnds + add))
-        edges = sorted(set([0] + bnds + [n]))
-        segs = [(edges[j], edges[j + 1]) for j in range(len(edges) - 1) if edges[j + 1] - edges[j] >= SEG_MIN]
-        seg_bounds = [a for (a, b) in segs if a > 0]
-        seg_pals = [_train(range(a, b, max(1, (b - a) // 60))) for (a, b) in segs]
-        frame_seg[:] = -1
-        for si, (a, b) in enumerate(segs):
-            frame_seg[a:b] = si
-        cur = 0                                                  # 隙間は前方フィル
-        for f in range(n):
-            if frame_seg[f] < 0:
-                frame_seg[f] = cur
-            else:
-                cur = int(frame_seg[f])
-    return pals_arr, seg_pals, frame_seg, seg_bounds
+    if exact_global:
+        stats = {
+            "algo": MOSAIC_GM,
+            "global": global_stats,
+            "global_candidates": [record for *_head, record in candidates],
+            "global_exact_all_frames": True,
+            "candidate_segments": 1,
+            "selected_segments": 1,
+        }
+        return pals_arr, [pals_arr], frame_seg, [], stats
+
+    segments = detect_palette_segments(frames)
+    segment_train_count = int(os.environ.get("CBRSIM_PAL_SEG_TRAIN_FRAMES", "240"))
+    segment_validation_count = int(os.environ.get("CBRSIM_PAL_SEG_VALIDATE_FRAMES", "60"))
+    segment_rel = float(os.environ.get("CBRSIM_PAL_SEG_GAIN_REL", "0.005"))
+    segment_abs = float(os.environ.get("CBRSIM_PAL_SEG_GAIN_ABS", "0.002"))
+    selected = []
+    segment_stats = []
+    for start, end in segments:
+        train_indices = sample_indices(start, end, segment_train_count)
+        local_palettes, local_stats = build_mosaic_palettes(
+            load_tiles(train_indices), n_pal=4, return_stats=True)
+        validate_indices = sample_indices(start, end, segment_validation_count, half_step=True)
+        validate_tiles = load_tiles(validate_indices)
+        validate_flat, _detail = flatten_low_detail(validate_tiles)
+        evaluator = PaletteEvaluator(validate_flat)
+        local_active = int(local_stats["active_lines"])
+        local_score = score_palettes(
+            validate_flat, local_palettes[:local_active], evaluator=evaluator,
+            core_colors=int(local_stats["core_colors"]),
+        )
+        global_score = score_palettes(
+            validate_flat, pals_arr[:global_active], evaluator=evaluator,
+            core_colors=int(global_stats["core_colors"]),
+        )
+        improvement = global_score.score - local_score.score
+        relative = improvement / max(1.0, global_score.score)
+        per_pixel = improvement / max(1, len(validate_flat) * 64)
+        use_local = improvement > 0 and relative >= segment_rel and per_pixel >= segment_abs
+        selected.append(np.asarray(local_palettes if use_local else pals_arr, dtype=np.uint8))
+        segment_stats.append({
+            "start": int(start), "end": int(end),
+            "training_frames": len(train_indices),
+            "validation_frames": len(validate_indices),
+            "local": local_stats,
+            "local_score_per_pixel": local_score.summary()["score_per_pixel"],
+            "global_score_per_pixel": global_score.summary()["score_per_pixel"],
+            "relative_gain": relative,
+            "gain_per_pixel": per_pixel,
+            "selected": "local" if use_local else "global",
+        })
+
+    # Consecutive candidate segments that select the same palette need no CRAM
+    # switch and collapse to one frame_seg epoch automatically.
+    seg_pals = []
+    frame_seg[:] = -1
+    for (start, end), palettes in zip(segments, selected):
+        if not seg_pals or not np.array_equal(seg_pals[-1], palettes):
+            seg_pals.append(palettes)
+        frame_seg[start:end] = len(seg_pals) - 1
+    current = 0
+    for frame in range(n):
+        if frame_seg[frame] < 0:
+            frame_seg[frame] = current
+        else:
+            current = int(frame_seg[frame])
+    seg_bounds = [
+        frame for frame in range(1, n)
+        if frame_seg[frame] != frame_seg[frame - 1]
+    ]
+    stats = {
+        "algo": MOSAIC_GM,
+        "global": global_stats,
+        "global_candidates": [record for *_head, record in candidates],
+        "global_exact_all_frames": False,
+        "candidate_segments": len(segments),
+        "selected_segments": len(seg_pals),
+        "segments": segment_stats,
+    }
+    return pals_arr, seg_pals, frame_seg, seg_bounds, stats
 
 
 OUT = sim_work_dir()
@@ -695,10 +879,11 @@ def main():
         print(f"  PRG先読み(patch): {len(prg_patch)}カット, distinct {uniq} tiles "
               f"({uniq*PATTERN_BYTES/1024:.0f}KB) をロード時バッファ")
 
-    print(f"training palettes (4x15)  DITHER={DITHER_ON} SEGPAL={SEGPAL_ON} NEAR={NEAR_ON} ...")
-    _global_pals, seg_pals, frame_seg, seg_bounds = segment_and_train(frames)
+    print(f"training palettes ({PAL_ALGO})  DITHER={DITHER_ON} SEGPAL={SEGPAL_ON} NEAR={NEAR_ON} ...")
+    _global_pals, seg_pals, frame_seg, seg_bounds, palette_stats = segment_and_train(frames)
     if SEGPAL_ON:
-        print(f"  per-segment palettes: {len(seg_pals)}区間, 暗転差替 {len(seg_bounds)}点")
+        print(f"  per-segment palettes: {len(seg_pals)}区間, CRAM差替 {len(seg_bounds)}点 "
+              f"(candidates={palette_stats['candidate_segments']})")
     _t = _mark("パレット学習", _t)
 
     main_dir = OUT / "preview"      # SEGA-CD 実出力(ゴースト有り)
@@ -1346,6 +1531,8 @@ def main():
         pickle.dump({
             "geom": (int(TCOLS), int(TROWS), int(C_CELLS), int(TILE)),
             "mode": MODE.upper(),                              # header display mode
+            "pal_algo": PAL_ALGO,
+            "pal_stats": palette_stats,
             "seg_pals": [np.asarray(p, np.uint8) for p in seg_pals],  # list of (4,15,3)
             "frame_seg": np.asarray(frame_seg, np.int32),
             "frames": dec_frames,                                     # [[(cell,pal,key),...], ...]
