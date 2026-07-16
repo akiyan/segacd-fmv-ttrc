@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from palette_algorithms import (  # noqa: E402
-    MOSAIC_GM, build_mosaic_palettes, refine_one_line_palette,
+    MOSAIC_GM, build_mosaic_palettes, coherent_assign_idx,
+    refine_one_line_palette,
 )
 
 
@@ -69,6 +70,29 @@ def main() -> int:
         brightness = row.astype(np.int16).sum(1)
         assert brightness[0] == brightness.min()
         assert brightness[14] == brightness.max()
+
+    # Two adjacent tiles prefer different lines from their interiors, but the
+    # shared source colour maps in opposite directions at the boundary. A
+    # sufficiently strong spatial cost should choose one consistent line.
+    color_a = np.array((4, 3, 3), dtype=np.uint8)
+    color_b = np.array((2, 3, 3), dtype=np.uint8)
+    shared = np.array((3, 3, 3), dtype=np.uint8)
+    left = np.tile(color_a, (64, 1)).reshape(8, 8, 3)
+    right = np.tile(color_b, (64, 1)).reshape(8, 8, 3)
+    left[:, -1] = shared
+    right[:, 0] = shared
+    adjacent = np.stack([left.reshape(64, 3), right.reshape(64, 3)])
+    zero = np.zeros((13, 3), dtype=np.uint8)
+    spatial_palettes = np.stack([
+        np.concatenate([[color_a, (2, 2, 2)], zero]),
+        np.concatenate([[color_b, (4, 4, 4)], zero]),
+    ])
+    independent, _index = coherent_assign_idx(
+        adjacent, spatial_palettes, 1, 2, seam_weight=0)
+    coherent, _index = coherent_assign_idx(
+        adjacent, spatial_palettes, 1, 2, seam_weight=8, iterations=2)
+    np.testing.assert_array_equal(independent, (0, 1))
+    assert coherent[0] == coherent[1], coherent
     print("MOSAIC-GM exact: one-line stop, shared-core growth, and HUD extrema verified")
     return 0
 

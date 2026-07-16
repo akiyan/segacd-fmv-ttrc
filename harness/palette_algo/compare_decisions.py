@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from compare_sources import rgb333_bayer  # noqa: E402
-from palette_algorithms import score_palettes  # noqa: E402
+from palette_algorithms import coherent_assign_idx  # noqa: E402
 from quantize_global4_tiles import palette_lut, rgb333_keys, tile_blocks  # noqa: E402
 
 
@@ -35,14 +35,29 @@ def load_log(path: Path):
         return pickle.load(source)
 
 
-def quantize(tiles, palettes):
+def quantize(tiles, palettes, rows, cols, seam_weight, seam_iterations):
+    assign, index = coherent_assign_idx(
+        tiles, palettes, rows, cols,
+        seam_weight=seam_weight, iterations=seam_iterations)
+    return np.asarray(palettes)[assign[:, None], index - 1], assign
+
+
+def mapping_noise(tiles, palettes, assign):
     keys = rgb333_keys(tiles)
-    tables = [palette_lut(palette, squared=True) for palette in palettes]
-    cost = np.stack([table[0] for table in tables])
-    index = np.stack([table[1] for table in tables])
-    assign = cost[:, keys].sum(2, dtype=np.int64).T.argmin(1)
-    selected = index[assign[:, None], keys]
-    return np.asarray(palettes)[assign[:, None], selected], assign
+    line_hist = np.stack([
+        np.bincount(keys[assign == line].reshape(-1), minlength=512)
+        for line in range(len(palettes))
+    ])
+    maps = []
+    for palette in palettes:
+        _error, index = palette_lut(palette, squared=True)
+        maps.append(palette[index].astype(np.int16))
+    total = 0
+    for left in range(len(palettes)):
+        for right in range(left + 1, len(palettes)):
+            shared = np.minimum(line_hist[left], line_hist[right])
+            total += int((shared * ((maps[left] - maps[right]) ** 2).sum(1)).sum())
+    return total
 
 
 def seam_error(source, output, rows, cols):
@@ -60,7 +75,7 @@ def seam_error(source, output, rows, cols):
     return total, pairs
 
 
-def evaluate(label, log, frame_tiles, indices):
+def evaluate(label, log, frame_tiles, indices, seam_weight, seam_iterations):
     palettes = np.asarray(log["seg_pals"], dtype=np.uint8)
     frame_seg = np.asarray(log["frame_seg"], dtype=np.int32)
     cols, rows, cells, _tile = map(int, log["geom"])
@@ -68,28 +83,33 @@ def evaluate(label, log, frame_tiles, indices):
         raise SystemExit(f"{label}: source tile count differs from decision geometry")
 
     pixel_error = 0
-    mapping_noise = 0
+    mapping_noise_total = 0
     seam = 0
     seam_pairs = 0
     line_count = np.zeros(4, dtype=np.int64)
     for segment in np.unique(frame_seg[indices]):
         selected_frames = [index for index in indices if frame_seg[index] == segment]
         tiles = np.concatenate([frame_tiles[index] for index in selected_frames])
-        result = score_palettes(tiles, palettes[int(segment)])
-        pixel_error += result.pixel_error
-        mapping_noise += result.mapping_noise
-        line_count += np.bincount(result.assign, minlength=4)
+        segment_assign = []
         for index in selected_frames:
             source = frame_tiles[index]
-            output, _assign = quantize(source, palettes[int(segment)])
+            output, assign = quantize(
+                source, palettes[int(segment)], rows, cols,
+                seam_weight, seam_iterations)
+            segment_assign.append(assign)
+            pixel_error += int(((output.astype(np.int16) - source.astype(np.int16)) ** 2).sum())
+            line_count += np.bincount(assign, minlength=4)
             value, pairs = seam_error(source, output, rows, cols)
             seam += value
             seam_pairs += pairs
+        mapping_noise_total += mapping_noise(
+            tiles, palettes[int(segment)], np.concatenate(segment_assign))
     pixels = len(indices) * cells * 64
     print(
         f"{label}: segments={len(palettes)} sample_frames={len(indices)} "
-        f"pixel={pixel_error / pixels:.9f} mapping={mapping_noise / pixels:.9f} "
-        f"combined={(pixel_error + mapping_noise) / pixels:.9f} "
+        f"coherent={seam_weight:g}x{seam_iterations} "
+        f"pixel={pixel_error / pixels:.9f} mapping={mapping_noise_total / pixels:.9f} "
+        f"combined={(pixel_error + mapping_noise_total) / pixels:.9f} "
         f"seam={seam / max(1, seam_pairs):.9f} "
         f"lines={','.join(f'{value / line_count.sum():.3f}' for value in line_count)}"
     )
@@ -100,6 +120,8 @@ def main() -> int:
     parser.add_argument("master_dir", type=Path)
     parser.add_argument("decision", nargs="+", type=Path)
     parser.add_argument("--frames", type=int, default=240)
+    parser.add_argument("--coherent-weight", type=float, nargs="+", default=[0.0])
+    parser.add_argument("--coherent-iterations", type=int, nargs="+", default=[2])
     args = parser.parse_args()
     logs = [load_log(path) for path in args.decision]
     total = min(len(log["frame_seg"]) for log in logs)
@@ -116,8 +138,12 @@ def main() -> int:
         )))
         for index in indices
     }
-    for path, log in zip(args.decision, logs):
-        evaluate(path.stem + "@" + path.parent.name, log, frame_tiles, indices)
+    for coherent_iterations in args.coherent_iterations:
+        for coherent_weight in args.coherent_weight:
+            for path, log in zip(args.decision, logs):
+                evaluate(
+                    path.stem + "@" + path.parent.name, log, frame_tiles, indices,
+                    coherent_weight, coherent_iterations)
     return 0
 
 

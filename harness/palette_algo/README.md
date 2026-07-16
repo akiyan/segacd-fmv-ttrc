@@ -103,3 +103,33 @@ all three under MOSAIC-GM. Sonic's pixel error rose slightly from `0.096713` to
 from `0.190608` to `0.192575` (+1.0%), showing that shared colours solve line
 mapping inconsistency but spatially coherent tile assignment still needs its
 own optimization stage.
+
+Sweep the spatial assignment weight and checkerboard iteration count without
+re-learning the palettes:
+
+```sh
+python3 harness/palette_algo/compare_decisions.py \
+  videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/master \
+  videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/decisions.pkl \
+  --coherent-weight 0 0.25 1 4 8 \
+  --coherent-iterations 1 2 4
+```
+
+The pair cost compares quantization residuals only at the shared 8x8 edge. It
+therefore suppresses a discontinuity created by palette selection without
+penalizing a real edge that already exists in the source image.
+
+On Sonic's fixed 240-frame set, two checkerboard passes were enough to
+converge. Four passes changed the seam result by at most 0.03%. With two
+passes, the visual-error trade-off was:
+
+| Weight | Pixel | Mapping | Seam |
+|---:|---:|---:|---:|
+| 0 | 0.100739 | 0.048295 | 0.192575 |
+| 1 | 0.101206 | 0.048481 | 0.187682 |
+| 4 | 0.103136 | 0.051275 | 0.183782 |
+| 8 | 0.104619 | 0.053860 | 0.182618 |
+
+Weight 8 lowers the introduced boundary discontinuity by 5.2% while adding
+only 0.0039 squared RGB333 units per source pixel. Codec cost is deliberately
+not part of this stage's selection criterion.

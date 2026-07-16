@@ -265,6 +265,60 @@ def score_palettes(tiles, palettes, evaluator=None, mapping_weight=None, core_co
     )
 
 
+def coherent_assign_idx(tiles, palettes, rows, cols, seam_weight=1.0, iterations=2):
+    """Assign palette lines with an added 8x8-boundary residual penalty.
+
+    The source edge itself is not penalized. The pair term compares each
+    candidate tile's quantization residual (output minus source) with the
+    selected neighbour residual, so only a boundary introduced by palette
+    quantization costs energy. Checkerboard updates keep every pass
+    deterministic and map directly to a future GPU kernel.
+    """
+    tiles = np.asarray(tiles, dtype=np.uint8).reshape(-1, 64, 3)
+    palettes = np.asarray(palettes, dtype=np.uint8)
+    if len(tiles) != rows * cols:
+        raise ValueError(f"tile count {len(tiles)} differs from {rows}x{cols}")
+    keys = rgb333_keys(tiles)
+    tables = [palette_lut(palette, squared=True) for palette in palettes]
+    cost = np.stack([table[0] for table in tables])
+    index = np.stack([table[1] for table in tables])
+    tile_error = cost[:, keys].sum(2, dtype=np.int64).T
+    assign = tile_error.argmin(1).astype(np.int8)
+    if seam_weight > 0 and len(palettes) > 1:
+        quantized = np.stack([
+            palettes[line][index[line, keys]]
+            for line in range(len(palettes))
+        ]).astype(np.int16)
+        residual = (quantized - tiles[None].astype(np.int16)).reshape(
+            len(palettes), rows, cols, 8, 8, 3)
+        assignment = assign.reshape(rows, cols)
+        for _iteration in range(max(1, int(iterations))):
+            for parity in (0, 1):
+                for row in range(rows):
+                    for col in range((parity - row) & 1, cols, 2):
+                        energy = tile_error[row * cols + col].astype(np.float64)
+                        if row:
+                            neighbour = int(assignment[row - 1, col])
+                            delta = residual[:, row, col, 0] - residual[neighbour, row - 1, col, 7]
+                            energy += seam_weight * (delta * delta).sum((1, 2))
+                        if row + 1 < rows:
+                            neighbour = int(assignment[row + 1, col])
+                            delta = residual[:, row, col, 7] - residual[neighbour, row + 1, col, 0]
+                            energy += seam_weight * (delta * delta).sum((1, 2))
+                        if col:
+                            neighbour = int(assignment[row, col - 1])
+                            delta = residual[:, row, col, :, 0] - residual[neighbour, row, col - 1, :, 7]
+                            energy += seam_weight * (delta * delta).sum((1, 2))
+                        if col + 1 < cols:
+                            neighbour = int(assignment[row, col + 1])
+                            delta = residual[:, row, col, :, 7] - residual[neighbour, row, col + 1, :, 0]
+                            energy += seam_weight * (delta * delta).sum((1, 2))
+                        assignment[row, col] = int(energy.argmin())
+        assign = assignment.reshape(-1).astype(np.int8)
+    selected = index[assign[:, None], keys] + 1
+    return assign, selected.astype(np.uint8)
+
+
 def _fit_independent(tiles, keys, weights, initial, evaluator, iterations=3):
     palettes = [np.asarray(palette, dtype=np.uint8) for palette in initial]
     for _ in range(iterations):
