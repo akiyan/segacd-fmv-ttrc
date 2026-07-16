@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e39 : Restrict the measured 200-cold H40 limit to exactly 24fps, whose
+#        two/three-VBLANK cadence produced Lunar's slips. Restore the common
+#        scaled limits for unmeasured H40 rates, including 175 at 30fps.
 #   e38 : Freeze analysis-panel arrays before threaded PNG encoding, validate
 #        each completed PNG, and atomically replace the old frame. Parallel
 #        rendering can no longer leave a corrupt or cross-frame preview file.
@@ -299,5 +302,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260716
-e=38
+e=39
 p=43
