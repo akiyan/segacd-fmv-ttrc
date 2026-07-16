@@ -11,6 +11,12 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p42 : Generate 256 straight bitmap handlers plus fixed NT0/NT1 blitters once
+#        after stream-header setup. Runtime code removes the per-bit bitmap loop
+#        and per-row name-table address/loop work while retaining exact zero/full
+#        paths and geometry/range fallbacks. Full Lunar H32/H40 DEBUG playback
+#        matches the reference S/D/R behavior; measured Main-CPU savings average
+#        3.534 ms/frame at H32 and 4.031 ms/frame at H40 with no regressed frame.
 #   e35/p41 : Keep non-integer-VBlank content rates such as 24 fps delivery-
 #        paced instead of rounding their PCM chunk sizing to N2/29.97 fps.
 #        24 fps now uses 555 B/frame while existing 15/30 fps output is unchanged.
@@ -281,4 +287,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260716
 e=35
-p=41
+p=42

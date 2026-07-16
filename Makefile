@@ -206,9 +206,10 @@ movieplay: check-tools $(MOVIEPLAY_ISO) $(MOVIEPLAY_CUE)
 # ストリーム側のデバッグ欄は CBRSIM_PACK_DEBUG=1 で pack した時だけ載せる。
 DEBUG ?= 0
 ISO_HOLD_N ?= 0
-# Experimental issue #27 Main-CPU straight-line bitmap handlers. Keep disabled
-# by default until H32/H40 A/B playback and timing validation are complete.
-MAIN_CODEGEN ?= 0
+# Issue #27 Main-CPU straight-line bitmap handlers and fixed-geometry NT
+# blitters. H32/H40 full-playback validation is complete; MAIN_CODEGEN=0 keeps
+# the byte-identical reference player available for fallback/A-B diagnostics.
+MAIN_CODEGEN ?= 1
 # DEBUG changes assembler flags without changing a source timestamp. Force this
 # small object to rebuild so `make disc DEBUG=1` can never reuse a release object
 # (or vice versa).
