@@ -74,6 +74,19 @@ def sample_stats(samples):
     return {"peak_abs": peak_abs, "rms": rms}
 
 
+def adjacent_jumps(samples):
+    """Return absolute adjacent deltas in an isolated interpreter frame.
+
+    Python 3.14.4 has occasionally substituted an unrelated outer local into
+    long-running loops in this script.  Keeping the two sample locals in this
+    small helper avoids sharing the WAV/path frame while retaining a plain loop.
+    """
+    jumps = []
+    for before, after in zip(samples, samples[1:]):
+        jumps.append(abs(int(after) - int(before)))
+    return jumps
+
+
 def wav_stats(path, seconds, jump_threshold):
     wav = read_wav(path)
     samples = wav["samples"]
@@ -83,11 +96,7 @@ def wav_stats(path, seconds, jump_threshold):
     overall = sample_stats(samples)
     for channel in range(wav["channels"]):
         current = channel_samples(samples, channel, wav["channels"])
-        jumps = []
-        previous = current[0] if current else 0
-        for sample in current[1:]:
-            jumps.append(abs(sample - previous))
-            previous = sample
+        jumps = adjacent_jumps(current)
         jumps_sorted = sorted(jumps)
         # Keep this as an explicit loop.  Python 3.14.4 has produced spurious,
         # non-deterministic matches for this large filtered comprehension on
