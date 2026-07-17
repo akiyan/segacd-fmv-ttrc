@@ -55,7 +55,7 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX"], "2")
         self.assertEqual(
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN"], "253")
-        self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "lanczos")
+        self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "area")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
 
     def test_profile_without_preprocess_clears_inherited_snap(self) -> None:

@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e45 : Switch the Bad Apple H40 no-denoise resize comparison from direct
+#        Lanczos to area resampling while retaining source endpoint snapping
+#        and normal ordered dithering.
 #   e44 : Add profile-level resize_filter and master_denoise controls. Bad Apple
 #        H40 disables the master-only upscale/denoise/blur pass and uses one
 #        direct Lanczos resize after source endpoint snapping.
@@ -316,5 +319,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260717
-e=44
+e=45
 p=43

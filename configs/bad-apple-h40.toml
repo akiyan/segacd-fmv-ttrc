@@ -15,7 +15,7 @@ mode = "H40"
 width = 320
 height = 224
 fit = "pad"
-resize_filter = "lanczos"
+resize_filter = "area"
 master_denoise = false
 
 [audio]

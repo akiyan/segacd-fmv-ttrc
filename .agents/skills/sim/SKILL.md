@@ -112,9 +112,14 @@ output directory, encoder/palette settings, and DEBUG pack settings.
 
 Before every `/sim`, perform these steps in this exact order:
 
-1. **Show the complete TOML profile to the user in commentary.** Print every
-   section and value verbatim in one code block before starting the sim. Do not
-   summarize or omit settings. This is the user's preflight record of the run.
+1. **Read the complete TOML profile, then explain the relevant settings to the
+   user in commentary before starting.** Do not paste the TOML verbatim. In
+   plain language, show the values that are commonly tuned for codec/visual
+   comparisons and clearly call out every value changed for this run. Omit
+   stable source identity/timing fields such as `path`, `fps`, `duration`, and
+   `sar` unless they changed from the preceding comparison. Include unchanged
+   settings only when they materially affect how the current result should be
+   interpreted. This explanation is the user's preflight record of the run.
 2. Validate the profile with `tools/encode_config.py` and identify its exact
    `[output].directory`.
 3. Check the shared-machine exclusion rule below.
