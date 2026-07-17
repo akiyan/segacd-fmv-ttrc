@@ -3,8 +3,9 @@
 # record_movie.sh - record Sega CD playback and create a verification preview.
 #
 # Wraps tools/run_headless.sh (RetroArch + Genesis Plus GX FFmpeg recorder under
-# Xvfb), keeps the Mega-CD startup sequence by default, and transcodes it to an
-# H.264 + AAC preview for quick verification.
+# Xvfb), keeps the Mega-CD startup sequence, records FFV1/FLAC through a fixed
+# input Replay at uncapped speed by default, and transcodes it to an H.264 + AAC
+# preview for quick verification.
 #
 # The recording is the emulator's own synchronized A/V output (video + whatever
 # audio the build produces) - not an offline re-mux of PROBE.BIN.
@@ -23,9 +24,11 @@
 #                  (default: 0, preserving the startup sequence)
 #   --tag NAME     work prefix under the capture dir (default: rec_<disc basename>)
 #   --display :N   X display for Xvfb (default :236)
-#   --preset NAME  ffv1-flac (pixel-lossless default) or realtime (4:2:0 check)
+#   --preset NAME  ffv1-flac (pixel-lossless default) or realtime (paced 4:2:0 check)
 #   --offline-record
-#                  record a fixed input replay uncapped with FFV1/FLAC
+#                  explicitly select the default fixed-Replay uncapped mode
+#   --realtime-lossless
+#                  use the legacy wall-clock-paced FFV1/FLAC path
 #   --input-replay FILE
 #                  reuse an input replay for an exact-frame offline or realtime run
 #   --record-size WxH
@@ -59,7 +62,9 @@ BUILD=1
 BUILD_DEBUG=1
 AUDIO_CHECK_ARGS=()
 AUTO_AUDIO_TRIM=0
-OFFLINE_RECORD=0
+OFFLINE_RECORD=1
+OFFLINE_REQUESTED=0
+REALTIME_LOSSLESS_REQUESTED=0
 INPUT_REPLAY=""
 
 while [ $# -gt 0 ]; do
@@ -72,7 +77,8 @@ while [ $# -gt 0 ]; do
     --tag) TAG="$2"; shift 2;;
     --display) DISPLAY_NUM="$2"; shift 2;;
     --preset) PRESET="$2"; shift 2;;
-    --offline-record) OFFLINE_RECORD=1; shift;;
+    --offline-record) OFFLINE_RECORD=1; OFFLINE_REQUESTED=1; shift;;
+    --realtime-lossless) OFFLINE_RECORD=0; REALTIME_LOSSLESS_REQUESTED=1; shift;;
     --input-replay) INPUT_REPLAY="$2"; shift 2;;
     --record-size) RECORD_SIZE="$2"; shift 2;;
     --audio-jump-threshold) AUDIO_CHECK_ARGS+=(--audio-jump-threshold "$2"); shift 2;;
@@ -85,6 +91,22 @@ while [ $# -gt 0 ]; do
     *) echo "unknown option: $1" >&2; exit 2;;
   esac
 done
+
+if [ "$OFFLINE_REQUESTED" -eq 1 ] && [ "$REALTIME_LOSSLESS_REQUESTED" -eq 1 ]; then
+  echo "--offline-record and --realtime-lossless are mutually exclusive" >&2
+  exit 2
+fi
+if [ "$REALTIME_LOSSLESS_REQUESTED" -eq 1 ] && [ "$PRESET" != "ffv1-flac" ]; then
+  echo "--realtime-lossless requires --preset ffv1-flac" >&2
+  exit 2
+fi
+if [ "$PRESET" = "realtime" ]; then
+  if [ "$OFFLINE_REQUESTED" -eq 1 ]; then
+    echo "--offline-record does not support --preset realtime" >&2
+    exit 2
+  fi
+  OFFLINE_RECORD=0
+fi
 
 if [ -n "$CONFIG" ]; then
   CONFIG_STEM="$(python3 tools/encode_config.py "$CONFIG" --print-stem)"
@@ -113,7 +135,7 @@ if [[ ! "$TRIM" =~ ^(0|[1-9][0-9]*)$ ]]; then
   exit 2
 fi
 if [ "$OFFLINE_RECORD" -eq 1 ] && [ "$PRESET" != "ffv1-flac" ]; then
-  echo "--offline-record only supports --preset ffv1-flac" >&2
+  echo "offline recording only supports --preset ffv1-flac" >&2
   exit 2
 fi
 if [ -n "$INPUT_REPLAY" ] && [ ! -f "$INPUT_REPLAY" ]; then
@@ -139,9 +161,10 @@ fi
 [ -f "$DISC" ] || { echo "disc not found: $DISC (drop --no-build or build it)" >&2; exit 1; }
 
 # run_headless records launch->Escape. The capture loop (shots*interval) is the
-# window during which playback is recorded; size it to cover trim + requested
-# seconds plus a small margin. Auto trim is an explicit movie-only mode, so give
-# its window enough extra material to search without changing the default path.
+# window during which paced playback is recorded; size it to cover trim plus the
+# requested seconds and a small margin. Offline is the default and uses the same
+# duration to derive an exact emulator-frame limit. Auto trim is an explicit
+# movie-only mode, so give its window enough extra material to search.
 INTERVAL=2
 CAPTURE_LEAD="$TRIM"
 [ "$AUTO_AUDIO_TRIM" -eq 1 ] && CAPTURE_LEAD=30
@@ -171,7 +194,9 @@ if [ "$OFFLINE_RECORD" -eq 1 ] && [ -z "$REPLAY_FILE" ]; then
   [ -s "$REPLAY_FILE" ] || { echo "input replay not produced: $REPLAY_FILE" >&2; exit 1; }
 fi
 
-echo ">> recording ${REC_SECS}s of $DISC (preset $PRESET) ..."
+RECORD_MODE="offline"
+[ "$OFFLINE_RECORD" -eq 0 ] && RECORD_MODE="realtime"
+echo ">> recording ${REC_SECS}s of $DISC (preset $PRESET, mode $RECORD_MODE) ..."
 RECORD_SIZE_ARGS=()
 [ -n "$RECORD_SIZE" ] && RECORD_SIZE_ARGS=(--record-size "$RECORD_SIZE")
 if [ "$OFFLINE_RECORD" -eq 1 ]; then
