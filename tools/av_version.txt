@@ -11,12 +11,12 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
-#   e45 : Switch the Bad Apple H40 no-denoise resize comparison from direct
-#        Lanczos to area resampling while retaining source endpoint snapping
-#        and normal ordered dithering.
-#   e44 : Add profile-level resize_filter and master_denoise controls. Bad Apple
-#        H40 disables the master-only upscale/denoise/blur pass and uses one
-#        direct Lanczos resize after source endpoint snapping.
+#   e45 : Select area resampling as the final Bad Apple H40 source resize while
+#        retaining source endpoint snapping, no master denoise/blur, and normal
+#        ordered dithering.
+#   e44 : Add profile-level resize_filter and master_denoise controls. The Bad
+#        Apple H40 direct-Lanczos analysis disables the master-only upscale,
+#        denoise, and blur pass after source endpoint snapping.
 #   e43 : Remove the experimental encoder-side endpoint-fill path. Add optional
 #        [source.preprocess.endpoint_snap] RGB888 preprocessing before both the
 #        master and analysis Source paths; Bad Apple H40 snaps 0-2 to 0 and
