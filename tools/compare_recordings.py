@@ -317,6 +317,14 @@ def first_non_monotonic(values: Sequence[int]) -> int | None:
     return None
 
 
+def first_decreasing(values: Sequence[int]) -> int | None:
+    """Return the first decrease; equal adjacent derived timestamps are valid."""
+    for index in range(1, len(values)):
+        if values[index] < values[index - 1]:
+            return index
+    return None
+
+
 def first_sequence_mismatch(a: Sequence[T], b: Sequence[T]) -> int | None:
     """Return the first differing index, including a missing tail element."""
     for index, (left, right) in enumerate(zip(a, b)):
@@ -545,8 +553,11 @@ def _frame_report(time_base: str, frames: Sequence[FrameHash]) -> dict[str, Any]
         "frame_count": len(frames),
         "first_pts": frames[0].pts,
         "last_pts": frames[-1].pts,
-        "pts_monotonic": first_non_monotonic([frame.pts for frame in frames]) is None,
-        "dts_monotonic": first_non_monotonic([frame.dts for frame in frames]) is None,
+        # framemd5 rescales Matroska's original packet timestamps into its output
+        # time base.  That rounding can map two strictly increasing packet PTS
+        # values to the same derived value; only an actual decrease is invalid.
+        "pts_monotonic": first_decreasing([frame.pts for frame in frames]) is None,
+        "dts_monotonic": first_decreasing([frame.dts for frame in frames]) is None,
         "hash_sequence_sha256": _sha256_sequence(frame.digest for frame in frames),
     }
 
@@ -601,12 +612,12 @@ def _compare_video(
         for field in ("pts", "dts"):
             if not summary[f"{field}_monotonic"]:
                 values = [getattr(frame, field) for frame in frames]
-                index = first_non_monotonic(values)
+                index = first_decreasing(values)
                 assert index is not None
                 _failure(
                     report,
                     f"video.{side}.framemd5_{field}_monotonic",
-                    f"{side} framemd5 {field.upper()} is not strictly monotonic at frame {index}",
+                    f"{side} framemd5 {field.upper()} decreases at frame {index}",
                 )
     if len(base_frames) != len(candidate_frames):
         _failure(
