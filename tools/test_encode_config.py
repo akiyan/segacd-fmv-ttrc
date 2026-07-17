@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from encode_config import load_profile
+from encode_config import apply_profile_env, load_profile
 
 
 PROFILE = """\
@@ -42,6 +42,51 @@ output = "out/movieplay/MOVIE.DAT"
 
 
 class EncodeProfileArtifactTests(unittest.TestCase):
+    def test_bad_apple_h40_uses_source_endpoint_snap(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        h40 = load_profile(root / "configs/bad-apple-h40.toml")
+        inherited = {
+            "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX": "9",
+            "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN": "246",
+        }
+        env = apply_profile_env(h40, inherited)
+        self.assertTrue(env["CBRSIM_SRC"].endswith("BadApple.mp4"))
+        self.assertEqual(
+            env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX"], "2")
+        self.assertEqual(
+            env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN"], "253")
+
+    def test_profile_without_preprocess_clears_inherited_snap(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        h32 = load_profile(root / "configs/bad-apple-h32.toml")
+        env = apply_profile_env(h32, {
+            "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX": "2",
+            "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN": "253",
+        })
+        self.assertEqual(
+            env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX"], "-1")
+        self.assertEqual(
+            env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN"], "256")
+
+    def test_endpoint_snap_limits_must_be_ordered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "endpoint-snap.toml"
+            path.write_text(PROFILE.replace(
+                "[video]",
+                "[source.preprocess.endpoint_snap]\nblack_max = 253\n"
+                "white_min = 2\n\n[video]"))
+            with self.assertRaisesRegex(ValueError, "black_max must be below"):
+                load_profile(path)
+
+    def test_endpoint_snap_requires_both_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "endpoint-snap.toml"
+            path.write_text(PROFILE.replace(
+                "[video]",
+                "[source.preprocess.endpoint_snap]\nblack_max = 2\n\n[video]"))
+            with self.assertRaisesRegex(ValueError, "missing.*white_min"):
+                load_profile(path)
+
     def test_artifacts_follow_toml_filename(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sakura-h32.toml"

@@ -57,7 +57,9 @@ from palette_algorithms import (  # noqa: E402
     score_palettes,
 )
 from cbr_paths import sim_work_dir  # noqa: E402
-from video_geometry import probe_source, parse_ratio, source_filter, raw_filter  # noqa: E402
+from video_geometry import (  # noqa: E402
+    endpoint_snap_filter, probe_source, parse_ratio, source_filter, raw_filter,
+)
 
 # 対象動画・寸法・fps は env で差し替え可(既定はサンプル動画)。
 # CBRSIM_OUT を指定しない場合は videos/<stem>/tmp に出力する。
@@ -228,6 +230,14 @@ NEAR_KEEP_ACCURATE_ONLY = os.environ.get("CBRSIM_NEAR_ACCURATE_ONLY", "1") != "0
 # 静止タイルは毎コマ同一の333のまま=差分/使い回しを壊さない(誤差拡散は波及するので不採用)。
 # 前処理のディザ除去(master抽出)はそのまま。掛け直すのは出力の333化のここだけ。
 DITHER_ON = os.environ.get("CBRSIM_DITHER", "1") != "0"   # 既定ON。OFFは CBRSIM_DITHER=0（例外時のみ）
+# Optional source preprocessing, applied before both the master and raw paths.
+# Out-of-range defaults disable it for profiles without endpoint_snap.
+PREPROCESS_BLACK_MAX = int(os.environ.get(
+    "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX", "-1"))
+PREPROCESS_WHITE_MIN = int(os.environ.get(
+    "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN", "256"))
+SOURCE_PREPROCESS_VF = endpoint_snap_filter(
+    PREPROCESS_BLACK_MAX, PREPROCESS_WHITE_MIN)
 # 深い暗転で区切り、暗転の瞬間に区間別60色パレットへ差し替える(CRAM総入替)。
 SEGPAL_ON = os.environ.get("CBRSIM_SEGPAL", "1") != "0"   # 既定ON。OFFは CBRSIM_SEGPAL=0（例外時のみ）
 PAL_ALGO = normalize_palette_algo()                          # stl4 (legacy) / mosaic-gm (opt-in while tuning)
@@ -858,6 +868,12 @@ def main():
             MODE, W, H, src_w, src_h,
             src_sar_num=src_sar_num, src_sar_den=src_sar_den,
             fit=GEOMETRY_FIT)
+    if SOURCE_PREPROCESS_VF:
+        DEDITHER_VF = f"{SOURCE_PREPROCESS_VF},{DEDITHER_VF}"
+        RAW_VF = f"{SOURCE_PREPROCESS_VF},{RAW_VF}"
+        print(
+            "source preprocessing: endpoint_snap "
+            f"black_max={PREPROCESS_BLACK_MAX} white_min={PREPROCESS_WHITE_MIN}")
     # 各処理フェーズの所要時間を計測し、終了時にフレームあたり秒数付きで報告する。
     _t_all = time.perf_counter()
     _phases = []
@@ -870,7 +886,9 @@ def main():
 
     # CBRSIM_REUSE=1: 既に展開済みの master/raw/audio を再利用し ffmpeg 展開を省く
     # (レイアウト調整でパネルだけ描き直したいとき用。OUTは丸ごとクリアしない)。
-    reuse = bool(os.environ.get("CBRSIM_REUSE"))
+    reuse = os.environ.get("CBRSIM_REUSE", "0").strip().lower() not in {
+        "", "0", "false", "no", "off",
+    }
     master_dir = OUT / "master"     # ディザ除去済み(量子化入力)
     raw_dir = OUT / "raw"           # 生のオリジナル(比較TR用)
     cached = reuse and any(master_dir.glob("*.png")) and any(raw_dir.glob("*.png"))
@@ -1589,6 +1607,9 @@ def main():
             "source": {
                 "path": str(SRC), "fps": str(FPS_STR), "duration": str(DURATION),
                 "sar": SOURCE_SAR_OVERRIDE,
+                "preprocess": dict(
+                    CONFIG_PROFILE.section("source").get("preprocess", {})
+                    if CONFIG_PROFILE else {}),
             },
             "video": {
                 "mode": MODE.upper(), "width": int(W), "height": int(H),

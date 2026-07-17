@@ -11,6 +11,17 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e43 : Remove the experimental encoder-side endpoint-fill path. Add optional
+#        [source.preprocess.endpoint_snap] RGB888 preprocessing before both the
+#        master and analysis Source paths; Bad Apple H40 snaps 0-2 to 0 and
+#        253-255 to 255 while retaining normal ordered dithering.
+#   e42 : Experimental Bad Apple H32 encoder-side endpoint-fill analysis build;
+#        retired by e43.
+#   e41 : Disable output dithering in the Bad Apple H40 profile for a direct
+#        nearest-RGB333 comparison. H32 and every other source profile remain
+#        unchanged.
+#   e40 : Experimental Bad Apple H40 encoder-side endpoint-fill analysis build;
+#        retired by e43.
 #   e39 : Restrict the measured 200-cold H40 limit to exactly 24fps, whose
 #        two/three-VBLANK cadence produced Lunar's slips. Restore the common
 #        scaled limits for unmeasured H40 rates, including 175 at 30fps.
@@ -301,6 +312,6 @@
 #   e17: Raise requested startup PCM arming from 32 to 45 frames. The pack
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
-date=20260716
-e=39
+date=20260717
+e=43
 p=43

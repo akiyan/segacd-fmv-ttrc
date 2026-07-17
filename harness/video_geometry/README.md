@@ -38,3 +38,7 @@ resulting top/bottom border is only 11 lines.  The former 522x400 centred
 crop remains available with `--fit crop`, but it must not be used when the
 side edges contain picture content.  The same plan is printed as JSON by the
 CLI and can be used by standalone ffmpeg harnesses.
+
+The helper also builds the optional RGB `endpoint_snap` source-preprocessing
+filter. It runs before both the denoised master path and the raw Source-panel
+path; its public settings are documented in `CONFIG.md`.

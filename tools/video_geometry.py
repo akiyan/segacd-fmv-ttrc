@@ -58,6 +58,18 @@ def parse_ratio(value: str | None) -> tuple[int, int]:
     return int(num), int(den)
 
 
+def endpoint_snap_filter(black_max: int = -1, white_min: int = 256) -> str:
+    """Build an RGB source filter that snaps only values near the endpoints."""
+    if black_max < 0 and white_min > 255:
+        return ""
+    if not 0 <= black_max <= 255 or not 0 <= white_min <= 255:
+        raise ValueError("endpoint snap limits must be within 0..255")
+    if black_max >= white_min:
+        raise ValueError("endpoint snap black_max must be below white_min")
+    expr = f"if(lte(val,{black_max}),0,if(gte(val,{white_min}),255,val))"
+    return f"format=rgb24,lutrgb=r='{expr}':g='{expr}':b='{expr}'"
+
+
 def probe_source(src: str) -> tuple[int, int, int, int]:
     """Return coded width/height and the source sample-aspect ratio."""
     out = subprocess.check_output(

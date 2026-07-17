@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Small regression checks for the H32/H40 source geometry helper."""
 
-from tools.video_geometry import geometry_plan, source_filter
+from tools.video_geometry import endpoint_snap_filter, geometry_plan, source_filter
 
 
 def main() -> None:
@@ -26,6 +26,17 @@ def main() -> None:
     assert "scale=640:404" in h40_vf and "pad=320:224" in h40_vf
     assert source_filter("H32", 256, 224, 576, 400, fit="crop").startswith(
         "setsar=1,crop=522:400:27:0")
+    assert endpoint_snap_filter() == ""
+    endpoint_vf = endpoint_snap_filter(2, 253)
+    assert endpoint_vf.startswith("format=rgb24,lutrgb=")
+    assert endpoint_vf.count(
+        "if(lte(val,2),0,if(gte(val,253),255,val))") == 3
+    try:
+        endpoint_snap_filter(253, 2)
+    except ValueError as exc:
+        assert "black_max must be below" in str(exc)
+    else:
+        raise AssertionError("unordered endpoint snap limits were accepted")
     print("video geometry checks OK")
 
 

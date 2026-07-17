@@ -6,6 +6,10 @@ fps = "30"
 duration = "219.213021"
 sar = "1:1"
 
+[source.preprocess.endpoint_snap]
+black_max = 2
+white_min = 253
+
 [video]
 mode = "H40"
 width = 320

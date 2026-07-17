@@ -60,9 +60,14 @@ ENV_MAP = {
     ("palette", "segment_gain_relative"): "CBRSIM_PAL_SEG_GAIN_REL",
     ("palette", "segment_gain_per_pixel"): "CBRSIM_PAL_SEG_GAIN_ABS",
 }
+PROFILE_ENV_DEFAULTS = {
+    "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX": "-1",
+    "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN": "256",
+}
 
 ALLOWED = {
-    "source": {key for section, key in ENV_MAP if section == "source"},
+    "source": ({key for section, key in ENV_MAP if section == "source"}
+               | {"preprocess"}),
     "video": {key for section, key in ENV_MAP if section == "video"},
     "audio": {key for section, key in ENV_MAP if section == "audio"},
     "output": {key for section, key in ENV_MAP if section == "output"},
@@ -174,6 +179,37 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         raise ValueError(f"{profile_path}: video width and height must be multiples of 8")
     if str(data["video"]["fit"]).lower() not in {"pad", "crop"}:
         raise ValueError(f"{profile_path}: video.fit must be 'pad' or 'crop'")
+    preprocess = data["source"].get("preprocess", {})
+    if not isinstance(preprocess, dict):
+        raise ValueError(f"{profile_path}: [source.preprocess] must be a table")
+    unknown_preprocess = set(preprocess) - {"endpoint_snap"}
+    if unknown_preprocess:
+        raise ValueError(
+            f"{profile_path}: unknown [source.preprocess] keys: "
+            f"{', '.join(sorted(unknown_preprocess))}")
+    if "endpoint_snap" in preprocess:
+        endpoint_snap = preprocess["endpoint_snap"]
+        if not isinstance(endpoint_snap, dict):
+            raise ValueError(
+                f"{profile_path}: [source.preprocess.endpoint_snap] must be a table")
+        unknown_snap = set(endpoint_snap) - {"black_max", "white_min"}
+        if unknown_snap:
+            raise ValueError(
+                f"{profile_path}: unknown [source.preprocess.endpoint_snap] keys: "
+                f"{', '.join(sorted(unknown_snap))}")
+        missing_snap = {"black_max", "white_min"} - set(endpoint_snap)
+        if missing_snap:
+            raise ValueError(
+                f"{profile_path}: missing [source.preprocess.endpoint_snap] keys: "
+                f"{', '.join(sorted(missing_snap))}")
+        black_max = int(endpoint_snap["black_max"])
+        white_min = int(endpoint_snap["white_min"])
+        if not 0 <= black_max <= 255 or not 0 <= white_min <= 255:
+            raise ValueError(
+                f"{profile_path}: endpoint snap limits must be within 0..255")
+        if black_max >= white_min:
+            raise ValueError(
+                f"{profile_path}: endpoint snap black_max must be below white_min")
     profile = EncodeProfile(profile_path, data, hashlib.sha256(raw).hexdigest())
     # Validate the filename while loading so every consumer agrees on paths.
     profile.artifact_stem
@@ -193,6 +229,21 @@ def apply_profile_env(
         value = _toml_scalar(values[key])
         env[name] = value
         applied[name] = value
+    for name, value in PROFILE_ENV_DEFAULTS.items():
+        if name not in applied:
+            env[name] = value
+            applied[name] = value
+    endpoint_snap = (profile.data["source"].get("preprocess", {})
+                     .get("endpoint_snap"))
+    if endpoint_snap is not None:
+        snap_env = {
+            "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX": endpoint_snap["black_max"],
+            "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN": endpoint_snap["white_min"],
+        }
+        for name, value in snap_env.items():
+            scalar = _toml_scalar(value)
+            env[name] = scalar
+            applied[name] = scalar
     env["CBRSIM_CONFIG"] = str(profile.path)
     applied["CBRSIM_CONFIG"] = str(profile.path)
     return applied
