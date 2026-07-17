@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p44 : Keep the 30fps cold-run MOVEM fast path from loading its own
+#        postincrement source register a4. The 68000 substituted the updated
+#        pointer for one 4-byte pattern row, producing a horizontal dash in the
+#        same row of every fresh 8x8 tile. A seven-register MOVEM plus one long
+#        copy preserves a4 and the exact 32 pattern bytes.
 #   e45 : Select area resampling as the final Bad Apple H40 source resize while
 #        retaining source endpoint snapping, no master denoise/blur, and normal
 #        ordered dithering.
@@ -320,4 +325,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260717
 e=45
-p=43
+p=44

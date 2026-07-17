@@ -1216,8 +1216,12 @@ ef_run:
 	add.w	d3, d4
 	subq.w	#1, d3
 ef_run_pattern:
-	movem.l	(a4)+, d0-d2/a2-a6		/* 32-byte PRG→Word-RAM copy */
-	movem.l	d0-d2/a2-a6, (a1)
+	/* Do not include postincrement base a4 in the MOVEM register list.  On
+	   68000 its updated pointer value replaces one loaded long, turning the
+	   same row of every 8x8 pattern into a horizontal dash. */
+	movem.l	(a4)+, d0-d2/a2-a3/a5-a6	/* first 28 bytes */
+	movem.l	d0-d2/a2-a3/a5-a6, (a1)
+	move.l	(a4)+, 28(a1)			/* final 4 bytes without clobbering a4 */
 	lea	32(a1), a1
 	subq.w	#1, d6
 	bne	1f
