@@ -816,6 +816,18 @@ def quant_pool_start_method(gpu_enabled):
     return "spawn" if gpu_enabled else "fork"
 
 
+def default_png_workers(version_info):
+    """Return the safe default PNG writer count for this CPython version."""
+    return 1 if tuple(version_info[:2]) >= (3, 14) else 6
+
+
+def png_workers():
+    env = os.environ.get("CBRSIM_PNG_WORKERS")
+    if env:
+        return max(1, int(env))
+    return default_png_workers(sys.version_info)
+
+
 def precompute_quant(frames, seg_pals, frame_seg):
     """各フレームの (detail, assign, plain_idx, plain_rgb) を並列に前計算して返す。"""
     n = len(frames)
@@ -1081,11 +1093,16 @@ def main():
     _t = _mark("量子化", _t)
 
     _t_render = 0.0        # ループ内訳: 描画+PNG保存に費やした時間(残りがcommit/探索)
-    # PNG保存(3枚/コマ)を裏スレッドへ。PILの圧縮はGILを解放するので実並列=次コマのcommitと重なる。
+    # PNG保存(3枚/コマ)。CPython <=3.13は裏スレッドで圧縮を重ねられるが、3.14は
+    # Pillow/NumPy保存中にinterpreter自体がsegfaultした実績があるため既定同期保存。
     from concurrent.futures import ThreadPoolExecutor
     import collections as _collections
-    _png_pool = None if NO_PANELS else ThreadPoolExecutor(max_workers=6)
+    _png_workers = png_workers()
+    _png_pool = (ThreadPoolExecutor(max_workers=_png_workers)
+                 if not NO_PANELS and _png_workers > 1 else None)
     _png_futs = _collections.deque()
+    if not NO_PANELS:
+        print(f"PNG writers: {_png_workers} ({'async' if _png_pool else 'synchronous'})", flush=True)
 
     def _write_png(arr, path):
         """Write one complete, decodable PNG before replacing the old frame."""
@@ -1099,11 +1116,14 @@ def main():
             temp.unlink(missing_ok=True)
 
     def _save_png(arr, path):
-        if len(_png_futs) >= 96:          # 背圧: 生成が速すぎてもメモリ膨張を防ぐ
-            _png_futs.popleft().result()
         # cells_to_image can return a view into live frame state.  Freeze it
         # before the worker starts so the next frame cannot mutate its buffer.
         frozen = np.ascontiguousarray(arr).copy()
+        if _png_pool is None:
+            _write_png(frozen, path)
+            return
+        if len(_png_futs) >= 96:          # 背圧: 生成が速すぎてもメモリ膨張を防ぐ
+            _png_futs.popleft().result()
         _png_futs.append(_png_pool.submit(_write_png, frozen, path))
 
     for i in range(n):
