@@ -152,6 +152,11 @@ successful audio plus preview verification without any offline option.
 - A Replay is tied to its disc, core binary, core options, and harness setup.
   Regenerate it after any of those change. A Replay must extend beyond the
   fixed run; reaching EOF is an error.
+- Automatic Replay creation sends a short burst of START presses on wall-clock
+  intervals. A newly generated Replay can therefore choose a slightly different
+  emulator input frame on another host/run. Once saved, the Replay fixes those
+  input frames exactly; all equality and repeatability tests must reuse that
+  same file.
 - Matroska container bytes may differ because of muxer metadata even when every
   decoded frame, PCM sample, and packet timestamp is equal. Use the comparator,
   not a whole-file checksum, as the content gate.

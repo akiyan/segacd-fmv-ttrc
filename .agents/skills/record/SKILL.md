@@ -117,11 +117,11 @@ OUTDIR="$PWD/videos" tools/record_movie.sh \
   --out videos/STEM_offline_preview.mp4
 ```
 
-With no `--input-replay`, the high-level harness first records deterministic input under
+With no `--input-replay`, the high-level harness first records an input Replay under
 `tmp/PROFILE/record/`, makes it 120 emulator frames longer than the main fixed-frame run,
-and prints its path as `REPLAY=...`. The recording retains the Mega-CD startup, CD player,
-START transition, full movie, DEBUG HUD, and tail. Replay EOF before the frame limit is a
-hard failure.
+and prints its path as `REPLAY=...`. Playback of that saved Replay fixes the captured input
+frames. The recording retains the Mega-CD startup, CD player, START transition, full movie,
+DEBUG HUD, and tail. Replay EOF before the frame limit is a hard failure.
 
 Qualify an offline result against a realtime FFV1/FLAC run of the same Replay. Do not use
 the Replay-generation run as the baseline: Replay initial-state handling can change its
