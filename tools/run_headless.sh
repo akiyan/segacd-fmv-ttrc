@@ -150,6 +150,14 @@ if [ "$OFFLINE_RECORD" -eq 1 ]; then
     echo "--record-offline and --record-realtime are mutually exclusive" >&2
     exit 2
   }
+  [ -z "$RECORD_CONFIG" ] || {
+    echo "--record-offline does not accept --recordconfig; use its fixed FFV1/FLAC preset" >&2
+    exit 2
+  }
+  if [ -n "$RECORD_PRESET" ] && [ "$RECORD_PRESET" != "ffv1-flac" ]; then
+    echo "--record-offline only supports --record-preset ffv1-flac" >&2
+    exit 2
+  fi
   [ -n "$MAX_FRAMES" ] || {
     echo "--record-offline requires --max-frames N" >&2
     exit 2
@@ -173,10 +181,10 @@ fi
 if [ "$OFFLINE_RECORD" -eq 1 ]; then
   [ -z "$RECORD_PRESET" ] && [ -z "$RECORD_CONFIG" ] && RECORD_PRESET="ffv1-flac"
 fi
-# Normal recording uses SDL2 dummy audio as its realtime clock. Offline mode
-# leaves the output driver at null: core PCM still reaches the recorder, while
-# no host audio thread can pace or reshape the emulation loop.
-if [ "$RECORD" -eq 1 ] && [ "$OFFLINE_RECORD" -eq 0 ]; then
+# Both recording modes use SDL2's dummy sink so RetroArch initializes its audio
+# path normally. Realtime mode is paced by audio_sync below; offline mode keeps
+# the same sink but disables audio sync and rate control, so it remains uncapped.
+if [ "$RECORD" -eq 1 ]; then
   [ "$AUDIO_DRIVER" = "null" ] && AUDIO_DRIVER="sdl2"
   [ -z "$SDL_AUDIO_DRIVER" ] && SDL_AUDIO_DRIVER="dummy"
 fi
@@ -436,6 +444,12 @@ if [ -n "$MAX_FRAMES" ]; then
     echo "RetroArch log does not show a normal runtime/core shutdown" >&2
     exit 1
   fi
+fi
+if [ -n "$PLAY_REPLAY" ] && [ -n "$MAX_FRAMES" ] && \
+   grep -q '\[Replay\].*EOF' "$OUTDIR/retroarch_${TAG}.log"; then
+  echo "input replay reached EOF before the fixed-frame run ended: $PLAY_REPLAY" >&2
+  echo "record a replay longer than --max-frames (the high-level harness adds 120 frames)" >&2
+  exit 1
 fi
 if [ -n "$RECORD_REPLAY" ] && [ ! -s "$RECORD_REPLAY" ]; then
   echo "input replay was not produced: $RECORD_REPLAY" >&2
