@@ -547,15 +547,19 @@ def mux():
 
 
 if __name__ == "__main__":
-    from multiprocessing import Pool
+    from multiprocessing import get_context
     os.makedirs(FRAMES_DIR, exist_ok=True)
     rng = None
     if len(sys.argv) == 3:                     # 範囲指定(検証用): PNGのみ, mp4化しない
         rng = list(range(int(sys.argv[1]), int(sys.argv[2])))
     frames = rng if rng is not None else list(range(NF))
     print(f"render {len(frames)} frames @ {W}x{H} ({TCOLS}x{TROWS}) fps={FPS} -> {FRAMES_DIR}", flush=True)
-    nw = max(1, (os.cpu_count() or 2) - 2)
-    with Pool(nw) as p:
+    nw = min(max(1, len(frames)), max(1, (os.cpu_count() or 2) - 2))
+    # Python 3.14 changed POSIX's default from fork to forkserver.  This renderer
+    # deliberately loads its large read-only frame/stat tables before starting
+    # workers; Linux fork shares those pages and is the proven project path.
+    mp = get_context("fork") if sys.platform.startswith("linux") else get_context()
+    with mp.Pool(nw) as p:
         for k, _ in enumerate(p.imap_unordered(render, frames, chunksize=8)):
             if k % 300 == 0:
                 print(f"  {k}/{len(frames)}", flush=True)

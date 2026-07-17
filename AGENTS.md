@@ -381,3 +381,14 @@ evidence alone.
   healthy; the missing nodes seen inside the sandbox are an isolation artifact.
 - Reboot only when the outside-sandbox checks also fail and host kernel logs or
   device state support it.
+
+### Analysis renderer multiprocessing in the Codex sandbox
+
+`tools/render_analysis.py` creates a multiprocessing pool. The normal Codex
+workspace sandbox can reject the pool's local IPC socket with
+`PermissionError: Operation not permitted` even though rendering is healthy.
+Run real-frame and full analysis renders outside the sandbox; do not replace a
+failed pool render with a single-process result and call the multiprocessing
+path verified. On Linux the renderer explicitly uses the proven `fork` context
+because Python 3.14's new `forkserver` default can reset its worker connection
+after the large read-only analysis tables have loaded.
