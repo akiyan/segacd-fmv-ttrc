@@ -626,8 +626,8 @@ bf_bdone:
 	   (パレット区間切替の瞬間に実機側だけ明るいゴミタイルが出る実バグ)。 */
 bf_dma:
 	/* Pass2: 表を順に Word-RAM 直DMA(src→VRAM dst)。VBLANK予算(d7)でランをまたいで分割。
-	   Word-RAM源DMAは先頭1ワードが化ける(実測/Sega文書)ため、チャンク毎に
-	   先頭1ワードをCPU書き→残り(chunk-1)語を src+2→dst+2 でDMA。 */
+	   Word-RAM源DMAは先頭1ワードが化ける(実測/Sega文書)ため、src+2/full lengthを
+	   dstへDMAした後、チャンク先頭の1ワードをCPUで上書き修復する。 */
 	move.w	n_runs, d4
 	beq	bf_flip
 	lea	RUN_TABLE, a2
@@ -652,7 +652,7 @@ bf_chunk:
 	bls	2f
 	move.w	d7, d6
 2:
-	bsr	dma_chunk_wr			/* d6語を a3(Word-RAM)→d3 へ(先頭CPU書き+DMA, 完了待ち) */
+	bsr	dma_chunk_wr			/* d6語を a3(Word-RAM)→d3 へ(DMA+先頭CPU修復, 完了待ち) */
 	sub.w	d6, d7				/* 予算 -= chunk */
 	sub.w	d6, d1				/* ラン残 -= chunk */
 	add.w	d6, d6				/* chunk*2 = バイト */
@@ -734,9 +734,8 @@ do_flip:
 	rts
 
 /* d6語を Word-RAM(a3) → VRAM(d3) へDMA。完了待ち。trashes d0,d2
-   Word-RAM源はフェッチが1ワード遅延する(最初のフェッチはsrc-2を返す)ため、
-   **源アドレスに+2して全長をそのまま転送**すると全ワードが正しく届く
-   (dst側は据置・CPU書き不要)。 */
+   Word-RAM源はフェッチが1ワード遅延するため、src+2/full lengthを通常dstへDMAし、
+   DMAが書かないdst先頭をCPUでa3の先頭ワードから修復する。 */
 dma_chunk_wr:
 	move.w	#0x8F02, (VDP_CTRL).l		/* autoinc=2 */
 	move.w	d6, d2				/* 長さ = chunk 語 */
