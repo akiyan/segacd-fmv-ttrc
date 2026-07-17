@@ -42,6 +42,7 @@ MODES = {
     "H32": ModeGeometry("H32", 8, 7, 256, 224),
     "H40": ModeGeometry("H40", 32, 35, 320, 224),
 }
+RESIZE_FILTERS = {"area", "bicubic", "bilinear", "lanczos", "neighbor"}
 
 
 def mode_geometry(mode: str) -> ModeGeometry:
@@ -141,8 +142,14 @@ def geometry_plan(mode: str, width: int, height: int, src_w: int, src_h: int,
 def source_filter(mode: str, width: int, height: int, src_w: int, src_h: int,
                   *, src_sar_num: int = 1, src_sar_den: int = 1,
                   fit: str = "pad",
-                  denoise: bool = True) -> str:
+                  denoise: bool = True,
+                  resize_filter: str = "lanczos") -> str:
     """Build the canonical ffmpeg filter, accounting for source SAR."""
+    resize_filter = resize_filter.lower()
+    if resize_filter not in RESIZE_FILTERS:
+        raise ValueError(
+            f"unsupported resize filter {resize_filter!r}; "
+            f"choose {', '.join(sorted(RESIZE_FILTERS))}")
     p = geometry_plan(mode, width, height, src_w, src_h,
                       src_sar_num, src_sar_den, fit)
     cw, ch, cx, cy = p["crop"]
@@ -159,9 +166,9 @@ def source_filter(mode: str, width: int, height: int, src_w: int, src_h: int,
     if denoise:
         # Keep the source's displayed shape during the denoise pass. Scaling
         # to the MD raster here would apply the HAR twice.
-        vf += [f"scale={iw * 2}:{ih * 2}:flags=lanczos",
+        vf += [f"scale={iw * 2}:{ih * 2}:flags={resize_filter}",
                "hqdn3d=6:6:8:8", "gblur=sigma=1.6"]
-    vf.append(f"scale={iw}:{ih}:flags=lanczos")
+    vf.append(f"scale={iw}:{ih}:flags={resize_filter}")
     if fit == "pad":
         vf.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
     return ",".join(vf)
@@ -169,11 +176,13 @@ def source_filter(mode: str, width: int, height: int, src_w: int, src_h: int,
 
 def raw_filter(mode: str, width: int, height: int, src_w: int, src_h: int,
                *, src_sar_num: int = 1, src_sar_den: int = 1,
-               fit: str = "pad") -> str:
+               fit: str = "pad",
+               resize_filter: str = "lanczos") -> str:
     return source_filter(mode, width, height, src_w, src_h,
                          src_sar_num=src_sar_num, src_sar_den=src_sar_den,
                          fit=fit,
-                         denoise=False)
+                         denoise=False,
+                         resize_filter=resize_filter)
 
 
 def _main() -> None:
@@ -183,6 +192,8 @@ def _main() -> None:
     ap.add_argument("--width", type=int)
     ap.add_argument("--height", type=int)
     ap.add_argument("--fit", choices=("pad", "crop"), default="pad")
+    ap.add_argument("--resize-filter", choices=sorted(RESIZE_FILTERS), default="lanczos")
+    ap.add_argument("--no-master-denoise", action="store_true")
     ap.add_argument("--source-sar", help="override input SAR, e.g. 25:27 for a 576x400 file intended as 4:3")
     args = ap.parse_args()
     g = mode_geometry(args.mode)
@@ -194,10 +205,13 @@ def _main() -> None:
     p = geometry_plan(args.mode, w, h, sw, sh, sar_num, sar_den, args.fit)
     p["master_vf"] = source_filter(args.mode, w, h, sw, sh,
                                     src_sar_num=sar_num, src_sar_den=sar_den,
-                                    fit=args.fit)
+                                    fit=args.fit,
+                                    denoise=not args.no_master_denoise,
+                                    resize_filter=args.resize_filter)
     p["raw_vf"] = raw_filter(args.mode, w, h, sw, sh,
                               src_sar_num=sar_num, src_sar_den=sar_den,
-                              fit=args.fit)
+                              fit=args.fit,
+                              resize_filter=args.resize_filter)
     print(json.dumps(p, indent=2, ensure_ascii=False))
 
 

@@ -26,6 +26,14 @@ def main() -> None:
     assert "scale=640:404" in h40_vf and "pad=320:224" in h40_vf
     assert source_filter("H32", 256, 224, 576, 400, fit="crop").startswith(
         "setsar=1,crop=522:400:27:0")
+    direct_vf = source_filter(
+        "H40", 320, 224, 576, 400, denoise=False,
+        resize_filter="lanczos")
+    assert "hqdn3d" not in direct_vf and "gblur" not in direct_vf
+    assert direct_vf.count("flags=lanczos") == 1
+    assert "flags=area" in source_filter(
+        "H40", 320, 224, 576, 400, denoise=False,
+        resize_filter="area")
     assert endpoint_snap_filter() == ""
     endpoint_vf = endpoint_snap_filter(2, 253)
     assert endpoint_vf.startswith("format=rgb24,lutrgb=")

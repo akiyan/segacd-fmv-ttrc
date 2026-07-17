@@ -15,13 +15,15 @@ mode = "H40"
 width = 320
 height = 224
 fit = "pad"
+resize_filter = "lanczos"
+master_denoise = false
 
 [audio]
 kind = "pcm13"
 
 [output]
 directory = "videos/BadApple_H40_320x224_pcm/tmp"
-reuse = true
+reuse = false
 emit_decisions = true
 
 [encoder]

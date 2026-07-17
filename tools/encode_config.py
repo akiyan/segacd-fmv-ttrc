@@ -36,6 +36,8 @@ ENV_MAP = {
     ("video", "width"): "CBRSIM_W",
     ("video", "height"): "CBRSIM_H",
     ("video", "fit"): "CBRSIM_GEOMETRY_FIT",
+    ("video", "resize_filter"): "CBRSIM_RESIZE_FILTER",
+    ("video", "master_denoise"): "CBRSIM_MASTER_DENOISE",
     ("video", "master_filter"): "CBRSIM_MASTER_VF",
     ("video", "raw_filter"): "CBRSIM_RAW_VF",
     ("audio", "kind"): "CBRSIM_AUDIO",
@@ -63,6 +65,8 @@ ENV_MAP = {
 PROFILE_ENV_DEFAULTS = {
     "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX": "-1",
     "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN": "256",
+    "CBRSIM_RESIZE_FILTER": "lanczos",
+    "CBRSIM_MASTER_DENOISE": "1",
 }
 
 ALLOWED = {
@@ -179,6 +183,11 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         raise ValueError(f"{profile_path}: video width and height must be multiples of 8")
     if str(data["video"]["fit"]).lower() not in {"pad", "crop"}:
         raise ValueError(f"{profile_path}: video.fit must be 'pad' or 'crop'")
+    resize_filter = str(data["video"].get("resize_filter", "lanczos")).lower()
+    if resize_filter not in {"area", "bicubic", "bilinear", "lanczos", "neighbor"}:
+        raise ValueError(
+            f"{profile_path}: video.resize_filter must be area, bicubic, "
+            "bilinear, lanczos, or neighbor")
     preprocess = data["source"].get("preprocess", {})
     if not isinstance(preprocess, dict):
         raise ValueError(f"{profile_path}: [source.preprocess] must be a table")

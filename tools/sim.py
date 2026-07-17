@@ -70,6 +70,8 @@ MODE = os.environ.get("CBRSIM_MODE", "H32")
 W = int(os.environ.get("CBRSIM_W", "320" if MODE.upper() == "H40" else "256"))
 H = int(os.environ.get("CBRSIM_H", "144"))
 GEOMETRY_FIT = os.environ.get("CBRSIM_GEOMETRY_FIT", "pad").lower()
+RESIZE_FILTER = os.environ.get("CBRSIM_RESIZE_FILTER", "lanczos").lower()
+MASTER_DENOISE = os.environ.get("CBRSIM_MASTER_DENOISE", "1") != "0"
 SOURCE_SAR_OVERRIDE = os.environ.get("CBRSIM_SOURCE_SAR")
 _MASTER_VF_OVERRIDE = os.environ.get("CBRSIM_MASTER_VF")
 _RAW_VF_OVERRIDE = os.environ.get("CBRSIM_RAW_VF")
@@ -863,11 +865,12 @@ def main():
         DEDITHER_VF = DEDITHER_VF or source_filter(
             MODE, W, H, src_w, src_h,
             src_sar_num=src_sar_num, src_sar_den=src_sar_den,
-            fit=GEOMETRY_FIT)
+            fit=GEOMETRY_FIT, denoise=MASTER_DENOISE,
+            resize_filter=RESIZE_FILTER)
         RAW_VF = RAW_VF or raw_filter(
             MODE, W, H, src_w, src_h,
             src_sar_num=src_sar_num, src_sar_den=src_sar_den,
-            fit=GEOMETRY_FIT)
+            fit=GEOMETRY_FIT, resize_filter=RESIZE_FILTER)
     if SOURCE_PREPROCESS_VF:
         DEDITHER_VF = f"{SOURCE_PREPROCESS_VF},{DEDITHER_VF}"
         RAW_VF = f"{SOURCE_PREPROCESS_VF},{RAW_VF}"
@@ -1615,6 +1618,8 @@ def main():
                 "mode": MODE.upper(), "width": int(W), "height": int(H),
                 "cols": int(TCOLS), "rows": int(TROWS), "cells": int(C_CELLS),
                 "tile": int(TILE), "fit": GEOMETRY_FIT,
+                "resize_filter": RESIZE_FILTER,
+                "master_denoise": bool(MASTER_DENOISE),
             },
             "timing": {
                 "content_fps": str(FPS_STR), "fps": float(FPS),

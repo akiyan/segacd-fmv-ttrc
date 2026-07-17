@@ -55,6 +55,8 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX"], "2")
         self.assertEqual(
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN"], "253")
+        self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "lanczos")
+        self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
 
     def test_profile_without_preprocess_clears_inherited_snap(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -67,6 +69,8 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX"], "-1")
         self.assertEqual(
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN"], "256")
+        self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "lanczos")
+        self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "1")
 
     def test_endpoint_snap_limits_must_be_ordered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,6 +89,14 @@ class EncodeProfileArtifactTests(unittest.TestCase):
                 "[video]",
                 "[source.preprocess.endpoint_snap]\nblack_max = 2\n\n[video]"))
             with self.assertRaisesRegex(ValueError, "missing.*white_min"):
+                load_profile(path)
+
+    def test_unknown_resize_filter_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "resize-filter.toml"
+            path.write_text(PROFILE.replace(
+                "fit = \"pad\"", "fit = \"pad\"\nresize_filter = \"magic\""))
+            with self.assertRaisesRegex(ValueError, "video.resize_filter"):
                 load_profile(path)
 
     def test_artifacts_follow_toml_filename(self) -> None:

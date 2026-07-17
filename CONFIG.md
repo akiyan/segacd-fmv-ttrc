@@ -210,7 +210,7 @@ and on the disc because those are TTRC format names read by the player.
 |---|---|---|
 | `[source]` | `path`, `fps`, `duration`, optional `sar` | Input identity and native timing. `sar` repairs missing/wrong source metadata; it does not crop. |
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
-| `[video]` | `mode`, `width`, `height`, `fit`, optional `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `fit="pad"` preserves every source pixel; use `crop` only for confirmed black margins. H32 uses PAR 8:7 and H40 uses 32:35. |
+| `[video]` | `mode`, `width`, `height`, `fit`, optional `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `fit="pad"` preserves every source pixel; use `crop` only for confirmed black margins. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
 | `[audio]` | `kind` | `pcm13` is the shipping RF5C164 path. |
 | `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. Normal hardware work sets `emit_decisions=true`. |
 | `[encoder]` | `gpu`, `rate_kib`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `coa` | Common codec controls. GPU is the default; CPU fallback remains automatic. |

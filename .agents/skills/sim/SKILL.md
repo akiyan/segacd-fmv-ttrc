@@ -110,6 +110,41 @@ Apple H32/H40 profiles are complete examples. The profile must name the source,
 native fps, exact duration, full mode raster, HAR-aware `fit`, PCM audio,
 output directory, encoder/palette settings, and DEBUG pack settings.
 
+Before every `/sim`, perform these steps in this exact order:
+
+1. **Show the complete TOML profile to the user in commentary.** Print every
+   section and value verbatim in one code block before starting the sim. Do not
+   summarize or omit settings. This is the user's preflight record of the run.
+2. Validate the profile with `tools/encode_config.py` and identify its exact
+   `[output].directory`.
+3. Check the shared-machine exclusion rule below.
+4. **Delete all existing contents inside that one simulation output directory**
+   before running. This includes cached `master/`, `raw/`, analysis frames,
+   stats, audio, reports, and decision logs. Never reuse them for `/sim`, even
+   when resolution and fps are unchanged. Constrain deletion to the profile's
+   declared `videos/<stem>/tmp` directory; refuse an empty, root, repository,
+   `tmp/`, or `out/` path. Do not delete packed artifacts under `out/`.
+5. Run the sim only after the cleanup finishes and report that a clean run is
+   starting.
+
+One safe way to resolve and guard the cleanup target is:
+
+```sh
+CONFIG=configs/<source>-<mode>.toml
+SIM_OUT=$(python3 -c 'import sys; sys.path.insert(0,"tools"); from encode_config import load_profile; print(load_profile(sys.argv[1]).output_dir)' "$CONFIG")
+case "$SIM_OUT" in
+  videos/*/tmp) ;;
+  *) echo "refusing unsafe sim cleanup path: $SIM_OUT" >&2; exit 1 ;;
+esac
+mkdir -p "$SIM_OUT"
+find "$SIM_OUT" -mindepth 1 -delete
+```
+
+The profile should normally set `output.reuse = false` for a `/sim` analysis
+run. The directory cleanup remains mandatory even with that setting, so a
+parsing error or stale environment cannot silently reuse another comparison's
+inputs.
+
 ```sh
 PY=~/.config/cbrsim-gpu/venv/bin/python
 [ -x "$PY" ] || PY=python3
@@ -226,8 +261,8 @@ ps -eo pid,etimes,args | grep -E "sim\\.py|render_analysis\\.py" | grep -v grep
 - The old `make_base`, `render_statusline`, `render_palstate`, and
   `compose_*.sh` path is not needed for this new pipeline.
 - Use `tools/sim.py` unchanged as the simulation core.
-- If W/H are unchanged, `CBRSIM_REUSE=1` can skip master extraction. Quantizing
-  still reruns.
+- Never use `CBRSIM_REUSE=1` for `/sim`. Clean the profile-specific simulation
+  output directory and re-extract master/raw/audio from the configured source.
 - `render_analysis.py` is heavy for 3000-frame PIL rendering. It uses `nproc-2`
   parallelism. For long videos, run in the background or delegate to a forked
   context to avoid filling the main conversation context.

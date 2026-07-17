@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e44 : Add profile-level resize_filter and master_denoise controls. Bad Apple
+#        H40 disables the master-only upscale/denoise/blur pass and uses one
+#        direct Lanczos resize after source endpoint snapping.
 #   e43 : Remove the experimental encoder-side endpoint-fill path. Add optional
 #        [source.preprocess.endpoint_snap] RGB888 preprocessing before both the
 #        master and analysis Source paths; Bad Apple H40 snaps 0-2 to 0 and
@@ -313,5 +316,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260717
-e=43
+e=44
 p=43

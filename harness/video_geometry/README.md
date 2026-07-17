@@ -42,3 +42,5 @@ CLI and can be used by standalone ffmpeg harnesses.
 The helper also builds the optional RGB `endpoint_snap` source-preprocessing
 filter. It runs before both the denoised master path and the raw Source-panel
 path; its public settings are documented in `CONFIG.md`.
+The same TOML video section can select the resize filter and disable the
+master-only denoise/blur pass for already-clean sources such as Bad Apple.
