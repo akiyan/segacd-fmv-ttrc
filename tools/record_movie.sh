@@ -24,6 +24,10 @@
 #   --tag NAME     work prefix under the capture dir (default: rec_<disc basename>)
 #   --display :N   X display for Xvfb (default :236)
 #   --preset NAME  ffv1-flac (pixel-lossless default) or realtime (4:2:0 check)
+#   --offline-record
+#                  record a fixed input replay uncapped with FFV1/FLAC
+#   --input-replay FILE
+#                  reuse an input replay for an exact-frame offline or realtime run
 #   --record-size WxH
 #                  native recording surface (H32: 256x224, H40: 320x224)
 #   --audio-jump-threshold N
@@ -55,6 +59,8 @@ BUILD=1
 BUILD_DEBUG=1
 AUDIO_CHECK_ARGS=()
 AUTO_AUDIO_TRIM=0
+OFFLINE_RECORD=0
+INPUT_REPLAY=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -66,6 +72,8 @@ while [ $# -gt 0 ]; do
     --tag) TAG="$2"; shift 2;;
     --display) DISPLAY_NUM="$2"; shift 2;;
     --preset) PRESET="$2"; shift 2;;
+    --offline-record) OFFLINE_RECORD=1; shift;;
+    --input-replay) INPUT_REPLAY="$2"; shift 2;;
     --record-size) RECORD_SIZE="$2"; shift 2;;
     --audio-jump-threshold) AUDIO_CHECK_ARGS+=(--audio-jump-threshold "$2"); shift 2;;
     --audio-min-rms) AUDIO_CHECK_ARGS+=(--audio-min-rms "$2"); shift 2;;
@@ -96,6 +104,22 @@ if [ -z "$DISC" ]; then
   echo "provide --config TOML, or --disc CUE together with --no-build" >&2
   exit 2
 fi
+if [[ ! "$REC_SECS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--seconds must be a positive integer: $REC_SECS" >&2
+  exit 2
+fi
+if [[ ! "$TRIM" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "--trim must be a non-negative integer: $TRIM" >&2
+  exit 2
+fi
+if [ "$OFFLINE_RECORD" -eq 1 ] && [ "$PRESET" != "ffv1-flac" ]; then
+  echo "--offline-record only supports --preset ffv1-flac" >&2
+  exit 2
+fi
+if [ -n "$INPUT_REPLAY" ] && [ ! -f "$INPUT_REPLAY" ]; then
+  echo "input replay not found: $INPUT_REPLAY" >&2
+  exit 1
+fi
 
 [ -z "$TAG" ] && TAG="rec_$(basename "${DISC%.*}")"
 [ -z "$OUT" ] && OUT="videos/${TAG}_preview.mp4"
@@ -122,11 +146,55 @@ INTERVAL=2
 CAPTURE_LEAD="$TRIM"
 [ "$AUTO_AUDIO_TRIM" -eq 1 ] && CAPTURE_LEAD=30
 SHOTS=$(( (CAPTURE_LEAD + REC_SECS + 10 + INTERVAL - 1) / INTERVAL ))
+REPLAY_FILE="$INPUT_REPLAY"
+MAX_FRAMES=""
+PIPELINE_WALL_START_NS=""
+if [ "$OFFLINE_RECORD" -eq 1 ] || [ -n "$INPUT_REPLAY" ]; then
+  RAW_EMULATED_SECONDS=$((CAPTURE_LEAD + REC_SECS + 10))
+  MAX_FRAMES=$((RAW_EMULATED_SECONDS * 60))
+  if [ "$RAW_EMULATED_SECONDS" -le 0 ] || [ "$MAX_FRAMES" -le 0 ]; then
+    echo "capture duration is outside the supported integer range" >&2
+    exit 2
+  fi
+  PIPELINE_WALL_START_NS="$(date +%s%N)"
+fi
+
+if [ "$OFFLINE_RECORD" -eq 1 ] && [ -z "$REPLAY_FILE" ]; then
+  DISC_STEM="$(basename "${DISC%.*}")"
+  REPLAY_DIR="$ROOT/tmp/$DISC_STEM/record"
+  REPLAY_FILE="$REPLAY_DIR/${TAG}_input.replay"
+  REPLAY_MAX_FRAMES=$((MAX_FRAMES + 120))
+  echo ">> generating input replay ($REPLAY_MAX_FRAMES frames) -> $REPLAY_FILE"
+  OUTDIR="$REPLAY_DIR" tools/run_headless.sh "$DISC" --tag "${TAG}_replay" \
+    --record-replay "$REPLAY_FILE" --max-frames "$REPLAY_MAX_FRAMES" \
+    --boot-wait 0.5 --presses 30 --press-gap 0.1 --display "$DISPLAY_NUM"
+  [ -s "$REPLAY_FILE" ] || { echo "input replay not produced: $REPLAY_FILE" >&2; exit 1; }
+fi
 
 echo ">> recording ${REC_SECS}s of $DISC (preset $PRESET) ..."
 RECORD_SIZE_ARGS=()
 [ -n "$RECORD_SIZE" ] && RECORD_SIZE_ARGS=(--record-size "$RECORD_SIZE")
-if [ "$PRESET" = "realtime" ]; then
+if [ "$OFFLINE_RECORD" -eq 1 ]; then
+  OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
+    --record-offline --max-frames "$MAX_FRAMES" --play-replay "$REPLAY_FILE" \
+    --display "$DISPLAY_NUM" \
+    "${RECORD_SIZE_ARGS[@]}" \
+    "${AUDIO_CHECK_ARGS[@]}"
+elif [ -n "$INPUT_REPLAY" ] && [ "$PRESET" = "realtime" ]; then
+  OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
+    --record-realtime \
+    --max-frames "$MAX_FRAMES" --play-replay "$REPLAY_FILE" \
+    --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
+    "${RECORD_SIZE_ARGS[@]}" \
+    "${AUDIO_CHECK_ARGS[@]}"
+elif [ -n "$INPUT_REPLAY" ]; then
+  OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
+    --record --record-preset "$PRESET" \
+    --max-frames "$MAX_FRAMES" --play-replay "$REPLAY_FILE" \
+    --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
+    "${RECORD_SIZE_ARGS[@]}" \
+    "${AUDIO_CHECK_ARGS[@]}"
+elif [ "$PRESET" = "realtime" ]; then
   OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record-realtime \
     --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
@@ -248,7 +316,15 @@ if [ "${#AUDIO_CHECK_ARGS[@]}" -eq 0 ] || [[ " ${AUDIO_CHECK_ARGS[*]} " != *" --
   echo "mp4 audio check: $OUT_JSON (jump_threshold=$THRESHOLD min_rms=$MIN_RMS)"
 fi
 
+if [ -n "$PIPELINE_WALL_START_NS" ]; then
+  PIPELINE_WALL_END_NS="$(date +%s%N)"
+  PIPELINE_WALL_SECONDS="$(awk -v start="$PIPELINE_WALL_START_NS" -v end="$PIPELINE_WALL_END_NS" \
+    'BEGIN { printf "%.3f", (end - start) / 1000000000 }')"
+fi
+
 rm -f "$RAW_MKV" "$CAPTURE_DIR/${TAG}.wav"
+[ -n "$REPLAY_FILE" ] && echo "REPLAY=$REPLAY_FILE"
+[ -n "$PIPELINE_WALL_START_NS" ] && echo "PIPELINE_WALL_SECONDS=$PIPELINE_WALL_SECONDS"
 echo "$BOUNDED_KEY=$BOUNDED_MKV"
 echo "OUT=$OUT"
 for artifact in "$BOUNDED_MKV" "$OUT"; do
