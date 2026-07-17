@@ -12,6 +12,38 @@ back toward the old game-specific port unless the user explicitly asks for it.
 - The priority is that the explanation is understandable, not that it uses the
   most formal vocabulary.
 
+## Terminology and Intent Checks
+
+This project has several similarly named objects whose substitution changes the
+entire design. Be deliberately strict about checking the user's terminology
+before beginning broad investigation, benchmarking, or implementation.
+
+- If a statement combines terms in a way that looks inconsistent with the
+  current format, hardware ownership, or the preceding discussion, treat it as
+  a possible wording slip. Do not silently reinterpret it or investigate every
+  possible meaning.
+- First restate the intended **object, operation, and memory domain** in one
+  short question. For example: "Do you mean keeping the routing table, rather
+  than the pattern payload ring, resident in Word RAM?"
+- This confirmation is required whenever the ambiguity would change the file
+  format, memory map, bank ownership, buffering model, cycle analysis, or work
+  branch. Ask even when one interpretation seems likely.
+- After the user corrects a term, discard conclusions based on the mistaken
+  interpretation and re-evaluate from the corrected object.
+
+Keep these distinctions explicit:
+
+- **routing table**: per-delivery-slot sector counts used to sort BODY sectors;
+  it is not pattern data.
+- **payload RING**: the PRG-RAM FIFO holding prefetched 32-byte cold patterns.
+- **APPLY ring**: the PRG-RAM circular queue holding continuous control blocks.
+- **resident pattern**: currently a pattern retained in the VRAM tile pool. A
+  proposed Word-RAM pattern cache is a separate, second-level cache.
+- **tank**: the simulator/packer model of usable payload buffering, not another
+  physical player buffer.
+- **Word RAM output bank**: the 1M/1M frame handoff area exchanged between Sub
+  and Main CPUs; it is not automatically shared by both CPUs at once.
+
 ## Language Policy
 
 - Use English by default for repository files, documentation, code comments,
