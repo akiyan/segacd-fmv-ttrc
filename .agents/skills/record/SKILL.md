@@ -179,8 +179,8 @@ Check the raw MKV and reports before trusting a capture:
 2. For a normal run, confirm the harness timing report is near the requested wall-clock
    duration. For offline, confirm the exact requested packet/frame count and report the
    media-to-wall speed instead; faster-than-realtime is expected.
-3. Confirm normal core unload. Wall-clock runs should reach `Average monitor Hz`; natural
-   fixed-frame exits must show `Content ran for a total of` and `Unloading core`. Reject a
+3. Confirm exit zero plus `Content ran for a total of` and `Unloading core`. Some RetroArch
+   builds also print `Average monitor Hz`, but 1.22.2 does not do so consistently. Reject a
    log ending at `SET_GEOMETRY`, a nonzero exit, Replay EOF, or an unreadable trailer.
 4. Confirm the audio JSON exists, has nonzero RMS when required, and reports zero clip/jump
    candidates at the selected thresholds.

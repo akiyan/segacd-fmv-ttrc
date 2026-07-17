@@ -238,12 +238,13 @@ Emulator pitfalls learned the hard way:
   diagnostic frames, or an input Replay plus `--max-frames` for an exact
   recording window.
 - A crashed RetroArch commonly leaves the log ending at `SET_GEOMETRY`.
-  Wall-clock runs should reach the usual `Average monitor Hz` shutdown lines.
-  A natural `--max-frames` exit is healthy when RetroArch returns zero, the log
-  contains `Content ran for a total of` and `Unloading core`, the Matroska
-  trailer is readable, and packet plus decoded-frame counts equal the requested
-  limit. Check the appropriate ending before trusting black/garbage screenshots
-  (exit code 139 usually means runaway reads past mapped regions).
+  A healthy run returns zero and reaches `Content ran for a total of` plus
+  `Unloading core`; some RetroArch builds additionally print `Average monitor
+  Hz`, but 1.22.2 does not do so consistently. A natural `--max-frames` exit
+  also requires a readable Matroska trailer and packet plus decoded-frame counts
+  equal to the requested limit. Check the appropriate ending before trusting
+  black/garbage screenshots (exit code 139 usually means runaway reads past
+  mapped regions).
 - Every consumer of a shared data format must be updated together: a
   diagnostic path that still writes the old layout (e.g. `dump_ring_head`)
   will corrupt a new-format reader and can crash the whole emulator.
