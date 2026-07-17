@@ -366,8 +366,8 @@ echo $! > "$RA_PID"
 
 if [ -z "$PLAY_REPLAY" ]; then
   sleep "$BOOT_WAIT"
-  W="$(retroarch_window)"
   for _ in $(seq 1 "$PRESSES"); do
+    W="$(retroarch_window)"
     [ -n "$W" ] && DISPLAY="$DISPLAY_NUM" xdotool key --window "$W" Return || true
     sleep "$PRESS_GAP"
   done
