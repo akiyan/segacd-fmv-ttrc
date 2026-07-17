@@ -4,7 +4,6 @@
 import argparse
 import hashlib
 import json
-import math
 import struct
 import subprocess
 import wave
@@ -65,14 +64,13 @@ def channel_samples(samples, channel, channels):
 def sample_stats(samples):
     if not samples:
         return {"peak_abs": 0, "rms": 0}
-    peak_abs = 0
-    sum_squares = 0
-    for sample in samples:
-        magnitude = abs(sample)
-        if magnitude > peak_abs:
-            peak_abs = magnitude
-        sum_squares += sample * sample
-    rms = math.sqrt(sum_squares / len(samples))
+    # Keep this pass out of a long Python scalar loop.  Python 3.14.4 has
+    # occasionally substituted an unrelated outer local for the `abs` builtin
+    # here, while NumPy also completes the 15+ million-sample capture much
+    # faster.  int64 keeps the square and sum exact for signed 16-bit audio.
+    values = np.asarray(samples, dtype=np.int64)
+    peak_abs = int(np.abs(values).max())
+    rms = float(np.sqrt(np.mean(values * values, dtype=np.float64)))
     return {"peak_abs": peak_abs, "rms": rms}
 
 
