@@ -232,13 +232,18 @@ innocent in order, with byte-level or frame-level evidence:
 
 Emulator pitfalls learned the hard way:
 
-- Headless RetroArch with audio disabled runs 4-5x realtime. Never map
-  screenshot wall-clock time to frame numbers; a shot at "12 seconds" can be
-  far past the section you meant to check. Use `ISO_HOLD_N` for exact frames.
-- A crashed RetroArch leaves the log ending at `SET_GEOMETRY`; a healthy run
-  ends with `Average monitor Hz` shutdown lines. Check this before trusting
-  black/garbage screenshots (exit code 139 = the game code crashed the
-  emulator, usually via runaway reads past mapped regions).
+- Uncapped headless RetroArch can run many times faster than realtime. Never
+  map screenshot wall-clock time to frame numbers; a shot at "12 seconds" can
+  be far past the section you meant to check. Use `ISO_HOLD_N` for exact
+  diagnostic frames, or an input Replay plus `--max-frames` for an exact
+  recording window.
+- A crashed RetroArch commonly leaves the log ending at `SET_GEOMETRY`.
+  Wall-clock runs should reach the usual `Average monitor Hz` shutdown lines.
+  A natural `--max-frames` exit is healthy when RetroArch returns zero, the log
+  contains `Content ran for a total of` and `Unloading core`, the Matroska
+  trailer is readable, and packet plus decoded-frame counts equal the requested
+  limit. Check the appropriate ending before trusting black/garbage screenshots
+  (exit code 139 usually means runaway reads past mapped regions).
 - Every consumer of a shared data format must be updated together: a
   diagnostic path that still writes the old layout (e.g. `dump_ring_head`)
   will corrupt a new-format reader and can crash the whole emulator.
@@ -330,6 +335,22 @@ tools/record_movie.sh --config configs/PROFILE.toml \
 - The high-level recorder defaults to FFV1/FLAC and writes its bounded
   pixel-lossless MKV under `videos/`. Explicit `--preset realtime` is a faster
   4:2:0 verification capture and must not be used as a `compilation` input.
+- Normal recording remains SDL-audio-paced. Use the explicit
+  `--offline-record` mode only for a fixed-Replay FFV1/FLAC capture. It keeps
+  the same DEBUG disc, Mega-CD startup, CD player, START transition, movie and
+  tail, but disables audio sync, rate control and video vsync so the fixed
+  emulator-frame run can proceed uncapped.
+- If `--offline-record` has no `--input-replay`, `record_movie.sh` first records
+  one under `tmp/PROFILE/record/`, 120 emulator frames longer than the main run.
+  A supplied Replay must also extend beyond `--max-frames`; Replay EOF is a
+  hard failure because RetroArch may otherwise repeat a cached end frame.
+  Replays belong to the exact disc, core and configuration that created them;
+  regenerate after any of those change.
+- Qualify an offline path with the same Replay played once in realtime
+  FFV1/FLAC and once offline. Run `tools/compare_recordings.py` on the two
+  bounded MKVs and require exact decoded-frame hashes, PCM SHA-256/sample count,
+  packet PTS/DTS/durations and stream metadata. Repeat the offline run and
+  compare it too. The Replay-generation run is not the realtime baseline.
 - The default keeps the Mega-CD startup. Use trimming only when the user
   explicitly asks for a movie-only clip.
 - Run one RetroArch/Xvfb recording at a time.

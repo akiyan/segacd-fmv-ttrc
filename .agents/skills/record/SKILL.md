@@ -48,7 +48,7 @@ Use `tools/record_movie.sh`, which owns the high-level recording workflow:
 tools/record_movie.sh [--config TOML | --disc CUE --no-build] [--out MP4] [--seconds N] \
   [--trim SEC | --auto-audio-trim] [--tag NAME] [--display :N] \
   [--preset realtime|ffv1-flac] [--record-size WxH] [--no-build] \
-  [--release-build]
+  [--release-build] [--offline-record] [--input-replay FILE]
 ```
 
 Defaults and rules:
@@ -77,6 +77,11 @@ Defaults and rules:
 - `ffv1-flac` is the pixel-lossless default and the only normal input to `compilation`.
   Explicit `realtime` uses H.264 with 4:2:0 chroma for a faster synchronized check, writes
   `_native.mkv` rather than `_lossless.mkv`, and must not feed an upload compilation.
+- `--offline-record` is an explicit fixed-Replay test path. It always uses FFV1/FLAC;
+  lossy presets and arbitrary low-level recorder configurations are rejected.
+- `--input-replay FILE` reuses an existing input Replay for an exact-frame paced or offline
+  run. Reuse it only with the disc, libretro core, core options, and harness configuration
+  that created it.
 
 Canonical full capture for later upload:
 
@@ -100,11 +105,62 @@ tools/record_movie.sh --config configs/PROFILE.toml \
   --out videos/rec_check_preview.mp4
 ```
 
+## Fast offline capture
+
+Use offline recording only when faster-than-realtime FFV1/FLAC output is requested or when
+qualifying the harness itself:
+
+```sh
+OUTDIR="$PWD/videos" tools/record_movie.sh \
+  --config configs/PROFILE.toml --seconds 180 --offline-record \
+  --tag STEM_offline --record-size 256x224 --display :269 \
+  --out videos/STEM_offline_preview.mp4
+```
+
+With no `--input-replay`, the high-level harness first records deterministic input under
+`tmp/PROFILE/record/`, makes it 120 emulator frames longer than the main fixed-frame run,
+and prints its path as `REPLAY=...`. The recording retains the Mega-CD startup, CD player,
+START transition, full movie, DEBUG HUD, and tail. Replay EOF before the frame limit is a
+hard failure.
+
+Qualify an offline result against a realtime FFV1/FLAC run of the same Replay. Do not use
+the Replay-generation run as the baseline: Replay initial-state handling can change its
+audio boundary by one stereo PCM sample.
+
+```sh
+REPLAY=tmp/PROFILE/record/STEM_offline_input.replay
+
+OUTDIR="$PWD/videos" tools/record_movie.sh \
+  --disc out/PROFILE.cue --no-build --seconds 180 --input-replay "$REPLAY" \
+  --tag STEM_realtime --record-size 256x224 --display :270 \
+  --out videos/STEM_realtime_preview.mp4
+
+OUTDIR="$PWD/videos" tools/record_movie.sh \
+  --disc out/PROFILE.cue --no-build --seconds 180 --offline-record \
+  --input-replay "$REPLAY" --tag STEM_offline_ab \
+  --record-size 256x224 --display :271 \
+  --out videos/STEM_offline_ab_preview.mp4
+
+python3 tools/compare_recordings.py \
+  videos/STEM_realtime_lossless.mkv videos/STEM_offline_ab_lossless.mkv \
+  --json videos/STEM_offline_ab_compare.json
+```
+
+Run the offline command a second time with another tag and require another passing exact
+comparison. The comparator checks every decoded video frame, every decoded PCM sample,
+packet PTS/DTS/durations, stream metadata, and total counts without trimming or alignment.
+
 ## What the harness guarantees
 
 `tools/run_headless.sh` records with RetroArch's FFmpeg recorder; Xvfb only supplies the
-headless display. Every recording uses the SDL audio clock and rejects a duration outside
-0.60x--1.50x of its requested wall-clock run.
+headless display. Both modes initialize RetroArch's audio path through the SDL dummy sink,
+so the core's PCM reaches the recorder without a physical output device.
+
+- Normal recording keeps audio sync and rate control enabled. It rejects a duration outside
+  0.60x--1.50x of its requested wall-clock run.
+- Explicit offline recording disables audio sync, rate control, and video vsync. It exits
+  naturally after `--max-frames`, rejects Replay EOF, and requires packet and decoded-frame
+  counts to equal the limit exactly.
 
 - `realtime` / `flac-fast`: x264 CRF 0 plus FLAC, but with 4:2:0 chroma, so the result is
   native-size and synchronized but not pixel-lossless.
@@ -120,15 +176,19 @@ Check the raw MKV and reports before trusting a capture:
 
 1. Use `ffprobe` to confirm video, audio, expected native raster, about 60000/1001 fps, and a
    valid duration.
-2. Confirm the harness timing report is near the requested wall-clock duration. Reject a
-   multi-times-faster capture.
-3. Confirm the RetroArch log ends with normal core unload and `Average monitor Hz` near 60;
-   reject a log ending at `SET_GEOMETRY`.
+2. For a normal run, confirm the harness timing report is near the requested wall-clock
+   duration. For offline, confirm the exact requested packet/frame count and report the
+   media-to-wall speed instead; faster-than-realtime is expected.
+3. Confirm normal core unload. Wall-clock runs should reach `Average monitor Hz`; natural
+   fixed-frame exits must show `Content ran for a total of` and `Unloading core`. Reject a
+   log ending at `SET_GEOMETRY`, a nonzero exit, Replay EOF, or an unreadable trailer.
 4. Confirm the audio JSON exists, has nonzero RMS when required, and reports zero clip/jump
    candidates at the selected thresholds.
 5. Inspect frames from the MKV and confirm that the Mega-CD startup appears first, playback
    begins later, the DEBUG Window HUD is visible, and the movie advances. Do not use the HUD
    to seek the movie start.
+6. For offline, require a passing same-Replay realtime comparison and a passing second
+   offline run through `tools/compare_recordings.py`.
 
 The JSON report is a mechanical gate, not a substitute for listening. Claim that no audible
 clicks exist only after listening to the final file.
@@ -199,4 +259,5 @@ complete, then remove only artifacts created by this session when space is neede
 
 Report the raw MKV path, preview MP4 path, duration, raster/fps, audio presence, audio JSON
 path and key RMS/peak/clip/jump values, whether startup was retained, and whether human
-listening was performed.
+listening was performed. For offline runs also report the Replay path, requested/max frame
+count, wall time and speed, exact-comparison JSON/pass state, and repeat-run result.
