@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e46 : Show analysis DMA in pattern tiles and record the exact packed
+#        cold-run count per frame. Add a Run fragmentation meter whose scale is
+#        the one-run-per-DMA-tile worst case and whose four digits cover H40.
 #   p45 : Reduce Main-CPU cold-run fixed cost. One- and two-tile runs write
 #        Word RAM directly to the VDP; longer DMA runs reuse their destination
 #        command for the required first-word repair. H40 DEBUG adds a low-cost
@@ -330,5 +333,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260717
-e=45
+e=46
 p=45

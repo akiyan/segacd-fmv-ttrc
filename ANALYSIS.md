@@ -26,7 +26,7 @@ automates: update layout -> update this file -> notify).
 +----------------------------------------------+   | CATEGORY TOTALS (whole clip)|
 +----------------------------------------------+   | +-------------------------+ |
 | STATUS BAR                                   |   | | AUDIO WAVEFORM          | |
-|  [Req] [Cold] [Band] [Tank] [Buff] [DMA]     |   | | (+/-2s, now = centre)   | |
+|  [Req] [Cold] [Band] [Tank] [Buff] [DMA] [Run]|  | | (+/-2s, now = centre)   | |
 |  Prev/Current/Next palette strip             |   | +-------------------------+ |
 |  3 stacked timelines (Req / Tank / transfer) |   +-----------------------------+
 +----------------------------------------------+
@@ -143,7 +143,7 @@ find *some* resident rather than leave a hole.
 3. Else find the best resident. If it passes `Near`(tier 0) or `Coa`(tier 1) and
    the budget allows the 2 B name -> `Near` / `Coa`.
 4. Else load the exact pattern (34 B), unless the per-frame **cold cap**
-   (`COLD_CAP_REALIZED`, `av_config.py`) is already reached: from fresh CD ->
+   (`cold_cap_for_fps`, `av_config.py`) is already reached: from fresh CD ->
    `Raw`, or from the tank -> `Buf`.
 5. Else (budget/tank/cold-cap exhausted) if the best resident improves on the
    current display (default improve mode; see Flbk above) -> `Flbk`
@@ -159,7 +159,7 @@ Miss-priority so it gets an accurate reload when budget allows.
 ## Status bar (bottom-left)
 
 Left to right: one wide **Req** meter, then **Cold**, **Band**, **Tank**,
-**Buff**, **DMA** meters (each bar is as wide as its own label). Below the
+**Buff**, **DMA**, **Run** meters (each bar is as wide as its own label). Below the
 meters is the palette strip; to the right are three stacked timelines.
 
 ### Req meter
@@ -171,10 +171,10 @@ yellow vertical **budget line** marking the per-frame update budget. Labels:
 ### Cold meter
 `Cold:NNN` = this frame's **new tile loads** (`Raw + Buf`, i.e. every 32-byte
 pattern that had to be delivered, whether fresh CD or tank). The bar stacks a
-Raw-coloured and a Buf-coloured segment; full-scale = `COLD_CAP_REALIZED`
-(`av_config.py`, the drop-safe per-frame cold ceiling, default 380; raise per
-source with `CBRSIM_COLD_CAP_REALIZED`). This visualises the value the
-hardware slip investigations were fought over.
+Raw-coloured and a Buf-coloured segment; full-scale = `cold_cap_for_fps`
+(`av_config.py`, the mode/fps-specific drop-safe per-frame cold ceiling; an
+explicit positive `CBRSIM_MAX_COLD` is reserved for special experiments).
+This visualises the value the hardware slip investigations were fought over.
 
 ### Band meter (effective CD usage) - KiB/sec
 `Band` is the **effective** bandwidth: how much of the constant CD read was put
@@ -208,10 +208,24 @@ filled. Label `Buff:-NNN / +NNN / +/-000`. Full-scale = `C - per-frame Raw
 budget` (the largest plausible one-frame swing).
 
 ### DMA meter
-`DMA:NNNNN` = VRAM bytes transferred this frame (current value only; no max or
-mode suffix in the label). The bar is still scaled to the per-frame theoretical
-VDP transfer ceiling for the screen mode and fps. Green fill; if the transfer
-exceeds the ceiling it turns orange with a red overflow tail.
+`DMA:NNN` or `DMA:NNNN` = the number of **32-byte pattern tiles** transferred
+to VRAM this frame. The numeric field uses only the digits required by the
+current raster (three for full H32's 896 tiles, four for full H40's 1120), so
+the former five-digit byte meter is narrower. Its full-scale starts from the
+mode/fps theoretical VDP byte ceiling, subtracts the fixed full name-table DMA
+(`2 * cells` bytes), divides the remainder by 32 bytes/tile, and clamps it to
+the raster's tile count. Green fill; if the transfer exceeds that ceiling it
+turns orange with a red overflow tail.
+
+### DMA run meter
+`Run:NNNN` = the number of ascending consecutive VRAM-slot runs used for those
+DMA pattern tiles, exactly matching the packer's cold-run descriptors. Reuse
+entries do not break a run; a slot discontinuity does. The bar's per-frame
+full-scale is the current `DMA` tile count: the worst case is every transferred
+tile isolated into its own one-tile run. A tiny bar therefore means long,
+efficient runs; a full amber bar means the maximally fragmented case. The
+numeric field is fixed at four digits, derived from full H40's worst case of
+1120 DMA tiles and therefore 1120 runs.
 
 ### Palette strip
 `Prev` / `Current` / `Next` palette sets (each 4 palettes x 15 colours, drawn
@@ -231,4 +245,5 @@ playhead:
 
 Raw `(205,205,205)`, Same `(150,150,158)` grey, Near `(95,115,215)` blue,
 Coa `(45,240,70)` green, Flbk `(240,150,50)` orange,
-Buf `(175,120,235)` violet, Miss `(220,70,70)` red, Band-overhead `(95,110,122)`.
+Buf `(175,120,235)` violet, Miss `(220,70,70)` red, DMA `(70,190,90)` green,
+DMA-run `(215,165,65)` amber, Band-overhead `(95,110,122)`.

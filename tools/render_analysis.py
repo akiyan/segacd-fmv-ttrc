@@ -21,6 +21,7 @@ import sys
 import os
 import re
 import glob
+import pickle
 import subprocess
 from pathlib import Path
 import numpy as np
@@ -136,7 +137,42 @@ Same = np.maximum(C - Want, 0) + Dedup          # Dedup(完全一致流用)を S
 # カテゴリ別ユニークタイル数(何枚の別タイルを使い回したか)。旧statsに無ければ0(後方互換)
 Same_u = col("same_u"); Near_u = col("near_u"); Coa_u = col("coa_u")
 Flbk_u = col("flbk_u") + col("mid_u") + col("far_u")
-DMA = (Raw + Buf) * 32 + C * 2                 # 毎コマVRAM転送量(パターン+ネームテーブル)
+DMA_TILES = col("dma_tiles") if "dma_tiles" in idx else Raw + Buf
+
+
+def _legacy_dma_runs():
+    """Replay the shared allocator when rendering an older stats.npz.
+
+    Fresh sims save dma_runs directly. Existing verified sims can still render
+    the exact packed-run count from decisions.pkl without a full re-encode.
+    """
+    path = Path(SIM) / "decisions.pkl"
+    if not path.exists():
+        return np.where(DMA_TILES > 0, 1, 0).astype(np.int64)
+    try:
+        from tile_alloc import TileAllocator, count_slot_runs
+        with path.open("rb") as fh:
+            log = pickle.load(fh)
+        frames = log["frames"]
+        if len(frames) != NF:
+            raise ValueError(f"decision frames {len(frames)} != stats frames {NF}")
+        pool = int(log.get(
+            "vram_tiles",
+            log.get("config", {}).get("hardware", {}).get("vram_tiles", 1400)))
+        alloc = TileAllocator(C, pool, 1)
+        result = np.zeros(NF, np.int64)
+        for i, frame in enumerate(frames):
+            ordered = sorted(frame, key=lambda item: item[0])
+            placed = alloc.place_frame([(int(cell), key) for cell, _pal, key in ordered], i)
+            result[i] = count_slot_runs(slot for slot, cold in placed if cold)
+        print("DMA runs: replayed exact values from legacy decisions.pkl")
+        return result
+    except Exception as exc:
+        print(f"DMA runs: legacy replay unavailable ({exc}); using one-run lower bound")
+        return np.where(DMA_TILES > 0, 1, 0).astype(np.int64)
+
+
+DMA_RUNS = col("dma_runs") if "dma_runs" in idx else _legacy_dma_runs()
 FULL = {"Raw": Raw, "Same": Same, "Near": Near, "Coa": Coa,
         "Flbk": Flbk, "Buf": Buf, "Miss": Miss}
 WIN = 4; HALF = int(round(FPS * WIN))                       # 線グラフ ±4秒
@@ -232,9 +268,9 @@ def frame_plinfo(i):
 GAP = 16
 REQ_W = 180
 COLD_W = L._w(L.f_leg, "Cold:000") + 3                    # Coldバー(Req↔Bandの間)
-BAND_W, TANK_W, BUFF_W, DMA_W = L.meter_widths("DMA:00000")   # DMAは現在値のみ
+BAND_W, TANK_W, BUFF_W, DMA_W, RUN_W = L.meter_widths(C)
 X_TL_STATUS = (4 + REQ_W + GAP + COLD_W + GAP + BAND_W + GAP + TANK_W + GAP
-               + BUFF_W + GAP + DMA_W + GAP)
+               + BUFF_W + GAP + DMA_W + GAP + RUN_W + GAP)
 # 指針器フルスケールの基準 C-MAX_RAW の MAX_RAW は「1コマのRaw予算」(=CDで新規に読める最大タイル数)。
 # 観測最大(Raw.max)は初期タンク放出で全タイル≈Cになり scale≈0=全塗りになるので使わない。
 MAX_RAW = int(z["budget_tiles"]) if "budget_tiles" in z else FRAME_CD // 34   # TANK_DELTA は上の Band 節で計算済み
@@ -322,7 +358,7 @@ def draw_status_real(data):
     ly = by + BH + 3
     x = 4
     cn = data["counts"]
-    dmax = L.dma_frame_max(MODE, FPS); dval = data["dma_bytes"]
+    dmax = L.dma_tile_capacity(MODE, FPS, C); dval = data["dma_tiles"]
 
     def stacked(segs, full, bw):
         px = x
@@ -358,14 +394,24 @@ def draw_status_real(data):
     # 4) Tank増減の指針器(中央薄線・減=左赤/増=右青)。フルスケール=描画範囲タイル数-最大Raw数
     L.draw_tank_delta(d, x, by, BH, ly, BUFF_W, data["tank_delta"], max(1, C - data["max_raw"]))
     x += BUFF_W + GAP
-    # 5) DMA = 今フレームVRAM転送量(現在値のみ)。バー幅=ラベル幅
-    fillw = int(DMA_W * min(dval, dmax) / dmax); over = dval > dmax
-    d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else (70, 190, 90))
+    # 5) DMA = 今フレームの32Bパターンタイル数
+    fillw = int(DMA_W * min(dval, dmax) / max(dmax, 1)); over = dval > dmax
+    d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else L.COL_DMA)
     if over:
         d.rectangle([x + fillw, by, x + DMA_W, by + BH], fill=(150, 60, 60))
     d.rectangle([x, by, x + DMA_W, by + BH], outline=L.COL_FRAME_IN)
-    L.draw_field(d, x, ly, "DMA:", dval, 5, L.f_leg, L.COL_TXT)   # 最大値/モード表記なし
+    L.draw_field(d, x, ly, "DMA:", dval, L.dma_value_digits(C), L.f_leg, L.COL_TXT)
     x += DMA_W + GAP
+
+    # 6) DMArun = 連続VRAM slot列数。フル=1tile/runの最悪ケース。
+    run_val = int(data["dma_runs"]); run_max = L.dma_run_worst_case(dval)
+    run_fill = (max(1, int(RUN_W * min(run_val, run_max) / run_max))
+                if run_val > 0 and run_max > 0 else 0)
+    d.rectangle([x, by, x + run_fill, by + BH],
+                fill=(220, 70, 70) if run_val > run_max else L.COL_RUN)
+    d.rectangle([x, by, x + RUN_W, by + BH], outline=L.COL_FRAME_IN)
+    L.draw_field(d, x, ly, "Run:", run_val, L.DMA_RUN_DIGITS, L.f_leg, L.COL_TXT)
+    x += RUN_W + GAP
     # メーター下: パレット Prev/Current/Next(PL/Frame見出し, 正方形タイル)
     meters_right = x - GAP
     py0 = ly + 16
@@ -399,7 +445,8 @@ def frame_data(i):
                 mode=MODE, res=RES, audio=AUDIO_STR, avg_kbps=AVG_KBPS,
                 req=int(Want[i]), budget=BUDGET,
                 comp=cn["Same"] + cn["Near"] + cn["Coa"] + cn["Flbk"],
-                buf_cap=BUF_CAP, buf_rem=int(BUF_REM[i]), dma_bytes=int(DMA[i]),
+                buf_cap=BUF_CAP, buf_rem=int(BUF_REM[i]),
+                dma_tiles=int(DMA_TILES[i]), dma_runs=int(DMA_RUNS[i]),
                 raw_bytes=int(RAW_BYTES[i]), buf_bytes=int(BUF_BYTES[i]), ovh_bytes=int(OVH_BYTES[i]),
                 band_kbps=int(BAND[i]), cd1x_bpf=CD1X_BPF,
                 cold=cn["Raw"] + cn["Buf"], cold_raw=cn["Raw"], cold_buf=cn["Buf"],

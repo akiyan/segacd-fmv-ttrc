@@ -22,6 +22,22 @@ neighbouring VRAM slots so the Main CPU can DMA them in long runs. Displayed til
 import numpy as np
 
 
+def count_slot_runs(slots):
+    """Count ascending consecutive VRAM-slot runs in payload order.
+
+    One isolated cold tile is one run. Reused (non-cold) entries are omitted by
+    the caller, exactly like the packed cold-run descriptor stream.
+    """
+    runs = 0
+    previous = None
+    for slot in slots:
+        slot = int(slot)
+        if previous is None or slot != previous + 1:
+            runs += 1
+        previous = slot
+    return runs
+
+
 class TileAllocator:
     """Slot residency for one stream. Feed it each frame's updated cells in a fixed
     order; it assigns a VRAM slot per tile key and reports cold (new load) vs reuse.

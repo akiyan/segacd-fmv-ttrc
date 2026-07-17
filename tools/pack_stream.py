@@ -244,21 +244,19 @@ def resolve(log, POOL, mode="lru"):
 
 def run_stats(per):
     """フレーム内coldスロット列(セル順)の連続ラン統計。MD側DMAまとめの効果見積り。"""
+    from tile_alloc import count_slot_runs
     runs_per_frame = np.zeros(len(per), np.int64)
     colds_per_frame = np.zeros(len(per), np.int64)
     for i, (cells, entries, colds) in enumerate(per):
-        prev = None
-        runs = 0
+        slots = []
         nc = 0
         for e, c in zip(entries, colds):
             if not c:
                 continue
             s = (e & 0x07FF) - BASE
-            if prev is None or s != prev + 1:
-                runs += 1
-            prev = s
+            slots.append(s)
             nc += 1
-        runs_per_frame[i] = runs
+        runs_per_frame[i] = count_slot_runs(slots)
         colds_per_frame[i] = nc
     tot_c = int(colds_per_frame.sum())
     tot_r = int(runs_per_frame.sum())

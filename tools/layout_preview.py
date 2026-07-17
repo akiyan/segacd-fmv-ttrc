@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """解析フレーム(1920x1080)の新レイアウトを『ダミー値』で1枚だけ描くプレビュー。
-sim/ffmpeg を回さず秒で反復するためのもの。ここでレイアウトを固めたら
-make_base.py / render_statusline.py / sim.py(catmap) / compose に反映する。
+sim/ffmpeg を回さず秒で反復するためのもの。本ファイルがレイアウトの正で、
+render_analysis.py が同じ描画関数と定数を実データに使う。
 
 新レイアウト(この版):
   左  = SEGA-CD sim output(4:3枠) + 下に status帯
@@ -16,7 +16,7 @@ import math
 import random
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
-import av_config   # COLD_CAP_REALIZED(Coldバーのフルスケール)
+import av_config   # cold_cap_for_fps (Coldバーのフルスケール)
 
 FONT = "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf"
 CW, CH = 1920, 1080
@@ -50,6 +50,8 @@ COL_TXT = (225, 225, 225)
 COL_DIM = (150, 150, 155)
 COL_ZERO = (160, 160, 166)       # ゼロ埋めの先頭ゼロ(通常より少し暗いだけ)
 COL_OVH = (95, 110, 122)         # 有効Bandの「音声+その他ヘッダ」セグメント(くすんだ青灰)
+COL_DMA = (70, 190, 90)          # DMAパターンタイル数(green)
+COL_RUN = (215, 165, 65)         # DMA run分断度(amber)
 
 # ---- レイアウト定数(枠 = [x0,y0,x1,y1]) ----
 PAD = 11
@@ -90,6 +92,40 @@ def dma_frame_max(mode, fps):
     """1コマで転送できる理論値 = (1コマ内のVBLANK数=60/fps) × 1VBLANK理論値。
     15fps→4×, 30fps→2×, 24fps→2.5×。"""
     return int(round(60.0 / fps * dma_vblank(mode)))
+
+
+def dma_tile_capacity(mode, fps, cells):
+    """Pattern-tile DMA ceiling after the fixed full name table is paid.
+
+    The byte ceiling includes the per-frame 2-byte name entry for every drawn
+    cell. The remainder is available to 32-byte pattern tiles. A frame cannot
+    transfer more pattern tiles than it draws.
+    """
+    cells = int(cells)
+    pattern_bytes = max(0, dma_frame_max(mode, fps) - cells * 2)
+    return min(cells, pattern_bytes // 32)
+
+
+def dma_value_digits(cells):
+    """Digits needed by the DMA tile count for this raster."""
+    return len(str(max(0, int(cells))))
+
+
+def dma_run_worst_case(dma_tiles):
+    """Worst case is one isolated DMA run for every transferred tile."""
+    return max(0, int(dma_tiles))
+
+
+H40_FULL_TILES = (MODES["H40"]["sw"] // 8) * (MODES["H40"]["sh"] // 8)
+DMA_RUN_DIGITS = len(str(dma_run_worst_case(H40_FULL_TILES)))  # 1120 -> 4桁
+
+
+def dma_label_template(cells):
+    return "DMA:" + "0" * dma_value_digits(cells)
+
+
+def run_label_template():
+    return "Run:" + "0" * DMA_RUN_DIGITS
 
 f_head = None; f_leg = None; f_lbl = None; f_sm = None; f_meta = None; f_pal = None
 
@@ -155,6 +191,7 @@ def dummy_data():
     # カテゴリ合計(全編累積のダミー) と そのユニーク数(全編で使われた別タイル数)
     cat_totals = {k: counts[k] * (200 + (hash(k) % 90)) for k, _ in CATS}
     cat_uniq = {k: max(1, int(cat_totals[k] * (0.06 + 0.05 * (hash(k) % 7) / 7))) for k, _ in CATS}
+    dma_tiles = counts["Raw"] + counts["Buf"]
     return dict(C=C, counts=counts, counts_uniq=counts_uniq, series=series, fps=fps, win=win,
                 palettes=palettes, cat_totals=cat_totals, cat_uniq=cat_uniq, tank_delta=tank_delta, max_raw=max_raw,
                 cd1x_bpf=cd1x_bpf, raw_bytes=raw_bytes, buf_bytes=buf_bytes, ovh_bytes=ovh_bytes, band_kbps=band_kbps,
@@ -167,7 +204,7 @@ def dummy_data():
                 buf_cap=buf_cap, buf_rem=13900,
                 cold=counts["Raw"] + counts["Buf"], cold_raw=counts["Raw"], cold_buf=counts["Buf"],
                 cold_cap=av_config.cold_cap_for_fps(15, "H32"),
-                dma_bytes=(counts["Raw"] + counts["Buf"]) * 32 + C * 2,   # パターン+ネームテーブル
+                dma_tiles=dma_tiles, dma_runs=23,
                 tl=tl, buf_rem_series=rem, dma_tl=dma_tl, tln=tln,
                 time_s=42.0, frame=1260, total_frames=2712)
 
@@ -206,12 +243,13 @@ def draw_field(d, x, y, label, value, width, font, col, maxval=None, maxwidth=No
     return x
 
 
-def meter_widths(dma_lab):
-    """各メーターのバー幅=自分のラベル幅(統一幅を廃止)。返り値 (Band, Tank, Buff増減, DMA)。"""
+def meter_widths(cells):
+    """Each bar follows its label width. Returns Band, Tank, Buff, DMA, Run."""
     return (_w(f_leg, "Band:000KiB/sec") + 3,
             _w(f_leg, "Tank:00000") + 3,
             _w(f_leg, "Buff:-000") + 3,
-            _w(f_leg, dma_lab) + 3)
+            _w(f_leg, dma_label_template(cells)) + 3,
+            _w(f_leg, run_label_template()) + 3)
 
 
 def draw_tank_delta(d, x, by, BH, ly, bw, delta, scale):
@@ -335,7 +373,7 @@ def draw_graph(w, h, data):
 
 
 def draw_status(w, h, data):
-    """status帯: Req / Comp / Buf / DMA (全て等幅) + 2段Timeline(ヒートマップ+Buf残量マップ)。
+    """status帯: Req / Cold / Band / Tank / Buff / DMA / Run + 3段Timeline。
     数値はゼロ埋め(先頭ゼロは暗色)で桁固定。MissCarryは廃止。"""
     im = Image.new("RGB", (w, h), (16, 16, 16))
     d = ImageDraw.Draw(im)
@@ -343,9 +381,10 @@ def draw_status(w, h, data):
     C = data["C"]
     GAP = 16
     REQ_W = 180                     # Req は同ラインに Raw/Comp を並べるので広め
-    dmax = dma_frame_max(data["mode"], data["fps"]); dval = data["dma_bytes"]
+    dmax = dma_tile_capacity(data["mode"], data["fps"], C)
+    dval = data["dma_tiles"]
     # メーター幅の統一を廃止=各バーは自分のラベル幅
-    BAND_W, TANK_W, BUFF_W, DMA_W = meter_widths("DMA:00000")   # DMAは現在値のみ(最大値/モード無し)
+    BAND_W, TANK_W, BUFF_W, DMA_W, RUN_W = meter_widths(C)
     COLD_W = _w(f_leg, "Cold:000") + 3          # 新: Coldバー幅=ラベル幅(Req↔Bandの間に挿入)
     ly = by + BH + 3
     x = 4
@@ -385,21 +424,31 @@ def draw_status(w, h, data):
     # 4) Tank増減の指針器(中央薄線・減=左赤/増=右青)。フルスケール=描画範囲タイル数-最大Raw数
     draw_tank_delta(d, x, by, BH, ly, BUFF_W, data["tank_delta"], max(1, C - data["max_raw"]))
     x += BUFF_W + GAP
-    # 5) DMA = 今フレームVRAM転送量(現在値のみ)。バー幅=ラベル幅。超過は橙+右赤(内部scaleは理論値)
-    fillw = int(DMA_W * min(dval, dmax) / dmax); over = dval > dmax
-    d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else (70, 190, 90))
+    # 5) DMA = 今フレームの32Bパターンタイル数。フル=モード/fpsの理論DMAから全NT分を引いた枚数。
+    fillw = int(DMA_W * min(dval, dmax) / max(dmax, 1)); over = dval > dmax
+    d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else COL_DMA)
     if over:
         d.rectangle([x + fillw, by, x + DMA_W, by + BH], fill=(150, 60, 60))
     d.rectangle([x, by, x + DMA_W, by + BH], outline=COL_FRAME_IN)
-    draw_field(d, x, ly, "DMA:", dval, 5, f_leg, COL_TXT)   # 最大値/モード表記なし
+    draw_field(d, x, ly, "DMA:", dval, dma_value_digits(C), f_leg, COL_TXT)
     x += DMA_W + GAP
+
+    # 6) DMArun = coldタイルの連続VRAM slot列数。最悪=全DMAタイルが孤立して1tile/run。
+    run_val = int(data["dma_runs"]); run_max = dma_run_worst_case(dval)
+    run_fill = (max(1, int(RUN_W * min(run_val, run_max) / run_max))
+                if run_val > 0 and run_max > 0 else 0)
+    d.rectangle([x, by, x + run_fill, by + BH],
+                fill=(220, 70, 70) if run_val > run_max else COL_RUN)
+    d.rectangle([x, by, x + RUN_W, by + BH], outline=COL_FRAME_IN)
+    draw_field(d, x, ly, "Run:", run_val, DMA_RUN_DIGITS, f_leg, COL_TXT)
+    x += RUN_W + GAP
 
     # メーターの下: パレット Prev/Current/Next(PL/Frame見出し)
     meters_right = x - GAP
     py0 = ly + 16
     draw_palettes_strip(d, 4, py0, meters_right - 4, (h - 2) - py0, data["palettes"], data.get("pl_info"))
 
-    # 5) 3段Timeline(右端まで): 上=Reqヒートマップ / 中=Buf残量マップ / 下=DMA転送量。比=2:1:1
+    # 7) 3段Timeline(右端まで): 上=Reqヒートマップ / 中=Buf残量マップ / 下=有効転送量。比=2:1:1
     x_tl = x
     tlw = w - 4 - x_tl
     if tlw > 20:

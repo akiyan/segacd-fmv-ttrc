@@ -961,7 +961,7 @@ def main():
     cur_key = [None] * C_CELLS          # 表示中パターン(idx bytes)
     cur_pal = np.full(C_CELLS, -1, np.int16)
     committed_plain = [None] * C_CELLS  # 直近commitした plain パターン(内容変化検出用)
-    from tile_alloc import TileAllocator
+    from tile_alloc import TileAllocator, count_slot_runs
     # 共有割り当て(連続, pack と同一コード)。これが residency の真の源=pack の realized と一致=cap=realized。
     # 判定は前フレーム末の状態を参照し、割り当て(スロット付与+追い出し)は各フレーム末に cell順で実行
     # (=pack の resolve と同一順)。VRAM_TILES=pack POOL。
@@ -1427,7 +1427,10 @@ def main():
         # 更新でないので place しない=cur_slot/slot_refs が前回のまま(参照継続で保護)。realized=cap の要。
         upd_ck = [(int(c), cur_key[int(c)]) for c in np.where(updated)[0]
                   if cur_key[int(c)] is not None]
-        alloc.place_frame(upd_ck, i)
+        placements = alloc.place_frame(upd_ck, i)
+        dma_slots = [slot for slot, cold in placements if cold]
+        dma_tiles = len(dma_slots)                 # 実際にVRAMへ送る32Bパターンタイル数
+        dma_runs = count_slot_runs(dma_slots)      # packのcold-run descriptorと同じ連続slot定義
         ensure_capacity(i)
 
         # CRAMエミュ: このフレームの全更新を反映した最終表示を、現区間パレットで引き直す。
@@ -1500,7 +1503,7 @@ def main():
         stat_rows.append((
             i, f_fixed, want, upd, miss, C_CELLS - want, dedup_saved, tile_recs, carry, age_max,
             want / C_CELLS, int(near_eff.sum()), coa_hits, flbk_hits, prg_hits,
-            len(u_same), len(u_near), len(u_coa), len(u_flbk)))
+            len(u_same), len(u_near), len(u_coa), len(u_flbk), dma_tiles, dma_runs))
 
         # エージングの待ちカウンタ更新: 未更新のdirtyは+1、更新済み/変化なしは0へ
         wait = np.where(changed & ~updated & ~near_eff, wait + 1, 0)   # Nearは滞留させない
@@ -1583,7 +1586,7 @@ def main():
     # status line 用の per-frame 実測を保存
     stats = np.array(stat_rows, np.float64)
     cols = ("frame ffix want updated miss delta dedup tx carry age want_frac near coa flbk buf"
-            " same_u near_u coa_u flbk_u")
+            " same_u near_u coa_u flbk_u dma_tiles dma_runs")
     budget_tiles = int(np.median(stats[:, 1]))   # ffix中央値 = 固定予算タイル数(fps依存)
     # 全編ユニーク(cattotals併記用): same/near/coa/flbk の別タイル総数
     cat_uniq = np.array([len(guniq["same"]), len(guniq["near"]), len(guniq["coa"]),
