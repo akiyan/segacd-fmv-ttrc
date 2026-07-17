@@ -334,24 +334,29 @@ tools/record_movie.sh --config configs/PROFILE.toml \
 ```
 
 - The high-level recorder defaults to FFV1/FLAC and writes its bounded
-  pixel-lossless MKV under `videos/`. Explicit `--preset realtime` is a faster
-  4:2:0 verification capture and must not be used as a `compilation` input.
-- Normal recording remains SDL-audio-paced. Use the explicit
-  `--offline-record` mode only for a fixed-Replay FFV1/FLAC capture. It keeps
-  the same DEBUG disc, Mega-CD startup, CD player, START transition, movie and
-  tail, but disables audio sync, rate control and video vsync so the fixed
-  emulator-frame run can proceed uncapped.
-- If `--offline-record` has no `--input-replay`, `record_movie.sh` first records
-  one under `tmp/PROFILE/record/`, 120 emulator frames longer than the main run.
+  pixel-lossless MKV under `videos/`. It uses the qualified fixed-Replay offline
+  path by default: the same DEBUG disc, Mega-CD startup, CD player, START
+  transition, movie and tail, with audio sync, rate control and video vsync
+  disabled so the fixed emulator-frame run can proceed uncapped.
+- `--offline-record` is an explicit spelling of that default.
+  `--realtime-lossless` selects the paced FFV1/FLAC fallback for qualification
+  or diagnosis. Explicit `--preset realtime` instead selects paced H.264 4:2:0
+  and must not be used as a `compilation` input.
+- If the default has no `--input-replay`, `record_movie.sh` first records one
+  under `tmp/PROFILE/record/`, 120 emulator frames longer than the main run.
   A supplied Replay must also extend beyond `--max-frames`; Replay EOF is a
   hard failure because RetroArch may otherwise repeat a cached end frame.
   Replays belong to the exact disc, core and configuration that created them;
   regenerate after any of those change.
-- Qualify an offline path with the same Replay played once in realtime
-  FFV1/FLAC and once offline. Run `tools/compare_recordings.py` on the two
-  bounded MKVs and require exact decoded-frame hashes, PCM SHA-256/sample count,
-  packet PTS/DTS/durations and stream metadata. Repeat the offline run and
-  compare it too. The Replay-generation run is not the realtime baseline.
+- Requalify after changing RetroArch, the core, offline harness/recording code,
+  or recorder settings, and whenever a result is suspect. Play the same Replay
+  once with `--realtime-lossless --preset ffv1-flac` and once with the offline
+  default. Run `tools/compare_recordings.py` on the two bounded MKVs and require
+  exact decoded-frame hashes, PCM SHA-256/sample count, packet PTS/DTS/durations
+  and stream metadata. Repeat the offline run and compare it too. The
+  Replay-generation run is not the realtime baseline. Routine recordings use
+  their built-in count/audio/log/visual gates without rerunning all
+  three qualification captures.
 - The default keeps the Mega-CD startup. Use trimming only when the user
   explicitly asks for a movie-only clip.
 - Run one RetroArch/Xvfb recording at a time.

@@ -162,20 +162,23 @@ do not waive a failed proof.
 
 Use `record` with the same profile. Build DEBUG by default, keep the Window HUD,
 and retain the full Mega-CD startup. Choose a launch-to-tail duration long
-enough for startup, the complete source, and a short ending margin. Use:
+enough for startup, the complete source, and a short ending margin. `record`
+uses the qualified fixed-Replay offline FFV1/FLAC path by default. Use:
 
 - `ffv1-flac`;
 - `--record-size 256x224` for H32 or `320x224` for H40;
 - an unused X display;
 - the canonical `videos/<stem>_emu_lossless.mkv` and preview paths.
 
-Record emulator-synchronized A/V. Never replace the recorded audio with the
-offline source and never trim the normal compilation input.
+Record emulator-synchronized A/V. "Offline" means unpaced emulation, not an
+offline audio replacement. Never replace the recorded audio with the source
+and never trim the normal compilation input.
 
 Before accepting the recording, verify:
 
 - native raster, about 60000/1001 fps, audio, and bounded duration with `ffprobe`;
-- wall-clock timing and normal RetroArch/core shutdown logs;
+- exact raw packet/decoded-frame counts, media-to-wall speed, and normal
+  RetroArch/core shutdown logs;
 - nonzero movie audio and the audio JSON's RMS, peak, clip, and jump results;
 - startup screens, later movie playback, visible DEBUG HUD, progression, and tail;
 - representative lossless frames against the sim when timing or fps behavior is new or suspect.

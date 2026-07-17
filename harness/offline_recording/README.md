@@ -2,10 +2,11 @@
 
 ## Goal
 
-The normal `/record` path is paced in realtime and remains the default. This
-harness qualifies an explicit faster path that records the same native
-FFV1/FLAC output without waiting for wall time. It must preserve the complete
-Mega-CD startup, CD player, START transition, DEBUG movie playback, and tail.
+This harness qualified a faster `/record` path that records the same native
+FFV1/FLAC output without waiting for wall time. After the exact A/B and repeat
+gates passed, the high-level recorder adopted this fixed-Replay path as its
+default. It must preserve the complete Mega-CD startup, CD player, START
+transition, DEBUG movie playback, and tail.
 
 The offline path is acceptable only when its decoded video, decoded audio, and
 packet timing are exactly equal to a realtime FFV1/FLAC run driven by the same
@@ -13,7 +14,8 @@ input Replay.
 
 ## Method
 
-`tools/record_movie.sh --offline-record` orchestrates the path:
+`tools/record_movie.sh` orchestrates the default path. `--offline-record`
+remains an explicit, backward-compatible spelling of the same mode:
 
 1. Build a DEBUG disc unless `--no-build` is explicit.
 2. Record a RetroArch input Replay when none is supplied. The Replay is 120
@@ -36,12 +38,12 @@ saved Replay.
 
 ## Commands
 
-One-command offline capture:
+One-command default capture:
 
 ```sh
 OUTDIR="$PWD/videos" tools/record_movie.sh \
   --config configs/ps2-sakura-op-h32.toml \
-  --seconds 140 --offline-record \
+  --seconds 140 \
   --tag issue28_offline --record-size 256x224 --display :299 \
   --out videos/issue28_offline_preview.mp4 --audio-min-rms 1
 ```
@@ -54,13 +56,14 @@ REPLAY=tmp/ps2-sakura-op-h32/record/issue28_offline_input.replay
 
 OUTDIR="$PWD/videos" tools/record_movie.sh \
   --disc out/ps2-sakura-op-h32.cue --no-build \
-  --seconds 140 --input-replay "$REPLAY" \
+  --seconds 140 --realtime-lossless --preset ffv1-flac \
+  --input-replay "$REPLAY" \
   --tag issue28_realtime --record-size 256x224 --display :300 \
   --out videos/issue28_realtime_preview.mp4 --audio-min-rms 1
 
 OUTDIR="$PWD/videos" tools/record_movie.sh \
   --disc out/ps2-sakura-op-h32.cue --no-build \
-  --seconds 140 --offline-record --input-replay "$REPLAY" \
+  --seconds 140 --input-replay "$REPLAY" \
   --tag issue28_offline_ab --record-size 256x224 --display :301 \
   --out videos/issue28_offline_ab_preview.mp4 --audio-min-rms 1
 
@@ -70,8 +73,10 @@ python3 tools/compare_recordings.py \
   --json videos/issue28_realtime_vs_offline.json
 ```
 
-Repeat the offline command with a new tag, then compare the two offline bounded
-MKVs with the same comparator.
+When requalifying, repeat the offline command with a new tag, then compare the
+two offline bounded MKVs with the same comparator. Routine captures use their
+built-in frame/packet, audio, log, and visual gates without rerunning
+the three-capture qualification.
 
 ## Exact gates
 
@@ -135,9 +140,9 @@ Realtime versus offline and offline versus repeat both passed all exact gates:
 A visual contact sheet confirmed the Mega-CD logo, CD player, licence screen,
 DEBUG HUD movie playback through the full source, and post-movie tail.
 
-The unchanged default path also passed a wall-clock smoke run: 8.05 seconds of
-bounded 256x224 FFV1/FLAC, normal runtime/core unload, readable trailer, and
-successful audio plus preview verification without any offline option.
+The explicit realtime-lossless fallback also passed a wall-clock smoke run:
+8.05 seconds of bounded 256x224 FFV1/FLAC, normal runtime/core unload, readable
+trailer, and successful audio plus preview verification.
 
 ## Limits and decisions
 
@@ -147,6 +152,9 @@ successful audio plus preview verification without any offline option.
   that no recorded frames were lost.
 - FFV1 remains at two encoder threads. The measured 13.45x main-run speed
   already exceeds the target, so no thread-count change was needed.
+- The qualified fixed-Replay path is now the high-level default. Use
+  `--realtime-lossless --preset ffv1-flac` only for requalification or paced
+  diagnosis; `--preset realtime` remains the separate H.264 4:2:0 check path.
 - Existing post-processing remains sequential. The overall target was exceeded
   without adding parallel decode/transcode complexity.
 - A Replay is tied to its disc, core binary, core options, and harness setup.

@@ -1,13 +1,13 @@
 ---
 name: record
-description: Build a DEBUG Sega CD disc by default, then record it with RetroArch and Genesis Plus GX from emulator launch through the Mega-CD startup screens and playback, preserving synchronized A/V and producing a native-resolution lossless MKV plus a verification preview. Use for "record it", "capture playback as video", "record the OP", "verify the recording", or "/record". Build release only when the user explicitly requests it. Use DEBUG HUD OCR only for requested diagnostics, never for default head cueing. This skill records and verifies; compilation produces the final upload MP4 and publishes it.
+description: Build a DEBUG Sega CD disc by default, then make a fast fixed-Replay FFV1/FLAC recording with RetroArch and Genesis Plus GX from emulator launch through the Mega-CD startup screens and playback, preserving synchronized A/V and producing a native-resolution lossless MKV plus a verification preview. Use for "record it", "capture playback as video", "record the OP", "verify the recording", or "/record". Build release or use realtime pacing only when explicitly requested. Use DEBUG HUD OCR only for requested diagnostics, never for default head cueing. This skill records and verifies; compilation produces the final upload MP4 and publishes it.
 ---
 
 # record: Sega CD Playback Recording
 
 Record the emulator's own synchronized video and build-generated audio from launch through
 the Mega-CD BIOS/CD player, START transition, movie, and tail. Keep the startup sequence by
-default. Do not replace audio with an offline source.
+default. "Offline" here means unpaced emulation, not replacement with an offline audio source.
 
 Run every command from the repository root.
 
@@ -48,7 +48,7 @@ Use `tools/record_movie.sh`, which owns the high-level recording workflow:
 tools/record_movie.sh [--config TOML | --disc CUE --no-build] [--out MP4] [--seconds N] \
   [--trim SEC | --auto-audio-trim] [--tag NAME] [--display :N] \
   [--preset realtime|ffv1-flac] [--record-size WxH] [--no-build] \
-  [--release-build] [--offline-record] [--input-replay FILE]
+  [--release-build] [--offline-record | --realtime-lossless] [--input-replay FILE]
 ```
 
 Defaults and rules:
@@ -75,10 +75,13 @@ Defaults and rules:
   logs, PID files, and raw diagnostic capture to `tmp/PROFILE/record/`; do not
   put multiple profile runs directly in the shared `tmp/` root.
 - `ffv1-flac` is the pixel-lossless default and the only normal input to `compilation`.
-  Explicit `realtime` uses H.264 with 4:2:0 chroma for a faster synchronized check, writes
-  `_native.mkv` rather than `_lossless.mkv`, and must not feed an upload compilation.
-- `--offline-record` is an explicit fixed-Replay test path. It always uses FFV1/FLAC;
-  lossy presets and arbitrary low-level recorder configurations are rejected.
+  The high-level default records it uncapped through a fixed Replay. Explicit
+  `--preset realtime` uses wall-clock-paced H.264 with 4:2:0 chroma, writes `_native.mkv`
+  rather than `_lossless.mkv`, and must not feed an upload compilation.
+- `--offline-record` remains as an explicit spelling of the default. Offline always uses
+  FFV1/FLAC; lossy presets and arbitrary low-level recorder configurations are rejected.
+- `--realtime-lossless` selects the paced FFV1/FLAC fallback used to requalify or diagnose
+  the offline path. It is not required for routine recordings.
 - `--input-replay FILE` reuses an existing input Replay for an exact-frame paced or offline
   run. Reuse it only with the disc, libretro core, core options, and harness configuration
   that created it.
@@ -105,14 +108,13 @@ tools/record_movie.sh --config configs/PROFILE.toml \
   --out videos/rec_check_preview.mp4
 ```
 
-## Fast offline capture
+## Default fast offline capture
 
-Use offline recording only when faster-than-realtime FFV1/FLAC output is requested or when
-qualifying the harness itself:
+Routine `$record` work uses faster-than-realtime FFV1/FLAC without an extra mode flag:
 
 ```sh
 OUTDIR="$PWD/videos" tools/record_movie.sh \
-  --config configs/PROFILE.toml --seconds 180 --offline-record \
+  --config configs/PROFILE.toml --seconds 180 \
   --tag STEM_offline --record-size 256x224 --display :269 \
   --out videos/STEM_offline_preview.mp4
 ```
@@ -131,12 +133,13 @@ audio boundary by one stereo PCM sample.
 REPLAY=tmp/PROFILE/record/STEM_offline_input.replay
 
 OUTDIR="$PWD/videos" tools/record_movie.sh \
-  --disc out/PROFILE.cue --no-build --seconds 180 --input-replay "$REPLAY" \
+  --disc out/PROFILE.cue --no-build --seconds 180 --realtime-lossless \
+  --preset ffv1-flac --input-replay "$REPLAY" \
   --tag STEM_realtime --record-size 256x224 --display :270 \
   --out videos/STEM_realtime_preview.mp4
 
 OUTDIR="$PWD/videos" tools/record_movie.sh \
-  --disc out/PROFILE.cue --no-build --seconds 180 --offline-record \
+  --disc out/PROFILE.cue --no-build --seconds 180 \
   --input-replay "$REPLAY" --tag STEM_offline_ab \
   --record-size 256x224 --display :271 \
   --out videos/STEM_offline_ab_preview.mp4
@@ -146,9 +149,12 @@ python3 tools/compare_recordings.py \
   --json videos/STEM_offline_ab_compare.json
 ```
 
-Run the offline command a second time with another tag and require another passing exact
-comparison. The comparator checks every decoded video frame, every decoded PCM sample,
-packet PTS/DTS/durations, stream metadata, and total counts without trimming or alignment.
+When requalifying the harness, run the offline command a second time with another tag and
+require another passing exact comparison. The comparator checks every decoded video frame,
+every decoded PCM sample, packet PTS/DTS/durations, stream metadata, and total counts without
+trimming or alignment. Routine captures do not repeat the three-run qualification unless
+RetroArch, the core, harness timing/recording code, or recorder settings changed, or a result
+is suspect.
 
 ## What the harness guarantees
 
@@ -156,11 +162,11 @@ packet PTS/DTS/durations, stream metadata, and total counts without trimming or 
 headless display. Both modes initialize RetroArch's audio path through the SDL dummy sink,
 so the core's PCM reaches the recorder without a physical output device.
 
-- Normal recording keeps audio sync and rate control enabled. It rejects a duration outside
-  0.60x--1.50x of its requested wall-clock run.
-- Explicit offline recording disables audio sync, rate control, and video vsync. It exits
+- Default offline recording disables audio sync, rate control, and video vsync. It exits
   naturally after `--max-frames`, rejects Replay EOF, and requires packet and decoded-frame
   counts to equal the limit exactly.
+- Explicit `--realtime-lossless` keeps audio sync and rate control enabled while preserving
+  FFV1/FLAC. It is the paced baseline for qualification and diagnosis.
 
 - `realtime` / `flac-fast`: x264 CRF 0 plus FLAC, but with 4:2:0 chroma, so the result is
   native-size and synchronized but not pixel-lossless.
@@ -176,9 +182,9 @@ Check the raw MKV and reports before trusting a capture:
 
 1. Use `ffprobe` to confirm video, audio, expected native raster, about 60000/1001 fps, and a
    valid duration.
-2. For a normal run, confirm the harness timing report is near the requested wall-clock
-   duration. For offline, confirm the exact requested packet/frame count and report the
-   media-to-wall speed instead; faster-than-realtime is expected.
+2. For the default offline run, confirm the exact requested packet/frame count and report
+   media-to-wall speed; faster-than-realtime is expected. For `--realtime-lossless`, confirm
+   the harness timing is near the requested emulated duration.
 3. Confirm exit zero plus `Content ran for a total of` and `Unloading core`. Some RetroArch
    builds also print `Average monitor Hz`, but 1.22.2 does not do so consistently. Reject a
    log ending at `SET_GEOMETRY`, a nonzero exit, Replay EOF, or an unreadable trailer.
@@ -187,8 +193,9 @@ Check the raw MKV and reports before trusting a capture:
 5. Inspect frames from the MKV and confirm that the Mega-CD startup appears first, playback
    begins later, the DEBUG Window HUD is visible, and the movie advances. Do not use the HUD
    to seek the movie start.
-6. For offline, require a passing same-Replay realtime comparison and a passing second
-   offline run through `tools/compare_recordings.py`.
+6. After changing RetroArch, the core, the offline harness, or recorder settings, requalify
+   with a same-Replay `--realtime-lossless` comparison and a second offline run through
+   `tools/compare_recordings.py`. Also requalify any suspect result.
 
 The JSON report is a mechanical gate, not a substitute for listening. Claim that no audible
 clicks exist only after listening to the final file.
@@ -260,4 +267,5 @@ complete, then remove only artifacts created by this session when space is neede
 Report the raw MKV path, preview MP4 path, duration, raster/fps, audio presence, audio JSON
 path and key RMS/peak/clip/jump values, whether startup was retained, and whether human
 listening was performed. For offline runs also report the Replay path, requested/max frame
-count, wall time and speed, exact-comparison JSON/pass state, and repeat-run result.
+count, wall time, and speed. When the run requalifies the fast path, additionally report the
+exact-comparison JSON/pass state and repeat-run result.
