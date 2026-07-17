@@ -27,4 +27,7 @@ The proof covers:
 This is an equivalence proof, not a hardware timing measurement. It assumes the
 already-established Word-RAM DMA first-word behavior and does not validate
 VBlank budgets, VDP wait states, or the performance break-even point between
-DMA and CPU-direct writes.
+DMA and CPU-direct writes. It also does not change the logical cold-run count:
+both CPU-direct runs and DMA-backed runs remain one Main run-table record, and a
+long run split across VBlanks still remains one record. That record count is the
+analysis `Run` value and H40 DEBUG HUD `N`; it is not a VDP DMA command count.

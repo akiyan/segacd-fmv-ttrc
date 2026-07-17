@@ -293,6 +293,22 @@ consumption. It also matches bitmap cells, entry palettes and every physical col
 pattern to `decisions.pkl`. The report gives the exact added control bytes/sectors,
 startup frames 1--42 statistics, and decimal frame 2019 statistics.
 
+The Main CPU counts these descriptors into `n_runs`; H40 DEBUG HUD `N` displays
+its low byte. This logical run count is intentionally independent of the p45
+transfer path: a one- or two-tile run is CPU-written, while a longer run is DMA'd
+and can be split at a VBlank boundary. To compare the HUD OCR from a real emulator
+recording with the exact descriptors in the recorded disc, run:
+
+```sh
+python3 harness/pipeline_speedup/verify_run_hud.py \
+  --header out/PROFILE/HEADER.DAT --body out/PROFILE/BODY.DAT \
+  --csv videos/RECORDING.csv
+```
+
+The checker uses high-confidence observations by default and compares every one
+with `packed_n_runs & 0xff`. Early p45 CSVs called the same HUD field `dma_calls`;
+that legacy column name never represented the physical VDP DMA command count.
+
 ## 30 fps entry-poll fast-path proof
 
 The legacy/fallback Sub entry loop decrements both an update counter and a CDC
