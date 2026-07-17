@@ -13,6 +13,8 @@ import unittest
 from pathlib import Path
 
 from compare_recordings import (
+    _optional_integer,
+    _packet_summary,
     compare_recordings,
     first_non_monotonic,
     first_sequence_mismatch,
@@ -147,6 +149,19 @@ class TimelineHelperTests(unittest.TestCase):
         self.assertIsNone(first_sequence_mismatch([(0, 1)], [(0, 1)]))
         self.assertEqual(first_sequence_mismatch([(0, 1)], [(0, 1), (1, 1)]), 1)
         self.assertEqual(first_sequence_mismatch([(0, 1), (2, 1)], [(0, 1), (3, 1)]), 1)
+
+    def test_missing_packet_duration_is_valid_and_end_uses_pts_delta(self) -> None:
+        self.assertIsNone(_optional_integer(None, "duration"))
+        self.assertIsNone(_optional_integer("N/A", "duration"))
+        packets = [
+            {"pts": 0, "dts": 0, "duration": None},
+            {"pts": 17, "dts": 17, "duration": None},
+            {"pts": 33, "dts": 33, "duration": None},
+        ]
+        summary = _packet_summary(packets)
+        self.assertEqual(summary["end_pts"], 49)
+        self.assertEqual(summary["end_pts_source"], "last_pts_delta")
+        self.assertTrue(summary["pts_monotonic"])
 
 
 if __name__ == "__main__":

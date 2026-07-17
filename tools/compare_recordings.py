@@ -79,6 +79,13 @@ def _integer(value: Any, field: str) -> int:
         raise RecordingError(f"invalid {field}: {value!r}") from exc
 
 
+def _optional_integer(value: Any, field: str) -> int | None:
+    """Parse an optional ffprobe integer such as Matroska packet duration."""
+    if value is None or value == "N/A":
+        return None
+    return _integer(value, field)
+
+
 def _decimal(value: Any, field: str) -> Decimal:
     if value is None or value == "N/A":
         raise RecordingError(f"missing {field}")
@@ -129,7 +136,7 @@ def probe_recording(path: Path) -> dict[str, Any]:
     audio = audios[0]
     video_index = _integer(video.get("index"), "video stream index")
     audio_index = _integer(audio.get("index"), "audio stream index")
-    packets: dict[str, list[dict[str, int]]] = {"video": [], "audio": []}
+    packets: dict[str, list[dict[str, int | None]]] = {"video": [], "audio": []}
     for number, packet in enumerate(data.get("packets", [])):
         stream_index = _integer(packet.get("stream_index"), f"packet {number} stream_index")
         if stream_index == video_index:
@@ -144,7 +151,7 @@ def probe_recording(path: Path) -> dict[str, Any]:
             {
                 "pts": _integer(packet.get("pts"), f"{name} packet {len(target)} pts"),
                 "dts": _integer(packet.get("dts"), f"{name} packet {len(target)} dts"),
-                "duration": _integer(
+                "duration": _optional_integer(
                     packet.get("duration"), f"{name} packet {len(target)} duration"
                 ),
             }
@@ -354,16 +361,31 @@ def _stream_metadata(stream: dict[str, Any], kind: str) -> dict[str, Any]:
     return {field: stream.get(field) for field in fields}
 
 
-def _packet_summary(packets: Sequence[dict[str, int]]) -> dict[str, Any]:
+def _packet_summary(packets: Sequence[dict[str, int | None]]) -> dict[str, Any]:
     pts = [packet["pts"] for packet in packets]
     dts = [packet["dts"] for packet in packets]
+    assert all(value is not None for value in pts)
+    assert all(value is not None for value in dts)
+    typed_pts = [int(value) for value in pts]
+    typed_dts = [int(value) for value in dts]
+    last_duration = packets[-1]["duration"]
+    if last_duration is not None:
+        end_pts = typed_pts[-1] + last_duration
+        end_pts_source = "packet_duration"
+    elif len(typed_pts) >= 2 and typed_pts[-1] > typed_pts[-2]:
+        end_pts = typed_pts[-1] + (typed_pts[-1] - typed_pts[-2])
+        end_pts_source = "last_pts_delta"
+    else:
+        end_pts = None
+        end_pts_source = None
     return {
         "packet_count": len(packets),
-        "first_pts": pts[0],
-        "last_pts": pts[-1],
-        "end_pts": pts[-1] + packets[-1]["duration"],
-        "pts_monotonic": first_non_monotonic(pts) is None,
-        "dts_monotonic": first_non_monotonic(dts) is None,
+        "first_pts": typed_pts[0],
+        "last_pts": typed_pts[-1],
+        "end_pts": end_pts,
+        "end_pts_source": end_pts_source,
+        "pts_monotonic": first_non_monotonic(typed_pts) is None,
+        "dts_monotonic": first_non_monotonic(typed_dts) is None,
     }
 
 
