@@ -198,9 +198,11 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
   repair, fresh tiles keep one stale VRAM word each (dark 4px dashes scattered
   on updated tiles; settled frames look clean). The variant "CPU first word +
   DMA `src+2 -> dst+2` with `len-1`" is WRONG here: every word lands one early
-  (vertical striping). With this recipe the Main CPU never copies pattern
-  bytes (build a run table, DMA straight from Word RAM, one repair word per
-  chunk).
+  (vertical striping). The default player uses this recipe for runs of three or
+  more tiles and reuses the ordinary destination command for the repair. Runs
+  of one or two tiles are faster as 8 or 16 direct `MOVE.L` writes from Word
+  RAM; ordinary CPU reads do not have the DMA first-word defect. Set
+  `DMA_RUN_FASTPATH=0` only for an all-DMA A/B build.
 - DMA from Main RAM needs no correction. Trigger writes: first control word,
   then the second word containing CD5 (`0x80`); keep the pre-DMA register
   writes (`0x93-0x97`) before the control words.

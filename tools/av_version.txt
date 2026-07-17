@@ -11,6 +11,12 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p45 : Reduce Main-CPU cold-run fixed cost. One- and two-tile runs write
+#        Word RAM directly to the VDP; longer DMA runs reuse their destination
+#        command for the required first-word repair. H40 DEBUG adds a low-cost
+#        Mega-CD stopwatch/readout and packed run count for matched-frame A/B.
+#        Bad Apple H40 measured 12.0% lower pattern-transfer time over 3093
+#        matched frames and 13.0% at its 47-run peak, with identical pixels.
 #   p44 : Keep the 30fps cold-run MOVEM fast path from loading its own
 #        postincrement source register a4. The 68000 substituted the updated
 #        pointer for one 4-byte pattern row, producing a horizontal dash in the
@@ -325,4 +331,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260717
 e=45
-p=44
+p=45

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Extract and aggregate the DEBUG HUD from a native playback recording.
 
-The player renders this fixed row:
+The player renders this common row, with an H40-only diagnostic suffix:
 
-    FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx
+    H32: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx
+    H40: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxxUxxxxNxx
 
 Frames are decoded sequentially through ffmpeg.  High-confidence OCR samples
 with the same F value are combined before R transitions are reported.  This is
@@ -31,9 +32,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 import read_frameno  # noqa: E402
-
-
-FIELDS = read_frameno.HUD_FIELDS
 
 
 @dataclass(frozen=True)
@@ -120,14 +118,22 @@ def iter_samples(
 ) -> Iterable[Sample]:
     # Only the top-left HUD area is sent through the pipe.  Decoding still sees
     # every source frame, while pipe traffic stays small even for an upscaled MP4.
-    crop_w = min(read_frameno.HUD_CELLS * read_frameno.CELL, probe.width - crop_x)
+    available_width = probe.width - crop_x
+    layout = read_frameno.hud_layout_for_width(available_width)
+    fields = tuple(name for name, _col, _digits in layout)
+    hud_cells = (
+        read_frameno.HUD_H40_CELLS
+        if layout is read_frameno.HUD_H40_LAYOUT
+        else read_frameno.HUD_CELLS
+    )
+    crop_w = min(hud_cells * read_frameno.CELL, available_width)
     crop_h = min(32, probe.height)
     if crop_x < 0 or crop_x >= probe.width:
         raise SystemExit(f"--crop-x must be within 0..{probe.width - 1}")
-    if crop_w < read_frameno.HUD_CELLS * read_frameno.CELL or crop_h < 8:
+    if crop_w < hud_cells * read_frameno.CELL or crop_h < 8:
         raise SystemExit(
             f"HUD crop is too small ({crop_w}x{crop_h}); "
-            f"need at least {read_frameno.HUD_CELLS * read_frameno.CELL}x8"
+            f"need at least {hud_cells * read_frameno.CELL}x8"
         )
 
     vf = f"crop={crop_w}:{crop_h}:{crop_x}:0,format=gray"
@@ -154,12 +160,12 @@ def iter_samples(
             )
         image = np.frombuffer(raw, np.uint8).reshape(crop_h, crop_w)
         hud = read_frameno.read_hud(image)
-        field_conf = {name: float(hud[name][1]) for name in FIELDS}
+        field_conf = {name: float(hud[name][1]) for name in fields}
         if min(field_conf.values()) >= confidence:
             yield Sample(
                 capture=capture,
                 time_s=probe.start_time + capture / float(probe.fps),
-                values={name: int(hud[name][0]) for name in FIELDS},
+                values={name: int(hud[name][0]) for name in fields},
                 confidence=field_conf,
             )
         capture += 1
@@ -174,7 +180,7 @@ def aggregate(samples: list[Sample], loop: int = -1) -> FrameGroup:
     if not samples:
         raise ValueError("cannot aggregate an empty sample group")
     values: dict[str, int] = {}
-    for field in FIELDS:
+    for field in samples[0].values:
         counts = Counter(sample.values[field] for sample in samples)
         # Prefer the common value, then the value with the highest summed OCR
         # confidence.  The final tie-break is deterministic.
@@ -291,12 +297,13 @@ def transition_indices(groups: list[FrameGroup]) -> list[int]:
 
 def _fmt(group: FrameGroup) -> str:
     v = group.values
+    h40 = f" U{v['U']:04X} N{v['N']:02X}" if "U" in v else ""
     return (
         f"loop={group.loop} t={group.time_first:8.3f}s "
         f"cap={group.capture_first:5d}-{group.capture_last:<5d} "
         f"F{v['F']:04X} P{v['P']:02X} S{v['S']:02X} D{v['D']:02X} "
         f"R{v['R']:02X} L{v['L']:02X} C{v['C']:02X} W{v['W']:02X} "
-        f"M{v['M']:02X} A{v['A']:02X} n={group.sample_count} "
+        f"M{v['M']:02X} A{v['A']:02X}{h40} n={group.sample_count} "
         f"conf={group.confidence:.3f}"
     )
 
@@ -332,7 +339,9 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
         "loop", "capture_first", "capture_last", "time_first_s", "time_last_s",
         "sample_count", "confidence", "frame", "frame_hex", "palette", "slip",
         "desync", "resync", "lead_256b", "lead_hex", "cd_wait", "sub_wait_lines",
-        "main_vblank_wait", "startup_audio_left", "r_transition", "prev_frame",
+        "main_vblank_wait", "startup_audio_left", "main_pattern_ticks",
+        "main_pattern_ms", "cold_runs_low8",
+        "r_transition", "prev_frame",
         "prev_lead_256b", "next_frame", "next_lead_256b",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -363,6 +372,11 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
                 "sub_wait_lines": values["W"],
                 "main_vblank_wait": values["M"],
                 "startup_audio_left": values["A"],
+                "main_pattern_ticks": values.get("U", ""),
+                "main_pattern_ms": (
+                    f"{values['U'] * 0.03072:.5f}" if "U" in values else ""
+                ),
+                "cold_runs_low8": values.get("N", ""),
                 "r_transition": (
                     f"{previous.values['R']:02X}->{values['R']:02X}" if previous else ""
                 ),

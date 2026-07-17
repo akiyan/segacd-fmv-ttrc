@@ -135,8 +135,8 @@ clicks exist only after listening to the final file.
 
 ## Optional HUD diagnostics
 
-The standard capture already builds DEBUG. Parse `F/P/S/D/R/L/C/W/M/A` only when the task asks
-for those diagnostics; otherwise leave the visible HUD unparsed. Keep OCR work separate from
+The standard capture already builds DEBUG. Parse `F/P/S/D/R/L/C/W/M/A` and the H40-only
+`U/N` fields only when the task asks for those diagnostics; otherwise leave the visible HUD unparsed. Keep OCR work separate from
 ordinary recording and publication head cueing:
 
 ```sh
@@ -149,9 +149,12 @@ OUTDIR="$PWD/videos" tools/run_headless.sh out/PROFILE.cue \
   --shots 68 --interval 2 --display :NNN
 ```
 
-Confirm the contiguous Window-plane HUD `FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx` is visible before
-a long OCR scan. `F` contains four hexadecimal digits; every other field contains two. Read
-the requested counters over the complete loop. Never reuse this OCR as a publication trim point.
+Confirm the contiguous Window-plane HUD is visible before a long OCR scan. H32 uses
+`FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx`; H40 appends `UxxxxNxx`. `F/U` contain four
+hexadecimal digits; every other field contains two. Read the requested counters over the
+complete loop. In H40, `U` is the Main pattern-transfer time in 30.72 us Mega-CD
+stopwatch ticks and `N` is the packed cold-run count's low byte (wrapping at
+256). Never reuse this OCR as a publication trim point.
 
 ## Existing recordings and smoke tests
 

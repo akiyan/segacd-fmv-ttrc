@@ -25,6 +25,7 @@
 .equ GA_COMCMD0, 0x00A12010
 .equ GA_COMCMD1, 0x00A12012
 .equ GA_COMSTAT0, 0x00A12020
+.equ GA_STOPWATCH, 0x00A1200C		/* 12-bit, 30.72 us/tick, Main read-only */
 
 .equ PROBE_BANK, 0x00200000
 
@@ -78,6 +79,7 @@
    これを超える転送はランをまたいで次VBLANKへ分割=active表示中へのはみ出し防止(ares対策)。 */
 .equ VB_WORDS_H32, 2800		/* H32 V28 NTSC */
 .equ VB_WORDS_H40, 3400		/* H40 V28 NTSC(理論~3895語より保守的) */
+.equ CPU_DIRECT_MAX_WORDS, 32	/* 1-2 tiles: CPU writes beat per-run DMA setup */
 
 .text
 
@@ -224,7 +226,7 @@ ip_entry:
 	dbra	d1, 1b
 	/* Initialize the maximum-width Window row once with the reserved blank glyph.
 	   H40 uses all 64 entries; H32 displays the first 32.  Per-frame code then
-	   overwrites only the 32 live HUD entries and never clears the row again. */
+	   overwrites 32 H32 or 40 H40 HUD entries and never clears the row again. */
 	move.l	#WIN_NT, d0
 	bsr	set_vram_write
 	move.w	md_font_vtile, d0
@@ -240,6 +242,8 @@ ip_entry:
 	clr.w	vsync_acc			/* v4: ペーシングカウンタ初期化(.bssはMD上でクリアされない) */
 .ifdef DEBUG
 	clr.w	sub_wait_lines
+	clr.w	dma_elapsed_ticks
+	clr.w	dma_start_tick
 .endif
 play_loop:
 	/* v4: ディスクが CD 1x レートマッチpadding済み(pack)=1コマぶんのデータ配送が表示レートに
@@ -454,9 +458,10 @@ build_frame:
 	movem.l	d0-d7/a0-a3, -(sp)
 .ifdef DEBUG
 	clr.w	vsync_acc			/* per-frame VBlank-start waits shown as Mxx */
+	clr.w	dma_elapsed_ticks		/* H40 Uxxxx: Main pattern-transfer stopwatch ticks */
 .endif
-	/* Pass1: コピー無し。(dst.w, len.w, src.l)のラン表だけ作る=Main CPUはパターンに触れない。
-	   src は Word-RAM 内のパターン先頭(タイルDMAはWord-RAM直, 先頭1ワード化けはPass2で対処) */
+	/* Pass1: パターンコピー無し。(dst.w, len.w, src.l)のラン表だけ作る。
+	   src は Word-RAM 内のパターン先頭。Pass2は長runをDMA+先頭補修、短runをCPU直書きする。 */
 	lea	(PROBE_BANK+0x82), a0		/* n_load @ +0x82, loads @ +0x84 */
 	move.w	(a0)+, d7			/* n_load 合計タイル数 */
 	lea	RUN_TABLE, a2
@@ -625,9 +630,9 @@ bf_bdone:
 	   タイルDMAが複数vblankに渡る間「旧フレーム表示×新パレット」が見える
 	   (パレット区間切替の瞬間に実機側だけ明るいゴミタイルが出る実バグ)。 */
 bf_dma:
-	/* Pass2: 表を順に Word-RAM 直DMA(src→VRAM dst)。VBLANK予算(d7)でランをまたいで分割。
-	   Word-RAM源DMAは先頭1ワードが化ける(実測/Sega文書)ため、src+2/full lengthを
-	   dstへDMAした後、チャンク先頭の1ワードをCPUで上書き修復する。 */
+	/* Pass2: 表を順に Word-RAM からVRAMへ転送。VBLANK予算(d7)でランをまたいで分割。
+	   長runのWord-RAM DMAは先頭1ワードが化ける(実測/Sega文書)ため、src+2/full lengthを
+	   dstへDMAした後、チャンク先頭の1ワードをCPUで上書き修復する。短runはCPU直書き。 */
 	move.w	n_runs, d4
 	beq	bf_flip
 	lea	RUN_TABLE, a2
@@ -636,11 +641,21 @@ bf_dma:
 	bne	1f
 	bsr	wait_vb_start
 1:
+.ifdef DEBUG
+	move.w	(GA_STOPWATCH).l, d0
+	move.w	d0, dma_start_tick		/* begin inside the first transfer VBlank */
+.endif
 	move.w	md_vbudget, d7			/* d7 = 残VBLANK予算(語, モード別) */
 bf_run_lp:
 	move.w	(a2)+, d3			/* dst(VRAMバイト) */
 	move.w	(a2)+, d1			/* len(語, このランの残) */
 	movea.l	(a2)+, a3			/* src(Word-RAM) */
+.ifdef DMA_RUN_FASTPATH
+	/* A one-time run branch is much cheaper than programming a DMA for one or
+	   two tiles.  Test the original run length here, never a budget-split tail. */
+	cmpi.w	#CPU_DIRECT_MAX_WORDS, d1
+	bls.s	bf_short_run
+.endif
 bf_chunk:
 	tst.w	d7				/* 予算切れなら次vblank開始まで待って補充 */
 	bgt	1f
@@ -658,12 +673,49 @@ bf_chunk:
 	add.w	d6, d6				/* chunk*2 = バイト */
 	adda.w	d6, a3				/* src += バイト */
 	add.w	d6, d3				/* dst += バイト */
+.ifdef DMA_RUN_FASTPATH
+	tst.w	d1
+	beq	bf_run_done			/* usual one-chunk run avoids an extra BRA */
+	bra	bf_chunk
+.else
 	tst.w	d1
 	bne	bf_chunk
+.endif
+
+.ifdef DMA_RUN_FASTPATH
+bf_short_run:
+	/* Keep the whole short run in one VBlank.  H40's 3400-word budget leaves
+	   an 8-word tail, so a 16/32-word run may need to start in the next blank. */
+	cmp.w	d7, d1
+	bls.s	1f
+	bsr	wait_vb_start
+	move.w	md_vbudget, d7
+1:
+	move.w	d3, d0
+	bsr	set_vram_write
+	cmpi.w	#16, d1				/* two tiles write one extra 32-byte block */
+	beq.s	2f
+	.rept 8
+	move.l	(a3)+, (VDP_DATA).l
+	.endr
+2:
+	.rept 8
+	move.l	(a3)+, (VDP_DATA).l
+	.endr
+	sub.w	d1, d7
+.endif
+bf_run_done:
 	subq.w	#1, d4
 	bne	bf_run_lp
 bf_flip:
 .ifdef DEBUG
+	tst.w	n_runs
+	beq.s	1f
+	move.w	(GA_STOPWATCH).l, d0
+	sub.w	dma_start_tick, d0
+	andi.w	#0x0FFF, d0			/* stopwatch wraps naturally after 4096 ticks */
+	move.w	d0, dma_elapsed_ticks
+1:
 	bsr	render_dbg			/* fixed Window最上段を更新(reg2 flipと独立) */
 .endif
 	/* パレット区間切替: CRAM総入替(64語≈0.1ms)→flip を新しいvblank頭で連続実行=
@@ -760,6 +812,28 @@ dma_chunk_wr:
 	move.w	#0x9700, d0
 	or.b	d2, d0
 	move.w	d0, (VDP_CTRL).l
+.ifdef DMA_RUN_FASTPATH
+	/* Build the normal VRAM-write command once.  CD5 in its low word starts
+	   DMA; the preserved command then restores the same destination for the
+	   one-word CPU repair without recomputing set_vram_write. */
+	move.l	d3, d0
+	andi.l	#0x0000FFFF, d0
+	move.l	d0, d2
+	andi.l	#0x00003FFF, d0
+	swap	d0
+	ori.l	#0x40000000, d0
+	lsr.w	#7, d2
+	lsr.w	#7, d2
+	andi.w	#0x0003, d2
+	or.w	d2, d0				/* d0 = ordinary VRAM-write command */
+	move.l	d0, d2				/* preserved across wait_dma_done */
+	ori.w	#0x0080, d0			/* CD5: memory-to-VRAM DMA */
+	move.l	d0, (VDP_CTRL).l		/* high control word, then CD5 trigger word */
+	bsr	wait_dma_done
+	/* 先頭1ワードはDMA開始ラッチの古い値(ゴミ)が書かれるため、CPUで上書き修復。
+	   (src+2補正で2ワード目以降は正しい。ゴミはチャンク先頭の1ワードのみ) */
+	move.l	d2, (VDP_CTRL).l
+.else
 	move.l	d3, d0				/* dst コマンド(VRAM書込+CD5起動) */
 	and.l	#0x0000FFFF, d0
 	move.l	d0, d2
@@ -773,10 +847,10 @@ dma_chunk_wr:
 	ori.w	#0x0080, d2
 	move.w	d2, (VDP_CTRL).l
 	bsr	wait_dma_done
-	/* 先頭1ワードはDMA開始ラッチの古い値(ゴミ)が書かれるため、CPUで上書き修復。
-	   (src+2補正で2ワード目以降は正しい。ゴミはチャンク先頭の1ワードのみ) */
+	/* Restore the ordinary destination command before repairing dst[0]. */
 	move.w	d3, d0
 	bsr	set_vram_write
+.endif
 	move.w	(a3), (VDP_DATA).l
 	rts
 
@@ -892,8 +966,9 @@ wait_vblank:
 	rts
 
 /* 独立Window planeの最上段1行にデバッグHUDを連続書きする。
-   Layout: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx = 32 words in H32/H40.
-	Fは16-bit、Lはleadのhigh byte、他はlow byteの2桁。Lは256B単位。
+   H32: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx = 32 words.
+   H40: the same 32 words followed by UxxxxNxx = 40 words.
+	F/Uは16-bit、Lはleadのhigh byte、他はlow byteの2桁。Lは256B単位。
    WIN_NTは固定なのでNT0/NT1の裏表flipに影響されない。 */
 render_dbg:
 	movem.l	d0-d4, -(sp)
@@ -909,7 +984,7 @@ render_dbg:
 	blo	0b
 1:
 	move.l	#WIN_NT, d0
-	bsr	set_vram_write			/* one address setup, then exactly 32 sequential writes */
+	bsr	set_vram_write			/* one address setup, then 32/40 sequential writes */
 	/* F: frame number, 4 digits */
 	move.w	#15, d3				/* glyph 'F'(=hex F) */
 	move.w	frame_no, d4
@@ -952,6 +1027,17 @@ render_dbg:
 	move.w	#10, d3				/* glyph 'A'(=hex A) */
 	move.w	(PROBE_BANK+0xAF1C).l, d4
 	bsr	dbg_put2
+	/* H40 has exactly eight additional visible Window cells.  Keep the shared
+	   H32 prefix stable and use the tail for direct Main/DMA correlation. */
+	cmpi.w	#1, md_mode
+	bne.s	1f
+	move.w	#20, d3				/* glyph 'U': Main pattern-transfer stopwatch ticks */
+	move.w	dma_elapsed_ticks, d4
+	bsr	dbg_put4
+	move.w	#27, d3				/* glyph 'N': cold-run descriptor count */
+	move.w	n_runs, d4
+	bsr	dbg_put2
+1:
 	movem.l	(sp)+, d0-d4
 	rts
 
@@ -1023,6 +1109,10 @@ dbg_seg:
 	.space 2
 sub_wait_lines:
 	.space 2				/* DEBUG HUD W: Main wait for Sub at last bank swap */
+dma_elapsed_ticks:
+	.space 2				/* DEBUG H40 Uxxxx: 30.72 us stopwatch ticks */
+dma_start_tick:
+	.space 2				/* DEBUG stopwatch sample at first pattern transfer */
 md_nseg:
 	.space 2				/* PALTAB区間数(表コピー時にクランプ済み) */
 .ifdef MAIN_CODEGEN

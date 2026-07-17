@@ -184,10 +184,16 @@ python tools/pack_stream.py --config configs/bad-apple-h32.toml --verify
 make disc CONFIG=configs/bad-apple-h32.toml DEBUG=1
 ```
 
-`MAIN_CODEGEN=1` opts into the experimental issue #27 Main-CPU bitmap handler
-generator. It emits code once after header setup and falls back to the reference
-bit loop if its runtime size/range checks fail. The option remains disabled by
-default until H32/H40 playback and timing A/B validation is complete.
+`MAIN_CODEGEN=1` is the default issue #27 Main-CPU bitmap handler generator. It
+emits code once after header setup and falls back to the reference bit loop if
+its runtime size/range checks fail. Set `MAIN_CODEGEN=0` only for a reference
+bit-loop A/B build.
+
+`DMA_RUN_FASTPATH=1` is the default Main pattern-transfer path. One- and
+two-tile cold runs use direct CPU writes from Word RAM, while longer runs retain
+Word-RAM DMA with the required first-word repair and reuse its destination
+command. `DMA_RUN_FASTPATH=0` is an all-DMA diagnostic fallback for A/B builds;
+it does not change the packed stream or encoded image.
 
 `sim.py` resolves the profile once and stores the exact geometry, timing, audio,
 stream, hardware, palette, and pack settings plus the TOML SHA-256 in
@@ -236,10 +242,11 @@ on the VDP Window plane (`render_dbg` in ip, read back by
 the two alternating video name tables, so a video-plane flip cannot make the
 text disappear for one frame.
 
-Both H32 and H40 use the same contiguous 32-cell layout, with no field gaps:
-`FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx`. `F` is four hexadecimal digits; `L`
-shows the high byte of the lead, and `P/S/D/R/C/W/M/A` show their low byte.
-Every compact field is two digits and wraps naturally from `FF` to `00`.
+H32 uses the contiguous 32-cell layout
+`FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx`. H40 keeps that exact prefix and uses its
+eight additional visible cells for `UxxxxNxx`. `F` and `U` are four
+hexadecimal digits; `L` shows the high byte of the lead, and the other compact
+fields show their low byte. Two-digit fields wrap naturally from `FF` to `00`.
 
 The shared font asset uses source index 0 for its background and source index 1
 for set pixels. The movie player expands them once to P0/index1 and P0/index15
@@ -250,11 +257,11 @@ per-frame font scan, recolour, DMA, or additional VBlank wait.
 The top Window row covers the video visually, but a DEBUG build still updates
 the hidden video name-table row and all other rows exactly as a release build.
 All Window cells are initialized with the opaque darkest-colour blank glyph;
-the 32 live HUD cells are then overwritten once per frame. This adds no DMA and
-does not branch on whether the video starts at row 0. In DEBUG builds, the old
-slip-triggered CRAM0 red border is disabled; slips remain visible in `Sxx`, while
-the HUD colours stay stable. Release builds retain the red indicator because
-they do not have the HUD.
+32 H32 or 40 H40 live HUD cells are then overwritten once per frame. This adds
+no DMA and does not branch on whether the video starts at row 0. In DEBUG
+builds, the old slip-triggered CRAM0 red border is disabled; slips remain
+visible in `Sxx`, while the HUD colours stay stable. Release builds retain the
+red indicator because they do not have the HUD.
 
 | Marker | Display | Meaning |
 |---|---|---|
@@ -268,3 +275,5 @@ they do not have the HUD.
 | `W` | `Wxx` | Approximate Main-CPU wait for Sub completion at `CMD_SWAP`, in V-counter scanlines. It wraps at 256, so use it as a short-wait diagnostic rather than an absolute stopwatch. |
 | `M` | `Mxx` | VBlank starts waited by the Main pattern path this frame. Values of 2 or more prove an extra VBlank spill. |
 | `A` | `Axx` | Legacy startup-audio duplicate chunks still being skipped. Current persistent-prefetch streams start and remain at zero. |
+| `U` | `Uxxxx` (H40) | Main pattern-transfer time in Mega-CD stopwatch ticks, measured from the first run through the final DMA repair or CPU-direct write. One tick is 30.72 us; the 12-bit counter wraps after 4096 ticks (about 125.83 ms). |
+| `N` | `Nxx` (H40) | Low byte of the packed cold-run descriptor count for this frame. This is the fragmentation count before a long run is split by the VBlank word budget and wraps at 256. |

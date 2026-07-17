@@ -119,9 +119,10 @@ meter and tile category.
   `MOVIE.DAT` compatibility file for analysis and regression tools.
 - `tools/render_analysis.py` + `tools/layout_preview.py`: the analysis overlay.
 - `boot/`: the Sub/Main CPU playback runtime for real hardware. DEBUG builds
-  keep the contiguous 32-cell `FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx` HUD on the
-  top-row VDP Window plane and upload its fixed P0/index15 font once, so
-  video-plane flips and palette switches do not recolour or blink the text.
+  keep the contiguous `FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx` HUD on the top-row
+  VDP Window plane; H40 appends `UxxxxNxx` for Main pattern-transfer stopwatch
+  ticks and the packed cold-run count's low byte. The fixed P0/index15 font is uploaded once, so video-plane
+  flips and palette switches do not recolour or blink the text.
 
 ## Build Targets
 

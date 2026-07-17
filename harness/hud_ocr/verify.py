@@ -38,7 +38,8 @@ def make_hud(width, values, origin=(5, 4), complete=True, black_backing=False):
     # modelled by black_backing below.
     image = (150 + (7 * xx + 11 * yy) % 91).astype(np.uint8)
     x, y = origin
-    fields = read_frameno.HUD_LAYOUT if complete else read_frameno.HUD_LAYOUT[:1]
+    layout = read_frameno.hud_layout_for_width(width)
+    fields = layout if complete else layout[:1]
     if black_backing:
         image[y:y + read_frameno.CELL, :] = 0
     for name, col, digits in fields:
@@ -53,7 +54,7 @@ def make_hud(width, values, origin=(5, 4), complete=True, black_backing=False):
 def check_case(width, values, origin):
     image = make_hud(width, values, origin, black_backing=True)
     got = read_frameno.read_hud(image)
-    for name, _col, digits in read_frameno.HUD_LAYOUT:
+    for name, _col, digits in read_frameno.hud_layout_for_width(width):
         mask = (1 << (digits * 4)) - 1
         expected = values[name] & mask
         if got[name][0] != expected:
@@ -70,13 +71,17 @@ def check_case(width, values, origin):
 
 def main():
     if read_frameno.HUD_CELLS != 32:
-        raise SystemExit(f"HUD layout is {read_frameno.HUD_CELLS} cells, expected 32")
+        raise SystemExit(f"H32 HUD is {read_frameno.HUD_CELLS} cells, expected 32")
+    if read_frameno.HUD_H40_CELLS != 40:
+        raise SystemExit(
+            f"H40 HUD is {read_frameno.HUD_H40_CELLS} cells, expected 40")
     check_case(256, {"F": 0x1234, "P": 0xAB, "S": 0xFF,
                      "D": 0x00, "R": 0x7E, "L": 0x68,
                      "C": 0x02, "W": 0x03, "M": 0x04, "A": 0x1E}, (0, 5))
     check_case(320, {"F": 0x0000, "P": 0xFF, "S": 0x00,
                      "D": 0xFF, "R": 0x00, "L": 0x7F,
-                     "C": 0x00, "W": 0xFF, "M": 0x02, "A": 0x00}, (2, 3))
+                     "C": 0x00, "W": 0xFF, "M": 0x02, "A": 0x00,
+                     "U": 0x1234, "N": 0x2F}, (0, 3))
 
     # The longstanding single-purpose API must not depend on later HUD fields.
     only_f = make_hud(
@@ -87,7 +92,7 @@ def main():
         raise SystemExit(
             f"standalone F API: got {frame:04X}/{confidence:.3f}, expected CAFE")
 
-    print("HUD OCR proof: OK (full-width black row, H32/H40 32-cell layout, standalone F compatible)")
+    print("HUD OCR proof: OK (H32 32 cells, H40 40 cells, standalone F compatible)")
 
 
 if __name__ == "__main__":

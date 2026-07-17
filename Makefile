@@ -210,6 +210,9 @@ ISO_HOLD_N ?= 0
 # blitters. H32/H40 full-playback validation is complete; MAIN_CODEGEN=0 keeps
 # the byte-identical reference player available for fallback/A-B diagnostics.
 MAIN_CODEGEN ?= 1
+# Main-CPU pattern-transfer fast path.  Set to 0 only for reproducible A/B
+# diagnostics against the former all-DMA run path.
+DMA_RUN_FASTPATH ?= 1
 # DEBUG changes assembler flags without changing a source timestamp. Force this
 # small object to rebuild so `make disc DEBUG=1` can never reuse a release object
 # (or vice versa).
@@ -217,7 +220,7 @@ movieplay-force:
 
 $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin $(MOVIEPLAY_STREAM_DIR)/palettes.bin $(BOOT_DIR)/dbgfont.bin tools/av_config.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
 	python3 tools/check_player_ring.py
-	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter 1,$(MAIN_CODEGEN)),--defsym MAIN_CODEGEN=1) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
+	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter 1,$(MAIN_CODEGEN)),--defsym MAIN_CODEGEN=1) $(if $(filter 1,$(DMA_RUN_FASTPATH)),--defsym DMA_RUN_FASTPATH=1) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
 
 $(BOOT_DIR)/dbgfont.bin: tools/gen_debugfont.py
 	python3 tools/gen_debugfont.py

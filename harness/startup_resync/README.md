@@ -5,7 +5,8 @@ first audio re-sync (`R`) without seeking by eye.  It uses the player's fixed
 top-row HUD:
 
 ```text
-FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx
+H32: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx
+H40: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxxUxxxxNxx
 ```
 
 The startup-specific fields are:
@@ -15,12 +16,15 @@ The startup-specific fields are:
 - `W`: Main's wait for Sub completion at `CMD_SWAP`, in approximate scanlines;
 - `M`: Main-side VBlank-start waits while applying pattern DMA;
 - `A`: startup-audio duplicate chunks still skipped after this frame.
+- `U` (H40): Main pattern-transfer time in 30.72 us Mega-CD stopwatch ticks;
+- `N` (H40): low byte of the packed cold-run descriptor count before VBlank
+  splits; it wraps at 256.
 
-All five use two hexadecimal digits. The extra counters exist only in a
-`DEBUG=1` player and add no DMA; the Window row receives ten more CPU words.
+The startup fields use two hexadecimal digits. `U` uses four digits and `N`
+uses two. The extra counters exist only in a `DEBUG=1` player and add no DMA.
 
 Every capture frame is decoded by `ffmpeg` as a small grayscale rawvideo crop.
-`tools/read_frameno.py:read_hud` reads all ten fields.  A sample is accepted only
+`tools/read_frameno.py:read_hud` reads all visible fields.  A sample is accepted only
 when every field meets the confidence threshold, then repeated capture frames
 with the same `F` value are aggregated.  This matters because a 29.97 fps movie
 frame normally appears in about two frames of a 59.94 fps recording.
