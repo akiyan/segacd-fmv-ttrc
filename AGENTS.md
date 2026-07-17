@@ -376,10 +376,16 @@ evidence alone.
 - Check `nvidia-smi` and a small CuPy allocation outside the sandbox first.
 - Run GPU `tools/sim.py` and `tools/render_analysis.py` outside the sandbox so
   they can access the NVIDIA device nodes.
+- Prefer `~/.config/cbrsim-gpu-stable/venv/bin/python`: it is the verified
+  CPython 3.14.4 + NumPy 2.3.5 + CuPy 14.1.1 environment. The older
+  `cbrsim-gpu` venv's NumPy 2.5.1 corrupted long runs (segfaults and NumPy
+  `SystemError`) even though short CUDA allocations passed. The sim rejects
+  that exact unsafe combination before doing work.
 - The GPU sim initializes CUDA before its CPU frame-loader pool. Those workers
   must use multiprocessing `spawn`, never `fork`: forking the live CUDA parent
   can segfault the Python 3.14 interpreter part-way through precomputation.
-  CPU-only sim runs may keep the cheaper `fork` path.
+  CPU-only sim runs may keep the cheaper `fork` path. GPU runs default to the
+  verified four feeder processes; `CBRSIM_WORKERS` remains a diagnostic override.
 - CPython 3.14 also defaults sim PNG output to synchronous writes. Six concurrent
   Pillow/NumPy writer threads have caused an interpreter segfault late in long
   encodes. Older Python versions retain six writers; `CBRSIM_PNG_WORKERS` is a

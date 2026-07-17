@@ -8,6 +8,12 @@ import sim
 
 
 class SimMultiprocessingTests(unittest.TestCase):
+    def test_gpu_feeder_defaults_to_verified_four_processes(self) -> None:
+        self.assertEqual(sim.quant_worker_count(True, 30), 4)
+        self.assertEqual(sim.quant_worker_count(True, 2), 2)
+        self.assertEqual(sim.quant_worker_count(True, 30, override_present=True), 30)
+        self.assertEqual(sim.quant_worker_count(False, 30), 30)
+
     def test_gpu_loader_pool_never_forks_cuda_parent(self) -> None:
         self.assertEqual(sim.quant_pool_start_method(True), "spawn")
 

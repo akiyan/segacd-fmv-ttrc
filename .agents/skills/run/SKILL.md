@@ -85,7 +85,8 @@ run two captures together, and never kill another session's process.
 Prefer the GPU Python environment:
 
 ```sh
-PY=/home/akiyan/.config/cbrsim-gpu/venv/bin/python
+PY=/home/akiyan/.config/cbrsim-gpu-stable/venv/bin/python
+[ -x "$PY" ] || PY=/home/akiyan/.config/cbrsim-gpu/venv/bin/python
 [ -x "$PY" ] || PY=python3
 ```
 

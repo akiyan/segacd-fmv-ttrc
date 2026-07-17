@@ -805,6 +805,12 @@ def n_workers():
     return max(1, (os.cpu_count() or 4) - 2)      # PCのCPUコア数-2(毎回動的に取得)
 
 
+def quant_worker_count(gpu_enabled, requested, override_present=False):
+    """Keep the verified GPU feeder width unless a diagnostic overrides it."""
+    requested = max(1, int(requested))
+    return requested if override_present or not gpu_enabled else min(requested, 4)
+
+
 def quant_pool_start_method(gpu_enabled):
     """Choose a safe process start method for the quantization feeder pool.
 
@@ -831,9 +837,10 @@ def png_workers():
 def precompute_quant(frames, seg_pals, frame_seg):
     """各フレームの (detail, assign, plain_idx, plain_rgb) を並列に前計算して返す。"""
     n = len(frames)
-    w = n_workers()
     import gpu_quant
     gpu_on = gpu_quant.enabled()
+    w = quant_worker_count(
+        gpu_on, n_workers(), override_present="CBRSIM_WORKERS" in os.environ)
     if gpu_on:
         # CPU(並列)で読込/333化/タイル化 → GPU で割当/索引。imap で両者を重ねる
         # (ワーカーが flat を出す傍から親GPUが処理＝CPU I/OとGPU計算を並行)。
@@ -879,6 +886,12 @@ def precompute_quant(frames, seg_pals, frame_seg):
 
 def main():
     global DEDITHER_VF, RAW_VF
+    if (sys.version_info[:3] == (3, 14, 4)
+            and np.__version__ == "2.5.1"):
+        raise SystemExit(
+            "unsafe numeric runtime: CPython 3.14.4 + NumPy 2.5.1 corrupted "
+            "long sim runs on this host. Use "
+            "~/.config/cbrsim-gpu-stable/venv/bin/python (NumPy 2.3.5).")
     if CONFIG_PROFILE is not None:
         print(f"encode profile: {CONFIG_PROFILE.path} sha256={CONFIG_PROFILE.sha256}")
     if not DEDITHER_VF or not RAW_VF:

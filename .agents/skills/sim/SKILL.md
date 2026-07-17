@@ -43,7 +43,8 @@ Other fixed defaults:
 - Start sim/render with the GPU-specific Python when available:
 
 ```sh
-PY=~/.config/cbrsim-gpu/venv/bin/python
+PY=~/.config/cbrsim-gpu-stable/venv/bin/python
+[ -x "$PY" ] || PY=~/.config/cbrsim-gpu/venv/bin/python
 [ -x "$PY" ] || PY=python3
 ```
 
@@ -151,7 +152,8 @@ parsing error or stale environment cannot silently reuse another comparison's
 inputs.
 
 ```sh
-PY=~/.config/cbrsim-gpu/venv/bin/python
+PY=~/.config/cbrsim-gpu-stable/venv/bin/python
+[ -x "$PY" ] || PY=~/.config/cbrsim-gpu/venv/bin/python
 [ -x "$PY" ] || PY=python3
 "$PY" tools/sim.py --config configs/<source>-<mode>.toml
 ```

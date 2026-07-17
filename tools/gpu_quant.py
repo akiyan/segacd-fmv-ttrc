@@ -7,7 +7,8 @@
 
 GPU実行は既定で有効。CBRSIM_GPU=0/off/false/no のときだけ明示的に無効化する。
 cupy が無い/GPU が使えない場合は自動でCPUへフォールバック(enabled()==False)。
-CUDA 実行環境は専用venv ~/.config/cbrsim-gpu/venv に隔離(cupy-cuda12x[ctk])。
+CUDA 実行環境は専用venv ~/.config/cbrsim-gpu-stable/venv に隔離。
+これはsystem NumPy 2.3.5と既存cupy-cuda12x[ctk]を組み合わせる。
 sim を GPU で回すときはその venv の python で起動する。
 """
 import os
