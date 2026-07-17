@@ -217,15 +217,25 @@ mode/fps theoretical VDP byte ceiling, subtracts the fixed full name-table DMA
 the raster's tile count. Green fill; if the transfer exceeds that ceiling it
 turns orange with a red overflow tail.
 
-### DMA run meter
-`Run:NNNN` = the number of ascending consecutive VRAM-slot runs used for those
-DMA pattern tiles, exactly matching the packer's cold-run descriptors. Reuse
-entries do not break a run; a slot discontinuity does. The bar's per-frame
-full-scale is the current `DMA` tile count: the worst case is every transferred
-tile isolated into its own one-tile run. A tiny bar therefore means long,
-efficient runs; a full amber bar means the maximally fragmented case. The
-numeric field is fixed at four digits, derived from full H40's worst case of
-1120 DMA tiles and therefore 1120 runs.
+### Pattern transfer run meter
+`Run:NNNN` = the number of ascending consecutive cold VRAM-slot runs used for
+the pattern tiles, exactly matching the packer's cold-run descriptors, the
+Main CPU run-table record count, and H40 DEBUG HUD `N` (before its low-byte
+display truncation). Reuse entries do not break a run; a slot discontinuity
+does, including a wrap from the end of the slot pool to slot zero.
+
+This is deliberately **not the number of VDP DMA commands**. With the p45
+player, a one- or two-tile run is copied directly by the CPU, while a longer
+run uses DMA and may be split into more than one DMA command at a VBlank budget
+boundary. Both still remain one `Run` record. The bar therefore measures the
+fragmentation seen by the player independent of the current transfer fast
+path.
+
+The bar's per-frame full-scale is the current `DMA` tile count: the theoretical
+worst case is every transferred tile isolated into its own one-tile run. A tiny
+bar therefore means long, efficient runs; a full amber bar means the maximally
+fragmented case. The numeric field is fixed at four digits, derived from full
+H40's theoretical worst case of 1120 pattern tiles and therefore 1120 runs.
 
 ### Palette strip
 `Prev` / `Current` / `Next` palette sets (each 4 palettes x 15 colours, drawn

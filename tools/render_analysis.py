@@ -148,7 +148,9 @@ def _legacy_dma_runs():
     """
     path = Path(SIM) / "decisions.pkl"
     if not path.exists():
-        return np.where(DMA_TILES > 0, 1, 0).astype(np.int64)
+        raise SystemExit(
+            "DMA runs: stats.npz has no dma_runs and decisions.pkl is missing; "
+            "re-run sim instead of displaying an estimated value")
     try:
         from tile_alloc import TileAllocator, count_slot_runs
         with path.open("rb") as fh:
@@ -161,15 +163,24 @@ def _legacy_dma_runs():
             log.get("config", {}).get("hardware", {}).get("vram_tiles", 1400)))
         alloc = TileAllocator(C, pool, 1)
         result = np.zeros(NF, np.int64)
+        replay_tiles = np.zeros(NF, np.int64)
         for i, frame in enumerate(frames):
             ordered = sorted(frame, key=lambda item: item[0])
             placed = alloc.place_frame([(int(cell), key) for cell, _pal, key in ordered], i)
-            result[i] = count_slot_runs(slot for slot, cold in placed if cold)
-        print("DMA runs: replayed exact values from legacy decisions.pkl")
+            cold_slots = [slot for slot, cold in placed if cold]
+            replay_tiles[i] = len(cold_slots)
+            result[i] = count_slot_runs(cold_slots)
+        mismatch = np.flatnonzero(replay_tiles != DMA_TILES)
+        if mismatch.size:
+            i = int(mismatch[0])
+            raise ValueError(
+                f"frame {i} cold tiles decisions={int(replay_tiles[i])} "
+                f"stats={int(DMA_TILES[i])}")
+        print("Pattern runs: replayed exact values from legacy decisions.pkl")
         return result
     except Exception as exc:
-        print(f"DMA runs: legacy replay unavailable ({exc}); using one-run lower bound")
-        return np.where(DMA_TILES > 0, 1, 0).astype(np.int64)
+        raise SystemExit(
+            f"Pattern runs: exact legacy replay failed ({exc}); re-run sim") from exc
 
 
 DMA_RUNS = col("dma_runs") if "dma_runs" in idx else _legacy_dma_runs()
@@ -403,7 +414,7 @@ def draw_status_real(data):
     L.draw_field(d, x, ly, "DMA:", dval, L.dma_value_digits(C), L.f_leg, L.COL_TXT)
     x += DMA_W + GAP
 
-    # 6) DMArun = 連続VRAM slot列数。フル=1tile/runの最悪ケース。
+    # 6) Run = playerのcold-run record数。フル=1tile/runの理論最悪ケース。
     run_val = int(data["dma_runs"]); run_max = L.dma_run_worst_case(dval)
     run_fill = (max(1, int(RUN_W * min(run_val, run_max) / run_max))
                 if run_val > 0 and run_max > 0 else 0)

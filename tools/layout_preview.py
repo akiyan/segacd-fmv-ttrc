@@ -51,7 +51,7 @@ COL_DIM = (150, 150, 155)
 COL_ZERO = (160, 160, 166)       # ゼロ埋めの先頭ゼロ(通常より少し暗いだけ)
 COL_OVH = (95, 110, 122)         # 有効Bandの「音声+その他ヘッダ」セグメント(くすんだ青灰)
 COL_DMA = (70, 190, 90)          # DMAパターンタイル数(green)
-COL_RUN = (215, 165, 65)         # DMA run分断度(amber)
+COL_RUN = (215, 165, 65)         # cold pattern run分断度(amber)
 
 # ---- レイアウト定数(枠 = [x0,y0,x1,y1]) ----
 PAD = 11
@@ -112,7 +112,7 @@ def dma_value_digits(cells):
 
 
 def dma_run_worst_case(dma_tiles):
-    """Worst case is one isolated DMA run for every transferred tile."""
+    """Theoretical worst case: one isolated cold-run record per tile."""
     return max(0, int(dma_tiles))
 
 
@@ -433,7 +433,7 @@ def draw_status(w, h, data):
     draw_field(d, x, ly, "DMA:", dval, dma_value_digits(C), f_leg, COL_TXT)
     x += DMA_W + GAP
 
-    # 6) DMArun = coldタイルの連続VRAM slot列数。最悪=全DMAタイルが孤立して1tile/run。
+    # 6) Run = playerのcold-run record数。CPU/DMA転送方式にかかわらず1tile/runが理論最悪。
     run_val = int(data["dma_runs"]); run_max = dma_run_worst_case(dval)
     run_fill = (max(1, int(RUN_W * min(run_val, run_max) / run_max))
                 if run_val > 0 and run_max > 0 else 0)

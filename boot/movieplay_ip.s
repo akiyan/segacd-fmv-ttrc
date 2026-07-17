@@ -42,7 +42,7 @@
    Word RAM directly and repairs the first destination word on the CPU.  Keep
    the whole 24 KiB range reserved for boot-time Main-CPU code generation. */
 .equ MAIN_CODEGEN_BASE,  0x00FF2000
-.equ RUN_TABLE,          0x00FF8000	/* (dst.w,len.w,src.l) runs (max ~128) */
+.equ RUN_TABLE,          0x00FF8000	/* (dst.w,len.w,src.l) cold-run records; 0x3000B capacity */
 .equ MAIN_CODEGEN_LIMIT, RUN_TABLE
 .equ MAIN_CODEGEN_TABLE_BYTES, 0x0200	/* 256 signed word offsets */
 .equ MAIN_CODEGEN_HANDLER_MAX, 70	/* mask FF: guarded before writing */
@@ -494,7 +494,7 @@ bf_stage:
 	bne	bf_stage
 bf_stage_done:
 bf_none:
-	move.w	d4, n_runs			/* このフレームのDMAラン数(0可) */
+	move.w	d4, n_runs			/* cold-run record数(0可、物理DMA発行数ではない) */
 bf_upd:
 	/* Read bitmap+entries directly from the linear control block in the swapped
 	   Word-RAM bank.  The Sub already walks them to build cold runs; rewriting

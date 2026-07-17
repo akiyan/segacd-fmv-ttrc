@@ -1032,6 +1032,8 @@ def main():
     dec_frames = []            # 実機決定ログ: 各要素 = そのフレームの [(cell, pal, key), ...]
     dec_miss = []              # per-frame Miss数(デバッグオーバーレイ用。デコード側では算出不能)
     dec_cats = []              # per-frame カテゴリ数[raw,same,near,coa,flbk,buf,miss](デバッグ欄用)
+    transfer_tiles_log = []    # pack/player照合用: cold pattern tile数
+    transfer_runs_log = []     # pack/player照合用: packed cold-run record数
     tank = TANK_CAP_BYTES if VBV_ON else 0        # 貯水池残量(bytes)。開始時=満タン
     tank_tiles_log = []                           # 毎フレームのタンク残量(タイル換算)
     cd_used_log = []                              # 毎フレームの有効CD使用量(=FRAME_BYTES - パディング捨て分)
@@ -1430,7 +1432,11 @@ def main():
         placements = alloc.place_frame(upd_ck, i)
         dma_slots = [slot for slot, cold in placements if cold]
         dma_tiles = len(dma_slots)                 # 実際にVRAMへ送る32Bパターンタイル数
-        dma_runs = count_slot_runs(dma_slots)      # packのcold-run descriptorと同じ連続slot定義
+        # MainのHUD Nと同じlogical run数。p45では1-2 tile runはCPU直書き、長runは
+        # VBlank境界で複数DMAに割れるため、物理VDP DMA発行回数とは意図的に異なる。
+        dma_runs = count_slot_runs(dma_slots)
+        transfer_tiles_log.append(dma_tiles)
+        transfer_runs_log.append(dma_runs)
         ensure_capacity(i)
 
         # CRAMエミュ: このフレームの全更新を反映した最終表示を、現区間パレットで引き直す。
@@ -1655,6 +1661,12 @@ def main():
             "seg_pals": [np.asarray(p, np.uint8) for p in seg_pals],  # list of (4,15,3)
             "frame_seg": np.asarray(frame_seg, np.int32),
             "frames": dec_frames,                                     # [[(cell,pal,key),...], ...]
+            # simが決めた値をpackで全frame再計算し、descriptor/HUD Nとのズレを即時検出する。
+            "pattern_transfers": {
+                "schema_version": 1,
+                "tiles": np.asarray(transfer_tiles_log, np.uint16),
+                "runs": np.asarray(transfer_runs_log, np.uint16),
+            },
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]
             "frame_bytes": int(FRAME_BYTES), "audio_rate": int(AUDIO_RATE),

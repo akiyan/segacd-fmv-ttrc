@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 import layout_preview as layout
-from tile_alloc import count_slot_runs
+from tile_alloc import count_slot_runs, slot_runs
 
 
 class AnalysisDmaTests(unittest.TestCase):
@@ -27,6 +27,12 @@ class AnalysisDmaTests(unittest.TestCase):
         self.assertEqual(count_slot_runs([]), 0)
         self.assertEqual(count_slot_runs([4]), 1)
         self.assertEqual(count_slot_runs([4, 5, 6, 9, 10, 3]), 3)
+
+    def test_slot_runs_are_the_player_records(self) -> None:
+        self.assertEqual(slot_runs([]), [])
+        self.assertEqual(slot_runs([4, 5, 6, 9, 10, 3]), [(4, 3), (9, 2), (3, 1)])
+        # Pool wrap is a discontinuity; reuse entries have already been omitted.
+        self.assertEqual(slot_runs([1398, 1399, 0, 1]), [(1398, 2), (0, 2)])
 
 
 if __name__ == "__main__":

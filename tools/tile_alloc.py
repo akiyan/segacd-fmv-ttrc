@@ -22,20 +22,27 @@ neighbouring VRAM slots so the Main CPU can DMA them in long runs. Displayed til
 import numpy as np
 
 
-def count_slot_runs(slots):
-    """Count ascending consecutive VRAM-slot runs in payload order.
+def slot_runs(slots):
+    """Return ascending consecutive VRAM-slot runs in payload order.
 
-    One isolated cold tile is one run. Reused (non-cold) entries are omitted by
-    the caller, exactly like the packed cold-run descriptor stream.
+    Each result is ``(slot_start, tile_count)``.  The caller supplies cold slots
+    only, so reuse entries do not split a run.  A pool wrap is not consecutive:
+    ``pool - 1`` followed by ``0`` starts a new run, just like the player.
     """
-    runs = 0
-    previous = None
+    runs = []
     for slot in slots:
         slot = int(slot)
-        if previous is None or slot != previous + 1:
-            runs += 1
-        previous = slot
+        if runs and runs[-1][0] + runs[-1][1] == slot:
+            start, count = runs[-1]
+            runs[-1] = (start, count + 1)
+        else:
+            runs.append((slot, 1))
     return runs
+
+
+def count_slot_runs(slots):
+    """Count the packed/player cold-run records for a cold-slot sequence."""
+    return len(slot_runs(slots))
 
 
 class TileAllocator:

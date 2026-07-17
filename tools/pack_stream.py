@@ -41,6 +41,7 @@ from encode_config import load_profile
 from cbr_paths import sim_work_dir
 from quantize_global4_tiles import pals_to_bytes
 from quantize_md_video import rgb333_to_rgb888
+from tile_alloc import slot_runs
 
 SECTOR = 2048
 MAGIC = b"TTRC"             # Tile Texture Reuse Codec
@@ -243,21 +244,13 @@ def resolve(log, POOL, mode="lru"):
 
 
 def run_stats(per):
-    """フレーム内coldスロット列(セル順)の連続ラン統計。MD側DMAまとめの効果見積り。"""
-    from tile_alloc import count_slot_runs
+    """フレーム内cold tile数とplayer cold-run record数を返して表示する。"""
     runs_per_frame = np.zeros(len(per), np.int64)
     colds_per_frame = np.zeros(len(per), np.int64)
     for i, (cells, entries, colds) in enumerate(per):
-        slots = []
-        nc = 0
-        for e, c in zip(entries, colds):
-            if not c:
-                continue
-            s = (e & 0x07FF) - BASE
-            slots.append(s)
-            nc += 1
-        runs_per_frame[i] = count_slot_runs(slots)
-        colds_per_frame[i] = nc
+        runs = cold_runs(entries, colds)
+        runs_per_frame[i] = len(runs)
+        colds_per_frame[i] = sum(count for _slot, count in runs)
     tot_c = int(colds_per_frame.sum())
     tot_r = int(runs_per_frame.sum())
     heavy = colds_per_frame >= 300
@@ -277,22 +270,53 @@ def run_stats(per):
               f"(frame {int(loads_bytes.argmax())})")
     else:
         print(f"  loads領域 最大{int(loads_bytes.max())}B / {O_LOADS_CAP}B")
-    return runs_per_frame
+    return colds_per_frame, runs_per_frame
 
 
 def cold_runs(entries, colds):
-    """Return consecutive cold-slot runs in payload consumption order."""
-    runs = []
-    for entry, cold in zip(entries, colds):
-        if not cold:
-            continue
-        slot = (int(entry) & 0x07FF) - BASE
-        if runs and runs[-1][0] + runs[-1][1] == slot:
-            start, count = runs[-1]
-            runs[-1] = (start, count + 1)
-        else:
-            runs.append((slot, 1))
-    return runs
+    """Return the exact packed/player cold-run records for one frame."""
+    return slot_runs(
+        (int(entry) & 0x07FF) - BASE
+        for entry, cold in zip(entries, colds)
+        if cold
+    )
+
+
+def verify_sim_pattern_transfers(log, packed_tiles, packed_runs):
+    """Require frozen sim transfer counts to match pack/player counts exactly.
+
+    Old decision logs predate these fields and remain packable.  Every newly
+    generated log carries them, turning a future run-grouping change into a
+    pack-time failure instead of a misleading analysis meter.
+    """
+    frozen = log.get("pattern_transfers")
+    if frozen is None:
+        print("  pattern transfer照合: 旧decision logのため省略 (再simで有効化)")
+        return False
+    if int(frozen.get("schema_version", 0)) != 1:
+        raise SystemExit(
+            "pack: unsupported pattern_transfers schema "
+            f"{frozen.get('schema_version')!r}")
+
+    expected = {
+        "tiles": np.asarray(packed_tiles, np.int64),
+        "runs": np.asarray(packed_runs, np.int64),
+    }
+    for name, actual in expected.items():
+        simulated = np.asarray(frozen.get(name, ()), np.int64)
+        if simulated.shape != actual.shape:
+            raise SystemExit(
+                f"pack: sim/pack pattern {name} length mismatch: "
+                f"sim={simulated.shape} pack={actual.shape}")
+        mismatch = np.flatnonzero(simulated != actual)
+        if mismatch.size:
+            frame = int(mismatch[0])
+            raise SystemExit(
+                f"pack: sim/pack pattern {name} mismatch at frame {frame}: "
+                f"sim={int(simulated[frame])} pack={int(actual[frame])}. "
+                "TileAllocator/run grouping changed after simulation; re-run sim.")
+    print(f"  pattern transfer照合: {len(packed_runs)} frames tiles/runs exact")
+    return True
 
 
 def build_control(log, per, n_upd, pal_w, audio_path):
@@ -992,7 +1016,13 @@ def main():
             f"pack: realized per-frame cold max={realized_max} > cap={cold_ceiling}. "
             f"共有 TileAllocator では realized=cap のはず=想定外。sim/pack の割り当て食い違いを疑う。")
     print(f"  realized cold: max={realized_max} <= {stream_mode} cap {cold_ceiling} (共有割り当て)")
-    run_stats(per)
+    packed_tiles, packed_runs = run_stats(per)
+    if not np.array_equal(packed_tiles, n_load):
+        frame = int(np.flatnonzero(packed_tiles != n_load)[0])
+        raise SystemExit(
+            f"pack: internal cold tile mismatch at frame {frame}: "
+            f"runs={int(packed_tiles[frame])} resolve={int(n_load[frame])}")
+    verify_sim_pattern_transfers(log, packed_tiles, packed_runs)
     blocks = build_control(log, per, n_upd, pal_w, audio_path)
     sc = schedule(per, n_load, blocks)
     st = ("OK" if sc["feasible"] else
