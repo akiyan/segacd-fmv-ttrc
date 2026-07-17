@@ -376,6 +376,10 @@ evidence alone.
 - Check `nvidia-smi` and a small CuPy allocation outside the sandbox first.
 - Run GPU `tools/sim.py` and `tools/render_analysis.py` outside the sandbox so
   they can access the NVIDIA device nodes.
+- The GPU sim initializes CUDA before its CPU frame-loader pool. Those workers
+  must use multiprocessing `spawn`, never `fork`: forking the live CUDA parent
+  can segfault the Python 3.14 interpreter part-way through precomputation.
+  CPU-only sim runs may keep the cheaper `fork` path.
 - If `/sbin/ub-device-create --verbose` says the `/dev/nvidia*` nodes already
   exist with correct permissions outside the sandbox, the host device setup is
   healthy; the missing nodes seen inside the sandbox are an isolation artifact.

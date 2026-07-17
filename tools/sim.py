@@ -805,12 +805,24 @@ def n_workers():
     return max(1, (os.cpu_count() or 4) - 2)      # PCのCPUコア数-2(毎回動的に取得)
 
 
+def quant_pool_start_method(gpu_enabled):
+    """Choose a safe process start method for the quantization feeder pool.
+
+    GPU palette work initializes CUDA in the parent before this pool starts.
+    Forking that live CUDA process can corrupt CPython/CUDA state, so GPU runs
+    must start clean worker interpreters. CPU-only runs retain the cheaper fork
+    path because they have no device context to inherit.
+    """
+    return "spawn" if gpu_enabled else "fork"
+
+
 def precompute_quant(frames, seg_pals, frame_seg):
     """各フレームの (detail, assign, plain_idx, plain_rgb) を並列に前計算して返す。"""
     n = len(frames)
     w = n_workers()
     import gpu_quant
-    if gpu_quant.enabled():
+    gpu_on = gpu_quant.enabled()
+    if gpu_on:
         # CPU(並列)で読込/333化/タイル化 → GPU で割当/索引。imap で両者を重ねる
         # (ワーカーが flat を出す傍から親GPUが処理＝CPU I/OとGPU計算を並行)。
         print(f"precompute quantization: {n} frames, CPU load x{w} + GPU assign/idx ...", flush=True)
@@ -820,7 +832,7 @@ def precompute_quant(frames, seg_pals, frame_seg):
         cache = gpu_quant.PalCache()
         if w > 1:
             import multiprocessing as mp
-            with mp.get_context("fork").Pool(
+            with mp.get_context(quant_pool_start_method(gpu_on)).Pool(
                     w, initializer=_quant_init, initargs=(frames, seg_pals, frame_seg)) as pool:
                 for i, (det, flat) in enumerate(pool.imap(_quant_one_flat, range(n), chunksize=8)):
                     details[i] = det
