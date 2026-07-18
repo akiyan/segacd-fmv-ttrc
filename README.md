@@ -100,6 +100,8 @@ meter and tile category.
   panel, meter, timeline, and tile category drawn by `tools/render_analysis.py`.
 - [MOVIE.md](MOVIE.md): the exact `HEADER.DAT` / `BODY.DAT` on-disc stream
   format written by `tools/pack_stream.py` and read by the Sega CD player.
+- [STREAMING.md](STREAMING.md): the live player memory maps and conservative
+  Main/Sub CPU headroom for planning additional streaming features.
 - [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
   playback pipeline budgets used when choosing encoder targets.
 - [ADPCM.md](ADPCM.md): the 22.05 kHz ADPCM real-time-decode investigation and
