@@ -24,3 +24,18 @@ tools/python.sh harness/player_constants/verify.py
 The script uses a temporary directory under `tmp/` and removes it after the
 matrix completes. It does not depend on copyrighted source video or a prior
 simulation.
+
+Measure the conservative instruction-cycle saving over a real fixed-N2 packed
+stream with:
+
+```sh
+tools/python.sh harness/player_constants/measure_cycles.py \
+  --header out/sonic-jam-op-h32/HEADER.DAT \
+  --body out/sonic-jam-op-h32/BODY.DAT
+```
+
+The cycle model uses the MC68000 User's Manual Section 8 timings. It counts all
+real packed cold runs but deliberately excludes variable extra savings from
+CDC polling, wave-chunk boundaries, DMA-budget refills and palette switches.
+The result is therefore a lower bound for the current player, not the stale
+1,400-cycles-per-frame estimate from before Main code generation was added.
