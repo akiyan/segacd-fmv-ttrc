@@ -81,7 +81,7 @@ H32とH40は異なるドット幅で同じ64:49の表示領域を表す。YouTub
    HUDやOCRは使わない。この時刻はチャプターだけをずらす値であり、映像は切らない。
 
    ```sh
-   python3 tools/youtube_chapters.py SIM_OUT CONTENT_FPS \
+   tools/python.sh tools/youtube_chapters.py SIM_OUT CONTENT_FPS \
      --content-offset MOVIE_START_SECONDS \
      --intro-label "Mega-CD startup"
    ```

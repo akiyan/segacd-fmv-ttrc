@@ -20,7 +20,7 @@ drawing functions and layout constants in `tools/layout_preview.py`
 
 2. **Regenerate and eyeball the dummy preview**:
    ```sh
-   python3 tools/layout_preview.py     # writes tmp/layout_preview.png
+   tools/python.sh tools/layout_preview.py     # writes tmp/layout_preview.png
    ```
    Crop and view the changed region to confirm it looks right. If the change
    depends on real encoder values (e.g. a value newly saved by the sim), also
@@ -28,7 +28,7 @@ drawing functions and layout constants in `tools/layout_preview.py`
    (see AGENTS.md "Shared-Machine Exclusion"):
    ```sh
    CBRSIM_OUT=tmp/<somesim> CBRSIM_SRC=<src> CBRSIM_MODE=<mode> \
-     python3 tools/render_analysis.py <N> <N+1>   # one frame, no mp4
+     tools/python.sh tools/render_analysis.py <N> <N+1>   # one frame, no mp4
    ```
 
 3. **Update `ANALYSIS.md`** so every element still matches exactly: the ASCII

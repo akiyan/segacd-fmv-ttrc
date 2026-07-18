@@ -27,7 +27,7 @@ explicitly asks for a movie-only clip.
 ## Preconditions
 
 Require `retroarch`, the Genesis Plus GX libretro core, `Xvfb`, `xdotool`, ImageMagick,
-`ffmpeg`, `ffprobe`, and `python3`. Keep the Sega CD BIOS in RetroArch's system directory.
+`ffmpeg`, `ffprobe`, and the locked `.venv`. Keep the Sega CD BIOS in RetroArch's system directory.
 Use these overrides only when needed:
 
 ```sh
@@ -144,7 +144,7 @@ OUTDIR="$PWD/videos" tools/record_movie.sh \
   --record-size 256x224 --display :271 \
   --out videos/STEM_offline_ab_preview.mp4
 
-python3 tools/compare_recordings.py \
+tools/python.sh tools/compare_recordings.py \
   videos/STEM_realtime_lossless.mkv videos/STEM_offline_ab_lossless.mkv \
   --json videos/STEM_offline_ab_compare.json
 ```

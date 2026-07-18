@@ -1,6 +1,16 @@
 ---
 name: sim
-description: Project skill for encoding an arbitrary video source with the delta stream codec in tools/sim.py and producing the standard full-length analysis video. Applies the four rules automatically: keep source fps, use resolution up to the DMA limit, preserve source pixels while removing only confirmed black bars, and allow starvation. Then run simulation, compose the analysis video, and optionally upload. Use for requests like "make an analysis video for this mp4", "make one for Sakura", or "/sim <src.mp4>". Implementation: tools/sim.py for codec simulation, tools/layout_preview.py for the canonical analysis layout and dummy preview, and tools/render_analysis.py for full MP4 rendering with real data.
+description: >-
+  Project skill for encoding an arbitrary video source with the delta stream
+  codec in tools/sim.py and producing the standard full-length analysis video.
+  Applies the four rules automatically: keep source fps, use resolution up to
+  the DMA limit, preserve source pixels while removing only confirmed black
+  bars, and allow starvation. Then run simulation, compose the analysis video,
+  and optionally upload. Use for requests like "make an analysis video for this
+  mp4", "make one for Sakura", or "/sim SOURCE.mp4". Implementation:
+  tools/sim.py for codec simulation, tools/layout_preview.py for the canonical
+  analysis layout and dummy preview, and tools/render_analysis.py for full MP4
+  rendering with real data.
 ---
 
 # /sim: Source Video -> Delta Codec -> Analysis Video
@@ -40,17 +50,18 @@ Other fixed defaults:
   packer's usable ring cap. Do not set `CBRSIM_TANK_KB` in normal runs.
 - Rate = 144 KiB/s by default.
 - GPU encoding is on by default. CPU is the fallback.
-- Start sim/render with the GPU-specific Python when available:
+- Start sim/render with the locked GPU environment. Do not fall back to a
+  system Python or an older venv:
 
 ```sh
-PY=~/.config/cbrsim-gpu-stable/venv/bin/python
-[ -x "$PY" ] || PY=~/.config/cbrsim-gpu/venv/bin/python
-[ -x "$PY" ] || PY=python3
+PY=.venv-gpu/bin/python
+[ -x "$PY" ] || { echo "run the locked .venv-gpu bootstrap from README.md" >&2; exit 1; }
 ```
 
-If CuPy is missing, it falls back to CPU automatically. Explicitly force CPU
-only with `CBRSIM_GPU=0`. CPU and GPU outputs should match bit for bit. See
-`[[gpu-quant-acceleration]]` for details.
+The encoder can fall back when CuPy is missing, but do not use that silent path
+for normal work. A deliberate CPU run uses
+`CBRSIM_GPU=0 tools/python.sh tools/sim.py ...`. CPU and GPU outputs should
+match bit for bit. See `[[gpu-quant-acceleration]]` for details.
 
 ## Procedure
 
@@ -137,7 +148,7 @@ One safe way to resolve and guard the cleanup target is:
 
 ```sh
 CONFIG=configs/<source>-<mode>.toml
-SIM_OUT=$(python3 -c 'import sys; sys.path.insert(0,"tools"); from encode_config import load_profile; print(load_profile(sys.argv[1]).output_dir)' "$CONFIG")
+SIM_OUT=$(tools/python.sh -c 'import sys; sys.path.insert(0,"tools"); from encode_config import load_profile; print(load_profile(sys.argv[1]).output_dir)' "$CONFIG")
 case "$SIM_OUT" in
   videos/*/tmp) ;;
   *) echo "refusing unsafe sim cleanup path: $SIM_OUT" >&2; exit 1 ;;
@@ -152,9 +163,8 @@ parsing error or stale environment cannot silently reuse another comparison's
 inputs.
 
 ```sh
-PY=~/.config/cbrsim-gpu-stable/venv/bin/python
-[ -x "$PY" ] || PY=~/.config/cbrsim-gpu/venv/bin/python
-[ -x "$PY" ] || PY=python3
+PY=.venv-gpu/bin/python
+[ -x "$PY" ] || { echo "run the locked .venv-gpu bootstrap from README.md" >&2; exit 1; }
 "$PY" tools/sim.py --config configs/<source>-<mode>.toml
 ```
 
@@ -200,7 +210,7 @@ FFmpeg, usually with `h264_nvenc`, `-r 60`, and audio.
 Frame-range check only:
 
 ```sh
-python3 tools/render_analysis.py --config configs/<source>-<mode>.toml <A> <B>
+tools/python.sh tools/render_analysis.py --config configs/<source>-<mode>.toml <A> <B>
 ```
 
 Important rendering notes:
@@ -235,7 +245,7 @@ Important rendering notes:
 
 ```sh
 PY=~/.config/youtube/venv/bin/python
-[ -x "$PY" ] || PY=python3
+[ -x "$PY" ] || { echo "bootstrap the separate YouTube environment from README.md" >&2; exit 1; }
 "$PY" ~/.claude/skills/youtube/youtube.py upload videos/<stem>_analysis.mp4 \
   --title "<source name> OP SEGA-CD delta codec analysis (WxH/WcxHc/fps/aspect/13.3kHz) YYYYMMDD" \
   --desc "<specs, four-rule choices, starvation rate>" \

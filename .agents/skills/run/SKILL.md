@@ -82,12 +82,11 @@ shared-machine process check from `AGENTS.md`. Wait while the other kind of
 heavy work is active. Never overlap sim/render with an emulator capture, never
 run two captures together, and never kill another session's process.
 
-Prefer the GPU Python environment:
+Use the locked GPU Python environment without a system or legacy fallback:
 
 ```sh
-PY=/home/akiyan/.config/cbrsim-gpu-stable/venv/bin/python
-[ -x "$PY" ] || PY=/home/akiyan/.config/cbrsim-gpu/venv/bin/python
-[ -x "$PY" ] || PY=python3
+PY=.venv-gpu/bin/python
+[ -x "$PY" ] || { echo "run the locked .venv-gpu bootstrap from README.md" >&2; exit 1; }
 ```
 
 Verify `nvidia-smi` and a small CuPy allocation outside a restricted sandbox
@@ -150,7 +149,7 @@ Do not proceed to recording until the analysis artifact and upload are verified.
 Run the packer's full verification against the same profile:
 
 ```sh
-python3 tools/pack_stream.py --config configs/PROFILE.toml --verify
+tools/python.sh tools/pack_stream.py --config configs/PROFILE.toml --verify
 ```
 
 Require the packer to walk the complete stream successfully and confirm the

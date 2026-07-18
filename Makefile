@@ -5,6 +5,7 @@ BOOT_DIR := boot
 CFG_DIR := cfg
 SECURITY_REGION ?= jp
 CONFIG ?=
+PYTHON ?= tools/python.sh
 
 # A movie build is identified by its TOML filename.  Keep packed streams under
 # out/<toml-stem>/, transient build/staging files under tmp/<toml-stem>/, and
@@ -22,7 +23,7 @@ endif
 endif
 
 ifneq ($(strip $(CONFIG)),)
-CONFIG_STEM := $(shell python3 tools/encode_config.py "$(CONFIG)" --print-stem)
+CONFIG_STEM := $(shell $(PYTHON) tools/encode_config.py "$(CONFIG)" --print-stem)
 ifeq ($(strip $(CONFIG_STEM)),)
 $(error invalid CONFIG: $(CONFIG))
 endif
@@ -64,6 +65,7 @@ movieplay-setup: setup
 disc: movieplay
 
 check-tools:
+	@test -x "$(PYTHON)" || (echo "missing project Python launcher: $(PYTHON). Run uv sync --managed-python --locked" && exit 1)
 	@test -x "$(AS)" || (echo "missing assembler: $(AS). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
 	@test -x "$(CC)" || (echo "missing compiler: $(CC). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
 	@test -x "$(LD)" || (echo "missing linker: $(LD). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
@@ -112,7 +114,7 @@ CDCBENCH_DAT_SECTORS ?= 1536
 cdcbench: check-tools $(OUT_DIR)/CDCBENCH.iso $(OUT_DIR)/CDCBENCH.cue
 
 $(BOOT_DIR)/hexfont.bin: tools/gen_hexfont.py
-	python3 tools/gen_hexfont.py
+	$(PYTHON) tools/gen_hexfont.py
 
 $(OUT_DIR)/cdcbench_ip.o: $(BOOT_DIR)/cdcbench_ip.s $(BOOT_DIR)/security.bin $(BOOT_DIR)/hexfont.bin | setup
 	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $< -o $@
@@ -143,7 +145,7 @@ $(OUT_DIR)/CDCBENCH.cue: $(OUT_DIR)/CDCBENCH.iso
 
 # --- Phase A: H32 256x144 静止画レンダラ(描画土台検証, CD読み無し/CPU書き込みのみ) ---
 STILL256_DISC := $(OUT_DIR)/disc_still256
-STILL256_DATA ?= $(shell python3 -c 'import sys; sys.path.insert(0, "tools"); from cbr_paths import sim_work_dir; print(sim_work_dir() / "still256.bin")')
+STILL256_DATA ?= $(shell $(PYTHON) -c 'import sys; sys.path.insert(0, "tools"); from cbr_paths import sim_work_dir; print(sim_work_dir() / "still256.bin")')
 
 still256: check-tools $(OUT_DIR)/STILL256.iso $(OUT_DIR)/STILL256.cue
 
@@ -219,17 +221,17 @@ DMA_RUN_FASTPATH ?= 1
 movieplay-force:
 
 $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin $(MOVIEPLAY_STREAM_DIR)/palettes.bin $(BOOT_DIR)/dbgfont.bin tools/av_config.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
-	python3 tools/check_player_ring.py
+	$(PYTHON) tools/check_player_ring.py
 	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter 1,$(MAIN_CODEGEN)),--defsym MAIN_CODEGEN=1) $(if $(filter 1,$(DMA_RUN_FASTPATH)),--defsym DMA_RUN_FASTPATH=1) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
 
 $(BOOT_DIR)/dbgfont.bin: tools/gen_debugfont.py
-	python3 tools/gen_debugfont.py
+	$(PYTHON) tools/gen_debugfont.py
 
 $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/ip.ld -o $@ $<
 
 $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s tools/av_config.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
-	python3 tools/check_player_ring.py
+	$(PYTHON) tools/check_player_ring.py
 	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter-out 0,$(ISO_HOLD_N)),--defsym ISO_HOLD_N=$(ISO_HOLD_N)) -I$(BOOT_DIR) $< -o $@
 
 $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.o
@@ -286,7 +288,7 @@ $(OUT_DIR)/streamtest_boot.bin: $(OUT_DIR)/streamtest_ip.bin $(OUT_DIR)/streamte
 $(OUT_DIR)/STREAMTEST.iso: $(OUT_DIR)/streamtest_boot.bin tools/gen_streamtest.py
 	@mkdir -p $(STREAMTEST_DISC)
 	@printf "Continuous stream self-test\n" > $(STREAMTEST_DISC)/README.TXT
-	python3 tools/gen_streamtest.py --frames $(STREAM_FRAMES) --frame-sectors $(STREAM_FRAME_SECTORS) --output $(STREAMTEST_DISC)/STREAM.DAT
+	$(PYTHON) tools/gen_streamtest.py --frames $(STREAM_FRAMES) --frame-sectors $(STREAM_FRAME_SECTORS) --output $(STREAMTEST_DISC)/STREAM.DAT
 	@rm -f $@ $(OUT_DIR)/STREAMTEST.cue
 	$(MKISOFS) -iso-level 1 -G $< -pad -V "SCFMV_STRM" -o $@ $(STREAMTEST_DISC)
 
@@ -331,7 +333,7 @@ ADPCMTEST_DISC := $(OUT_DIR)/disc_adpcmtest
 adpcmtest: check-tools $(OUT_DIR)/ADPCMTEST.iso $(OUT_DIR)/ADPCMTEST.cue
 
 $(BOOT_DIR)/adpcmtest_font.bin: tools/gen_adpcmtest_font.py
-	python3 tools/gen_adpcmtest_font.py
+	$(PYTHON) tools/gen_adpcmtest_font.py
 
 $(OUT_DIR)/adpcmtest_ip.o: $(BOOT_DIR)/adpcmtest_ip.s $(BOOT_DIR)/security.bin $(BOOT_DIR)/adpcmtest_font.bin | setup
 	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $< -o $@
@@ -346,7 +348,7 @@ $(OUT_DIR)/adpcmtest_adpcm.o: $(BOOT_DIR)/adpcmtest_adpcm.c | setup
 	$(CC) $(CFLAGS_M68K) -c $< -o $@
 
 $(OUT_DIR)/adpcmtest_tone_ima.bin: tools/gen_adpcmtest_audio.py | setup
-	python3 tools/gen_adpcmtest_audio.py --pattern --out $@ --rate 22050 --samples 8192
+	$(PYTHON) tools/gen_adpcmtest_audio.py --pattern --out $@ --rate 22050 --samples 8192
 
 $(OUT_DIR)/adpcmtest_audio.o: $(BOOT_DIR)/adpcmtest_audio.s $(OUT_DIR)/adpcmtest_tone_ima.bin | setup
 	$(AS) $(ASFLAGS) -I$(BOOT_DIR) $< -o $@
@@ -402,11 +404,11 @@ ASIC_PROBE_ROOT := $(OUT_DIR)/video/061_asic_160x80
 asictest: check-tools setup $(OUT_DIR)/ASIC.iso $(OUT_DIR)/ASIC.cue
 
 $(ASIC_PROBE_ROOT)/palettes.bin: $(OP_SRC) tools/quantize_global4_tiles.py tools/quantize_md_video.py
-	python3 tools/quantize_global4_tiles.py --input $(OP_SRC) --start 0 --duration 152.866667 --fps 15 --scale-width 160 --scale-height 80 --output-dir $(ASIC_PROBE_ROOT)
+	$(PYTHON) tools/quantize_global4_tiles.py --input $(OP_SRC) --start 0 --duration 152.866667 --fps 15 --scale-width 160 --scale-height 80 --output-dir $(ASIC_PROBE_ROOT)
 
 $(OUT_DIR)/asic/ASIC.DAT: $(ASIC_PROBE_ROOT)/palettes.bin tools/make_asic_stamps.py | setup
 	@mkdir -p $(OUT_DIR)/asic
-	python3 tools/make_asic_stamps.py \
+	$(PYTHON) tools/make_asic_stamps.py \
 		--tiles $(ASIC_PROBE_ROOT)/tile/$(ASIC_FRAME).tile \
 		--pmap $(ASIC_PROBE_ROOT)/pmap/$(ASIC_FRAME).pmap \
 		--pal $(ASIC_PROBE_ROOT)/palettes.bin \

@@ -17,6 +17,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+PYTHON="${PYTHON:-$ROOT/tools/python.sh}"
 
 RECORDING=""
 OUT_PREFIX=""
@@ -37,7 +38,7 @@ done
 [ -n "$RECORDING" ] || { echo "usage: $0 <recording.mp4|recording.mkv> [options]" >&2; exit 2; }
 [ -s "$RECORDING" ] || { echo "recording not found: $RECORDING" >&2; exit 1; }
 command -v ffmpeg >/dev/null 2>&1 || { echo "missing ffmpeg" >&2; exit 1; }
-command -v python3 >/dev/null 2>&1 || { echo "missing python3" >&2; exit 1; }
+[ -x "$PYTHON" ] || { echo "missing project Python launcher: $PYTHON" >&2; exit 1; }
 
 if [ -z "$OUT_PREFIX" ]; then
   OUT_PREFIX="${RECORDING%.*}"
@@ -47,7 +48,7 @@ JSON="${OUT_PREFIX}_verify.json"
 mkdir -p "$(dirname "$OUT_PREFIX")"
 
 ffmpeg -y -hide_banner -loglevel error -i "$RECORDING" -vn -ar 44100 "$WAV"
-python3 tools/analyze_recorded_audio.py "$RECORDING" \
+"$PYTHON" tools/analyze_recorded_audio.py "$RECORDING" \
   --wav "$WAV" \
   --jump-threshold "$JUMP_THRESHOLD" \
   --min-rms "$MIN_RMS" \

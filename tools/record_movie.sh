@@ -48,6 +48,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+PYTHON="${PYTHON:-$ROOT/tools/python.sh}"
+export PYTHON
 
 CONFIG=""
 DISC=""
@@ -109,7 +111,7 @@ if [ "$PRESET" = "realtime" ]; then
 fi
 
 if [ -n "$CONFIG" ]; then
-  CONFIG_STEM="$(python3 tools/encode_config.py "$CONFIG" --print-stem)"
+  CONFIG_STEM="$("$PYTHON" tools/encode_config.py "$CONFIG" --print-stem)"
   CONFIG_DISC="out/${CONFIG_STEM}.cue"
   if [ -z "$DISC" ]; then
     DISC="$CONFIG_DISC"
@@ -156,7 +158,7 @@ if [ "$BUILD" -eq 1 ]; then
   else
     echo ">> make disc CONFIG=$CONFIG DEBUG=0 (explicit release build)"
   fi
-  make disc CONFIG="$CONFIG" DEBUG="$BUILD_DEBUG" >/dev/null
+  make disc CONFIG="$CONFIG" DEBUG="$BUILD_DEBUG" PYTHON="$PYTHON" >/dev/null
 fi
 [ -f "$DISC" ] || { echo "disc not found: $DISC (drop --no-build or build it)" >&2; exit 1; }
 
@@ -259,7 +261,7 @@ done
 if [ "$AUTO_AUDIO_TRIM" -eq 1 ]; then
   [ -s "$CAPTURE_DIR/${TAG}.wav" ] || { echo "auto audio trim requires $CAPTURE_DIR/${TAG}.wav" >&2; exit 1; }
   [ "$MIN_RMS" = "0" ] && MIN_RMS=1
-  TRIM="$(python3 - "$CAPTURE_DIR/${TAG}.wav" "$REC_SECS" "$MIN_RMS" <<'PY'
+  TRIM="$("$PYTHON" - "$CAPTURE_DIR/${TAG}.wav" "$REC_SECS" "$MIN_RMS" <<'PY'
 import math
 import struct
 import sys
@@ -332,7 +334,7 @@ if [ "${#AUDIO_CHECK_ARGS[@]}" -eq 0 ] || [[ " ${AUDIO_CHECK_ARGS[*]} " != *" --
   OUT_WAV="${OUT%.*}_audio.wav"
   OUT_JSON="${OUT%.*}_audio.json"
   ffmpeg -y -hide_banner -loglevel error -i "$OUT" -vn -ar 44100 "$OUT_WAV"
-  python3 tools/analyze_recorded_audio.py "$OUT" \
+  "$PYTHON" tools/analyze_recorded_audio.py "$OUT" \
     --wav "$OUT_WAV" \
     --seconds 12 \
     --jump-threshold "$THRESHOLD" \

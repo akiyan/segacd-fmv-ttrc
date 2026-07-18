@@ -67,6 +67,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="${PYTHON:-$ROOT/tools/python.sh}"
 
 DISC=""
 TAG=""
@@ -200,7 +201,7 @@ done
 if [ "$RECORD" -eq 1 ]; then
   command -v ffmpeg >/dev/null 2>&1 || { echo "missing required tool for --record: ffmpeg" >&2; exit 1; }
   if [ "$AUDIO_CHECK" -eq 1 ]; then
-    command -v python3 >/dev/null 2>&1 || { echo "missing required tool for audio check: python3" >&2; exit 1; }
+    [ -x "$PYTHON" ] || { echo "missing project Python launcher for audio check: $PYTHON" >&2; exit 1; }
     [ -f "$ROOT/tools/analyze_recorded_audio.py" ] || { echo "missing audio check tool: $ROOT/tools/analyze_recorded_audio.py" >&2; exit 1; }
   fi
 fi
@@ -506,7 +507,7 @@ if [ "$RECORD" -eq 1 ]; then
   [ -s "$WAV_PATH" ] || { echo "audio extraction failed: $WAV_PATH" >&2; exit 1; }
   echo "audio:  $WAV_PATH"
   if [ "$AUDIO_CHECK" -eq 1 ]; then
-    python3 "$ROOT/tools/analyze_recorded_audio.py" "$RECORD_PATH" \
+    "$PYTHON" "$ROOT/tools/analyze_recorded_audio.py" "$RECORD_PATH" \
       --wav "$WAV_PATH" \
       --seconds 12 \
       --jump-threshold "$AUDIO_JUMP_THRESHOLD" \
