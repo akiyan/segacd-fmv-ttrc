@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e52 : Separate the encoder's virtual VBV budget from physical payload-RING
+#        occupancy in analysis. Sim and pack now share the exact sector
+#        scheduler and cross-check every frame, so Tank follows prebuffer,
+#        delivery, consumption and final-sector padding instead of unused
+#        virtual budget.
 #   p54 : Bind Main/Sub frame, geometry, audio, polling, DMA and CD-rate hot
 #        values to generated HEADER constants. Verify the per-profile header
 #        signature at startup and retain PLAYER_SPECIALIZE=0 as the generic A/B
@@ -380,5 +385,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260718
-e=51
+e=52
 p=54

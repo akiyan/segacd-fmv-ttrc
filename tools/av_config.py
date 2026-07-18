@@ -1,19 +1,21 @@
 """Single source of truth for the streaming geometry shared by the whole pipeline.
 
 The encoder (``tools/sim.py``), the packer (``tools/pack_stream.py``) and the
-on-disc player (``boot/movieplay_sp.s``) all describe the *same* PRG-RAM ring.
-Historically each side had its own knob:
+on-disc player (``boot/movieplay_sp.s``) share one safe payload-buffer capacity.
+Their objects are not identical: sim has a virtual VBV budget, while pack and
+player schedule and hold physical payload-RING sectors. Historically each side
+had its own capacity knob:
 
 * player  ``.equ RING_SIZE``       = 428 KB   (the physical buffer)
 * pack    ``CBRSIM_RING_CAP_KB``    = 388 KB   (schedule / prebuffer cap)
 * sim     ``CBRSIM_TANK_KB``        = 440 KB   (VBV tank — *larger than the ring!*)
 
-Three independent values for one buffer is a double-management trap: the sim can
-model more buffer than the hardware has, so a schedule it calls feasible
-underruns live, and the analysis (rendered from the sim) stops matching the disc.
+Three independent capacity values are a double-management trap: the sim can
+borrow more virtual budget than the hardware can schedule, causing live
+underruns even when the encode looked feasible.
 
-Here we define the ring **once** and derive everything from it, so sim, pack and
-player cannot drift apart. The player's ``RING_SIZE`` is asserted equal to
+Here we define the physical ring **once** and derive both safe capacity ceilings
+from it. The player's ``RING_SIZE`` is asserted equal to
 ``RING_SIZE_KB`` at build time (``tools/check_player_ring.py``, run by the
 Makefile). The per-source *cold cap* is deliberately NOT here: it belongs to the
 encoder alone (``CBRSIM_MAX_COLD`` in the sim). The packer refuses to re-cap.
@@ -28,15 +30,15 @@ import math
 RING_SIZE_KB = 428
 
 # The player throttles its CD pump at RING_SIZE-4KB (back-pressure); real
-# CD-delivery jitter shrinks the usable ring further. The pack schedules within,
-# and the sim's VBV tank models, the SAME jitter-adjusted usable ring, so all
-# three agree by construction. 40 KB keeps the scheduled peak (~RING_CAP-32)
+# CD-delivery jitter shrinks the usable ring further. The pack schedules within
+# this cap, and the sim may borrow no more virtual VBV budget than the same cap.
+# Their occupancies remain separate. 40 KB keeps the scheduled peak
 # comfortably below the 424 KB back-pressure threshold.
 RING_JITTER_MARGIN_KB = 40
 
 # Derived — do not set these independently anywhere else.
 RING_CAP_KB = RING_SIZE_KB - RING_JITTER_MARGIN_KB   # 388: pack schedule cap
-TANK_KB = RING_CAP_KB                                # sim VBV tank == usable ring
+TANK_KB = RING_CAP_KB                                # virtual VBV capacity ceiling
 
 # The player's pump_poll back-pressure threshold (RING_SIZE - 4KB). RING_CAP must
 # stay below this or the pump stalls (back-pressure ratchet -> CDC drops).

@@ -111,12 +111,17 @@ BUF = np.load(f"{SIM}/buffer_remaining.npz")
 BUF_CAP = int(BUF["total"]); BUF_REM = BUF["remaining"].astype(np.int64)
 BUF_SCHEMA = int(BUF["schema_version"]) if "schema_version" in BUF else 1
 BUF_KIND = str(BUF["remaining_kind"]) if "remaining_kind" in BUF else "legacy_vbv"
+VBV_REM = (BUF["vbv_remaining"].astype(np.int64)
+           if "vbv_remaining" in BUF else BUF_REM)
 if BUF_SCHEMA >= 2 and BUF_KIND != "payload_ring_patterns":
     raise SystemExit(
         f"unsupported buffer_remaining metric {BUF_KIND!r}; re-run sim")
 if len(BUF_REM) != NF:
     raise SystemExit(
         f"payload RING trace has {len(BUF_REM)} frames, expected {NF}; re-run sim")
+if len(VBV_REM) != NF:
+    raise SystemExit(
+        f"virtual VBV trace has {len(VBV_REM)} frames, expected {NF}; re-run sim")
 if (BUF_REM < 0).any() or (BUF_REM > BUF_CAP).any():
     raise SystemExit(
         "payload RING trace is outside its physical capacity; re-run sim")
@@ -261,11 +266,12 @@ Updated = col("updated")
 _cram = np.zeros(NF, np.int64); _cram[1:] = (FRAME_SEG[1:] != FRAME_SEG[:-1]).astype(np.int64) * 128
 FB = Raw * 32 + Buf * 32 + Updated * 2 + _cram        # 1コマの映像書込量(パターン+全ネーム+CRAM, タンク供給込み)
 FRAME_CD = int(z["frame_bytes"]) if "frame_bytes" in z else int(153600 / FPS)  # CBR配給/コマ(=このコマのCD読み量)
-# 有効Band = このコマのCDを「有効に使った」量 = 映像に使った分 + RINGに貯めた分(貯蓄も有効)。CDは毎コマ
-# FRAME_CD を読み、内訳は映像 or 貯蓄。タンク満杯で貯めきれず捨てたときだけ FRAME_CD を下回る。
+# Band is the encoder's virtual CBR-budget use; Tank/Buff below are the separate
+# physical payload-RING occupancy. Never derive Band banking from that RING.
 TANK_DELTA = np.zeros(NF, np.int64); TANK_DELTA[1:] = BUF_REM[1:] - BUF_REM[:-1]   # コマ毎payload RING増減(タイル)
+VBV_DELTA = np.zeros(NF, np.int64); VBV_DELTA[1:] = VBV_REM[1:] - VBV_REM[:-1]
 RAW_BYTES = np.minimum(FB, FRAME_CD)                  # 映像書込(Bandバーの Raw色)
-BUF_BYTES = np.maximum(0, TANK_DELTA) * 32            # タンクに貯めたバイト(Bandバーの Buf色)
+BUF_BYTES = np.maximum(0, VBV_DELTA) * 32             # 仮想VBV予算に貯めたバイト(Bandバーの Buf色)
 # 有効CD使用量: sim報告値 cd_used(音声+ネーム+CRAM+フラグ等の全ヘッダ+映像+貯蓄, パディング捨て分のみ除外)。
 # 無い旧simは 映像+貯蓄 で近似(音声等は含まれない)。
 _cd_used = CD_USED if CD_USED is not None else np.minimum(RAW_BYTES + BUF_BYTES, FRAME_CD)

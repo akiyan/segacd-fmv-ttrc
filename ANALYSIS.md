@@ -132,12 +132,12 @@ find *some* resident rather than leave a hole.
 
 | Class | Colour | Bytes | Meaning |
 |-------|--------|-------|---------|
-| **Raw**  | light grey | 34 (32 pattern + 2 name) | A **fresh** tile pattern read from CD this frame and written to VRAM. The accurate, full-cost update. |
+| **Raw**  | light grey | 34 (32 pattern + 2 name) | An accurate full-cost load charged to this frame's virtual CBR budget. Physical payload delivery may have happened earlier through the RING. |
 | **Same** | checker grey | 2 (name only) | The target tile's exact pattern is **already resident** in VRAM; the cell just points to it (lossless dedup). No pattern transfer. |
 | **Near** | blue | 2 (name) | No exact match, but a resident pattern passes the **Near** thresholds; the cell points to it. Near-perfect reuse. Also covers "keep the current display" when the currently shown tile is already accurate and still within Near of the new target. |
 | **Coa**  | green | 2 (name) | Best resident passes **Coa** (a bit rougher than Near). Used for flat/low-detail tiles where a close-enough resident exists. |
 | **Flbk** | orange (thick border) | 2 (name) | **Fallback** (merged Mid+Far). Only used when no Raw/Buf load is possible (budget/tank exhausted or the per-frame cold cap reached). Default is **improve mode**: the best resident is taken if it gets closer to the target than the current display (`CBRSIM_FLBK_IMPROVE_ONLY=0` reverts to the absolute wide **Flbk** threshold). Visibly approximate, but "better than a Miss". This is the last resort before Miss. |
-| **Buf**  | violet (thick border) | 34 (32 from tank + 2 name) | An accurate pattern load whose 32-byte pattern came from the **VBV tank** (pre-read/banked data in PRG-RAM) rather than fresh CD this frame. Same accuracy as Raw; different funding source. |
+| **Buf**  | violet (thick border) | 34 (32 pattern + 2 name) | An accurate full-cost load charged to banked virtual VBV budget. Same accuracy and physical payload path as Raw; only the encoder's funding class differs. |
 | **Miss** | red (filled) | 0 | The tile was **not updated**; it still shows whatever was there before. A red-filled hole in the category map. |
 
 ### Selection order (per changed tile, `commit_unified`)
@@ -148,16 +148,17 @@ find *some* resident rather than leave a hole.
 3. Else find the best resident. If it passes `Near`(tier 0) or `Coa`(tier 1) and
    the budget allows the 2 B name -> `Near` / `Coa`.
 4. Else load the exact pattern (34 B), unless the per-frame **cold cap**
-   (`cold_cap_for_fps`, `av_config.py`) is already reached: from fresh CD ->
-   `Raw`, or from the tank -> `Buf`.
-5. Else (budget/tank/cold-cap exhausted) if the best resident improves on the
+   (`cold_cap_for_fps`, `av_config.py`) is already reached: charge the current
+   virtual CBR budget -> `Raw`, or banked virtual VBV budget -> `Buf`.
+5. Else (budget/VBV/cold-cap exhausted) if the best resident improves on the
    current display (default improve mode; see Flbk above) -> `Flbk`
    (2 B fallback).
 6. Else -> `Miss`.
 
 Notes: `Same/Near/Coa/Flbk` cost only a 2-byte name-table entry (they reuse
-a resident 32-byte pattern). `Raw/Buf` cost a full 34 bytes. Only `Raw` spends
-fresh CD bandwidth this frame; `Buf` spends banked (tank) bytes. A persistent
+a resident 32-byte pattern). `Raw/Buf` cost a full 34 bytes in the encoder
+model. `Raw` spends current virtual CBR budget; `Buf` spends banked virtual VBV
+budget. Both are later delivered through the same physical payload RING. A persistent
 approximation (a tile stuck in Near/Coa/Flbk for >= 0.3s) is escalated to
 Miss-priority so it gets an accurate reload when budget allows.
 
@@ -170,45 +171,54 @@ meters is the palette strip; to the right are three stacked timelines.
 ### Req meter
 All categories stacked into one bar (full width = total tile count `C`), with a
 yellow vertical **budget line** marking the per-frame update budget. Labels:
-`Req:NNN` (changed tiles requested this frame), `Raw:NNN` (fresh loads),
+`Req:NNN` (changed tiles requested this frame), `Raw:NNN` (current-budget loads),
 `Comp:NNN` (tiles satisfied by resident reuse = `Same+Near+Coa+Flbk`).
 
 ### Cold meter
 `Cold:NNN` = this frame's **new tile loads** (`Raw + Buf`, i.e. every 32-byte
-pattern that had to be delivered, whether fresh CD or tank). The bar stacks a
+pattern that had to be consumed from the payload RING). The bar stacks a
 Raw-coloured and a Buf-coloured segment; full-scale = `cold_cap_for_fps`
 (`av_config.py`, the mode/fps-specific drop-safe per-frame cold ceiling; an
 explicit positive `CBRSIM_MAX_COLD` is reserved for special experiments).
 This visualises the value the hardware slip investigations were fought over.
 
 ### Band meter (effective CD usage) - KiB/sec
-`Band` is the **effective** bandwidth: how much of the constant CD read was put
-to use this frame. The CD reads a fixed `FRAME_BYTES` every frame (CBR). That
-budget is spent on, in bar order:
+`Band` is the encoder's **virtual CBR-budget use**: how much of the fixed
+`FRAME_BYTES` allowance it put to use this frame. It is a quality-allocation
+model, not a reading of physical BODY sectors or payload-RING occupancy. The
+bar is split, in order, into:
 
 - **Raw colour** = video written this frame (patterns + name table + CRAM).
-- **Buf/violet colour** = bytes **banked into the tank** this frame (saving for
-  future hard frames is also "effective" use).
+- **Buf/violet colour** = bytes banked into the encoder's virtual VBV budget
+  this frame (saving for future hard frames is also "effective" use).
 - **dim blue-grey colour** = audio + every other fixed header (name-table base,
   flag maps, CRAM, and anything else in the stream).
 
-`Band = FRAME_BYTES - padding`, where *padding* is the only wasted part: surplus
-that could not be banked because the tank was already full. So Band sits at the
-CBR ceiling (~144 KiB/sec) almost always, dipping only when the tank is full and
-there is nothing useful to send. The value comes from the encoder's own
+`Band = FRAME_BYTES - padding`, where *padding* is the unused part of this
+virtual budget. So Band sits at the CBR ceiling (~144 KiB/sec) almost always,
+dipping only when the VBV budget is full and there is nothing useful to send.
+The value comes from the encoder's own
 `cd_used` log, so it includes bytes the renderer does not otherwise model.
 `avg N KiB/sec` in the top meta is the mean of this Band. The bar's full-scale
 (like the effective-transfer timeline's) is the CD 1x per-frame byte count
 (`153600 / fps`).
 
 ### Tank meter
-`Tank:NNNNN` = current VBV tank level (in tile-equivalents). The violet bar fills
-to `level / capacity`. The tank banks spare bandwidth on easy frames and is
-drawn down on hard frames (this is what lets a pure-CBR stream survive bursts).
+`Tank:NNNNN` = actual end-of-frame PRG-RAM **payload RING occupancy**, in
+32-byte pattern slots. The sim runs the same sector scheduler as the packer,
+using the exact per-frame cold counts and control-block lengths. This includes
+the HEADER prebuffer, whole-sector padding, per-frame payload delivery, and
+pattern consumption. The packer recomputes the trace from its built control
+blocks and rejects any mismatch.
 
-### Buff meter (tank change indicator)
-A centre-anchored gauge for **this frame's** tank change. A faint centre line;
-fill grows **left in red** when the tank drained, **right in blue** when it
+This is intentionally separate from the encoder's virtual VBV budget. Near the
+end of a movie, Tank can only retain already delivered payload (usually no more
+than final-sector padding); it cannot rise just because unused virtual budget
+remains.
+
+### Buff meter (payload-RING change indicator)
+A centre-anchored gauge for this frame's physical payload-RING change. A faint
+centre line; fill grows **left in red** when the RING drained, **right in blue** when it
 filled. Label `Buff:-NNN / +NNN / +/-000`. Full-scale = `C - per-frame Raw
 budget` (the largest plausible one-frame swing).
 
@@ -253,7 +263,7 @@ Ratio 2:1:1 top to bottom, sharing the whole clip on the x-axis with a white
 playhead:
 1. **Req heatmap** - `Raw / Coa / Flbk / Buf / Miss` stacked per frame (same
    colours; `Same` and `Near` are omitted so the interesting load shows).
-2. **Tank level** - the VBV reservoir curve (violet).
+2. **Tank level** - actual physical payload-RING occupancy (violet).
 3. **Effective transfer** - Raw (video) plus Buf (banked) per frame.
 
 ## Colours (RGB)

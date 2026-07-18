@@ -23,21 +23,23 @@ Where a value lives: **sp** = `boot/movieplay_sp.s` (Sub CPU), **ip** =
 
 ---
 
-## A. Streaming buffer (ring / tank)
+## A. Streaming buffer (payload RING / virtual VBV budget)
 
-The ring is the PRG-RAM area that holds prefetched tile payload. The sim's "tank"
-models the same usable buffer so a schedule it calls feasible actually is.
+The payload RING is the physical PRG-RAM area that holds prefetched tile
+sectors. The encoder also has a virtual VBV budget with the same capacity, but
+the two occupancies are different: VBV guides quality choices, while the shared
+sim/packer sector scheduler determines actual RING occupancy.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | `RING_SIZE` / `RING_SIZE_KB` | 428 KB (0x6B000) | sp / cfg | Physical PRG ring. It fills the complete safe range from 0x0C000 up to `APPLY_BASE` after routing moved to Word RAM. |
 | `RING_JITTER_MARGIN_KB` | 40 KB | cfg | Headroom for real CD-delivery jitter, subtracted from the physical ring. |
 | `RING_CAP_KB` | 388 KB (derived) | cfg -> pack | Pack schedule / prefetch cap = `RING_SIZE_KB - RING_JITTER_MARGIN_KB`. |
-| `TANK_KB` | 388 KB (derived) | cfg -> sim | Sim VBV tank = usable ring. How much bandwidth a heavy frame may borrow. (Was wrongly 440 = larger than the ring.) |
+| `TANK_KB` | 388 KB (derived) | cfg -> sim | Capacity of the encoder's virtual VBV budget. It matches the usable RING capacity but is not the physical RING occupancy. |
 | `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the ring. `RING_CAP` must stay below it. |
 | routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v8 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
-| prebuffer | fills ring to `RING_CAP` | pack | Final region of `HEADER.DAT`; a boot-time burst that fills the ring before frame 1 so bursts are pre-buffered. |
+| prebuffer | up to `RING_CAP` | sim / pack | Final region of `HEADER.DAT`; a boot-time payload burst before frame 1. It is capped by both `RING_CAP` and the clip's total future cold payload. |
 | frame-0 boot staging | 36 KB max in the 40 KB jitter tail | sp | Frame 0 is temporarily stored at `RING_CAP` and expanded before BODY streaming reuses those PRG-RAM bytes. |
 
 DEBUG uses the Window name table for one opaque HUD row. It still updates every
@@ -147,8 +149,9 @@ continuously.
 
 ## G. Encoder quality knobs
 
-Per-cell the sim picks: Raw (fresh CD load), Same, Near/Coa/Flbk (reuse a
-resident tile), Buf (prefetched), or Miss. These thresholds steer that choice.
+Per-cell the sim picks: Raw (accurate load charged to the current virtual CBR
+budget), Same, Near/Coa/Flbk (reuse a resident tile), Buf (accurate load charged
+to banked virtual VBV budget), or Miss. These thresholds steer that choice.
 Frequently changed profile values use their TOML names below. The remaining
 `CBRSIM_*` variables are advanced shared experiments; do not put per-movie
 values in this document.
@@ -250,7 +253,7 @@ The profile loader is strict: misspelled sections/keys, unsupported display
 modes, non-tile-aligned dimensions, and unsafe TOML filename characters fail
 immediately. Profile values replace
 inherited per-source environment values unconditionally. Shared hardware limits
-such as ring size, tank size, and the automatic cold cap stay in
+such as ring size, virtual VBV capacity, and the automatic cold cap stay in
 `tools/av_config.py`; they are deliberately not per-source TOML fields.
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)

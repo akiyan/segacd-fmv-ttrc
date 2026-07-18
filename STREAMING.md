@@ -73,7 +73,7 @@ allocation and a build-time overlap check before use.
 | `0x07000..0x07FFF` | 4.00 KiB | boot ISO scratch and BIOS-unsafe streaming range | No |
 | `0x08000..0x097FF` | **6.00 KiB** | unused, previously marker-verified safe | **Yes, fixed PRG feature area** |
 | `0x09800..0x0BFFF` | 10.00 KiB | touched by BIOS during continuous reads | No |
-| `0x0C000..0x6CFFF` | 388.00 KiB | scheduled payload RING / simulator tank | No free headroom |
+| `0x0C000..0x6CFFF` | 388.00 KiB | scheduled payload RING / virtual VBV capacity ceiling | No free headroom |
 | `0x6D000..0x76FFF` | 40.00 KiB | delivery-jitter reserve; frame-0 pattern staging during boot | No; this is timing safety, not free RAM |
 | `0x77000..0x7F7FF` | 34.00 KiB | APPLY circular queue | No; its 4 KiB back-pressure gap is queue safety |
 | `0x7F800..0x7FEFF` | 1.75 KiB | Sub stack reserve, growing downward from `0x7FF00` | No |

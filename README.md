@@ -37,16 +37,17 @@ Everything else is shaped by Sega CD hardware, not by video theory:
   *close* resident is accepted under graded thresholds: `Near` (near-perfect),
   `Coa` (coarse), and `Flbk` (a wide fallback that fills what would otherwise be
   a hole). Accuracy is traded for zero pattern transfer.
-- **Constant CD bitrate + a VBV "tank".** The CD delivers a fixed number of
-  bytes per frame (CBR). Easy frames bank spare bytes into a PRG-RAM reservoir
-  (the tank); hard frames spend it. A strict CBR stream then survives bursts
-  without stalling the drive (re-seeking the CD is expensive).
+- **Constant CD bitrate + scheduled payload RING.** The encoder uses a virtual
+  VBV budget to move spare capacity from easy frames to hard ones. The packer
+  then schedules the chosen pattern payload into the physical PRG-RAM RING in
+  whole CD sectors. Both share one safe capacity, but their occupancy curves
+  are deliberately separate.
 - **DMA-limited refresh.** How many tiles can be written to VRAM per frame is
   bounded by the VBLANK DMA window for the screen mode and fps, so the tile grid
   size is chosen to fit that budget.
 - **RF5C164 PCM audio, interleaved.** Audio is packed into the same CD stream at
   a fixed byte rate and played on the PCM chip, kept in sync with video.
-- **PRG-RAM discipline.** Buffers, queues, and the tank live in PRG-RAM regions
+- **PRG-RAM discipline.** Buffers, queues, and the payload RING live in PRG-RAM regions
   that stay safe during continuous CD reads (see [AGENTS.md](AGENTS.md) hardware notes).
 
 ## Configurable within Sega CD limits
@@ -80,7 +81,7 @@ Sega CD-specific compression is the "Encode" step.
 5. **Encode (the codec):** maintain the resident VRAM tile pool; per frame,
    reuse exact / near / coarse / fallback residents where possible, load fresh
    patterns only where needed, spend the CBR budget by priority, and bank/spend
-   the VBV tank.
+   the virtual VBV budget.
 6. **Pack** video control, tile payload, palettes, and PCM audio into the
    two-file CD stream: an armed startup `HEADER.DAT` and a continuously read
    `BODY.DAT`.
