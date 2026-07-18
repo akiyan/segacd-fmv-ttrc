@@ -32,10 +32,37 @@ class PlaybackTimingTests(unittest.TestCase):
         self.assertEqual(av_config.vsync_n_for_fps(24), 2)
         self.assertEqual(av_config.playback_fps_for_content(24), 24)
         self.assertEqual(av_config.pcm_frame_bytes(24), 555)
+        self.assertFalse(av_config.uses_fixed_n2_cadence(24))
+
+    def test_only_ntsc_n2_rates_use_fixed_cadence(self) -> None:
+        self.assertTrue(av_config.uses_fixed_n2_cadence(30))
+        self.assertTrue(av_config.uses_fixed_n2_cadence(30_000 / 1001))
+        self.assertFalse(av_config.uses_fixed_n2_cadence(15))
+        self.assertFalse(av_config.uses_fixed_n2_cadence(60))
+
+    def test_30fps_cd_rate_matches_two_ntsc_vblanks(self) -> None:
+        numerator, modulus = av_config.cd_sector_rate(30)
+        self.assertEqual((numerator, modulus), (1001, 400))
+        acc = 0
+        deltas = []
+        for _ in range(400):
+            acc += numerator
+            delta, acc = divmod(acc, modulus)
+            deltas.append(delta)
+        self.assertEqual(sum(deltas), 1001)
+        self.assertEqual(deltas.count(2), 199)
+        self.assertEqual(deltas.count(3), 201)
+        self.assertEqual(acc, 0)
+
+    def test_non_n2_cd_rates_keep_legacy_schedule(self) -> None:
+        self.assertEqual(av_config.cd_sector_rate(15), (75, 15))
+        self.assertEqual(av_config.cd_sector_rate(24), (75, 24))
 
     def test_invalid_fps_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             av_config.vsync_n_for_fps(0)
+        with self.assertRaises(ValueError):
+            av_config.cd_sector_rate(0)
 
 
 class ColdCapTests(unittest.TestCase):

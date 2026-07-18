@@ -96,6 +96,39 @@ def playback_fps_for_content(fps):
     return value
 
 
+def uses_fixed_n2_cadence(fps):
+    """Whether this source uses the exact two-VBlank NTSC display cadence.
+
+    This deliberately excludes 24 fps even though its nearest cadence hint is
+    also N=2.  Delivery-paced 24 fps must retain its alternating two/three
+    VBlank behavior; only rates already classified as NTSC N=2 are fixed.
+    """
+    value = float(fps)
+    n = vsync_n_for_fps(value)
+    return (
+        n == 2
+        and abs((NTSC_VSYNC / value) - n) <= _INTEGER_VBLANK_TOLERANCE
+    )
+
+
+def cd_sector_rate(fps):
+    """Return the integer accumulator numerator/modulus for CD-1x sectors.
+
+    A fixed N=2 frame lasts exactly two 60000/1001 Hz VBlanks, so CD-1x
+    supplies 1001/400 sectors per frame.  Other rates retain the legacy
+    delivery-paced ``75 / round(fps)`` schedule.
+    """
+    value = float(fps)
+    if value <= 0:
+        raise ValueError(f"fps must be positive, got {fps!r}")
+    if uses_fixed_n2_cadence(value):
+        return 1001, 400
+    nominal = int(round(value))
+    if nominal <= 0:
+        raise ValueError(f"fps must round to a positive integer, got {fps!r}")
+    return 75, nominal
+
+
 def pcm_frame_bytes(fps, audio_rate=13_300):
     """Fixed mono u8 PCM bytes per frame, rounded up to avoid underrun."""
     return int(math.ceil(int(audio_rate) / playback_fps_for_content(fps)))
