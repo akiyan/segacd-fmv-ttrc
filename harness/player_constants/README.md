@@ -11,6 +11,8 @@ For every case it requires:
 - the specialized SP binary stays within the 4,096-byte boot area;
 - the specialized SP contains the exact HEADER signature immediate and the
   `0xBAD1` mismatch diagnostic;
+- Main's specialized flip branches cannot escape the `bf_doflip` control-flow
+  region before `do_flip`;
 - all six geometry/timing combinations assemble and link successfully.
 
 Run it with the project Python environment:

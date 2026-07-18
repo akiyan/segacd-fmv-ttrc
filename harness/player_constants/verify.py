@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import struct
 import subprocess
@@ -92,9 +93,37 @@ def text_size(size: Path, obj: Path) -> int:
     raise AssertionError(f"no .text size in {obj}")
 
 
+def verify_doflip_branches(objdump: Path, obj: Path) -> None:
+    """Keep local branches inside bf_doflip's control-flow region."""
+    disassembly = run([str(objdump), "-d", str(obj)])
+    start_match = re.search(r"^([0-9a-f]+) <bf_doflip>:$", disassembly, re.MULTILINE)
+    end_match = re.search(r"^([0-9a-f]+) <bf_after_flip>:$", disassembly, re.MULTILINE)
+    if not start_match or not end_match:
+        raise AssertionError(f"{obj}: missing bf_doflip symbols")
+    start = int(start_match.group(1), 16)
+    end = int(end_match.group(1), 16)
+    block = disassembly[start_match.end():end_match.start()]
+    branches = re.findall(
+        r"^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+"
+        r"(?!bsr)(b[a-z]+)\s+([0-9a-f]+)\s+<",
+        block,
+        re.MULTILINE,
+    )
+    if not branches:
+        raise AssertionError(f"{obj}: no bf_doflip local branches found")
+    escaped = [
+        (mnemonic, int(target, 16))
+        for mnemonic, target in branches
+        if not start <= int(target, 16) <= end
+    ]
+    if escaped:
+        details = ", ".join(f"{op}->0x{target:X}" for op, target in escaped)
+        raise AssertionError(f"{obj}: bf_doflip branch escaped its region: {details}")
+
+
 def build_case(
     case_dir: Path, *, specialized: bool,
-    assembler: Path, linker: Path, size: Path,
+    assembler: Path, linker: Path, size: Path, objdump: Path,
 ) -> Build:
     tag = "specialized" if specialized else "generic"
     common = [
@@ -113,6 +142,8 @@ def build_case(
         str(linker), "-nostdlib", "--oformat", "binary",
         "-T", str(ROOT / "cfg/ip.ld"), "-o", str(ip_bin), str(ip_obj),
     ])
+    if specialized:
+        verify_doflip_branches(objdump, ip_obj)
 
     sp_obj = case_dir / f"sp-{tag}.o"
     sp_bin = case_dir / f"sp-{tag}.bin"
@@ -136,6 +167,7 @@ def main() -> None:
     assembler = find_tool("m68k-elf-as")
     linker = find_tool("m68k-elf-ld")
     size = find_tool("m68k-elf-size")
+    objdump = find_tool("m68k-elf-objdump")
     tmp_root = ROOT / "tmp"
     tmp_root.mkdir(exist_ok=True)
 
@@ -154,10 +186,10 @@ def main() -> None:
 
             generic = build_case(
                 case_dir, specialized=False,
-                assembler=assembler, linker=linker, size=size)
+                assembler=assembler, linker=linker, size=size, objdump=objdump)
             specialized = build_case(
                 case_dir, specialized=True,
-                assembler=assembler, linker=linker, size=size)
+                assembler=assembler, linker=linker, size=size, objdump=objdump)
 
             if specialized.ip_bin > generic.ip_bin:
                 raise AssertionError(
