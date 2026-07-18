@@ -118,6 +118,8 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 
 - Keep public documentation in [`README.md`](README.md).
 - Keep agent and maintenance instructions in `AGENTS.md`.
+- Keep Markdown self-contained. Do not link to or name GitHub issues from
+  Markdown files; describe the current behavior or plan directly instead.
 - Do not add new scattered Markdown documents for project notes at the repo root.
 - **Harness / diagnostic docs are allowed under `harness/`.** When a debugging
   effort needs its own tooling and notes (detectors, repro scripts, findings),
@@ -160,9 +162,8 @@ within Sega CD limits, not fixed presets:
 - Frame rate = the source's native rate.
 - Audio = **PCM** (RF5C164), 13.3 kHz mono 8-bit — the verified on-hardware
   path. 22.05 kHz ADPCM decoded on the 68000s was shelved (structural limit;
-  see [ADPCM.md](ADPCM.md)); a revival that moves the decode to the **Z80**
-  (YM2612 DAC output, custom double-buffer driver) is approved and tracked in
-  issue #13.
+  see [ADPCM.md](ADPCM.md)). Z80 offload was also tested and shelved because
+  BUSREQ-based feeding contends with Main CPU video work.
 
 The old `OP.STR` / RLE and `PROBE.BIN` bring-up paths have been removed.
 `make disc CONFIG=configs/PROFILE.toml` builds the `HEADER.DAT` + `BODY.DAT`
@@ -194,8 +195,8 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
 - `<resolution>`: the Sega CD output resolution in pixels, `WxH` (e.g. `256x144`).
-- `<audio-format>`: `pcm` (68000-decoded ADPCM was shelved — see
-  [ADPCM.md](ADPCM.md); a Z80-decode ADPCM path is planned in issue #13).
+- `<audio-format>`: `pcm` (68000-decoded ADPCM and the later Z80-offload
+  experiment were shelved — see [ADPCM.md](ADPCM.md)).
 
 ## Hardware Facts
 
@@ -337,8 +338,8 @@ ffmpeg -i videos/<stem>_emu_lossless.mkv \
   sim *no matter how you tune*, STOP and question whether the sim mis-models the
   hardware's real limit — do not keep shaving the encoder to fit a symptom.
   Precedents: the CRAM emulation had a sim-side bug; 22.05 kHz ADPCM decode was
-  simply infeasible on the 68000s (structural — see `ADPCM.md`; a Z80-decode
-  revival is issue #13); and the streaming
+  simply infeasible on the 68000s, and Z80 offload introduced Main-bus
+  contention (see `ADPCM.md`); and the streaming
   ring: the sim's VBV tank was set equal to the player's ring
   (`RING_SIZE`=420 KB, TANK=440→400), i.e. it assumed the *entire* ring is usable
   for banking. Real CD-delivery jitter makes the usable ring smaller, so a

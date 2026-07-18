@@ -1,4 +1,4 @@
-# Offline lossless recording (issue #28)
+# Offline lossless recording
 
 ## Goal
 
@@ -44,33 +44,33 @@ One-command default capture:
 OUTDIR="$PWD/videos" tools/record_movie.sh \
   --config configs/ps2-sakura-op-h32.toml \
   --seconds 140 \
-  --tag issue28_offline --record-size 256x224 --display :299 \
-  --out videos/issue28_offline_preview.mp4 --audio-min-rms 1
+  --tag offline_record --record-size 256x224 --display :299 \
+  --out videos/offline_record_preview.mp4 --audio-min-rms 1
 ```
 
 The command prints `REPLAY=...`. Reuse that exact file for the realtime
 baseline and the repeat offline capture:
 
 ```sh
-REPLAY=tmp/ps2-sakura-op-h32/record/issue28_offline_input.replay
+REPLAY=tmp/ps2-sakura-op-h32/record/offline_record_input.replay
 
 OUTDIR="$PWD/videos" tools/record_movie.sh \
   --disc out/ps2-sakura-op-h32.cue --no-build \
   --seconds 140 --realtime-lossless --preset ffv1-flac \
   --input-replay "$REPLAY" \
-  --tag issue28_realtime --record-size 256x224 --display :300 \
-  --out videos/issue28_realtime_preview.mp4 --audio-min-rms 1
+  --tag realtime_baseline --record-size 256x224 --display :300 \
+  --out videos/realtime_baseline_preview.mp4 --audio-min-rms 1
 
 OUTDIR="$PWD/videos" tools/record_movie.sh \
   --disc out/ps2-sakura-op-h32.cue --no-build \
   --seconds 140 --input-replay "$REPLAY" \
-  --tag issue28_offline_ab --record-size 256x224 --display :301 \
-  --out videos/issue28_offline_ab_preview.mp4 --audio-min-rms 1
+  --tag offline_ab --record-size 256x224 --display :301 \
+  --out videos/offline_ab_preview.mp4 --audio-min-rms 1
 
 python3 tools/compare_recordings.py \
-  videos/issue28_realtime_lossless.mkv \
-  videos/issue28_offline_ab_lossless.mkv \
-  --json videos/issue28_realtime_vs_offline.json
+  videos/realtime_baseline_lossless.mkv \
+  videos/offline_ab_lossless.mkv \
+  --json videos/realtime_vs_offline.json
 ```
 
 When requalifying, repeat the offline command with a new tag, then compare the

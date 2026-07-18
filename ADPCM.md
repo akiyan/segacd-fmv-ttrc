@@ -6,10 +6,10 @@ CPU during sustained motion. The verified **PCM** audio path remains the shippin
 choice. The full ADPCM implementation is preserved on branch `adpcm-h40`; this
 doc records why it doesn't fit so a future attempt starts informed.
 
-**Update 2026-07-13**: the limit above is specific to decoding on the two
-68000s. A revival that moves the decode to the **Z80** (custom double-buffered
-driver, YM2612 DAC output) is approved and tracked in **issue #13** — see the
-new path 0 under "Paths for a future retry" below.
+**Update 2026-07-18**: moving decode to the **Z80** was implemented and tested.
+The timer-driven playback worked, but Main-to-Z80 feeding through BUSREQ caused
+periodic audio artifacts and competed with video work. That path is therefore
+shelved as well; the preserved `z80-audio` branch contains the experiment.
 
 Goal was: play the movie with **22.05 kHz IMA ADPCM** audio (fixed, no
 PCM/ADPCM switching) on real Mega-CD hardware, under the TTRC streaming pipeline,
@@ -87,15 +87,12 @@ budget). Both trade against the same maxed resource. With "no video degradation"
 
 ## Paths for a future retry (ranked, no-compromise first)
 
-0. **Z80 decode + YM2612 DAC (approved — issue #13)** — decode on the third
-   CPU so neither 68000 pays the ~17 ms. Audio data, IMA tables and driver code
-   all live in the Z80's internal 8 KB RAM (the Z80 never touches the main bus
-   during playback, so it cannot collide with VDP DMA); the Main CPU feeds
-   735 B/frame into the off-side buffer in small BUSREQ chunks. SGDK's DPCM2
-   driver proves a Z80 can decode-and-play at a fixed 22050 Hz, but it is a
-   ROM-resident sample player with a non-IMA codec — hence a custom driver.
-   Key risk: the IMA inner loop must fit ~162 Z80 cycles/sample (phase-0 proof
-   required). Supersedes paths 1–3 below unless it fails.
+0. **Z80 decode + YM2612 DAC (shelved after hardware testing)** — timer-driven
+   playback and decode worked, but the Main CPU still had to stop the Z80 with
+   BUSREQ to refill its internal buffer. Those stops produced periodic audio
+   artifacts, and larger PCM feeds also increased video slips. A cartridge-ROM
+   variant could let the Z80 fetch pre-recorded audio without BUSREQ, but it
+   would require Mode 1 hardware and new A/V synchronization work.
 1. **Video codec efficiency** — reduce cold-tile count per motion frame at equal
    picture quality (better tile reuse/matching). Frees per-frame CPU with no
    visible loss and no rate change. Largest/most uncertain, but the only truly

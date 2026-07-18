@@ -87,7 +87,7 @@ needed.**
 
 Done + verified:
 - Cold cap: single knob `COLD_CAP_15FPS = 350` (confirmed), `cap(fps)=350*15/fps`
-  (30->175, 24->219); realized ceiling fps-scaled. Uncapped removed. (issue #15 raises the knob.)
+  (30->175, 24->219); realized ceiling fps-scaled. Uncapped removed.
 - `AUDIO` fps-derived in the pack (15->887, 30->443).
 - **MOVIE.DAT v4**: variable frames (no 5-sector padding; each frame = n_pay+n_ctrl
   sectors), header offset 52 = N (VBlanks/frame), 54 = AUDIO. Sonic H32 30fps packs to
@@ -119,12 +119,12 @@ re-seek that costs time.
 Root cause: at 30fps the Sub-CPU must drain the CDC at ~2x the 15fps rate, and the
 current pump can't keep up on the 832-cell frames → the CDC overflows → sector slips
 → re-seeks → the effective rate halves. This is exactly the pipeline-throughput limit
-of **issue #15** (BUDGETS.md: "the real limit is the pipeline, not raw DMA").
+described in BUDGETS.md: the real limit is the pipeline, not raw DMA.
 
 Conclusion: **true 30fps is NOT structurally impossible** — the format, the data rate
 (fits CD 1x), and the player all work (D=0, plays to completion). The binding limit is
-Sub-CPU pump throughput, which the issue-#15 speedup (MOVEM block copies, fewer polls)
-is designed to lift. A lighter spec (fewer cells) would already hit 30fps clean now.
+Sub-CPU pump throughput, which the MOVEM block-copy and reduced-polling work is
+designed to lift. A lighter spec (fewer cells) would already hit 30fps clean now.
 
 ## Rate-matched padding (the real fix) + 30fps re-test
 
@@ -152,10 +152,10 @@ Results:
   over-delivery component but Sonic's binding limit is **Sub-CPU expand throughput**:
   832 cells at 30fps is ~2x the per-second decode work of 15fps, more than the Sub
   can do alongside the CD drain, so the ring fills → back-pressure → slips → the
-  effective rate settles at what the Sub can sustain (~16fps). This is the issue-#15
+  effective rate settles at what the Sub can sustain (~16fps). This is the
   pipeline-speed limit, not a format/over-delivery problem.
 
 Bottom line: 30fps is structurally correct (D=0, rate-matched disc, plays fully).
-Clean 30fps of a **dense** spec needs the Sub speedup (issue #15); a lighter grid
+Clean 30fps of a **dense** spec needs the Sub speedup; a lighter grid
 (~≤500 cells, so cells·30fps ≤ the ~16800 cells/s the Sub sustains at 15fps) would
 already play clean 30fps now.

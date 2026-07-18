@@ -1,4 +1,4 @@
-# Pipeline speedup (issue #15) — where the Sub actually spends time
+# Pipeline speedup — where the Sub actually spends time
 
 Goal: let a dense spec (Sonic H32, 256x208, 832 cells) play clean 29.97fps. The
 first rate-matched build was structurally correct (`D=0`) but ran at ~16fps with

@@ -1,6 +1,6 @@
 # Player constants build matrix
 
-This harness verifies issue #21's disc-specific Main/Sub assembly path without
+This harness verifies the disc-specific Main/Sub assembly path without
 reusing stale packed movies. It creates current TTRC v8 headers for H32 and H40
 at 15, 24 and 30 fps, generates `player_constants.inc`, then assembles and links
 both the generic and specialized DEBUG players.

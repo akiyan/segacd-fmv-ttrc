@@ -1,8 +1,9 @@
 # Main-CPU boot-time code generation
 
-This harness fixes the executable-byte contract for issue #27 before the
-player emits any code at runtime. Phase 1 replaces the mixed bitmap-byte loop
-with 256 straight-line handlers generated once after stream-header setup.
+This harness fixes the executable-byte contract for Main-CPU code generation
+before the player emits any code at runtime. Phase 1 replaces the mixed
+bitmap-byte loop with 256 straight-line handlers generated once after
+stream-header setup.
 
 The reserved Main RAM layout is:
 

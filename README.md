@@ -59,8 +59,8 @@ source within what the hardware allows — not fixed project constants:
 - **Frame rate:** the source's native rate is kept (15 / 24 / 30 fps, etc.).
 - **Audio format:** **PCM** (RF5C164), 13.3 kHz mono 8-bit — the verified
   on-hardware path. 22.05 kHz ADPCM decoded on the 68000s was shelved
-  (structural limit; see [ADPCM.md](ADPCM.md)); a Z80-decode revival is
-  planned (issue #13).
+  (structural limit; see [ADPCM.md](ADPCM.md)). A later Z80-offload experiment
+  was also shelved because feeding the Z80 contends with the Main CPU bus.
 
 ## Pipeline
 

@@ -187,7 +187,7 @@ python tools/pack_stream.py --config configs/bad-apple-h32.toml --verify
 make disc CONFIG=configs/bad-apple-h32.toml DEBUG=1
 ```
 
-`MAIN_CODEGEN=1` is the default issue #27 Main-CPU bitmap handler generator. It
+`MAIN_CODEGEN=1` is the default Main-CPU bitmap handler generator. It
 emits code once after header setup and falls back to the reference bit loop if
 its runtime size/range checks fail. Set `MAIN_CODEGEN=0` only for a reference
 bit-loop A/B build.
@@ -209,8 +209,8 @@ future change must check the DEBUG size as well as Release.
 
 The same generated constants specialize the Main object. For Sonic H32 the
 complete IP binary is 5,024 bytes in Release and 5,216 bytes in DEBUG, versus
-5,360 and 5,584 bytes for the generic build. The existing issue #27 runtime
-bitmap-handler and name-table code generation remains enabled; specialization
+5,360 and 5,584 bytes for the generic build. The existing runtime bitmap-handler
+and name-table code generation remains enabled; specialization
 removes the remaining per-frame RAM reads and the zero `col0` additions around
 that generated fast path.
 
