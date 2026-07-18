@@ -5,6 +5,8 @@
 /work/
 /tmp/
 /videos/
+.venv/
+.venv-gpu/
 __pycache__/
 .claude/settings.local.json
 .codex/

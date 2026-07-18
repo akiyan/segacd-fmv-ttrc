@@ -147,28 +147,40 @@ sudo apt update
 sudo apt install \
   ffmpeg fonts-ipafont-gothic genisoimage imagemagick \
   libretro-genesisplusgx \
-  python3 python3-numpy python3-pil python3-pip python3-venv \
+  pipx \
   retroarch rsync xdotool xvfb
 ```
 
 `fonts-ipafont-gothic` supplies the exact font used by
 `tools/layout_preview.py` and `tools/render_analysis.py`.
 
-For NVIDIA GPU acceleration, create a separate CuPy environment. The `ctk`
-extra is required on machines that have an NVIDIA driver but no system CUDA
-Toolkit headers:
+Install the pinned `uv` bootstrap, then let it install the project's managed
+CPython. The CPU environment is fully isolated under `.venv`: it does not use
+`/usr/bin/python` or distribution NumPy/Pillow packages.
 
 ```sh
-python3 -m venv ~/.config/cbrsim-gpu/venv
-~/.config/cbrsim-gpu/venv/bin/pip install \
-  numpy pillow 'cupy-cuda12x[ctk]'
-~/.config/cbrsim-gpu/venv/bin/python -c \
+pipx install 'uv==0.11.29'
+uv python install 3.14.4
+uv sync --managed-python --locked
+tools/python.sh -c \
+  'import sys, numpy, PIL; print(sys.base_prefix, numpy.__version__, PIL.__version__)'
+```
+
+For NVIDIA GPU acceleration, create a second isolated environment from the same
+lock. The `ctk` extra supplies CUDA user-space libraries without depending on a
+system CUDA Toolkit; the host NVIDIA driver is still required. Run the CUDA
+probe outside a sandbox that hides `/dev/nvidia*`.
+
+```sh
+UV_PROJECT_ENVIRONMENT=.venv-gpu \
+  uv sync --managed-python --locked --extra gpu
+tools/python.sh --gpu -c \
   'import cupy as cp; assert int(cp.arange(16).sum()) == 120'
 ```
 
-Use this GPU Python for `tools/sim.py` and `tools/render_analysis.py`. Use the
-system `python3` for `tools/pack_stream.py`; the packer does not use the GPU or
-need the much larger CUDA environment.
+`tools/python.sh` selects `.venv`; `tools/python.sh --gpu` selects
+`.venv-gpu`. It never falls back to a system Python. The lock keeps CPython
+3.14.4, NumPy 2.3.5, Pillow 12.1.1, and CuPy 14.1.1 reproducible.
 
 Install a Marsdev `m68k-elf` toolchain at `~/toolchains/mars`. The Makefile
 expects these executables by default:
@@ -201,17 +213,15 @@ The recording harness uses the distro Genesis Plus GX core at
 
 ## Build
 
-Required tools: Marsdev / `m68k-elf` toolchain, `mkisofs` or `genisoimage`,
-`ffmpeg` / `ffprobe`, `python3` with NumPy and Pillow, and a Sega CD BIOS for
-emulator testing.
+Required tools: `uv`, Marsdev / `m68k-elf` toolchain, `mkisofs` or
+`genisoimage`, `ffmpeg` / `ffprobe`, and a Sega CD BIOS for emulator testing.
+Bootstrap `.venv` (and `.venv-gpu` for an NVIDIA encode) as described above.
 
 For a new encode, run the pipeline in this order:
 
 ```sh
-PY=~/.config/cbrsim-gpu/venv/bin/python
-[ -x "$PY" ] || PY=python3
-"$PY" tools/sim.py --config configs/PROFILE.toml
-python3 tools/pack_stream.py --config configs/PROFILE.toml --verify
+tools/python.sh --gpu tools/sim.py --config configs/PROFILE.toml
+tools/python.sh tools/pack_stream.py --config configs/PROFILE.toml --verify
 make disc CONFIG=configs/PROFILE.toml DEBUG=1
 ```
 
@@ -261,8 +271,8 @@ Create the Python environment on each workstation instead of copying a venv
 from another Python version:
 
 ```sh
-python3 -m venv ~/.config/youtube/venv
-~/.config/youtube/venv/bin/pip install \
+uv venv --managed-python --python 3.14.4 ~/.config/youtube/venv
+uv pip install --python ~/.config/youtube/venv/bin/python \
   google-api-python-client google-auth-oauthlib google-auth-httplib2
 chmod 600 ~/.claude/skills/youtube/client_secret.json \
   ~/.config/youtube/youtube_token.json

@@ -890,8 +890,8 @@ def main():
             and np.__version__ == "2.5.1"):
         raise SystemExit(
             "unsafe numeric runtime: CPython 3.14.4 + NumPy 2.5.1 corrupted "
-            "long sim runs on this host. Use "
-            "~/.config/cbrsim-gpu-stable/venv/bin/python (NumPy 2.3.5).")
+            "long sim runs on this host. Bootstrap the locked GPU environment "
+            "and run tools/python.sh --gpu tools/sim.py (NumPy 2.3.5).")
     if CONFIG_PROFILE is not None:
         print(f"encode profile: {CONFIG_PROFILE.path} sha256={CONFIG_PROFILE.sha256}")
     if not DEDITHER_VF or not RAW_VF:

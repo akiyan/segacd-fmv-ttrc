@@ -423,6 +423,23 @@ ps -eo pid,etimes,args | grep -v grep \
 Any match on the *other* kind of work means wait. This extends the sim-only
 coordination rule (previously in the `/sim` skill) to cover the emulator too.
 
+### Project Python environments
+
+Do not run project tools with the system `python3` or inherit distribution
+site-packages. The repository pins `uv`, CPython and every Python package:
+
+- `uv sync --managed-python --locked` creates the CPU environment in `.venv`.
+  Use `tools/python.sh` for pack, tests, builds, recording checks and CPU tools.
+- `UV_PROJECT_ENVIRONMENT=.venv-gpu uv sync --managed-python --locked --extra gpu`
+  creates the separate CUDA environment in `.venv-gpu`. Use
+  `tools/python.sh --gpu` for GPU sim/render.
+- The launcher must fail when its selected environment is absent. Never add a
+  silent fallback to `/usr/bin/python`, a distro NumPy/Pillow, or an older venv.
+- `.python-version`, `pyproject.toml` and `uv.lock` are the reproducible source
+  of truth. The environments themselves remain git-ignored.
+- The YouTube credential environment is intentionally separate and is not part
+  of the codec tool lock.
+
 ### NVIDIA/CUDA in the Codex sandbox
 
 The normal Codex workspace sandbox can hide `/dev/nvidia*` even when the host
@@ -435,11 +452,12 @@ evidence alone.
 - Check `nvidia-smi` and a small CuPy allocation outside the sandbox first.
 - Run GPU `tools/sim.py` and `tools/render_analysis.py` outside the sandbox so
   they can access the NVIDIA device nodes.
-- Prefer `~/.config/cbrsim-gpu-stable/venv/bin/python`: it is the verified
-  CPython 3.14.4 + NumPy 2.3.5 + CuPy 14.1.1 environment. The older
-  `cbrsim-gpu` venv's NumPy 2.5.1 corrupted long runs (segfaults and NumPy
-  `SystemError`) even though short CUDA allocations passed. The sim rejects
-  that exact unsafe combination before doing work.
+- Use `tools/python.sh --gpu`, which selects the isolated `.venv-gpu` containing
+  CPython 3.14.4 + NumPy 2.3.5 + Pillow 12.1.1 + CuPy 14.1.1. The former
+  `cbrsim-gpu-stable` venv inherited system NumPy/Pillow and is rollback-only.
+  The still older `cbrsim-gpu` venv's NumPy 2.5.1 corrupted long runs (segfaults
+  and NumPy `SystemError`) even though short CUDA allocations passed. The sim
+  rejects that exact unsafe combination before doing work.
 - The GPU sim initializes CUDA before its CPU frame-loader pool. Those workers
   must use multiprocessing `spawn`, never `fork`: forking the live CUDA parent
   can segfault the Python 3.14 interpreter part-way through precomputation.
