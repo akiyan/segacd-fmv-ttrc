@@ -354,6 +354,11 @@ ffmpeg -i videos/<stem>_emu_lossless.mkv \
 ## Recording Rules
 
 - Use emulator-synchronized A/V output for verification.
+- Extract visual-check stills with `tools/extract_verification_frames.sh`. It
+  creates a never-reused directory and a source-hashed manifest for each
+  invocation, then builds the montage from that invocation's explicit frame
+  list. Never montage a shared check directory with `*.png`; loose stills from
+  an older recording or transcode can silently contaminate the result.
 - Do not verify playback by replacing audio with an offline source.
 - Real/emulator recordings use a `DEBUG=1` disc by default, including the Window HUD. Build
   release only when the user explicitly requests it. `tools/record_movie.sh` enforces this;

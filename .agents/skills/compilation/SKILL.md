@@ -97,6 +97,11 @@ H32とH40は異なるドット幅で同じ64:49の表示領域を表す。YouTub
    - rasterが2048x1568、SARが1:1、DARが64:49
    - 映画開始後の絵が縦長・横長になっていない
 
+   `tools/extract_verification_frames.sh`で完成MP4から起動・本編・末尾を名前付き抽出する。
+   出力先には`videos/<stem>/compilation_check`をbaseとして渡し、毎回新しく作られる
+   source固有directoryの`manifest.tsv`とmontageだけを確認する。共有directoryの
+   `*.png`をmontageせず、以前の録画・変換から残ったloose stillを混ぜない。
+
 5. **YouTubeへアップロードする**
 
    タイトル、英語→日本語の説明、CRAMチャプター、公開範囲、カテゴリ、再アップロード

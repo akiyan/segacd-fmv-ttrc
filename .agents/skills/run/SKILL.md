@@ -181,6 +181,11 @@ Before accepting the recording, verify:
 - startup screens, later movie playback, visible DEBUG HUD, progression, and tail;
 - representative lossless frames against the sim when timing or fps behavior is new or suspect.
 
+Use `tools/extract_verification_frames.sh` for representative recording stills. Pass named
+timestamps and a `videos/<stem>/record_check` base; inspect only the new directory and its
+manifest/montage. Never build a montage from a shared `*.png` glob or loose stills left by a
+previous capture.
+
 Treat the audio JSON as a mechanical gate. State that human listening occurred
 only if it actually occurred. Call this an emulator recording, not a physical
 hardware recording.
@@ -205,6 +210,10 @@ Verify the final MP4 has:
 - 2048x1568 raster, SAR 1:1, and DAR 64:49;
 - the recording's frame rate and nearly identical duration;
 - video, audio, and undistorted movie content.
+
+Extract startup/movie/tail stills with `tools/extract_verification_frames.sh`, using
+`videos/<stem>/compilation_check` as the base. Inspect only that invocation's printed
+`CHECK_DIR`; do not mix files from an older compilation.
 
 Generate boot-aware CRAM chapters and current bilingual metadata according to
 `AGENTS.md`, then upload as unlisted, category 20. Use `--force` only for a

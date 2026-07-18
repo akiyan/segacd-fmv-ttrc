@@ -192,7 +192,12 @@ Check the raw MKV and reports before trusting a capture:
    candidates at the selected thresholds.
 5. Inspect frames from the MKV and confirm that the Mega-CD startup appears first, playback
    begins later, the DEBUG Window HUD is visible, and the movie advances. Do not use the HUD
-   to seek the movie start.
+   to seek the movie start. Extract these stills with
+   `tools/extract_verification_frames.sh`; give it a `videos/<stem>/record_check` base and
+   named `LABEL=SECONDS` samples. It creates a never-reused source-specific directory,
+   records source/still hashes in `manifest.tsv`, and builds its montage only from the
+   explicit files extracted by that invocation. Never montage a shared check directory with
+   `*.png` or reuse loose stills from an earlier recording.
 6. After changing RetroArch, the core, the offline harness, or recorder settings, requalify
    with a same-Replay `--realtime-lossless` comparison and a second offline run through
    `tools/compare_recordings.py`. Also requalify any suspect result.
