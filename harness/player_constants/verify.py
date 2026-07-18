@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Build the generic/specialized player matrix for issue #21."""
+
+from __future__ import annotations
+
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+TOOLS = ROOT / "tools"
+sys.path.insert(0, str(TOOLS))
+
+import av_config  # noqa: E402
+import player_constants  # noqa: E402
+import ttrc_routing  # noqa: E402
+
+
+@dataclass(frozen=True)
+class Case:
+    name: str
+    mode: int
+    fps: int
+
+
+CASES = (
+    Case("h32-15", 0, 15),
+    Case("h32-24", 0, 24),
+    Case("h32-30", 0, 30),
+    Case("h40-15", 1, 15),
+    Case("h40-24", 1, 24),
+    Case("h40-30", 1, 30),
+)
+
+
+def find_tool(name: str) -> Path:
+    found = shutil.which(name)
+    if found:
+        return Path(found)
+    candidate = Path.home() / "toolchains/mars/m68k-elf/bin" / name
+    if candidate.is_file():
+        return candidate
+    raise SystemExit(f"missing tool: {name}")
+
+
+def make_header(case: Case) -> bytes:
+    tcols = 32 if case.mode == 0 else 40
+    trows = 28
+    cells = tcols * trows
+    frames = 600
+    features = ttrc_routing.FEATURE_COLD_RUNS
+    if av_config.uses_fixed_n2_cadence(case.fps):
+        features |= ttrc_routing.FEATURE_FIXED_N2
+    audio = av_config.pcm_frame_bytes(case.fps, 13_300)
+    prefix = struct.pack(
+        ">4s9H4LBB3L6H",
+        b"TTRC", ttrc_routing.VERSION, frames, tcols, trows, cells,
+        1400, 1, ttrc_routing.FRAME_SECTORS, 1,
+        12416, ttrc_routing.routing_sector_count(frames), 194, 12416,
+        case.mode, 0, 2, 18 if case.mode else 14, 1,
+        av_config.vsync_n_for_fps(case.fps), audio, case.fps, 0, 30, features,
+    )
+    sector = prefix + bytes(128) + bytes(player_constants.SECTOR - 192)
+    return player_constants.stamp_header_sector(sector)
+
+
+@dataclass(frozen=True)
+class Build:
+    ip_text: int
+    ip_bin: int
+    sp_text: int
+    sp_bin: int
+
+
+def run(command: list[str]) -> str:
+    result = subprocess.run(
+        command, cwd=ROOT, check=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return result.stdout
+
+
+def text_size(size: Path, obj: Path) -> int:
+    for line in run([str(size), "-A", str(obj)]).splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0] == ".text":
+            return int(fields[1])
+    raise AssertionError(f"no .text size in {obj}")
+
+
+def build_case(
+    case_dir: Path, *, specialized: bool,
+    assembler: Path, linker: Path, size: Path,
+) -> Build:
+    tag = "specialized" if specialized else "generic"
+    common = [
+        str(assembler), "-m68000", "--register-prefix-optional", "--bitwise-or",
+        "--defsym", "DEBUG=1",
+    ]
+    fixed = ["--defsym", "PLAYER_SPECIALIZED=1"] if specialized else []
+    includes = ["-I", str(case_dir), "-I", str(ROOT / "boot")]
+
+    ip_obj = case_dir / f"ip-{tag}.o"
+    ip_bin = case_dir / f"ip-{tag}.bin"
+    run(common + [
+        "--defsym", "MAIN_CODEGEN=1", "--defsym", "DMA_RUN_FASTPATH=1",
+    ] + fixed + includes + [str(ROOT / "boot/movieplay_ip.s"), "-o", str(ip_obj)])
+    run([
+        str(linker), "-nostdlib", "--oformat", "binary",
+        "-T", str(ROOT / "cfg/ip.ld"), "-o", str(ip_bin), str(ip_obj),
+    ])
+
+    sp_obj = case_dir / f"sp-{tag}.o"
+    sp_bin = case_dir / f"sp-{tag}.bin"
+    run(common + fixed + includes + [
+        str(ROOT / "boot/movieplay_sp.s"), "-o", str(sp_obj),
+    ])
+    run([
+        str(linker), "-nostdlib", "--oformat", "binary",
+        "-T", str(ROOT / "cfg/sp.ld"), "-o", str(sp_bin), str(sp_obj),
+    ])
+
+    return Build(
+        ip_text=text_size(size, ip_obj),
+        ip_bin=ip_bin.stat().st_size,
+        sp_text=text_size(size, sp_obj),
+        sp_bin=sp_bin.stat().st_size,
+    )
+
+
+def main() -> None:
+    assembler = find_tool("m68k-elf-as")
+    linker = find_tool("m68k-elf-ld")
+    size = find_tool("m68k-elf-size")
+    tmp_root = ROOT / "tmp"
+    tmp_root.mkdir(exist_ok=True)
+
+    print("case      IP generic->specialized   SP generic->specialized")
+    with tempfile.TemporaryDirectory(prefix="player_constants_", dir=tmp_root) as td:
+        matrix_dir = Path(td)
+        for case in CASES:
+            case_dir = matrix_dir / case.name
+            case_dir.mkdir()
+            header = make_header(case)
+            header_path = case_dir / "HEADER.DAT"
+            header_path.write_bytes(header)
+            (case_dir / "palettes.bin").write_bytes(bytes(128))
+            constants = player_constants.generate_include(
+                header_path, case_dir / "player_constants.inc")
+
+            generic = build_case(
+                case_dir, specialized=False,
+                assembler=assembler, linker=linker, size=size)
+            specialized = build_case(
+                case_dir, specialized=True,
+                assembler=assembler, linker=linker, size=size)
+
+            if specialized.ip_bin > generic.ip_bin:
+                raise AssertionError(
+                    f"{case.name}: specialized IP grew {generic.ip_bin}->{specialized.ip_bin}")
+            if specialized.sp_bin > generic.sp_bin:
+                raise AssertionError(
+                    f"{case.name}: specialized SP grew {generic.sp_bin}->{specialized.sp_bin}")
+            if specialized.sp_bin > 4096:
+                raise AssertionError(
+                    f"{case.name}: specialized SP is {specialized.sp_bin} bytes")
+
+            sp_bytes = (case_dir / "sp-specialized.bin").read_bytes()
+            if struct.pack(">L", constants.signature) not in sp_bytes:
+                raise AssertionError(
+                    f"{case.name}: SP does not contain HEADER signature immediate")
+            if struct.pack(">H", 0xBAD1) not in sp_bytes:
+                raise AssertionError(f"{case.name}: SP has no mismatch diagnostic")
+
+            print(
+                f"{case.name:<9} "
+                f"{generic.ip_bin:4}->{specialized.ip_bin:4}B "
+                f"(text {generic.ip_text:4}->{specialized.ip_text:4})   "
+                f"{generic.sp_bin:4}->{specialized.sp_bin:4}B "
+                f"(text {generic.sp_text:4}->{specialized.sp_text:4})")
+
+    print("player constant build matrix: OK")
+
+
+if __name__ == "__main__":
+    main()
