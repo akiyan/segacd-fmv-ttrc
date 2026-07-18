@@ -648,6 +648,7 @@ bf_dma:
 	move.w	n_runs, d4
 	beq	bf_flip
 	lea	RUN_TABLE, a2
+	bsr	pace_poll_vblank		/* count an already-entered fixed-N2 VBlank */
 	move.w	(VDP_CTRL).l, d0		/* 現vblank内でなければ次vblankへ */
 	btst	#3, d0
 	bne	1f

@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p52 : Count a fixed-N2 VBlank when the pattern-transfer pass enters after
+#        VBlank has already started. This removes a false third-VBlank hold
+#        without changing the transfer workload or the 24/15fps paths.
 #   p51 : Honor v8 FEATURE_FIXED_N2 as the authoritative two-VBlank
 #        flip-to-flip cadence. Count VBlanks crossed while waiting for the Sub
 #        CPU, pace immediately before reg2, and publish the DEBUG F row with the
@@ -367,4 +370,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260718
 e=50
-p=51
+p=52
