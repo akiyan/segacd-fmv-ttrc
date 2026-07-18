@@ -30,14 +30,15 @@ models the same usable buffer so a schedule it calls feasible actually is.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| `RING_SIZE` / `RING_SIZE_KB` | 412 KB (0x67000) | sp / cfg | Physical PRG ring. The final 8 KB was reassigned to the long-form routing table. |
+| `RING_SIZE` / `RING_SIZE_KB` | 412 KB (0x67000) | sp / cfg | Physical PRG ring. It deliberately stays at the last qualified size while routing relocation is validated separately from capacity growth. |
 | `RING_JITTER_MARGIN_KB` | 40 KB | cfg | Headroom for real CD-delivery jitter, subtracted from the physical ring. |
 | `RING_CAP_KB` | 372 KB (derived) | cfg -> pack | Pack schedule / prefetch cap = `RING_SIZE_KB - RING_JITTER_MARGIN_KB`. |
 | `TANK_KB` | 372 KB (derived) | cfg -> sim | Sim VBV tank = usable ring. How much bandwidth a heavy frame may borrow. (Was wrongly 440 = larger than the ring.) |
 | `BACKPRESSURE_KB` | 408 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the ring. `RING_CAP` must stay below it. |
-| routing table | 16 KB, 8192 frames | sp / pack | Two bytes per frame. The packer rejects longer streams before they can overwrite the apply ring. |
+| routing table | 16 KB per 1M Word-RAM bank, 8192 frames | sp / pack | Two bytes per frame, copied identically into both banks at boot. The Sub can therefore read it regardless of delivery/display frame parity. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | prebuffer | fills ring to `RING_CAP` | pack | Final region of `HEADER.DAT`; a boot-time burst that fills the ring before frame 1 so bursts are pre-buffered. |
+| frame-0 boot staging | 36 KB max in the 40 KB jitter tail | sp | Frame 0 is temporarily stored at `RING_CAP` and expanded before BODY streaming reuses those PRG-RAM bytes. |
 
 DEBUG uses the Window name table for one opaque HUD row. It still updates every
 video row behind that Window, so diagnostic playback has the same video-name-table
@@ -117,7 +118,7 @@ continuously.
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | pump_poll frequency | every 64 entries at <=20 fps; one end poll for a non-empty 24-30 fps descriptor frame | sp `expand_frame` | Runtime-selected cadence. A high-fps block with at most 1024 updates consumes packed cold-run descriptors directly and preserves the old end-of-frame poll. Larger H40 blocks and <=20fps streams retain the entry walker. Frame 0 has no active `BODY.DAT` read. |
-| ring-full skip | occ >= 416 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
+| ring-full skip | occ >= 408 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
 | `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. v4+ uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; 3.125 at 24 fps; alternating 2/3 at 30 fps). In v6 each `BODY.DAT` slot is control / future payload / pad. |
 | `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |

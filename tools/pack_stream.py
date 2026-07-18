@@ -82,7 +82,7 @@ DBG_NCAT = 7                 # カテゴリ数 [raw,same,near,coa,flbk,buf,miss]
 DBG_RESERVED = 4             # 予約u16スロット(将来の16bitデバッグ値用)
 DBG_LEN = (DBG_NCAT + DBG_RESERVED) * 2   # = 22B(偶数)
 FEATURE_COLD_RUNS = 0x0001   # header offset 62: control suffix has cold-run descriptors
-ROUTING_MAX_FRAMES = 8192     # player PRG table: 16 KiB, two bytes per frame
+ROUTING_MAX_FRAMES = 8192     # duplicated Word-RAM table: 16 KiB, two bytes per frame
 
 
 def debug_block(cats):

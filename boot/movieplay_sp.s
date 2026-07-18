@@ -33,24 +33,26 @@
 
 /* --- PRG-RAM レイアウト(program 0x6000〜, <0x1000) --- */
 /* 0x6800-0x8000 は連続読み中にBIOSが踏む(実証)。0x8000以上は安全(マーカー実証)。 */
-.equ ROUTING,     0x00073000        /* routing table(最大16KB=8192フレーム) 0x73000-0x77000。
-                                       8KB版は30fps長尺のframe4096以降がAPPLYへ越境した。 */
 .equ ISO_BUF,     0x00007000        /* ISO初期化用(streaming前のみ・BIOS領域を一時利用) */
 .equ SP_STACK,    0x0007FF00        /* スタック最上位(apply端0x7F800の上, 1.8KB) */
 /* 0x9800-0xC000は連続読み中にBIOSが踏む(回収を試みたら化けた)。RINGは0xC000から。 */
 .equ RING_BASE,   0x0000C000
-.equ RING_SIZE,   0x00067000        /* 412KB。末尾8KBを長尺routingへ譲り、40KB jitter余白は維持 */
+.equ RING_SIZE,   0x00067000        /* 412KB。40KB jitter余白は維持 */
 .equ RING_END,    RING_BASE+RING_SIZE     /* 0x73000 */
 .equ RING_PATTERNS, RING_SIZE/32
-.equ APPLY_BASE,  0x00077000        /* routing(8KB)の直後 */
+.equ RING_CAP_END,0x00069000        /* usable cap 372KBの終端。boot中だけframe0 patternsを
+                                       40KB jitter余白に置き、BODY開始前に展開する。 */
+.equ F0PAT_TMP,   0x00069000        /* H40最大1120 patternsは36KB(セクタ丸め)でRING_END内 */
+.equ APPLY_BASE,  0x00077000
 .equ APPLY_SIZE,  0x00008800        /* 34KB(16KBは頭詰まり→滑りを実測。42KB→34KBはrouting移設分) */
 .equ APPLY_END,   APPLY_BASE+APPLY_SIZE   /* 0x7F800 */
+.equ ROUTING_TMP, 0x00077000        /* boot中のみ。HEADERから読んだ16KBを未使用APPLYに一時保持 */
 
 /* --- Word-RAM スクラッチ(SPバンク内, 毎フレーム再利用=スワップ影響なし) --- */
 .equ CTRL_SCR,    0x000D0000        /* control block 線形化(<=2246B) */
 .equ PAD_SCR,     0x000D2000        /* pad セクタ捨て場 */
-.equ F0PAT_SCR,   0x000D4000        /* frame0 patterns 一時置場(32KB, リング外=streamingと非干渉)。
-                                       frame0展開のcold popはここから(f0_expand=1でring wrap/occ迂回)。 */
+.equ ROUTING,     0x000DC000        /* 所有中の1M Word-RAM bank末尾16KB。bootで両bankに同じ
+                                       v6 2-byte tableを複製し、drain/display parityの不一致を吸収。 */
 
 /* --- Word-RAM 出力(MDが読む) ---
    フル画面H40(最大1120セル)対応: loads は最大 1120*32B+ランヘッダ ≈ 36.5KB。
@@ -313,27 +315,18 @@ ap_done:
 	move.w	h_f0_ctrl_sec, d0
 	lea	CTRL_SCR, a0
 	bsr	drain_lin_staged
-	/* frame0 patterns を Word-RAM 一時置場(F0PAT_SCR)へ。リング外なので streaming と一切
-	   干渉しない(リングは PREBUF1 0xC000-0x63800 + streamed 0x63800↑ の連続=穴なし)。 */
-	move.l	#F0PAT_SCR, f0_pat_addr
+	/* frame0 patterns は PRG ring の40KB jitter余白へ一時保持する。PREBUF1の
+	   usable capより後ろで、BODY開始前に展開済みなのでstreamingとは重ならない。 */
+	move.l	#F0PAT_TMP, f0_pat_addr
 	moveq	#0, d0
 	move.w	h_f0_pat_sec, d0
 	movea.l	f0_pat_addr, a0
 	bsr	drain_lin_staged		/* CDC_TRN直行を避け STAGE経由(PRG直行スリップ防止) */
-	/* routing table → STAGE経由で PRG へ */
-	move.w	h_routing_sec, d7
-	lea	ROUTING, a1
-rt_lp:
-	movem.l	d7/a1, -(sp)
-	lea	PAD_SCR, a0
-	bsr	drain1
-	movem.l	(sp)+, d7/a1
-	movem.l	d7/a1, -(sp)
-	bsr	stage_copy
-	movem.l	(sp)+, d7/a1
-	lea	0x800(a1), a1
-	subq.w	#1, d7
-	bne	rt_lp
+	/* routing table → STAGE経由でboot中未使用のAPPLY領域へ一時保持。 */
+	moveq	#0, d0
+	move.w	h_routing_sec, d0
+	lea	ROUTING_TMP, a0
+	bsr	drain_lin_staged
 	/* prebuffer(PREBUF1=frame1満タン) → STAGE経由でリング下部(RING_BASE)へ */
 	move.l	#RING_BASE, ring_tail
 	move.w	h_prebuf_sec, d7
@@ -352,8 +345,24 @@ pb_lp:
 	subq.w	#1, d7
 	bne	pb_lp
 pb_done:
-	/* HEADER.DAT is exhausted here.  Prepare the steady-state queues and expand
-	   frame 0 before starting the independent timed BODY.DAT read. */
+	/* HEADER.DAT is exhausted, so a boot-only copy cannot delay its continuous
+	   drain. Duplicate the complete 16KB routing reservation into both physical
+	   1M Word-RAM banks. drain_frame may run ahead of frame_idx, so splitting the
+	   table by frame parity would select the wrong bank. Two toggles return to
+	   the original frame-0/PALTAB bank before expansion. */
+	moveq	#1, d1
+rt_bank:
+	lea	ROUTING_TMP, a0
+	lea	ROUTING, a1
+	move.w	#4096-1, d0
+rt_copy:
+	move.l	(a0)+, (a1)+
+	dbra	d0, rt_copy
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	dbra	d1, rt_bank
+	/* Prepare the steady-state queues and expand frame 0 before starting the
+	   independent timed BODY.DAT read. ROUTING_TMP is now free for APPLY. */
 	move.l	#APPLY_BASE, apply_tail
 	move.l	#APPLY_BASE, apply_cur
 	clr.w	drain_k
@@ -1157,7 +1166,7 @@ ef_bm:
 	movea.l	ring_head, a4			/* pop ptr(PRG読み) */
 	tst.w	f0_expand
 	beq	ef_ring_count
-	movea.l	f0_pat_addr, a4			/* frame0: popは Word RAM f0pat から(ring_headはpump occ用に0xC000維持) */
+	movea.l	f0_pat_addr, a4			/* frame0: popはboot専用PRG一時領域から(ring_headは0xC000維持) */
 	moveq	#-1, d6				/* frame0 patterns are contiguous and never wrap */
 	bra	ef_count_ready
 ef_ring_count:
@@ -1741,7 +1750,7 @@ drain_k:
 write_ptr:
 	.word	0
 f0_expand:
-	.word	0				/* !=0: frame0 cold pop is contiguous Word RAM, not PRG ring */
+	.word	0				/* !=0: frame0 cold pop is contiguous boot storage, not streaming ring */
 preloaded_audio_remaining:
 	.word	0				/* startup audioと重複するcontrol chunksの残り */
 pcm_running:

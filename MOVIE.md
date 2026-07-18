@@ -76,6 +76,15 @@ until the Main CPU confirms that display; timed playback then begins while the
 no time budget and never competes with frame 1 delivery, while the ring starts
 frame 1 pre-filled to `RING_CAP`.
 
+During boot, frame 0's patterns temporarily occupy the 40 KiB physical-ring
+jitter reserve above `RING_CAP`; the largest H40 frame needs 36 KiB after sector
+rounding. The on-disc routing table is staged in the not-yet-active APPLY ring,
+then copied identically into the final 16 KiB of both 1M Word-RAM banks after
+`HEADER.DAT` has been drained. Frame 0 is expanded before `BODY.DAT` can reuse
+its temporary PRG-RAM bytes. Duplicating routing is required because the bank
+owned by the Sub CPU follows the display handoff, while delivery may run ahead
+by more than one frame.
+
 ## Header (1 sector = 2048 bytes)
 
 First 22 bytes: `struct ">4sHHHHHHHHH"`.
@@ -102,9 +111,9 @@ Next 16 bytes: `struct ">LLLL"`.
 | 30  | 4    | prebuf_sec   | sectors occupied by the prebuffer |
 | 34  | 4    | ring_peak    | peak PRG-RAM ring usage (patterns), for buffer sizing |
 
-The player reserves 16 KiB for ROUTING, so a v6 stream may contain at most
-8192 frames. The packer rejects a longer stream instead of allowing routing to
-overwrite the adjacent control apply ring.
+The player reserves the final 16 KiB of each 1M Word-RAM bank for an identical
+ROUTING copy, so a v6 stream may contain at most 8192 frames. The packer rejects
+a longer stream before the table can exceed either resident copy.
 
 Then:
 

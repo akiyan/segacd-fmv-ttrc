@@ -23,8 +23,9 @@ import math
 
 # Physical PRG-RAM ring in the player. MUST equal boot/movieplay_sp.s
 # `.equ RING_SIZE` (0x67000 = 412 KB). Build-time assertion enforces it.
-# The adjacent 16 KB routing table supports 8192 frames without overwriting the
-# control apply ring (the old 8 KB table failed after frame 4095).
+# The routing table is duplicated in both Word-RAM banks. Keeping the physical
+# ring at its already-qualified size is deliberate until the newly free PRG
+# range has been tested as a separate capacity change.
 RING_SIZE_KB = 412
 
 # The player throttles its CD pump at RING_SIZE-4KB (back-pressure); real
