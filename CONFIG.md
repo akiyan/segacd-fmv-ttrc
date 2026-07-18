@@ -198,6 +198,15 @@ Word-RAM DMA with the required first-word repair and reuse its destination
 command. `DMA_RUN_FASTPATH=0` is an all-DMA diagnostic fallback for A/B builds;
 it does not change the packed stream or encoded image.
 
+`PLAYER_SPECIALIZE=1` is the default disc-specific player build. The packer
+writes `player_constants.inc` beside `HEADER.DAT`; both player objects depend on
+that generated file, and the Sub CPU verifies the matching fixed-header
+signature before using any immediate. Set `PLAYER_SPECIALIZE=0` only for the
+generic runtime-header A/B player. For the Sonic H32 profile the specialized Sub
+text is 3,754 bytes in Release and 3,804 bytes in DEBUG, versus 4,034 and 4,084
+bytes for the generic path. Both remain below the 4,096-byte boot-SP limit; any
+future change must check the DEBUG size as well as Release.
+
 `sim.py` resolves the profile once and stores the exact geometry, timing, audio,
 stream, hardware, palette, and pack settings plus the TOML SHA-256 in
 `decisions.pkl`. `pack_stream.py` then uses that frozen configuration only. It

@@ -216,6 +216,9 @@ MAIN_CODEGEN ?= 1
 # Main-CPU pattern-transfer fast path.  Set to 0 only for reproducible A/B
 # diagnostics against the former all-DMA run path.
 DMA_RUN_FASTPATH ?= 1
+# Bind player hot constants to this profile's HEADER.DAT.  Set to 0 only for
+# the generic runtime-header reference player used in A/B diagnostics.
+PLAYER_SPECIALIZE ?= 1
 # DEBUG changes assembler flags without changing a source timestamp. Force this
 # small object to rebuild so `make disc DEBUG=1` can never reuse a release object
 # (or vice versa).
@@ -236,7 +239,7 @@ $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o
 
 $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s $(PLAYER_CONSTANTS) tools/av_config.py tools/ttrc_routing.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
 	$(PYTHON) tools/check_player_ring.py
-	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter-out 0,$(ISO_HOLD_N)),--defsym ISO_HOLD_N=$(ISO_HOLD_N)) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
+	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter-out 0,$(ISO_HOLD_N)),--defsym ISO_HOLD_N=$(ISO_HOLD_N)) $(if $(filter 1,$(PLAYER_SPECIALIZE)),--defsym PLAYER_SPECIALIZED=1) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
 
 $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.o
 	$(LD) $(LDFLAGS) -T $(CFG_DIR)/sp.ld -o $@ $<

@@ -23,6 +23,58 @@
 .equ BIOS_CDC_ACK,  0x008D
 .equ BIOS_ROM_READN,0x0020
 
+.ifdef PLAYER_SPECIALIZED
+	.include "player_constants.inc"
+.endif
+
+.macro PC_MOVE_W runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	move.w	#\constant, \dest
+.else
+	move.w	\runtime, \dest
+.endif
+.endm
+
+.macro PC_MOVE_L runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	move.l	#\constant, \dest
+.else
+	move.l	\runtime, \dest
+.endif
+.endm
+
+.macro PC_CMP_W runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	cmpi.w	#\constant, \dest
+.else
+	cmp.w	\runtime, \dest
+.endif
+.endm
+
+.macro PC_ADD_W runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	addi.w	#\constant, \dest
+.else
+	add.w	\runtime, \dest
+.endif
+.endm
+
+.macro PC_SUB_W runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	subi.w	#\constant, \dest
+.else
+	sub.w	\runtime, \dest
+.endif
+.endm
+
+.macro PC_AND_W runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	andi.w	#\constant, \dest
+.else
+	and.w	\runtime, \dest
+.endif
+.endm
+
 .equ SUB_GA_BASE, 0x00FF8000
 .equ MEMMODE,     SUB_GA_BASE+0x0002
 .equ COMCMD0,     SUB_GA_BASE+0x0010
@@ -231,6 +283,18 @@ bad_header:
 	bra	bad_header
 1:
 	/* ヘッダ解析(>4sHHHHHHHHH + >LLLL + mode@38)。焼き込み定数を廃し実行時に読む */
+.ifdef PLAYER_SPECIALIZED
+	/* The generated constants came from these exact first 64 bytes.  A different
+	   profile has a different signature at offset 192 and must stop before any
+	   immediate geometry/timing value can reach the hot path. */
+	cmpi.l	#PC_SIGNATURE, (PAD_SCR+192).l
+	beq.s	1f
+	move.w	#0xBAD1, (COMSTAT1).l
+	bra	bad_header
+1:
+	clr.w	sec_acc
+	clr.w	lead
+.else
 	lea	PAD_SCR, a0
 	moveq	#0, d1
 	move.w	6(a0), d1
@@ -311,6 +375,7 @@ pm_set:
 	move.w	60(a0), h_audio_pre_sec
 	clr.w	sec_acc
 	clr.w	lead
+.endif
 	/* MDへヘッダ写しを渡す(frame0と同じバンクに書く=swap後にMDが読める) */
 	lea	(O_HDR).l, a1
 	moveq	#32-1, d1			/* 64B */
@@ -320,7 +385,7 @@ pm_set:
 	/* PALTAB(ヘッダ直後, paltab_sec) → Word-RAM O_PALTAB へ(frame0と同じバンク)。
 	   MDはSTAT_READY後に一度だけMain-RAM表へコピーする(以降palバイトは表参照のみ)。 */
 	moveq	#0, d0
-	move.w	h_paltab_sec, d0
+	PC_MOVE_W h_paltab_sec, PC_PALTAB_SEC, d0
 	beq	1f
 	lea	(O_PALTAB).l, a0
 	bsr	drain_lin_staged		/* CDC_TRN直行を避けSTAGE経由(スリップ防止) */
@@ -329,7 +394,7 @@ pm_set:
 	   h_audio_bytes chunk, so no cross-sector staging is needed. Current packs
 	   queue the source prefix here and put future chunks in live controls, keeping
 	   this reserve for the whole movie instead of consuming it during startup. */
-	move.w	h_audio_pre_sec, d7
+	PC_MOVE_W h_audio_pre_sec, PC_AUDIO_PRELOAD_SEC, d7
 	tst.w	d7
 	beq	ap_done
 ap_lp:
@@ -347,24 +412,24 @@ ap_done:
 	   RING_CAP以下=back-pressure非接触)。frame0の大バーストによる後続枯渇(崩壊)を根絶。 */
 	/* frame0 control(f0_ctrl_sec) を CTRL_SCR へ。CDC_TRN直行を避け STAGE経由(スリップ防止) */
 	moveq	#0, d0
-	move.w	h_f0_ctrl_sec, d0
+	PC_MOVE_W h_f0_ctrl_sec, PC_F0_CTRL_SEC, d0
 	lea	CTRL_SCR, a0
 	bsr	drain_lin_staged
 	/* frame0 patterns は PRG ring の40KB jitter余白へ一時保持する。PREBUF1の
 	   usable capより後ろで、BODY開始前に展開済みなのでstreamingとは重ならない。 */
 	move.l	#F0PAT_TMP, f0_pat_addr
 	moveq	#0, d0
-	move.w	h_f0_pat_sec, d0
+	PC_MOVE_W h_f0_pat_sec, PC_F0_PAT_SEC, d0
 	movea.l	f0_pat_addr, a0
 	bsr	drain_lin_staged		/* CDC_TRN直行を避け STAGE経由(PRG直行スリップ防止) */
 	/* routing table → STAGE経由でboot中未使用のAPPLY領域へ一時保持。 */
 	moveq	#0, d0
-	move.w	h_routing_sec, d0
+	PC_MOVE_W h_routing_sec, PC_ROUTING_SEC, d0
 	lea	ROUTING_TMP, a0
 	bsr	drain_lin_staged
 	/* prebuffer(PREBUF1=frame1満タン) → STAGE経由でリング下部(RING_BASE)へ */
 	move.l	#RING_BASE, ring_tail
-	move.w	h_prebuf_sec, d7
+	PC_MOVE_W h_prebuf_sec, PC_PREBUF_SEC, d7
 	tst.w	d7
 	beq	pb_done
 pb_lp:
@@ -386,7 +451,7 @@ pb_done:
 	lea	ROUTING_TMP, a0
 	tst.b	(a0)
 	bne	bad_header
-	move.w	h_frames, d7
+	PC_MOVE_W h_frames, PC_FRAMES, d7
 	subq.w	#1, d7
 rt_validate:
 	moveq	#0, d0
@@ -423,7 +488,7 @@ rt_copy:
 	/* Expand frame 0 entirely from its boot-only PRG pattern block. The ring tail is
 	   placed after the exact prebuffer payload, excluding sector padding. */
 	move.l	#RING_BASE, ring_head		/* pump_pollのocc計算用(0xC000)。frame0のpopはf0_pat_addr */
-	move.l	h_prebuf_pat, d0
+	PC_MOVE_L h_prebuf_pat, PC_PREBUF_PAT, d0
 	lsl.l	#5, d0
 	add.l	#RING_BASE, d0
 	move.l	d0, ring_tail			/* 0x63800 = PREBUF1末尾 = streaming tail */
@@ -435,8 +500,14 @@ rt_copy:
 	   recovery there because HEADER.DAT and BODY.DAT need not be adjacent.
 	   Pre-drain frame 1 completely before releasing frame 0. */
 	move.w	#1, drain_frame
+.ifdef PLAYER_SPECIALIZED
+.if PC_FRAMES < 2
+	bra	stream_armed
+.endif
+.else
 	cmpi.w	#2, h_frames
 	blo	stream_armed
+.endif
 	tst.l	body_total
 	beq	stream_armed
 	/* Detect a missing first BODY sector even when ISO extents are non-adjacent
@@ -494,7 +565,7 @@ f0h2:
 .equ ISO_HOLD_DUMP, 0			/* 0=クリーン静止(全画面=実フレームN) 1=内部状態ダンプ */
 stream_loop:
 	move.w	frame_idx, d0			/* 全フレーム処理済み=映画終端 */
-	cmp.w	h_frames, d0
+	PC_CMP_W h_frames, PC_FRAMES, d0
 	bhs	movie_end
 	bsr	process_frame
 3:
@@ -855,7 +926,7 @@ pump1_core:
 p1_top:
 	moveq	#0, d0
 	move.w	drain_frame, d0
-	cmp.w	h_frames, d0
+	PC_CMP_W h_frames, PC_FRAMES, d0
 	bhs	p1_ret				/* ストリーム終端: 読まずに戻る */
 	tst.w	drain_k
 	bne	p1_read				/* コマ途中: cur_fsec は計算済み */
@@ -870,12 +941,12 @@ p1_top:
 	move.w	d2, cur_total
 	/* ratedelta = base + carry(acc+rem, mod). Numerator/modulus quotient and
 	   remainder were computed once at header load, so this path needs no DIVU. */
-	move.w	sec_base, d5			/* d5 = base quotient */
+	PC_MOVE_W sec_base, PC_SEC_BASE, d5	/* d5 = base quotient */
 	move.w	sec_acc, d0
-	add.w	sec_rem, d0
-	cmp.w	sec_mod, d0
+	PC_ADD_W sec_rem, PC_SEC_REM, d0
+	PC_CMP_W sec_mod, PC_SEC_MOD, d0
 	blo	1f
-	sub.w	sec_mod, d0
+	PC_SUB_W sec_mod, PC_SEC_MOD, d0
 	addq.w	#1, d5
 1:
 	move.w	d0, sec_acc			/* accumulator remainder */
@@ -976,7 +1047,7 @@ pump_poll_core:
 						   routing[0]=0 によりframe1の実セクタをpad扱いで捨て、
 						   CD位置とdrain_k/frameが N セクタ desync → frame1が化ける。
 						   streaming state(drain_frame>=1)確立まで pump しない。 */
-	cmp.w	h_frames, d0
+	PC_CMP_W h_frames, PC_FRAMES, d0
 	bcc	pp_done				/* ストリーム終端 */
 	/* リング余裕: occupied = (tail-head) mod SIZE が SIZE-0x1000 以上なら見送り */
 	move.l	ring_tail, d0
@@ -1149,7 +1220,7 @@ expand_frame:
 	lea	CTRL_SCR, a0
 	addq.l	#4, a0				/* skip total_len(2) + frame_seq(2) */
 	move.w	(a0)+, d5			/* n_upd (forward validated value to O_NUPD) */
-	move.w	h_bmbytes, d1			/* corrupt-count guard: never walk past this mode's cells */
+	PC_MOVE_W h_bmbytes, PC_BMBYTES, d1	/* corrupt-count guard: never walk past this mode's cells */
 	lsl.w	#3, d1
 	cmp.w	d1, d5
 	bls	1f
@@ -1179,7 +1250,7 @@ ef_pal:
 	move.w	d4, (O_PALW).l
 ef_bm:
 .equ ISO_DUMP_OFF, 0
-	move.w	h_bmbytes, d0
+	PC_MOVE_W h_bmbytes, PC_BMBYTES, d0
 	adda.w	d0, a0				/* entries */
 	/* Feed this frame's PCM before the variable-cost bitmap/cold expansion.
 	   The control block is already linear and complete, so the audio position is
@@ -1211,15 +1282,21 @@ ef_count_ready:
 	   padded audio chunk.  At 24fps or above and n_upd<=1024 the entry walker has
 	   exactly one CDC poll at the end, so the descriptor path preserves that
 	   cadence while removing the duplicate entry scan and run reconstruction. */
-	move.w	h_features, d0
+	PC_MOVE_W h_features, PC_FEATURES, d0
 	btst	#FEATURE_COLD_RUNS_BIT, d0
 	beq	ef_entries
+.ifdef PLAYER_SPECIALIZED
+.if PC_PUMP_MASK != 0x03FF
+	bra	ef_entries
+.endif
+.else
 	cmpi.w	#0x03FF, pump_mask
 	bne	ef_entries			/* lower rates retain their proven 64-entry cadence */
+.endif
 	cmpi.w	#1024, d5
 	bhi	ef_entries			/* H40 >1024 needs the legacy intermediate poll */
 	movea.l	a5, a0				/* audio start */
-	move.w	h_audio_bytes, d0
+	PC_MOVE_W h_audio_bytes, PC_AUDIO_BYTES, d0
 	adda.w	d0, a0				/* first byte after audio */
 	move.l	a0, d0
 	btst	#0, d0				/* align the absolute block address, not AUDIO alone */
@@ -1243,7 +1320,7 @@ ef_run:
 	bls	1f
 	move.w	d1, d3
 1:
-	move.w	h_pool, d1
+	PC_MOVE_W h_pool, PC_POOL, d1
 	sub.w	d2, d1				/* slots available from slot_start */
 	bls	ef_run_next			/* corrupt slot outside the pool */
 	cmp.w	d1, d3
@@ -1287,7 +1364,7 @@ ef_entries:
 	beq	ef_finalize
 	subq.w	#1, d7
 	move.w	d7, d1
-	and.w	pump_mask, d1			/* entries until the first poll minus one */
+	PC_AND_W pump_mask, PC_PUMP_MASK, d1	/* entries until the first poll minus one */
 ef_entry:
 	move.w	(a0)+, d2			/* entry */
 	bpl	ef_entry_done			/* bit15 clear = reuse; Main consumes it directly */
@@ -1334,7 +1411,7 @@ ef_entry_done:
 	   no bitmap-time polls for cells the Sub no longer processes. */
 	dbra	d1, 1f
 	bsr	pump_poll
-	move.w	pump_mask, d1
+	PC_MOVE_W pump_mask, PC_PUMP_MASK, d1
 1:
 	dbra	d7, ef_entry
 ef_finalize:
@@ -1555,7 +1632,7 @@ wwc_live_sync:
 	add.w	#SYNC_LEAD, d2
 	andi.w	#RING_MASK, d2
 wwc_sync_ready:
-	move.w	h_audio_bytes, d3		/* v4: variable audio bytes/frame; d3 = remaining */
+	PC_MOVE_W h_audio_bytes, PC_AUDIO_BYTES, d3	/* fixed audio bytes/frame */
 	beq	wwc_done			/* avoid a 65536-byte loop on a corrupt zero value */
 	/* issue #15 opt5: RF5C164 samples occupy every other byte, so MOVE.L plus
 	   MOVEP.L writes four samples at once.  Outer 0x100-byte chunks preserve the
@@ -1575,7 +1652,7 @@ wwc_chunk:
 	beq	wwc_done
 	/* Poll at the fps-adaptive logical boundary (0x100 at <=20fps, 0x200 at 30fps). */
 	move.w	d2, d0
-	and.w	wave_pump_mask, d0
+	PC_AND_W wave_pump_mask, PC_WAVE_PUMP_MASK, d0
 	bne	1f
 	bsr	pump_poll			/* pump_poll preserves a1 */
 1:
@@ -1731,6 +1808,7 @@ frame_idx:
 	.word	0
 drain_frame:
 	.word	0
+.ifndef PLAYER_SPECIALIZED
 h_frames:
 	.space 2
 h_pool:
@@ -1769,6 +1847,7 @@ sec_rem:
 	.space 2				/* rate numerator mod sec_mod, precomputed at header load */
 sec_mod:
 	.space 2				/* rate accumulator modulus: fixed N2=400, otherwise fps */
+.endif
 sec_acc:
 	.space 2				/* v4: CD 1x レート累積器の余り(0..sec_mod-1) */
 cur_fsec:
