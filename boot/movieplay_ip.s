@@ -866,15 +866,13 @@ bf_doflip:
 	   final reg2 write inside VBlank even if that diagnostic work crosses out. */
 	move.w	(VDP_CTRL).l, d0
 	btst	#3, d0
-	bne.s	1f
+	bne.s	bf_doflip_ready
 	bsr	wait_vb_start
-	bra.s	1f
 .else
 	move.w	(VDP_CTRL).l, d0
 	btst	#3, d0
-	bne.s	1f
+	bne.s	bf_doflip_ready
 	bsr	wait_vb_start
-1:
 .endif
 .else
 	tst.w	md_fixed_n2
@@ -895,6 +893,7 @@ bf_doflip:
 	bsr	wait_vb_start
 2:
 .endif
+bf_doflip_ready:
 	bsr	do_flip
 bf_after_flip:
 .ifndef DEBUG
