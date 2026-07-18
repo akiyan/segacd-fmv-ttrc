@@ -84,6 +84,7 @@ RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
 DBG_NCAT = 7                 # カテゴリ数 [raw,same,near,coa,flbk,buf,miss]
 DBG_RESERVED = 4             # 予約u16スロット(将来の16bitデバッグ値用)
 DBG_LEN = (DBG_NCAT + DBG_RESERVED) * 2   # = 22B(偶数)
+assert DBG_LEN == stream_schedule.DEBUG_BLOCK_BYTES
 FEATURE_COLD_RUNS = ttrc_routing.FEATURE_COLD_RUNS
 FEATURE_FIXED_N2 = ttrc_routing.FEATURE_FIXED_N2
 ROUTING_MAX_FRAMES = ttrc_routing.MAX_FRAMES
@@ -320,6 +321,45 @@ def verify_sim_pattern_transfers(log, packed_tiles, packed_runs):
                 f"sim={int(simulated[frame])} pack={int(actual[frame])}. "
                 "TileAllocator/run grouping changed after simulation; re-run sim.")
     print(f"  pattern transfer照合: {len(packed_runs)} frames tiles/runs exact")
+    return True
+
+
+def verify_sim_stream_schedule(log, packed_schedule):
+    """Require the analysis RING trace to match the actual packed schedule."""
+    frozen = log.get("stream_schedule")
+    if frozen is None:
+        print("  payload RING照合: 旧decision logのため省略 (再simで有効化)")
+        return False
+    if int(frozen.get("schema_version", 0)) != 1:
+        raise SystemExit(
+            "pack: unsupported stream_schedule schema "
+            f"{frozen.get('schema_version')!r}")
+
+    expected = {
+        "block_lengths": np.asarray(packed_schedule["blk_len"], np.int64),
+        "ring_occupancy": np.asarray(
+            packed_schedule["ring_occupancy"], np.int64),
+        "payload_sectors": np.asarray(
+            packed_schedule["n_pay_sec"], np.int64),
+        "control_sectors": np.asarray(
+            packed_schedule["n_ctrl_sec"], np.int64),
+    }
+    for name, actual in expected.items():
+        simulated = np.asarray(frozen.get(name, ()), np.int64)
+        if simulated.shape != actual.shape:
+            raise SystemExit(
+                f"pack: sim/pack {name} length mismatch: "
+                f"sim={simulated.shape} pack={actual.shape}")
+        mismatch = np.flatnonzero(simulated != actual)
+        if mismatch.size:
+            frame = int(mismatch[0])
+            raise SystemExit(
+                f"pack: sim/pack {name} mismatch at frame {frame}: "
+                f"sim={int(simulated[frame])} pack={int(actual[frame])}. "
+                "Control layout or delivery scheduling changed after simulation; "
+                "re-run sim.")
+    print(
+        f"  payload RING照合: {len(expected['ring_occupancy'])} frames exact")
     return True
 
 
@@ -903,6 +943,7 @@ def main():
     verify_sim_pattern_transfers(log, packed_tiles, packed_runs)
     blocks = build_control(log, per, n_upd, pal_w, audio_path)
     sc = schedule(per, n_load, blocks)
+    verify_sim_stream_schedule(log, sc)
     st = ("OK" if sc["feasible"] else
           f"INFEASIBLE(over {sc['over']} under {sc.get('under',0)} "
           f"rate_lead_end {sc.get('rate_lead_end', 0)})")

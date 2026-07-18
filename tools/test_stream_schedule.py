@@ -70,6 +70,43 @@ class PayloadRingScheduleTests(unittest.TestCase):
         finally:
             pack.FPS, pack.PACK_FILL = old_fps, old_fill
 
+    def test_pack_rejects_a_frozen_ring_trace_mismatch(self) -> None:
+        packed = {
+            "blk_len": np.array([10, 12]),
+            "ring_occupancy": np.array([64, 32]),
+            "n_pay_sec": np.array([0, 1]),
+            "n_ctrl_sec": np.array([0, 1]),
+        }
+        frozen = {
+            "stream_schedule": {
+                "schema_version": 1,
+                "block_lengths": np.array([10, 12]),
+                "ring_occupancy": np.array([64, 31]),
+                "payload_sectors": np.array([0, 1]),
+                "control_sectors": np.array([0, 1]),
+            }
+        }
+        with self.assertRaisesRegex(SystemExit, "ring_occupancy mismatch at frame 1"):
+            pack.verify_sim_stream_schedule(frozen, packed)
+
+    def test_pack_accepts_an_exact_frozen_ring_trace(self) -> None:
+        packed = {
+            "blk_len": np.array([10, 12]),
+            "ring_occupancy": np.array([64, 32]),
+            "n_pay_sec": np.array([0, 1]),
+            "n_ctrl_sec": np.array([0, 1]),
+        }
+        frozen = {
+            "stream_schedule": {
+                "schema_version": 1,
+                "block_lengths": np.array([10, 12]),
+                "ring_occupancy": np.array([64, 32]),
+                "payload_sectors": np.array([0, 1]),
+                "control_sectors": np.array([0, 1]),
+            }
+        }
+        self.assertTrue(pack.verify_sim_stream_schedule(frozen, packed))
+
 
 if __name__ == "__main__":
     unittest.main()

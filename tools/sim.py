@@ -44,6 +44,8 @@ from encode_config import consume_config_arg, profile_identity  # noqa: E402
 # but TOML values always win over an inherited shell environment.
 CONFIG_PROFILE = consume_config_arg(sys.argv)
 import av_config  # noqa: E402
+import stream_schedule  # noqa: E402
+import ttrc_routing  # noqa: E402
 
 from quantize_md_video import (  # noqa: E402
     rgb888_to_rgb333, rgb333_to_rgb888, run, prepare_dir, MD_LEVELS,
@@ -1644,6 +1646,43 @@ def main():
     ded = np.array(dedup_saved_log, np.float64)        # L1/L2 VRAM常駐ヒット
     l3h = np.array(l3_hits_log, np.float64)            # L3(PRG-RAM)ヒット
     prh = np.array(prg_hits_log, np.float64)           # PRG先読みヒット
+    stats = np.array(stat_rows, np.float64)
+
+    # The encoder's VBV reservoir above is a quality-allocation model, not the
+    # physical PRG-RAM payload RING. Re-run the packer's exact sector schedule
+    # from the frozen update/run counts so the analysis curve shows hardware
+    # occupancy, including prebuffering and final-sector padding.
+    pack_config = dict(CONFIG_PROFILE.section("pack") if CONFIG_PROFILE else {})
+    control_lengths = stream_schedule.control_block_lengths(
+        stats[:, 3].astype(np.int64),
+        np.asarray(transfer_runs_log, np.int64),
+        cells=C_CELLS,
+        audio_frame_bytes=AUDIO_FRAME_BYTES,
+        debug=bool(pack_config.get("debug", False)),
+    )
+    try:
+        physical_schedule = stream_schedule.schedule_payload_ring(
+            np.asarray(transfer_tiles_log, np.int64),
+            control_lengths,
+            fps=FPS,
+            ring_capacity_patterns=TANK_CAP_BYTES // PATTERN_BYTES,
+            frame_sectors=ttrc_routing.FRAME_SECTORS,
+            fill=bool(pack_config.get("fill", True)),
+        )
+    except (ValueError, stream_schedule.ScheduleError) as exc:
+        raise SystemExit(
+            f"sim: physical payload RING schedule failed: {exc}") from exc
+    if not physical_schedule["feasible"]:
+        raise SystemExit(
+            "sim: physical payload RING schedule is infeasible "
+            f"(over={physical_schedule['over']} under={physical_schedule['under']} "
+            f"ready_min={physical_schedule['ready_min']} "
+            f"ctrl_min={physical_schedule['ctrl_min']} "
+            f"rate_lead_end={physical_schedule['rate_lead_end']})")
+    ring_remaining = np.asarray(
+        physical_schedule["ring_occupancy"], np.int64)
+    vbv_remaining = np.asarray(tank_tiles_log, np.int64)
+
     report = "\n".join([
         f"resolution={W}x{H} cells/frame={C_CELLS} fps={FPS}",
         f"cbr_frame_bytes={FRAME_BYTES} (純CBR, 繰り越し無し)",
@@ -1658,8 +1697,11 @@ def main():
         f"total_CD_pattern_bytes={(tr.sum()+prh.sum())*PATTERN_BYTES:.0f}",
         f"L3_saved_CD_bytes={l3h.sum()*PATTERN_BYTES:.0f} (L3が無ければCD再読みしていた分)",
         f"dedup_saved_ratio={ded.sum()/(tr.sum()+prh.sum()+ded.sum()+l3h.sum()+1e-9):.3f}",
-        f"VBV={VBV_ON} tank_cap={TANK_CAP_BYTES//PATTERN_BYTES}tiles"
-        + (f" tank残量: 開始{tank_tiles_log[0]}→終了{tank_tiles_log[-1]} 最小{min(tank_tiles_log)}" if VBV_ON else ""),
+        f"VBV={VBV_ON} budget_cap={TANK_CAP_BYTES//PATTERN_BYTES}tiles"
+        + (f" budget: start={vbv_remaining[0]} end={vbv_remaining[-1]} "
+           f"min={vbv_remaining.min()}" if VBV_ON else ""),
+        f"payload_RING: start={ring_remaining[0]} end={ring_remaining[-1]} "
+        f"min={ring_remaining.min()} peak={ring_remaining.max()}tiles",
         f"starved_frames={starved_frames} ({starved_frames/n*100:.1f}%)",
         f"avg_bps={fb.mean()*FPS:.0f} (target={TARGET_RATE}, CD1x={CD_RATE})",
         (f"upgrade(格上げ): 余剰でRaw化 avg {np.mean([u for u, _ in upgrade_log]):.1f}/コマ, "
@@ -1670,7 +1712,6 @@ def main():
     print(report)
 
     # status line 用の per-frame 実測を保存
-    stats = np.array(stat_rows, np.float64)
     cols = ("frame ffix want updated miss delta dedup tx carry age want_frac near coa flbk buf"
             " same_u near_u coa_u flbk_u dma_tiles dma_runs")
     budget_tiles = int(np.median(stats[:, 1]))   # ffix中央値 = 固定予算タイル数(fps依存)
@@ -1683,10 +1724,24 @@ def main():
              budget_tiles=budget_tiles,
              wait_hist=np.array(wait_hist_rows), nbins=NBINS)
     np.save(OUT / "miss_masks.npy", np.array(stale_rows, np.uint8))   # (n,72) packbits
-    if VBV_ON:                                          # 貯水池残量カーブを実測から保存(下段Bufマップ/メーター用)
-        rem = np.array(tank_tiles_log, np.int64)
-        np.savez(OUT / "buffer_remaining.npz", remaining=rem, total=TANK_CAP_BYTES // PATTERN_BYTES,
-                 cd_used=np.array(cd_used_log, np.int64))   # 有効CD使用量(音声+全ヘッダ+映像+貯蓄, パディング除く)
+    if VBV_ON:
+        # ``remaining`` is the physical payload RING used by the Tank meter.
+        # Keep the virtual encoder budget under its explicit name for offline
+        # diagnostics; it must never silently drive the hardware meter again.
+        np.savez(
+            OUT / "buffer_remaining.npz",
+            schema_version=np.int64(2),
+            remaining_kind=np.array("payload_ring_patterns"),
+            remaining=ring_remaining,
+            total=TANK_CAP_BYTES // PATTERN_BYTES,
+            vbv_remaining=vbv_remaining,
+            cd_used=np.array(cd_used_log, np.int64),
+            block_lengths=control_lengths,
+            payload_sectors=np.asarray(
+                physical_schedule["n_pay_sec"], np.int64),
+            control_sectors=np.asarray(
+                physical_schedule["n_ctrl_sec"], np.int64),
+        )
     print(f"wrote {main_dir}, {catmap_dir}, {misscarry_dir}; stats.npz + miss_masks.npy saved")
 
     # 実機TTRCエンコード用の決定ログ(既定off)。品質決定(区間パレット/ディザ/Near/Coa/VBV/fill)は
@@ -1746,6 +1801,17 @@ def main():
                 "schema_version": 1,
                 "tiles": np.asarray(transfer_tiles_log, np.uint16),
                 "runs": np.asarray(transfer_runs_log, np.uint16),
+            },
+            # Analysis and pack must show the same physical PRG payload RING.
+            # The packer compares this frozen trace with its built control data.
+            "stream_schedule": {
+                "schema_version": 1,
+                "block_lengths": control_lengths,
+                "ring_occupancy": ring_remaining,
+                "payload_sectors": np.asarray(
+                    physical_schedule["n_pay_sec"], np.int64),
+                "control_sectors": np.asarray(
+                    physical_schedule["n_ctrl_sec"], np.int64),
             },
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]

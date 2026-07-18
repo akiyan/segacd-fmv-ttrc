@@ -109,6 +109,20 @@ SCREEN_H = max(_M["sh"], H)
 SCREEN_A = L.screen_aspect(MODE)               # 画面の表示アスペクト(H32/H40=64:49, mode4≈14:9)
 BUF = np.load(f"{SIM}/buffer_remaining.npz")
 BUF_CAP = int(BUF["total"]); BUF_REM = BUF["remaining"].astype(np.int64)
+BUF_SCHEMA = int(BUF["schema_version"]) if "schema_version" in BUF else 1
+BUF_KIND = str(BUF["remaining_kind"]) if "remaining_kind" in BUF else "legacy_vbv"
+if BUF_SCHEMA >= 2 and BUF_KIND != "payload_ring_patterns":
+    raise SystemExit(
+        f"unsupported buffer_remaining metric {BUF_KIND!r}; re-run sim")
+if len(BUF_REM) != NF:
+    raise SystemExit(
+        f"payload RING trace has {len(BUF_REM)} frames, expected {NF}; re-run sim")
+if (BUF_REM < 0).any() or (BUF_REM > BUF_CAP).any():
+    raise SystemExit(
+        "payload RING trace is outside its physical capacity; re-run sim")
+if BUF_SCHEMA < 2:
+    print(
+        "Tank: legacy virtual VBV trace; re-run sim for physical payload RING occupancy")
 CD_USED = BUF["cd_used"].astype(np.int64) if "cd_used" in BUF else None   # 有効CD使用量(音声+全ヘッダ+映像+貯蓄)
 MISS_MASKS = np.load(f"{SIM}/miss_masks.npy")
 
@@ -247,9 +261,9 @@ Updated = col("updated")
 _cram = np.zeros(NF, np.int64); _cram[1:] = (FRAME_SEG[1:] != FRAME_SEG[:-1]).astype(np.int64) * 128
 FB = Raw * 32 + Buf * 32 + Updated * 2 + _cram        # 1コマの映像書込量(パターン+全ネーム+CRAM, タンク供給込み)
 FRAME_CD = int(z["frame_bytes"]) if "frame_bytes" in z else int(153600 / FPS)  # CBR配給/コマ(=このコマのCD読み量)
-# 有効Band = このコマのCDを「有効に使った」量 = 映像に使った分 + タンクに貯めた分(貯蓄も有効)。CDは毎コマ
+# 有効Band = このコマのCDを「有効に使った」量 = 映像に使った分 + RINGに貯めた分(貯蓄も有効)。CDは毎コマ
 # FRAME_CD を読み、内訳は映像 or 貯蓄。タンク満杯で貯めきれず捨てたときだけ FRAME_CD を下回る。
-TANK_DELTA = np.zeros(NF, np.int64); TANK_DELTA[1:] = BUF_REM[1:] - BUF_REM[:-1]   # コマ毎タンク増減(タイル)
+TANK_DELTA = np.zeros(NF, np.int64); TANK_DELTA[1:] = BUF_REM[1:] - BUF_REM[:-1]   # コマ毎payload RING増減(タイル)
 RAW_BYTES = np.minimum(FB, FRAME_CD)                  # 映像書込(Bandバーの Raw色)
 BUF_BYTES = np.maximum(0, TANK_DELTA) * 32            # タンクに貯めたバイト(Bandバーの Buf色)
 # 有効CD使用量: sim報告値 cd_used(音声+ネーム+CRAM+フラグ等の全ヘッダ+映像+貯蓄, パディング捨て分のみ除外)。
@@ -398,11 +412,11 @@ def draw_status_real(data):
     xb = L.draw_field(d, x, ly, "Band:", data["band_kbps"], 3, L.f_leg, L.COL_TXT)
     d.text((xb, ly), "KiB/sec", fill=L.COL_DIM, font=L.f_leg)
     x += BAND_W + GAP
-    # 3) Tank = 貯水池の現在残量(violet)。ラベルは現在数のみ、バー幅=ラベル幅
+    # 3) Tank = 実payload RINGの現在残量(violet)。ラベルは現在数のみ、バー幅=ラベル幅
     stacked([(data["buf_rem"], L.CAT_BUF)], data["buf_cap"], TANK_W)
     L.draw_field(d, x, ly, "Tank:", data["buf_rem"], 5, L.f_leg, L.COL_TXT)
     x += TANK_W + GAP
-    # 4) Tank増減の指針器(中央薄線・減=左赤/増=右青)。フルスケール=描画範囲タイル数-最大Raw数
+    # 4) payload RING増減の指針器(中央薄線・減=左赤/増=右青)。フルスケール=描画範囲タイル数-最大Raw数
     L.draw_tank_delta(d, x, by, BH, ly, BUFF_W, data["tank_delta"], max(1, C - data["max_raw"]))
     x += BUFF_W + GAP
     # 5) DMA = 今フレームの32Bパターンタイル数

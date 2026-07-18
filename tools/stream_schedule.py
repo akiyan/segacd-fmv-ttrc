@@ -16,6 +16,7 @@ import av_config
 SECTOR_BYTES = 2048
 PATTERN_BYTES = 32
 PATTERNS_PER_SECTOR = SECTOR_BYTES // PATTERN_BYTES
+DEBUG_BLOCK_BYTES = 22
 
 
 class ScheduleError(ValueError):
@@ -23,7 +24,8 @@ class ScheduleError(ValueError):
 
 
 def control_block_lengths(
-        updates, runs, *, cells, audio_frame_bytes, debug=False, debug_bytes=22):
+        updates, runs, *, cells, audio_frame_bytes, debug=False,
+        debug_bytes=DEBUG_BLOCK_BYTES):
     """Return the exact packed control length for every frame.
 
     This mirrors ``pack_stream.build_control`` without constructing audio or
