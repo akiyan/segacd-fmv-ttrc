@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e48/p48 : Extend the payload ring from the hardware-used 420 KiB waypoint
+#        to the PRG memory-map limit at 428 KiB. The 40 KiB jitter reserve and
+#        36 KiB gap below pump back-pressure stay unchanged, giving sim/pack a
+#        388 KiB usable tank while the player stops draining at 424 KiB.
 #   e47/p47 : Restore the previously hardware-used 420 KiB physical payload
 #        ring now that routing no longer occupies adjacent PRG RAM. Preserve
 #        the 40 KiB delivery-jitter reserve: sim/pack cap and tank become
@@ -341,5 +345,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260718
-e=47
-p=47
+e=48
+p=48

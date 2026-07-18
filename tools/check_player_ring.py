@@ -67,6 +67,10 @@ if ring_end > apply_base:
     sys.exit(
         f"check_player_ring: RING_END={ring_end:#x} overlaps "
         f"APPLY_BASE={apply_base:#x}")
+if ring_end != apply_base:
+    sys.exit(
+        f"check_player_ring: relocated routing leaves reclaimable PRG RAM: "
+        f"RING_END={ring_end:#x}, APPLY_BASE={apply_base:#x}")
 if ring_end - ring_cap_end != av_config.RING_JITTER_MARGIN_KB * 1024:
     sys.exit(
         "check_player_ring: physical-to-usable ring gap does not match the "

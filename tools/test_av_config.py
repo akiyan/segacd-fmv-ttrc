@@ -8,12 +8,12 @@ import av_config
 
 
 class RingGeometryTests(unittest.TestCase):
-    def test_intermediate_hardware_used_ring_geometry(self) -> None:
-        self.assertEqual(av_config.RING_SIZE_KB, 420)
+    def test_full_reclaimed_ring_geometry(self) -> None:
+        self.assertEqual(av_config.RING_SIZE_KB, 428)
         self.assertEqual(av_config.RING_JITTER_MARGIN_KB, 40)
-        self.assertEqual(av_config.RING_CAP_KB, 380)
-        self.assertEqual(av_config.TANK_KB, 380)
-        self.assertEqual(av_config.BACKPRESSURE_KB, 416)
+        self.assertEqual(av_config.RING_CAP_KB, 388)
+        self.assertEqual(av_config.TANK_KB, 388)
+        self.assertEqual(av_config.BACKPRESSURE_KB, 424)
         self.assertEqual(
             av_config.BACKPRESSURE_KB - av_config.RING_CAP_KB, 36)
 
