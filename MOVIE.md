@@ -142,9 +142,10 @@ Then:
 - offset 56: `u16 fps_int` (v4) — nominal fps (15/24/30) used by both packer and
   player to compute the rate-matched per-frame sector count (see Routing/Frame).
   `0` in v2/v3 (player defaults to 15);
-- offset 58: `u16 audio_preload_frames` (v5+) — legacy count of leading control
-  chunks duplicated in STARTUP_AUDIO and therefore skipped at run time. Current
-  prefetched streams shift controls ahead and store `0` here;
+- offset 58: `u16 audio_preload_frames` — historical v5/v6 count of leading
+  control chunks duplicated in STARTUP_AUDIO. v7 requires zero and rejects a
+  nonzero value; current streams shift controls ahead instead of skipping live
+  audio writes;
 - offset 60: `u16 audio_preload_sec` (v5+) — sectors in STARTUP_AUDIO. v5+
   uses one chunk per sector. Current streams normally store `30`, independently
   of the legacy skip count at offset 58;
@@ -198,9 +199,9 @@ sector, appends its chunk to
 wave RAM at `SYNC_LEAD`, and repeats while PCM is stopped. Current streams put
 source chunks 0-29 in this prefix, then put chunk 30 in frame 0's control,
 chunk 31 in frame 1's control, and so on. This preserves the exact source sample
-order while keeping a real 30-frame write reserve. Legacy streams may instead
-duplicate the leading chunks in their controls and use `audio_preload_frames`
-to skip those writes. PCM starts at the prefetched source prefix after frame 0
+order while keeping a real 30-frame write reserve. Historical v5/v6 players
+could instead duplicate leading chunks and skip their live writes; the v7
+player deliberately removes that obsolete path. PCM starts at the prefetched source prefix after frame 0
 is displayed, so the first audio sample remains aligned with the first visible
 movie frame rather than starting during the Mega-CD boot screen.
 

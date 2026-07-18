@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p49 : Require TTRC v7 and validate the exact routing-sector count, frame
+#        limit, frame-0 zero, reserved bits, total and control bounds once at
+#        boot. Hot paths decode total/control directly from one resident byte.
+#        Remove the obsolete nonzero startup-audio skip path required to fit
+#        the guards while also avoiding its per-frame branches and copies.
 #   e49 : Introduce TTRC v7 packed routing. Each frame stores control sectors
 #        and total sectors in one validated byte, doubling the 16 KiB resident
 #        table limit to 16384 frames while preserving every BODY boundary and
@@ -350,4 +355,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260718
 e=49
-p=48
+p=49

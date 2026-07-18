@@ -52,7 +52,7 @@
 .equ CTRL_SCR,    0x000D0000        /* control block 線形化(<=2246B) */
 .equ PAD_SCR,     0x000D2000        /* pad セクタ捨て場 */
 .equ ROUTING,     0x000DC000        /* 所有中の1M Word-RAM bank末尾16KB。bootで両bankに同じ
-                                       v6 2-byte tableを複製し、drain/display parityの不一致を吸収。 */
+                                       v7 1-byte tableを複製し、drain/display parityの不一致を吸収。 */
 
 /* --- Word-RAM 出力(MDが読む) ---
    フル画面H40(最大1120セル)対応: loads は最大 1120*32B+ランヘッダ ≈ 36.5KB。
@@ -69,7 +69,7 @@
                                        control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
 .equ O_CTRLWAIT,SUB_BANK_1M+0xAF18  /* DEBUG: current-control blocking sector pumps */
 .equ O_BODYWAIT,SUB_BANK_1M+0xAF1A  /* DEBUG: prior BODY payload/pad blocking pumps */
-.equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: legacy startup-audio duplicate skips left */
+.equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: v7 reserved zero (legacy startup-audio skip count) */
 .equ O_RESYNC, SUB_BANK_1M+0xAF20   /* 計測: 音声re-sync回数(リード下限/上限逸脱で書込ジャンプ=乱れの元) */
 .equ O_LEAD,   SUB_BANK_1M+0xAF22   /* 計測: 現コマの音声リード(write-play, バイト)。SYNC_MINに近づく=枯渇 */
 .equ O_HDR,    SUB_BANK_1M+0xAF80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
@@ -108,7 +108,7 @@
 
 .equ HEADER_SECTORS,  1
 /* frames/tcols/trows/cells/pool/base/prebuf/routing/mode は HEADER.DAT の
-   v6ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
+   v7ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
@@ -206,9 +206,9 @@ stream_start:
 	bsr	drain_lin
 	cmpi.l	#0x54545243, (PAD_SCR).l	/* "TTRC" */
 	bne	bad_header_magic
-	cmpi.w	#6, (PAD_SCR+4).l
+	cmpi.w	#7, (PAD_SCR+4).l
 	beq	1f
-	move.w	#0xBAD6, (COMSTAT1).l		/* split-file format required */
+	move.w	#0xBAD7, (COMSTAT1).l		/* packed-routing format required */
 	bra	bad_header
 bad_header_magic:
 	move.w	#0xBAD0, (COMSTAT1).l		/* 不一致: 診断マーカーを出して停止 */
@@ -217,14 +217,23 @@ bad_header:
 1:
 	/* ヘッダ解析(>4sHHHHHHHHH + >LLLL + mode@38)。焼き込み定数を廃し実行時に読む */
 	lea	PAD_SCR, a0
-	move.w	6(a0), h_frames
+	moveq	#0, d1
+	move.w	6(a0), d1
+	beq.s	bad_header
+	cmpi.w	#0x4000, d1			/* one-byte table: 16KB = 16384 frames */
+	bhi.s	bad_header
+	move.w	d1, h_frames
+	addi.w	#0x07FF, d1
+	lsr.w	#8, d1
+	lsr.w	#3, d1				/* exact routing_sec = ceil(frames/2048) */
+	cmp.l	26(a0), d1			/* long compare also rejects a nonzero high half */
+	bne.s	bad_header
+	move.w	d1, h_routing_sec
 	move.w	14(a0), h_pool			/* tile pool slots; validates run-descriptor bounds */
 	move.w	12(a0), d0			/* cells */
 	addq.w	#7, d0
 	lsr.w	#3, d0
 	move.w	d0, h_bmbytes			/* ceil(cells/8) */
-	move.l	26(a0), d0
-	move.w	d0, h_routing_sec
 	move.l	30(a0), d0
 	move.w	d0, h_prebuf_sec
 	move.l	22(a0), h_prebuf_pat
@@ -268,10 +277,10 @@ pm_set:
 	move.w	d1, sec_base
 	swap	d1
 	move.w	d1, sec_rem
-	/* v5: startup audio is stored as one PCM chunk per sector and written before
-	   PCM starts. Offset 58 is the legacy duplicate-control skip count. Current
-	   packs shift controls ahead by the prefetch depth, so this count is zero. */
-	move.w	58(a0), preloaded_audio_remaining
+	/* v7 keeps the legacy startup-audio skip field only as a required zero.
+	   Current controls carry future chunks, so no live audio write is skipped. */
+	tst.w	58(a0)
+	bne	bad_header
 	move.w	60(a0), h_audio_pre_sec
 	move.w	62(a0), h_features		/* bit0: post-audio cold-run descriptor suffix */
 	clr.w	sec_acc
@@ -345,6 +354,25 @@ pb_lp:
 	subq.w	#1, d7
 	bne	pb_lp
 pb_done:
+	/* Validate every v7 route once before it can steer BODY sectors. Values above
+	   0x2D cover reserved bits or total 6/7; the second comparison rejects
+	   n_ctrl > total. Frame 0 must have the single zero entry. */
+	lea	ROUTING_TMP, a0
+	tst.b	(a0)
+	bne	bad_header
+	move.w	h_frames, d7
+	subq.w	#1, d7
+rt_validate:
+	moveq	#0, d0
+	move.b	(a0)+, d0
+	cmpi.b	#0x2D, d0
+	bhi	bad_header
+	move.w	d0, d2
+	andi.w	#0x0007, d0			/* n_ctrl */
+	lsr.w	#3, d2				/* total (reserved bits already proved zero) */
+	cmp.w	d2, d0
+	bhi	bad_header
+	dbra	d7, rt_validate
 	/* HEADER.DAT is exhausted, so a boot-only copy cannot delay its continuous
 	   drain. Duplicate the complete 16KB routing reservation into both physical
 	   1M Word-RAM banks. drain_frame may run ahead of frame_idx, so splitting the
@@ -366,7 +394,7 @@ rt_copy:
 	move.l	#APPLY_BASE, apply_tail
 	move.l	#APPLY_BASE, apply_cur
 	clr.w	drain_k
-	/* Expand frame 0 entirely from its Word-RAM pattern block.  The ring tail is
+	/* Expand frame 0 entirely from its boot-only PRG pattern block. The ring tail is
 	   placed after the exact prebuffer payload, excluding sector padding. */
 	move.l	#RING_BASE, ring_head		/* pump_pollのocc計算用(0xC000)。frame0のpopはf0_pat_addr */
 	move.l	h_prebuf_pat, d0
@@ -805,15 +833,14 @@ p1_top:
 	bhs	p1_ret				/* ストリーム終端: 読まずに戻る */
 	tst.w	drain_k
 	bne	p1_read				/* コマ途中: cur_fsec は計算済み */
-	/* --- コマ先頭: cur_fsec = max(total, ratedelta-lead) を計算(pack と同一の有界累積器) --- */
-	add.w	d0, d0
+	/* --- コマ先頭: v7 routingを展開し cur_fsec を計算 --- */
 	lea	ROUTING, a0
-	move.b	(a0,d0.w), d1			/* n_pay */
-	andi.w	#0xFF, d1
-	move.b	1(a0,d0.w), d2			/* n_ctrl */
-	andi.w	#0xFF, d2
-	move.w	d2, cur_n_ctrl
-	add.w	d1, d2				/* d2 = total = n_pay+n_ctrl */
+	moveq	#0, d2
+	move.b	(a0,d0.w), d2			/* bits 3..5=total, 0..2=n_ctrl */
+	moveq	#7, d1
+	and.w	d2, d1
+	move.w	d1, cur_n_ctrl
+	lsr.w	#3, d2
 	move.w	d2, cur_total
 	/* ratedelta = floor((acc+75)/fps).  75/fps quotient and remainder were
 	   computed once at header load, so the per-frame path needs no DIVU. */
@@ -920,7 +947,7 @@ pump_poll:
 pump_poll_core:
 	move.w	drain_frame, d0
 	beq	pp_done				/* v2: frame0展開中は drain_frame=0。ここで pump すると
-						   routing[0]=(0,0) によりframe1の実セクタをpad扱いで捨て、
+						   routing[0]=0 によりframe1の実セクタをpad扱いで捨て、
 						   CD位置とdrain_k/frameが N セクタ desync → frame1が化ける。
 						   streaming state(drain_frame>=1)確立まで pump しない。 */
 	cmp.w	h_frames, d0
@@ -962,10 +989,9 @@ pf_pump:
 	bhi	pf_body_blocked			/* BODY is still draining an older frame */
 	/* Same frame: control-first means drain_k>=n_ctrl is sufficient.  n_ctrl=0
 	   is intentionally ready immediately because its bytes arrived earlier. */
-	add.w	d0, d0
 	lea	ROUTING, a0
-	moveq	#0, d1
-	move.b	1(a0,d0.w), d1
+	moveq	#7, d1
+	and.b	(a0,d0.w), d1			/* v7 low three bits = n_ctrl */
 	cmp.w	drain_k, d1
 	bls	pf_ready
 .ifdef DEBUG
@@ -1028,20 +1054,6 @@ fetch_control:
 	/* コピー: total_len バイトを a0(循環) → CTRL_SCR */
 	lea	CTRL_SCR, a1
 	move.w	d7, d6				/* 残バイト */
-	/* Legacy duplicate-startup audio was already copied from the boot prefix.
-	   Keep advancing apply_cur by the full d7 block, but do not spend Sub-CPU
-	   time copying that duplicate padded audio tail into CTRL_SCR. Current packs
-	   use shifted future chunks and set this counter to zero. */
-	tst.w	preloaded_audio_remaining
-	beq.s	1f
-	move.w	h_features, d0
-	btst	#0, d0
-	bne.s	1f				/* run suffix follows audio: copy the complete block */
-	move.w	h_audio_bytes, d0
-	addq.w	#1, d0
-	andi.w	#0xFFFE, d0			/* padded audio tail = round_up_even(audio bytes) */
-	sub.w	d0, d6
-1:
 	/* first_part = min(total_len, APPLY_END - a0) */
 	move.l	#APPLY_END, d0
 	sub.l	a0, d0				/* d0 = APPLY_END - a0 (bytes) */
@@ -1154,13 +1166,7 @@ ef_bm:
 	adda.w	d0, a5				/* audio start */
 	movea.l	a0, a6				/* preserve entries cursor across the call */
 	movea.l	a5, a0
-	tst.w	preloaded_audio_remaining
-	beq	2f
-	subq.w	#1, preloaded_audio_remaining
-	bra	3f
-2:
 	bsr	write_wave_chunk
-3:
 	movea.l	a6, a0
 	lea	(O_LOADS).l, a1
 	movea.l	ring_head, a4			/* pop ptr(PRG読み) */
@@ -1175,7 +1181,7 @@ ef_ring_count:
 	lsr.l	#5, d6				/* patterns remaining before ring wrap */
 ef_count_ready:
 	moveq	#0, d4				/* n_load */
-	/* New v6 streams append the packer's already-known cold slot runs after the
+	/* v6+ streams append the packer's already-known cold slot runs after the
 	   padded audio chunk.  At 24fps or above and n_upd<=1024 the entry walker has
 	   exactly one CDC poll at the end, so the descriptor path preserves that
 	   cadence while removing the duplicate entry scan and run reconstruction. */
@@ -1320,7 +1326,7 @@ ef_store:
 .ifdef DEBUG
 	move.w	pf_ctrl_wait, (O_CTRLWAIT).l
 	move.w	pf_body_wait, (O_BODYWAIT).l
-	move.w	preloaded_audio_remaining, (O_AUDIOLEFT).l
+	clr.w	(O_AUDIOLEFT).l
 .endif
 	tst.w	f0_expand
 	bne	1f
@@ -1728,7 +1734,7 @@ h_fps_int:
 h_audio_pre_sec:
 	.space 2				/* v5: STARTUP_AUDIO sector count (one chunk per sector) */
 h_features:
-	.space 2				/* v6 optional control suffix features (header offset 62) */
+	.space 2				/* v6+ optional control suffix features (header offset 62) */
 sec_base:
 	.space 2				/* floor(75/fps), precomputed at header load */
 sec_rem:
@@ -1751,8 +1757,6 @@ write_ptr:
 	.word	0
 f0_expand:
 	.word	0				/* !=0: frame0 cold pop is contiguous boot storage, not streaming ring */
-preloaded_audio_remaining:
-	.word	0				/* startup audioと重複するcontrol chunksの残り */
 pcm_running:
 	.word	0				/* 0=play headを読まずboot-time append, 1=live sync */
 desync_count:
