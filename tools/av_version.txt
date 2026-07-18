@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e47/p47 : Restore the previously hardware-used 420 KiB physical payload
+#        ring now that routing no longer occupies adjacent PRG RAM. Preserve
+#        the 40 KiB delivery-jitter reserve: sim/pack cap and tank become
+#        380 KiB, while the player back-pressure threshold becomes 416 KiB.
 #   p46 : Keep the v6 routing table resident in both 1M Word-RAM banks. Frame 0
 #        temporarily uses the physical ring's jitter tail, while the boot-only
 #        routing source borrows APPLY after HEADER has drained. Delivery may run
@@ -337,5 +341,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260718
-e=46
-p=46
+e=47
+p=47

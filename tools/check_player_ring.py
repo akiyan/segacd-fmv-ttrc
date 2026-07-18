@@ -59,6 +59,18 @@ if ring_cap_end != expected_cap_end or f0pat_tmp != ring_cap_end:
         f"ring cap: RING_CAP_END={ring_cap_end:#x}, F0PAT_TMP={f0pat_tmp:#x}, "
         f"expected={expected_cap_end:#x}")
 ring_end = ring_base + ring_bytes
+if ring_base % sector or ring_bytes % sector or ring_bytes % 32:
+    sys.exit(
+        "check_player_ring: payload ring must be sector- and pattern-aligned: "
+        f"base={ring_base:#x}, size={ring_bytes:#x}")
+if ring_end > apply_base:
+    sys.exit(
+        f"check_player_ring: RING_END={ring_end:#x} overlaps "
+        f"APPLY_BASE={apply_base:#x}")
+if ring_end - ring_cap_end != av_config.RING_JITTER_MARGIN_KB * 1024:
+    sys.exit(
+        "check_player_ring: physical-to-usable ring gap does not match the "
+        f"configured jitter margin: {ring_end - ring_cap_end} bytes")
 if f0pat_tmp + max_f0_bytes > ring_end:
     sys.exit(
         f"check_player_ring: H40 frame-0 staging ends at "
@@ -77,7 +89,7 @@ print(
     "check_player_ring: OK  frame0 boot staging "
     f"{f0pat_tmp:#x}..{f0pat_tmp + max_f0_bytes:#x}, routing temp "
     f"{routing_tmp:#x}..{routing_tmp + route_bytes:#x}, Word routing "
-    f"{routing:#x}..{routing + route_bytes:#x}")
+    f"{routing:#x}..{routing + route_bytes:#x}, PRG ring end {ring_end:#x}")
 
 # --- CRAM pre-load (PALTAB) consistency ---
 # The pack sizes the PALTAB to av_config.PALTAB_MAX_SEG; the Main player copies it

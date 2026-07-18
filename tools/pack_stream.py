@@ -523,7 +523,7 @@ def schedule(per, n_load, blocks):
         # frame0はDAT冒頭の専用ヘッダブロックとしてboot中にVRAM直ロードする(=ストリーミングの
         # リングを一切経由しない)。よってframe0のcoldはストリームの累積d(=リングpop)から除外し、
         # プリバッファは frame1用の満タンリング(RING_CAP)だけにする。frame0の配信は0。
-        # これでboot時リングは常にRING_CAP以下=back-pressure(416KB)に触れず、かつframe1以降が
+        # これでboot時リングは常にRING_CAP以下=back-pressureに触れず、かつframe1以降が
         # 満タンリングで始まる。frame0の大バーストによる後続枯渇(崩壊)を根絶。
         Bsec = int(min(ring_sec, M_sec))                  # frame1用プリバッファ=満タン(<=総量)
 
@@ -791,6 +791,10 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
         stream_pay = payload[nl0 * PAT:]             # frames1+ の payload連結
         f0_ctrl_sec = -(-len(f0_ctrl) // SECTOR)
         f0_pat_sec = -(-len(f0_pat) // SECTOR)
+        if f0_pat_sec * SECTOR > av_config.RING_JITTER_MARGIN_KB * 1024:
+            raise SystemExit(
+                f"pack: frame0 needs {f0_pat_sec} pattern sectors, beyond the "
+                f"{av_config.RING_JITTER_MARGIN_KB}KB boot staging tail")
     else:
         f0_ctrl = f0_pat = b""
         stream_ctrl = control
@@ -1041,8 +1045,11 @@ def main():
         startup_rate = int(sc["ratedelta"][1:startup_end].sum())
         print(f"  startup BODY frames 1..{startup_end - 1}: {startup_fsec} sectors "
               f"(CD-1x allowance {startup_rate}, avoidable excess {startup_fsec - startup_rate})")
-    if sc["ring_peak"] > RING_CAP_PAT:
-        print(f"  !! ring_peak {sc['ring_peak']*PAT/1024:.0f}KB > cap {RING_CAP_KB}KB (PRG収容不可の恐れ)")
+    if sc["prebuf_pat"] > RING_CAP_PAT or sc["ring_peak"] > RING_CAP_PAT:
+        raise SystemExit(
+            f"pack: payload ring exceeds cap {RING_CAP_KB}KB "
+            f"(prebuf={sc['prebuf_pat']*PAT/1024:.0f}KB, "
+            f"peak={sc['ring_peak']*PAT/1024:.0f}KB)")
     if not sc["feasible"]:
         raise SystemExit(
             "pack: refusing to write an infeasible BODY schedule "

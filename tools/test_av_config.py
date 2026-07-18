@@ -7,6 +7,17 @@ import unittest
 import av_config
 
 
+class RingGeometryTests(unittest.TestCase):
+    def test_intermediate_hardware_used_ring_geometry(self) -> None:
+        self.assertEqual(av_config.RING_SIZE_KB, 420)
+        self.assertEqual(av_config.RING_JITTER_MARGIN_KB, 40)
+        self.assertEqual(av_config.RING_CAP_KB, 380)
+        self.assertEqual(av_config.TANK_KB, 380)
+        self.assertEqual(av_config.BACKPRESSURE_KB, 416)
+        self.assertEqual(
+            av_config.BACKPRESSURE_KB - av_config.RING_CAP_KB, 36)
+
+
 class PlaybackTimingTests(unittest.TestCase):
     def test_ntsc_integer_vblank_rates_keep_existing_chunks(self) -> None:
         self.assertEqual(av_config.vsync_n_for_fps(15), 4)

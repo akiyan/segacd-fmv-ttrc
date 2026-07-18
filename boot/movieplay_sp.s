@@ -37,12 +37,12 @@
 .equ SP_STACK,    0x0007FF00        /* スタック最上位(apply端0x7F800の上, 1.8KB) */
 /* 0x9800-0xC000は連続読み中にBIOSが踏む(回収を試みたら化けた)。RINGは0xC000から。 */
 .equ RING_BASE,   0x0000C000
-.equ RING_SIZE,   0x00067000        /* 412KB。40KB jitter余白は維持 */
-.equ RING_END,    RING_BASE+RING_SIZE     /* 0x73000 */
+.equ RING_SIZE,   0x00069000        /* 420KB。40KB jitter余白は維持 */
+.equ RING_END,    RING_BASE+RING_SIZE     /* 0x75000 */
 .equ RING_PATTERNS, RING_SIZE/32
-.equ RING_CAP_END,0x00069000        /* usable cap 372KBの終端。boot中だけframe0 patternsを
+.equ RING_CAP_END,0x0006B000        /* usable cap 380KBの終端。boot中だけframe0 patternsを
                                        40KB jitter余白に置き、BODY開始前に展開する。 */
-.equ F0PAT_TMP,   0x00069000        /* H40最大1120 patternsは36KB(セクタ丸め)でRING_END内 */
+.equ F0PAT_TMP,   0x0006B000        /* H40最大1120 patternsは36KB(セクタ丸め)でRING_END内 */
 .equ APPLY_BASE,  0x00077000
 .equ APPLY_SIZE,  0x00008800        /* 34KB(16KBは頭詰まり→滑りを実測。42KB→34KBはrouting移設分) */
 .equ APPLY_END,   APPLY_BASE+APPLY_SIZE   /* 0x7F800 */
