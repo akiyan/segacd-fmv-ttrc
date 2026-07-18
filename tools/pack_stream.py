@@ -38,6 +38,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import av_config
 import player_constants
+import stream_schedule
 import ttrc_routing
 from encode_config import load_profile
 from cbr_paths import sim_work_dir
@@ -453,187 +454,36 @@ def rate_deltas(nfr):
     schedule.
     """
     try:
-        rate_num, rate_mod = av_config.cd_sector_rate(FPS)
-    except ValueError as exc:
+        return stream_schedule.rate_deltas(nfr, FPS)
+    except stream_schedule.ScheduleError as exc:
         raise SystemExit(f"pack: {exc}") from exc
-    out = np.zeros(nfr, np.int64)
-    acc = 0
-    for i in range(1, nfr):
-        acc += rate_num
-        out[i] = acc // rate_mod
-        acc -= int(out[i]) * rate_mod
-    return out
 
 
 def rate_match_fsec(n_pay_sec, n_ctrl_sec):
     """Apply the player's bounded CD-rate accumulator to a routing table."""
-    ratedelta = rate_deltas(len(n_pay_sec))
-    fsec = np.zeros(len(n_pay_sec), np.int64)
-    lead_trace = np.zeros(len(n_pay_sec), np.int64)
-    lead = 0
-    for i in range(1, len(n_pay_sec)):
-        actual = int(n_pay_sec[i]) + int(n_ctrl_sec[i])
-        due = int(ratedelta[i]) - lead
-        fsec[i] = max(actual, due)
-        lead += int(fsec[i]) - int(ratedelta[i])
-        if lead < 0:
-            raise AssertionError("rate-match lead became negative")
-        lead_trace[i] = lead
-    return fsec, ratedelta, lead_trace
+    try:
+        return stream_schedule.rate_match_sectors(
+            n_pay_sec, n_ctrl_sec, fps=FPS)
+    except stream_schedule.ScheduleError as exc:
+        raise SystemExit(f"pack: {exc}") from exc
 
 
 def schedule(per, n_load, blocks):
     """Schedule control JIT and rate-shaped payload prefetch sectors."""
-    nfr = len(per)
     blk_len = np.array([len(b) for b in blocks], np.int64)
-    # v6+ always arms frame 0 from HEADER.DAT.  Keeping a switch here would
-    # produce a file whose layout disagrees with its version, so reject the
-    # removed legacy mode explicitly instead of silently emitting it.
-    F0_HEADER = True
-    nc = np.zeros(nfr, np.int64)
-    ctrl_deliv = 0
-    ctrl_cur = 0
-    for i in range(nfr):
-        if F0_HEADER and i == 0:
-            continue                                      # frame0 control はヘッダ側(ストリーム外)
-        deficit = (ctrl_cur + int(blk_len[i])) - ctrl_deliv
-        k = max(0, -(-deficit // SECTOR)) if deficit > 0 else 0
-        nc[i] = k
-        ctrl_deliv += k * SECTOR
-        ctrl_cur += int(blk_len[i])
-    cap_sec = np.maximum(FRAME_SECTORS - nc, 0)
-    n_load_s = np.array(n_load, np.int64)
-    if F0_HEADER:
-        n_load_s[0] = 0                                   # frame0 patterns はヘッダ側(ストリーム外)
-    d = np.cumsum(n_load_s)
-    M = int(d[-1])
-    d_sec = -(-d // PAT_PER_SEC)
-    M_sec = int(-(-M // PAT_PER_SEC))
-    A = np.zeros(nfr, np.int64)
-    # PACK_FILL(default ON): use only the sectors that CD 1x can deliver by this
-    # frame, replacing rate padding with useful payload whenever ring space is
-    # available.  The old forward fill used all five routing sectors even at
-    # 30 fps, where the real-time allowance is only two or three sectors. Starting
-    # with a full ring and immediately refilling every consumed pattern made the
-    # first 30 Sonic frames carry 102 sectors instead of 75.  BODY is data-paced,
-    # so that policy itself slowed startup and exhausted the PCM preload.
-    #
-    # A backwards minimum-delivery envelope still guarantees every future cold
-    # deadline.  If a burst truly needs more than the current rate allowance,
-    # the schedule may use up to FRAME_SECTORS and the normal bounded lead logic
-    # repays that burst later.  Thus this remains forward prefetch, but never
-    # creates an avoidable above-1x startup burst merely to keep a full ring full.
-    if PACK_FILL:
-        ring_sec = RING_CAP_PAT // PAT_PER_SEC             # リング上限(セクタ)
-        # frame0はDAT冒頭の専用ヘッダブロックとしてboot中にVRAM直ロードする(=ストリーミングの
-        # リングを一切経由しない)。よってframe0のcoldはストリームの累積d(=リングpop)から除外し、
-        # プリバッファは frame1用の満タンリング(RING_CAP)だけにする。frame0の配信は0。
-        # これでboot時リングは常にRING_CAP以下=back-pressureに触れず、かつframe1以降が
-        # 満タンリングで始まる。frame0の大バーストによる後続枯渇(崩壊)を根絶。
-        Bsec = int(min(ring_sec, M_sec))                  # frame1用プリバッファ=満タン(<=総量)
-
-        # need[i] = the least cumulative payload sectors that must have arrived
-        # by the end of BODY slot i.  Besides the immediate frame-i+1 deadline,
-        # carry future demand backwards through each slot's hard 5-n_ctrl cap so
-        # a large later burst is prefetched early enough.
-        need = np.zeros(nfr, np.int64)
-        if nfr:
-            need[-1] = M_sec                              # emit the complete payload stream
-        for i in range(nfr - 2, -1, -1):
-            immediate = int(-(-int(d[i + 1]) // PAT_PER_SEC))
-            future = int(need[i + 1]) - int(cap_sec[i + 1])
-            need[i] = max(immediate, future, 0)
-        if nfr and Bsec < int(need[0]):
-            raise SystemExit(
-                f"pack: prebuffer {Bsec} sectors cannot arm the payload schedule; "
-                f"at least {int(need[0])} are required")
-
-        ratedelta = rate_deltas(nfr)
-        rate_lead = 0
-        prev = Bsec
-        if nfr:
-            A[0] = Bsec                                   # frame0 is outside BODY
-        for i in range(1, nfr):
-            # Sectors due now after repaying any earlier above-rate burst.  A
-            # control sector consumes the allowance first; payload occupies only
-            # the remainder unless the backwards safety envelope requires more.
-            due = int(ratedelta[i]) - rate_lead
-            soft_pay = max(0, due - int(nc[i]))
-            hi_ring = (int(d[i]) + RING_CAP_PAT) // PAT_PER_SEC
-            hi = min(prev + int(cap_sec[i]), M_sec, int(hi_ring))
-            lo = max(prev, int(need[i]))
-            if lo > hi:
-                raise SystemExit(
-                    f"pack: rate-shaped payload schedule is impossible at frame {i}: "
-                    f"minimum cumulative delivery {lo} sectors exceeds limit {hi}")
-            a = max(lo, min(prev + soft_pay, hi))
-            A[i] = a
-            actual = (a - prev) + int(nc[i])
-            fsec = max(actual, due)
-            rate_lead += fsec - int(ratedelta[i])
-            if rate_lead < 0:
-                raise AssertionError("rate-shaped schedule lead became negative")
-            prev = a
-    else:
-        cumcap = np.cumsum(cap_sec)
-        Bsec = int(max(0, np.max(d_sec - cumcap)))
-        A[-1] = M_sec
-        for i in range(nfr - 1, 0, -1):
-            A[i - 1] = max(int(d_sec[i - 1]), int(A[i] - cap_sec[i]))
-    n_pay_sec = np.empty(nfr, np.int64)
-    n_pay_sec[0] = A[0] - Bsec
-    n_pay_sec[1:] = A[1:] - A[:-1]
-    occ = A * PAT_PER_SEC - d
-    under = int((occ < 0).sum())                          # リング枯渇(飢餓)コマ数
-    over = int((n_pay_sec + nc > FRAME_SECTORS).sum())
-
-    # BODY.DAT is control-first.  The player may apply frame i immediately
-    # after its control sectors arrive, before frame i's payload sectors.  All
-    # cold patterns consumed through frame i must therefore have arrived by
-    # the end of frame i-1.  Frame 0 is independent and comes from HEADER.DAT.
-    if nfr > 1:
-        ready_margin = A[:-1] * PAT_PER_SEC - d[1:]
-        ready_bad = np.flatnonzero(ready_margin < 0)
-        ready_min = int(ready_margin.min())
-        if ready_bad.size:
-            frame = int(ready_bad[0]) + 1
-            raise SystemExit(
-                f"pack v8 control-first invariant failed at frame {frame}: "
-                f"only {int(A[frame - 1]) * PAT_PER_SEC} patterns delivered before control, "
-                f"but {int(d[frame])} are consumed through that frame "
-                f"(short by {-int(ready_margin[frame - 1])})")
-    else:
-        ready_min = 0
-
-    # Independently prove that the cumulative control sectors routed through
-    # each frame contain that frame's complete variable-length control block.
-    # This also covers n_ctrl=0: the block must already fit in earlier sectors.
-    ctrl_need_len = blk_len.copy()
-    if nfr:
-        ctrl_need_len[0] = 0                              # frame0 control is in HEADER.DAT
-    ctrl_need = np.cumsum(ctrl_need_len)
-    ctrl_delivered = np.cumsum(nc) * SECTOR
-    ctrl_margin = ctrl_delivered - ctrl_need
-    ctrl_bad = np.flatnonzero(ctrl_margin < 0)
-    ctrl_min = int(ctrl_margin.min()) if nfr else 0
-    if ctrl_bad.size:
-        frame = int(ctrl_bad[0])
-        raise SystemExit(
-            f"pack v8 control completeness failed at frame {frame}: "
-            f"{int(ctrl_delivered[frame])} bytes delivered, "
-            f"{int(ctrl_need[frame])} bytes required")
-
-    fsec, ratedelta, rate_lead_trace = rate_match_fsec(n_pay_sec, nc)
-    rate_lead_peak = int(rate_lead_trace.max()) if nfr else 0
-    rate_lead_end = int(rate_lead_trace[-1]) if nfr else 0
-    feasible = ((n_pay_sec >= 0).all() and over == 0 and under == 0
-                and ready_min >= 0 and ctrl_min >= 0 and rate_lead_end == 0)
-    return dict(n_pay_sec=n_pay_sec, n_ctrl_sec=nc, feasible=feasible, over=over, under=under,
-                prebuf_pat=Bsec * PAT_PER_SEC, ring_peak=int(occ.max()), ring_min=int(occ.min()),
-                ready_min=ready_min, ctrl_min=ctrl_min, blk_len=blk_len, M=M,
-                fsec=fsec, ratedelta=ratedelta, rate_lead_peak=rate_lead_peak,
-                rate_lead_end=rate_lead_end,
-                f0_header=F0_HEADER, f0_cold=int(n_load[0]), f0_ctrl_len=int(blk_len[0]))
+    if len(per) != len(n_load) or len(per) != len(blocks):
+        raise SystemExit("pack: schedule inputs have different frame counts")
+    try:
+        return stream_schedule.schedule_payload_ring(
+            n_load,
+            blk_len,
+            fps=FPS,
+            ring_capacity_patterns=RING_CAP_PAT,
+            frame_sectors=FRAME_SECTORS,
+            fill=PACK_FILL,
+        )
+    except (ValueError, stream_schedule.ScheduleError) as exc:
+        raise SystemExit(f"pack: {exc}") from exc
 
 
 def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None):
