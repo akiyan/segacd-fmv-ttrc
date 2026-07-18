@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p53 : Replace fixed-N2 VBlank edge sampling with a flip-to-flip stopwatch
+#        deadline. The 24.576ms midpoint cannot miss VBlank 1 during long Main
+#        work and always arms the following VBlank 2; 24/15fps remain unchanged.
 #   p52 : Count a fixed-N2 VBlank when the pattern-transfer pass enters after
 #        VBlank has already started. This removes a false third-VBlank hold
 #        without changing the transfer workload or the 24/15fps paths.
@@ -370,4 +373,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260718
 e=50
-p=52
+p=53

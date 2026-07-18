@@ -81,6 +81,7 @@
 .equ VB_WORDS_H40, 3400		/* H40 V28 NTSC(理論~3895語より保守的) */
 .equ CPU_DIRECT_MAX_WORDS, 32	/* 1-2 tiles: CPU writes beat per-run DMA setup */
 .equ FEATURE_FIXED_N2_BIT, 1	/* header features bit 1 */
+.equ PACE_N2_ARM_TICKS, 800	/* 24.576ms: safely between VBlank 1 and 2 */
 
 .text
 
@@ -249,8 +250,7 @@ ip_entry:
 	clr.w	frame_no
 	clr.w	started
 	clr.w	vsync_acc			/* v4: ペーシングカウンタ初期化(.bssはMD上でクリアされない) */
-	move.w	md_vsync_n, pace_vblanks	/* frame0 has no preceding movie flip */
-	clr.w	pace_in_vblank
+	bsr	prime_fixed_cadence		/* frame0 has no preceding movie flip */
 .ifdef DEBUG
 	clr.w	sub_wait_lines
 	clr.w	dma_elapsed_ticks
@@ -282,8 +282,7 @@ movie_end_md:
 	clr.w	frame_no
 	clr.w	started
 	clr.w	dbg_seg
-	move.w	md_vsync_n, pace_vblanks	/* 15s tail already satisfies frame0 cadence */
-	clr.w	pace_in_vblank
+	bsr	prime_fixed_cadence		/* 15s tail already satisfies frame0 cadence */
 	bra	play_loop
 
 .ifdef MAIN_CODEGEN
@@ -648,7 +647,6 @@ bf_dma:
 	move.w	n_runs, d4
 	beq	bf_flip
 	lea	RUN_TABLE, a2
-	bsr	pace_poll_vblank		/* count an already-entered fixed-N2 VBlank */
 	move.w	(VDP_CTRL).l, d0		/* 現vblank内でなければ次vblankへ */
 	btst	#3, d0
 	bne	1f
@@ -825,47 +823,30 @@ wait_vb_start:
 	btst	#3, d0
 	beq	2b				/* vblankに入るまで */
 	addq.w	#1, vsync_acc			/* v4: 1コマのVBLANK数を計上(表示ペーシング用) */
-	tst.w	md_fixed_n2
-	beq.s	3f
-	move.w	#1, pace_in_vblank
-	move.w	pace_vblanks, d0
-	cmp.w	md_vsync_n, d0
-	bcc.s	3f				/* saturate once the deadline is met */
-	addq.w	#1, pace_vblanks
-3:
 	rts
 
-/* Count a VBlank crossed while waiting on the Sub CPU rather than through
-   wait_vb_start. The state bit prevents counting the VBlank containing the
-   previous flip twice. Trashes d0. */
-pace_poll_vblank:
+/* Make frame 0 immediately eligible: its synthetic preceding flip is one
+   midpoint threshold in the past. Trashes d0. */
+prime_fixed_cadence:
 	tst.w	md_fixed_n2
-	beq.s	3f
-	move.w	(VDP_CTRL).l, d0
-	btst	#3, d0
-	beq.s	2f
-	tst.w	pace_in_vblank
-	bne.s	3f
-	move.w	#1, pace_in_vblank
-	move.w	pace_vblanks, d0
-	cmp.w	md_vsync_n, d0
-	bcc.s	3f
-	addq.w	#1, pace_vblanks
-	bra.s	3f
-2:
-	clr.w	pace_in_vblank
-3:
+	beq.s	1f
+	move.w	(GA_STOPWATCH).l, d0
+	sub.w	#PACE_N2_ARM_TICKS, d0
+	andi.w	#0x0FFF, d0
+	move.w	d0, pace_flip_tick
+1:
 	rts
 
-/* Return inside the first VBlank whose flip-to-flip count reaches N. A frame
-   that truly finishes late may use N+1; an early frame can never use N-1. */
+/* The stopwatch midpoint is safely after VBlank 1 ends and before VBlank 2
+   begins for any legal flip phase. This cannot miss a whole VBlank while the
+   Main CPU is busy, unlike edge polling. */
 wait_fixed_flip:
 1:
-	bsr	pace_poll_vblank
-	move.w	pace_vblanks, d0
-	cmp.w	md_vsync_n, d0
+	move.w	(GA_STOPWATCH).l, d0
+	sub.w	pace_flip_tick, d0
+	andi.w	#0x0FFF, d0
+	cmpi.w	#PACE_N2_ARM_TICKS, d0
 	bcc.s	2f
-	bsr	wait_vb_start
 	bra.s	1b
 2:
 	move.w	(VDP_CTRL).l, d0
@@ -875,17 +856,15 @@ wait_fixed_flip:
 3:
 	rts
 
-/* CRAM replacement needs the beginning of a fresh VBlank. Reach N-1 first,
-   then make the final wait the CRAM+flip VBlank. */
+/* CRAM replacement needs a fresh VBlank. At the midpoint we are between the
+   first and second VBlanks, so the next fresh start is exactly VBlank 2. */
 wait_fixed_palette_flip:
 1:
-	bsr	pace_poll_vblank
-	move.w	pace_vblanks, d0
-	move.w	md_vsync_n, d1
-	subq.w	#1, d1
-	cmp.w	d1, d0
+	move.w	(GA_STOPWATCH).l, d0
+	sub.w	pace_flip_tick, d0
+	andi.w	#0x0FFF, d0
+	cmpi.w	#PACE_N2_ARM_TICKS, d0
 	bcc.s	2f
-	bsr	wait_vb_start
 	bra.s	1b
 2:
 	bsr	wait_vb_start
@@ -902,8 +881,7 @@ do_flip:
 	eori.w	#1, back_idx			/* 裏を反転 */
 	tst.w	md_fixed_n2
 	beq.s	1f
-	clr.w	pace_vblanks			/* next deadline is measured from this exact flip */
-	move.w	#1, pace_in_vblank
+	move.w	(GA_STOPWATCH).l, pace_flip_tick	/* exact flip-to-flip deadline */
 1:
 	rts
 
@@ -1055,7 +1033,6 @@ swap_or_end:
 .endif
 	move.w	#CMD_SWAP, (GA_COMCMD0).l
 1:
-	bsr	pace_poll_vblank
 	move.w	(GA_COMSTAT0).l, d0
 	cmp.w	#STAT_READY, d0
 	beq	2f
@@ -1072,7 +1049,6 @@ swap_or_end:
 .endif
 	move.w	#0, (GA_COMCMD0).l
 3:
-	bsr	pace_poll_vblank
 	tst.w	(GA_COMSTAT0).l
 	bne	3b
 	move.w	d3, d0				/* swap_or_end return contract */
@@ -1209,10 +1185,8 @@ md_fixed_n2:
 	.space 2				/* v8 header feature bit 1; 24fps N2 hint alone stays unpaced */
 vsync_acc:
 	.space 2				/* v4: 現コマで消費したVBLANK数(ペーシング用) */
-pace_vblanks:
-	.space 2				/* v8: VBlanks since the preceding fixed-N2 flip */
-pace_in_vblank:
-	.space 2				/* v8: current VBlank has already been counted */
+pace_flip_tick:
+	.space 2				/* v8: GA stopwatch tick at preceding fixed-N2 flip */
 md_tcols:
 	.space 2
 md_trows:
