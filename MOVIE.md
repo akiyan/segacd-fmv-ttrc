@@ -170,6 +170,11 @@ Then:
   `vsync_n` hint is also 2. Unknown bits must not move any legacy field;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
+- offset 192: `u32 player_signature` — CRC-32 of bytes 0 through 63. The build
+  generates `player_constants.inc` from this same sector and bakes the signature
+  into both player objects. The Sub CPU compares it before accepting the stream,
+  so combining a player with another profile's `HEADER.DAT` stops with a
+  diagnostic instead of silently using the wrong immediate values;
 - remainder up to 2048 is zero.
 
 The player reads byte 38 while preparing frame 0, before entering `play_loop`.

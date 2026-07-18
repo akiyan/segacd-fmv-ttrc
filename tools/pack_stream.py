@@ -37,6 +37,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import av_config
+import player_constants
 import ttrc_routing
 from encode_config import load_profile
 from cbr_paths import sim_work_dir
@@ -867,6 +868,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     header += struct.pack(">H", features)          # offset 62: optional stream features
     header += b"\0" * (64 - len(header)) + seg0
     header += b"\0" * (SECTOR - len(header))
+    header = player_constants.stamp_header_sector(header)
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
                   + f0_pat.ljust(f0_pat_sec * SECTOR, b"\0"))
     header_blob = (header
@@ -893,6 +895,8 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     palette_path.write_bytes(seg0)
     with header_path.open("wb") as f:
         f.write(header_blob)
+    constants_path = out_path.with_name("player_constants.inc")
+    player_constants.generate_include(header_path, constants_path)
 
     pc = Bpat * PAT; cc = 0
     fsec_schedule = sc["fsec"]
@@ -952,6 +956,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
           f"ring_peak {ring_peak*PAT/1024:.0f}KB  v8 N={vsync_n}(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
+    print(f"  player constants: {constants_path}")
     print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS}(最大スロット) PALTAB_SEC={paltab_sec} "
           f"F0_CTRL_SEC={f0_ctrl_sec} F0_PAT_SEC={f0_pat_sec} ROUTING_SEC={routing_sec} "
           f"PREBUF_SEC={prebuf_sec} PREBUF_PAT={Bpat} RING_PEAK_PAT={ring_peak} VSYNC_N={vsync_n}")
