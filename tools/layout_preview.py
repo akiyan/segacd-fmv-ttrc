@@ -48,7 +48,6 @@ COL_BORDER = (200, 200, 200)
 COL_FRAME_IN = (70, 70, 70)
 COL_TXT = (225, 225, 225)
 COL_DIM = (150, 150, 155)
-COL_ZERO = (160, 160, 166)       # ゼロ埋めの先頭ゼロ(通常より少し暗いだけ)
 COL_OVH = (95, 110, 122)         # 有効Bandの「音声+その他ヘッダ」セグメント(くすんだ青灰)
 COL_DMA = (70, 190, 90)          # DMAパターンタイル数(green)
 COL_RUN = (215, 165, 65)         # cold pattern run分断度(amber)
@@ -220,14 +219,9 @@ def _w(font, s):
 
 
 def draw_padnum(d, x, y, value, width, font, col):
-    """value を width 桁ゼロ埋めして描く。先頭ゼロは暗色(COL_ZERO)。返り値=描画後x。"""
+    """value を width 桁ゼロ埋めして同じ文字色で描く。返り値=描画後x。"""
     s = str(int(value)).rjust(width, "0")
-    i = 0
-    while i < len(s) - 1 and s[i] == "0":
-        i += 1
-    if i:
-        d.text((x, y), s[:i], fill=COL_ZERO, font=font); x += _w(font, s[:i])
-    d.text((x, y), s[i:], fill=col, font=font); x += _w(font, s[i:])
+    d.text((x, y), s, fill=col, font=font); x += _w(font, s)
     return x
 
 
@@ -325,22 +319,49 @@ def swatch(d, x, y, sw, name, col):
         d.rectangle([x, y, x + sw, y + sw], outline=col, width=CAT_THICK.get(name, 1))  # 枠(細/太)
 
 
+def _mix_col(base, tint, amount):
+    """RGBを混ぜる。凡例メーターはカテゴリ色を暗い背景へ薄く足す。"""
+    return tuple(round(b + (t - b) * amount) for b, t in zip(base, tint))
+
+
+def legend_level(d, x0, x1, y, value, maximum, col):
+    """数字欄の背景を、frame内の最大カテゴリ比で伸びる薄い横メーターとして描く。"""
+    bg = (14, 14, 14)
+    top, bottom = y - 1, y + 16
+    d.rectangle([x0, top, x1, bottom], fill=_mix_col(bg, col, 0.14))
+    ratio = min(max(float(value) / max(int(maximum), 1), 0.0), 1.0)
+    fillw = round((x1 - x0 + 1) * ratio)
+    if value > 0:
+        fillw = max(1, fillw)
+    if fillw:
+        d.rectangle([x0, top, min(x1, x0 + fillw - 1), bottom],
+                    fill=_mix_col(bg, col, 0.38))
+
+
 def draw_legend(w, h, data):
-    """凡例(2行)。四角(色は残す) + 名前:カウント。metricの色対応として四角は全カテゴリ表示。"""
+    """凡例(2行)。数字欄はカテゴリ色の薄いframe内レベルメーター。"""
     im = Image.new("RGB", (w, h), (14, 14, 14))
     d = ImageDraw.Draw(im)
     per_row = 4
     cw = w // per_row
     sw = 14
+    meter_max = max(data["counts"].values(), default=1)
+    meter_chars_w = _w(f_leg, "000/000")
     for i, (name, col) in enumerate(CATS):
         row = i // per_row; c = i % per_row
         x = c * cw + 6; y = row * (h // 2) + (h // 2 - sw) // 2
         swatch(d, x, y, sw, name, col)
+        tx = x + sw + 6
+        label = DISP[name] + ":"
+        nx = tx + _w(f_leg, label) - 2
+        meter_right = min(nx + meter_chars_w - 1, (c + 1) * cw - 6)
+        legend_level(d, nx, meter_right, y - 1,
+                     data["counts"][name], meter_max, col)
         if name in UNIQ_CATS:      # ユニーク数/総数 を併記
-            draw_field(d, x + sw + 6, y - 1, DISP[name] + ":", data["counts_uniq"][name], 3, f_leg,
+            draw_field(d, tx, y - 1, label, data["counts_uniq"][name], 3, f_leg,
                        COL_TXT, data["counts"][name], 3)
         else:
-            draw_field(d, x + sw + 6, y - 1, DISP[name] + ":", data["counts"][name], 3, f_leg, COL_TXT)
+            draw_field(d, tx, y - 1, label, data["counts"][name], 3, f_leg, COL_TXT)
     return im
 
 
@@ -374,7 +395,7 @@ def draw_graph(w, h, data):
 
 def draw_status(w, h, data):
     """status帯: Req / Cold / Band / Tank / Buff / DMA / Run + 3段Timeline。
-    数値はゼロ埋め(先頭ゼロは暗色)で桁固定。MissCarryは廃止。"""
+    数値は同じ文字色のゼロ埋めで桁固定。MissCarryは廃止。"""
     im = Image.new("RGB", (w, h), (16, 16, 16))
     d = ImageDraw.Draw(im)
     by, BH = 8, 16                   # 上マージンを半分(16→8)。タイムラインもこのbyから始まり下端は据置=縦に伸びる

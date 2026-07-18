@@ -68,6 +68,11 @@ Low-resolution grids therefore appear at their true on-screen size.
   classes. Each shows the swatch and the name; the resident-reuse classes
   (`Same/Near/Coa/Flbk`) show `unique/used` counts for the frame (how many
   distinct resident tiles served how many cells), the others a single count.
+  The numeric field has a subtle seven-character-wide horizontal level fill.
+  The largest used-cell count in the frame reaches the full width and the other
+  categories are proportional to it; the tint is derived from the category
+  colour. `unique/used` entries use the `used` value for the fill. All
+  zero-padded digits use the normal text colour.
   Swatch styles mirror the map: `Raw` = black/white checker, `Same` = grey
   checker (both meaning "content fill, no border"), `Miss` = red fill,
   `Near`/`Coa` = thin frame, `Flbk`/`Buf` = thick frame.
