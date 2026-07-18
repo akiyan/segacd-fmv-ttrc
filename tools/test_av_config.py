@@ -58,6 +58,10 @@ class PlaybackTimingTests(unittest.TestCase):
         self.assertEqual(av_config.cd_sector_rate(15), (75, 15))
         self.assertEqual(av_config.cd_sector_rate(24), (75, 24))
 
+    def test_near_30_but_non_ntsc_rate_stays_delivery_paced(self) -> None:
+        self.assertFalse(av_config.uses_fixed_n2_cadence(29.8))
+        self.assertEqual(av_config.cd_sector_rate(29.8), (75, 30))
+
     def test_invalid_fps_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             av_config.vsync_n_for_fps(0)

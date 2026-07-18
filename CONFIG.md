@@ -35,7 +35,7 @@ models the same usable buffer so a schedule it calls feasible actually is.
 | `RING_CAP_KB` | 388 KB (derived) | cfg -> pack | Pack schedule / prefetch cap = `RING_SIZE_KB - RING_JITTER_MARGIN_KB`. |
 | `TANK_KB` | 388 KB (derived) | cfg -> sim | Sim VBV tank = usable ring. How much bandwidth a heavy frame may borrow. (Was wrongly 440 = larger than the ring.) |
 | `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the ring. `RING_CAP` must stay below it. |
-| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
+| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v8 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | prebuffer | fills ring to `RING_CAP` | pack | Final region of `HEADER.DAT`; a boot-time burst that fills the ring before frame 1 so bursts are pre-buffered. |
 | frame-0 boot staging | 36 KB max in the 40 KB jitter tail | sp | Frame 0 is temporarily stored at `RING_CAP` and expanded before BODY streaming reuses those PRG-RAM bytes. |
@@ -120,9 +120,10 @@ continuously.
 | pump_poll frequency | every 64 entries at <=20 fps; one end poll for a non-empty 24-30 fps descriptor frame | sp `expand_frame` | Runtime-selected cadence. A high-fps block with at most 1024 updates consumes packed cold-run descriptors directly and preserves the old end-of-frame poll. Larger H40 blocks and <=20fps streams retain the entry walker. Frame 0 has no active `BODY.DAT` read. |
 | ring-full skip | occ >= 424 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
-| `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. v4+ uses a rate-matched variable total averaging 75/fps sectors per frame (5 at 15 fps; 3.125 at 24 fps; alternating 2/3 at 30 fps). In v6+ each `BODY.DAT` slot is control / future payload / pad; v7 packs the control and total counts into one routing byte. |
+| `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. With v8 `FEATURE_FIXED_N2`, 400 frames receive exactly 1001 sectors: 199 two-sector and 201 three-sector allowances. Feature-clear 24fps and 15fps retain the delivery-paced 75/fps schedule (3.125 and 5 sectors/frame). In v6+ each `BODY.DAT` slot is control / future payload / pad; v7+ packs the control and total counts into one routing byte. |
 | `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
 | `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. At 24fps or above, the Sub copies eligible blocks by these runs instead of scanning every update entry again. Old streams use the entry fallback; old players ignore the suffix via `total_len`. |
+| `FEATURE_FIXED_N2` | header bit 1 at offset 62 (v8) | pack / sp / ip | Authoritative fixed-cadence contract. Main forces one flip every two VBlanks and Sub selects the matching 1001/400 sector accumulator. The packer sets it only when `uses_fixed_n2_cadence(fps)` is true; 24fps leaves it clear despite its N=2 hint. |
 | Word-RAM swap completion | DMNA bit 1 | sp `swap_settle` | Poll the hardware's 1M bank-switch busy flag. The former fixed `0x400` loop burned about 0.82 ms after every frame even when the switch was already complete. |
 
 ## E. VDP DMA budget (Main CPU)
@@ -131,6 +132,7 @@ continuously.
 |---|---|---|---|
 | `VB_WORDS_H40` | 3400 words/VBlank | ip | H40 per-VBlank DMA word budget (conservative vs. ~3895 theoretical). |
 | `VB_WORDS_H32` | 2800 words/VBlank | ip | H32 per-VBlank DMA word budget. |
+| fixed N2 cadence | `FEATURE_FIXED_N2` (v8) | pack / sp / ip | Main flips every exactly two VBlanks. The paired Sub schedule is 1001/400 sectors/frame, so CD delivery does not run ahead of the fixed display clock. This feature bit is authoritative; `vsync_n` alone never enables the path. Current 24fps and 15fps streams leave it clear and remain delivery-paced. |
 | `MAIN_CODEGEN_BASE..LIMIT` | 24 KB (`0xFF2000..0xFF7FFF`) | ip | Reserved for Main-CPU code generated once after header setup. The former tile staging use is obsolete because pattern DMA reads Word RAM directly. |
 | `RUN_TABLE` | 1536 records by address range; current cold cap is much lower | ip | `(dst, len, src)` table of contiguous cold-slot runs. Each record is counted by H40 HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. |
 
@@ -275,6 +277,6 @@ red indicator because they do not have the HUD.
 | `C` | `Cxx` | Blocking CD pumps needed before the current control could run, including an older BODY slot. Zero means delivery was already armed. |
 | `W` | `Wxx` | Approximate Main-CPU wait for Sub completion at `CMD_SWAP`, in V-counter scanlines. It wraps at 256, so use it as a short-wait diagnostic rather than an absolute stopwatch. |
 | `M` | `Mxx` | VBlank starts waited by the Main pattern path this frame. Values of 2 or more prove an extra VBlank spill. |
-| `A` | `A00` | Reserved-zero v7 field. The legacy startup-audio duplicate-skip path was removed; a nonzero header value is rejected. |
+| `A` | `A00` | Always cleared by the v8 player. Header offset 58 is the obsolete startup-audio duplicate-skip count: the packer writes zero and the player ignores it. |
 | `U` | `Uxxxx` (H40) | Main pattern-transfer time in Mega-CD stopwatch ticks, measured from the first run through the final DMA repair or CPU-direct write. One tick is 30.72 us; the 12-bit counter wraps after 4096 ticks (about 125.83 ms). |
 | `N` | `Nxx` (H40) | Low byte of the packed cold-run descriptor count for this frame. This is the fragmentation count before a long run is split by the VBlank word budget and wraps at 256. |

@@ -6,7 +6,7 @@ needs cold entries in stream order to pop patterns and build DMA runs.  This
 checker walks every real control block in the packed TTRC files both ways and
 verifies that the entry stream, cold-slot order and run grouping are identical.
 
-For v6/v7 it prefers the on-disc HEADER.DAT + BODY.DAT pair, verifies that each
+For v6-v8 it prefers the on-disc HEADER.DAT + BODY.DAT pair, verifies that each
 frame's control block and cold patterns are ready before that frame can run,
 and also accepts the off-disc MOVIE.DAT compatibility concatenation.  v4/v5
 combined MOVIE.DAT files remain readable for regression checks.
@@ -21,16 +21,24 @@ from pathlib import Path
 
 SECTOR = 2048
 ROUTING_TOTAL_MAX = 5
+FEATURE_FIXED_N2 = 0x0002
 
 
-def frame_sectors(routes: list[tuple[int, int]], fps: int) -> list[int]:
+def frame_sectors(
+    routes: list[tuple[int, int]], version: int, fps: int, vsync_n: int,
+    features: int,
+) -> list[int]:
     """Return the v4+ bounded-accumulator sector schedule for frames 1+."""
+    if version >= 8 and features & FEATURE_FIXED_N2:
+        rate_numerator, rate_modulus = 1001, 400
+    else:
+        rate_numerator, rate_modulus = 75, fps
     acc = 0
     lead = 0
     out = [0]
     for n_pay, n_ctrl in routes[1:]:
-        acc += 75
-        ratedelta, acc = divmod(acc, fps)
+        acc += rate_numerator
+        ratedelta, acc = divmod(acc, rate_modulus)
         actual = n_pay + n_ctrl
         fsec = max(actual, ratedelta - lead)
         lead += fsec - ratedelta
@@ -42,11 +50,12 @@ def decode_routes(
     routing: bytes, nframes: int, version: int
 ) -> list[tuple[int, int]]:
     """Decode routing without importing the production packer."""
-    entry_bytes = 1 if version == 7 else 2
+    compact = version >= 7
+    entry_bytes = 1 if compact else 2
     required = nframes * entry_bytes
     if len(routing) < required:
         raise AssertionError("truncated routing table")
-    if version != 7:
+    if not compact:
         return [
             (routing[frame * 2], routing[frame * 2 + 1])
             for frame in range(nframes)
@@ -55,12 +64,12 @@ def decode_routes(
     expected_bytes = ((nframes + SECTOR - 1) // SECTOR) * SECTOR
     if len(routing) != expected_bytes:
         raise AssertionError(
-            f"v7 routing region is {len(routing)} bytes, expected {expected_bytes}"
+            f"v7+ routing region is {len(routing)} bytes, expected {expected_bytes}"
         )
     if not nframes or routing[0] != 0:
-        raise AssertionError("v7 frame 0 routing entry must be zero")
+        raise AssertionError("v7+ frame 0 routing entry must be zero")
     if any(routing[nframes:]):
-        raise AssertionError("v7 routing sector padding must be zero")
+        raise AssertionError("v7+ routing sector padding must be zero")
 
     routes = []
     for frame, packed in enumerate(routing[:nframes]):
@@ -159,7 +168,7 @@ def main() -> None:
     parser.add_argument(
         "body",
         nargs="?",
-        help="BODY.DAT when the first argument is a standalone v6 HEADER.DAT",
+        help="BODY.DAT when the first argument is a standalone v6+ HEADER.DAT",
     )
     args = parser.parse_args()
 
@@ -178,14 +187,16 @@ def main() -> None:
     magic, version, nfr, _cols, _rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", data, 0
     )
-    if magic != b"TTRC" or version not in (4, 5, 6, 7):
-        raise SystemExit(f"expected TTRC v4-v7, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (4, 5, 6, 7, 8):
+        raise SystemExit(f"expected TTRC v4-v8, got {magic!r} v{version}")
     prebuf_pat = struct.unpack_from(">L", data, 22)[0]
     routing_sec = struct.unpack_from(">L", data, 26)[0]
     prebuf_sec = struct.unpack_from(">L", data, 30)[0]
     f0_ctrl_sec, f0_pat_sec, paltab_sec = struct.unpack_from(">LLL", data, 40)
+    vsync_n = struct.unpack_from(">H", data, 52)[0]
     fps = struct.unpack_from(">H", data, 56)[0] or 15
     audio_preload_sec = struct.unpack_from(">H", data, 60)[0]
+    features = struct.unpack_from(">H", data, 62)[0]
 
     f0_off = (1 + paltab_sec + audio_preload_sec) * SECTOR
     f0_len = struct.unpack_from(">H", data, f0_off)[0]
@@ -196,7 +207,7 @@ def main() -> None:
     routes = decode_routes(routing_raw, nfr, version)
     if routes[0] != (0, 0):
         raise AssertionError(f"frame 0 must live entirely in the header, route is {routes[0]}")
-    fsecs = frame_sectors(routes, fps)
+    fsecs = frame_sectors(routes, version, fps, vsync_n, features)
 
     frames_off = (routing_off // SECTOR + routing_sec + prebuf_sec) * SECTOR
     if len(data) < frames_off:
@@ -214,14 +225,14 @@ def main() -> None:
         elif len(data) == frames_off:
             body_path = stream_path.with_name("BODY.DAT")
             if not body_path.exists():
-                raise AssertionError(f"missing v6 body file: {body_path}")
+                raise AssertionError(f"missing v6+ body file: {body_path}")
             frames = body_path.read_bytes()
         else:
             body_path = None
             frames = data[frames_off:]
     else:
         if args.body:
-            raise AssertionError("separate HEADER.DAT/BODY.DAT requires TTRC v6/v7")
+            raise AssertionError("separate HEADER.DAT/BODY.DAT requires TTRC v6+")
         body_path = None
         frames = data[frames_off:]
 

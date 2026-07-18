@@ -8,7 +8,7 @@ therefore perform the same single poll after consuming its runs. H40 can
 contain up to 1120 cells, so the fallback retains its possible short-prefix
 poll followed by the final poll.
 
-This checker reads the real split TTRC v6/v7 stream, compares the fallback DBRA
+This checker reads the real split TTRC v6-v8 stream, compares the fallback DBRA
 countdown with an equivalent grouped model for every frame, and confirms that
 entry order and cold-slot run grouping are unchanged.  It additionally checks
 every synthetic update count up to the format's H40 maximum.
@@ -26,6 +26,7 @@ SECTOR = 2048
 POLL_CHUNK_30FPS = 1024
 MAX_H40_CELLS = 40 * 28
 ROUTING_TOTAL_MAX = 5
+FEATURE_FIXED_N2 = 0x0002
 
 
 @dataclass(frozen=True)
@@ -35,14 +36,21 @@ class Stream:
     entries: tuple[tuple[int, ...], ...]
 
 
-def frame_sectors(routes: list[tuple[int, int]], fps: int) -> list[int]:
-    """Reproduce the packer's bounded 75-sector BODY schedule."""
+def frame_sectors(
+    routes: list[tuple[int, int]], version: int, fps: int, vsync_n: int,
+    features: int,
+) -> list[int]:
+    """Reproduce the packer's versioned bounded BODY schedule."""
+    if version >= 8 and features & FEATURE_FIXED_N2:
+        rate_numerator, rate_modulus = 1001, 400
+    else:
+        rate_numerator, rate_modulus = 75, fps
     accumulator = 0
     lead = 0
     out = [0]
     for n_pay, n_ctrl in routes[1:]:
-        accumulator += 75
-        rated, accumulator = divmod(accumulator, fps)
+        accumulator += rate_numerator
+        rated, accumulator = divmod(accumulator, rate_modulus)
         actual = n_pay + n_ctrl
         sectors = max(actual, rated - lead)
         lead += sectors - rated
@@ -54,11 +62,12 @@ def decode_routes(
     routing: bytes, nframes: int, version: int
 ) -> list[tuple[int, int]]:
     """Decode routing without importing the production packer."""
-    entry_bytes = 1 if version == 7 else 2
+    compact = version >= 7
+    entry_bytes = 1 if compact else 2
     required = nframes * entry_bytes
     if len(routing) < required:
         raise AssertionError("routing table is truncated")
-    if version != 7:
+    if not compact:
         return [
             (routing[frame * 2], routing[frame * 2 + 1])
             for frame in range(nframes)
@@ -67,12 +76,12 @@ def decode_routes(
     expected_bytes = ((nframes + SECTOR - 1) // SECTOR) * SECTOR
     if len(routing) != expected_bytes:
         raise AssertionError(
-            f"v7 routing region is {len(routing)} bytes, expected {expected_bytes}"
+            f"v7+ routing region is {len(routing)} bytes, expected {expected_bytes}"
         )
     if not nframes or routing[0] != 0:
-        raise AssertionError("v7 frame 0 routing entry must be zero")
+        raise AssertionError("v7+ frame 0 routing entry must be zero")
     if any(routing[nframes:]):
-        raise AssertionError("v7 routing sector padding must be zero")
+        raise AssertionError("v7+ routing sector padding must be zero")
 
     routes = []
     for frame, packed in enumerate(routing[:nframes]):
@@ -127,14 +136,16 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, _cols, _rows, cells = struct.unpack_from(
         ">4sHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7):
-        raise AssertionError(f"expected split TTRC v6/v7, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7, 8):
+        raise AssertionError(f"expected split TTRC v6-v8, got {magic!r} v{version}")
 
     routing_sec = struct.unpack_from(">L", header, 26)[0]
     prebuf_sec = struct.unpack_from(">L", header, 30)[0]
     f0_ctrl_sec, f0_pat_sec, paltab_sec = struct.unpack_from(">LLL", header, 40)
+    vsync_n = struct.unpack_from(">H", header, 52)[0]
     fps = struct.unpack_from(">H", header, 56)[0] or 15
     audio_preload_sec = struct.unpack_from(">H", header, 60)[0]
+    features = struct.unpack_from(">H", header, 62)[0]
 
     frame0_offset = (1 + paltab_sec + audio_preload_sec) * SECTOR
     frame0_len = struct.unpack_from(">H", header, frame0_offset)[0]
@@ -162,7 +173,7 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
         )
 
     body = body_path.read_bytes()
-    slots = frame_sectors(routes, fps)
+    slots = frame_sectors(routes, version, fps, vsync_n, features)
     body_pos = 0
     control_stream = bytearray()
     for seq in range(1, nfr):

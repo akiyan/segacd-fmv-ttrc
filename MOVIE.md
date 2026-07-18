@@ -17,7 +17,7 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 7               (bump for an incompatible base-layout change)
+VERSION        = 8               (bump for an incompatible stream interpretation)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = header field    (888 B at N4; 444 B at N2)
@@ -42,6 +42,13 @@ cold-slot run descriptors after audio without moving any legacy field.
 **v7** packed each routing entry from two bytes into one byte containing the
 control-sector count and total-sector count. This doubled the resident-table
 limit from 8192 to 16384 frames without changing the BODY sector order.
+**v8** retained that one-byte routing layout and every header-field offset, but
+defined feature bit 1 (`FEATURE_FIXED_N2`) as the authoritative fixed-cadence
+contract. When set, the Main CPU flips once every two VBlanks and the Sub CPU
+assigns 1001 sectors per 400 frames. This changes the rate-padding boundaries
+in `BODY.DAT`, so an old v7 player must not read a v8 stream. The current packer
+sets the bit only for rates classified by `uses_fixed_n2_cadence`; 24fps and
+15fps leave it clear and retain their delivery-paced `75 / fps_int` schedule.
 
 ## File layout
 
@@ -56,7 +63,7 @@ HEADER.DAT
 +--------------------------------------------------+
 | FRAME 0 (f0_ctrl_sec + f0_pat_sec sectors)       |  control, then patterns
 +--------------------------------------------------+
-| ROUTING (routing_sec sectors)                    |  v7: 1 byte per frame, max 16384 frames
+| ROUTING (routing_sec sectors)                    |  v7+: 1 byte per frame, max 16384 frames
 +--------------------------------------------------+
 | PREBUFFER (prebuf_sec sectors)                   |  frame-1 ring prefill (Bpat patterns)
 +--------------------------------------------------+
@@ -96,7 +103,7 @@ First 22 bytes: `struct ">4sHHHHHHHHH"`.
 | Off | Size | Field          | Meaning |
 |-----|------|----------------|---------|
 | 0   | 4    | magic          | `"TTRC"` |
-| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body; 7 = packed routing entries) |
+| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body; 7 = packed routing entries; 8 = feature-controlled fixed-N2 display and CD-rate cadence) |
 | 6   | 2    | frames         | total frame count (`nfr`) |
 | 8   | 2    | tcols          | tile grid columns |
 | 10  | 2    | trows          | tile grid rows |
@@ -116,7 +123,7 @@ Next 16 bytes: `struct ">LLLL"`.
 | 34  | 4    | ring_peak    | peak PRG-RAM ring usage (patterns), for buffer sizing |
 
 The player reserves the final 16 KiB of each 1M Word-RAM bank for an identical
-ROUTING copy. A v7 stream uses one byte per frame and may therefore contain at
+ROUTING copy. A v7+ stream uses one byte per frame and may therefore contain at
 most 16384 frames. The packer rejects a longer stream before the table can
 exceed either resident copy.
 
@@ -134,24 +141,33 @@ Then:
 - offset 52: `u16 vsync_n` (v4) — nearest display-VBlank interval
   `N = round(59.94/fps)` (15fps→4, 24/30fps→2). This is a cadence/performance
   hint, not a request to round delivery-paced 24fps to 29.97fps. `0` in v2/v3
-  streams (player defaults to 4 = 15fps);
+  streams (player defaults to 4 = 15fps). In v8 this remains a hint when
+  `FEATURE_FIXED_N2` is clear. When that feature is set, it is authoritative
+  and the Main CPU forces N=2 even if this hint is stale. A 24fps stream stores
+  `N = 2` but leaves the feature clear, so it remains delivery-paced;
 - offset 54: `u16 audio_bytes` (v4) — fixed PCM bytes per effective playback
   frame, rounded up to keep a positive reserve (15fps→888, 24fps→555,
   30fps→444).
   `0` in v2/v3 (player defaults to 887);
-- offset 56: `u16 fps_int` (v4) — nominal fps (15/24/30) used by both packer and
-  player to compute the rate-matched per-frame sector count (see Routing/Frame).
-  `0` in v2/v3 (player defaults to 15);
+- offset 56: `u16 fps_int` (v4) — nominal fps (15/24/30). When
+  `FEATURE_FIXED_N2` is clear, the Sub CPU uses this as the modulus of the
+  delivery-paced 75/fps sector schedule (see Routing/Frame). The fixed-N2
+  feature instead selects 1001/400. Historical v2/v3 streams stored `0`; the
+  v8 player requires a nonzero nominal fps and rejects `0`;
 - offset 58: `u16 audio_preload_frames` — historical v5/v6 count of leading
-  control chunks duplicated in STARTUP_AUDIO. v7 requires zero and rejects a
-  nonzero value; current streams shift controls ahead instead of skipping live
-  audio writes;
+  control chunks duplicated in STARTUP_AUDIO. The v8 packer writes zero and the
+  v8 player ignores this obsolete field; current streams shift controls ahead
+  instead of skipping live audio writes;
 - offset 60: `u16 audio_preload_sec` (v5+) — sectors in STARTUP_AUDIO. v5+
   uses one chunk per sector. Current streams normally store `30`, independently
   of the legacy skip count at offset 58;
 - offset 62: `u16 features` (v6+ optional extensions). Bit 0
   (`FEATURE_COLD_RUNS`) means every control block appends the cold-slot run
-  suffix described below. Unknown bits must not move any legacy field;
+  suffix described below. Bit 1 (`FEATURE_FIXED_N2`, v8) is the authoritative
+  two-VBlank timing flag: it makes the Main CPU force N=2 and the Sub CPU use
+  the 1001/400 sector accumulator. The packer derives it with
+  `uses_fixed_n2_cadence`; 24fps leaves it clear even though its nearest
+  `vsync_n` hint is also 2. Unknown bits must not move any legacy field;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
 - remainder up to 2048 is zero.
@@ -200,14 +216,14 @@ wave RAM at `SYNC_LEAD`, and repeats while PCM is stopped. Current streams put
 source chunks 0-29 in this prefix, then put chunk 30 in frame 0's control,
 chunk 31 in frame 1's control, and so on. This preserves the exact source sample
 order while keeping a real 30-frame write reserve. Historical v5/v6 players
-could instead duplicate leading chunks and skip their live writes; the v7
+could instead duplicate leading chunks and skip their live writes; the v7+
 player deliberately removes that obsolete path. PCM starts at the prefetched source prefix after frame 0
 is displayed, so the first audio sample remains aligned with the first visible
 movie frame rather than starting during the Mega-CD boot screen.
 
 ## Routing table
 
-In v7, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
+In v7 and v8, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
 byte has this layout:
 
 | Bits | Field | Meaning |
@@ -225,12 +241,12 @@ Frame 0's routing byte is zero because its control and patterns live entirely
 in `HEADER.DAT`, not in `BODY.DAT`; the player validates this zero entry too.
 
 The final 16 KiB of each 1M Word-RAM bank holds an identical resident copy, so
-v7 supports at most 16384 frames. For comparison, v6 used two bytes per frame,
+v7+ supports at most 16384 frames. For comparison, v6 used two bytes per frame,
 `[n_pay_sec, n_ctrl_sec]`, and the same 16 KiB allocation limited it to 8192
 frames. v6 already stored and read the `n_ctrl_sec` control sectors first in
 each `BODY.DAT` frame slot despite the historical payload-first byte order.
 
-In v7, the first `n_ctrl_sec` sectors contain control data. The following
+In v7+, the first `n_ctrl_sec` sectors contain control data. The following
 `n_pay_sec` sectors refill the PRG-RAM payload ring, and any sectors through the
 frame's rate-matched `fsec` are padding.
 
@@ -238,7 +254,7 @@ The control and payload data are each continuous byte streams split at sector
 boundaries. A frame slot's sectors therefore do not necessarily belong only to
 that numbered frame: one control sector can finish several future control
 blocks, and payload is normally a forward prefetch for later frames. The packer
-guarantees both of these before writing v6 or v7:
+guarantees both of these before writing v6+:
 
 - after frame `i`'s complete control-sector prefix has arrived, control block
   `i` is present in the apply ring; `n_ctrl_sec = 0` is valid when an earlier
@@ -247,21 +263,33 @@ guarantees both of these before writing v6 or v7:
   earlier frame slots already contain every cold pattern frame `i` consumes.
 
 The table covers all `nfr` frames. In the historical v6 layout, frame 0's entry
-was the two-byte pair `(0, 0)`; in v7 it is the single zero byte described
+was the two-byte pair `(0, 0)`; in v7+ it is the single zero byte described
 above.
 
-**Rate-matched frame size (v4).** A frame's total on-disc sectors is
+**Rate-matched frame size (v4+).** A frame's total on-disc sectors is
 `fsec = max(n_pay_sec + n_ctrl_sec, ratedelta - lead)`. `ratedelta` is the number
-of sectors CD 1x delivers in one frame's display time — an integer sequence
-whose average is `75 / fps_int` (CD 1x = 75 sectors/s). Both packer and player
-generate it with the same accumulator: `acc += 75; ratedelta = acc // fps_int;
-acc %= fps_int`. So 15fps is a constant 5 sectors/frame; 30fps alternates 2 and
-3 (average 2.5). `lead` starts at zero and increases by
+of sectors CD 1x delivers in one frame's display time. Both packer and player
+generate the same integer sequence with a numerator/modulus accumulator.
+
+For a v8 stream with `FEATURE_FIXED_N2` set, the Main CPU forces N=2 and flips
+every exactly two VBlanks; the Sub CPU rate accumulator uses numerator 1001,
+modulus 400:
+`acc += 1001; ratedelta = acc // 400; acc %= 400`. Every complete 400-frame
+cycle therefore contains 199 two-sector frames and 201 three-sector frames,
+for exactly 1001 sectors total. When the feature is clear, including current
+24fps and 15fps streams, v8 retains the earlier delivery-paced accumulator:
+`acc += 75; ratedelta = acc // fps_int;
+acc %= fps_int`. This gives 3.125 sectors/frame at 24fps and a constant 5 at
+15fps. v4-v7 used that same 75/fps rule for all supported nominal rates,
+including the old 2.5-sector average at 30fps.
+
+`lead` starts at zero and increases by
 `fsec - ratedelta`. A data-heavy frame can therefore run long, while following
 light frames omit padding until that temporary lead is repaid. The complete
 stream converges to the CD 1x display-rate total without overflowing the ring.
-v2/v3 streams have `fps_int = 0`; the player defaults it to 15, which yields
-the constant 5 and reproduces the old fixed-slot behaviour exactly.
+Historical v2/v3 players defaulted `fps_int = 0` to 15, yielding the constant 5
+and reproducing the old fixed-slot behaviour. The v8 player accepts only v8 and
+rejects a zero nominal fps before entering this schedule.
 
 The v6-and-later packer first spends that frame's allowance on control, then replaces
 otherwise-unused rate padding with future payload while ring space is
@@ -269,8 +297,8 @@ available. It exceeds the allowance only when a backwards deadline proof says
 a later cold-pattern burst cannot otherwise be armed within the five-sector
 routing cap. The normal `lead` repayment then removes padding from following
 light frames. In particular, a full startup ring is not refilled with all five
-sectors merely to keep it full; at 30 fps an ordinary light region remains on
-the 2/3-sector CD-1x sequence.
+sectors merely to keep it full; with v8 `FEATURE_FIXED_N2`, an ordinary light
+region remains on the 1001/400 two-or-three-sector sequence.
 
 ## Prebuffer
 

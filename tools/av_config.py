@@ -99,6 +99,8 @@ def playback_fps_for_content(fps):
 def uses_fixed_n2_cadence(fps):
     """Whether this source uses the exact two-VBlank NTSC display cadence.
 
+    The packer serializes this decision as ``FEATURE_FIXED_N2``. That header
+    bit, not the nominal fps or nearest-N hint, is authoritative to the player.
     This deliberately excludes 24 fps even though its nearest cadence hint is
     also N=2.  Delivery-paced 24 fps must retain its alternating two/three
     VBlank behavior; only rates already classified as NTSC N=2 are fixed.

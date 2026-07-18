@@ -11,6 +11,14 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p51 : Honor v8 FEATURE_FIXED_N2 as the authoritative two-VBlank
+#        flip-to-flip cadence. Count VBlanks crossed while waiting for the Sub
+#        CPU, pace immediately before reg2, and publish the DEBUG F row with the
+#        matching picture. Feature-clear 24fps and 15fps remain delivery-paced.
+#   e50 : Introduce TTRC v8 and header feature bit 1 (FEATURE_FIXED_N2). Its
+#        BODY slots use the exact 1001/400 CD-sector allowance matching
+#        30000/1001fps, preventing the old 75/30 stream from running ahead when
+#        display pacing is restored. The one-byte routing layout remains v7's.
 #   p50 : Re-check VBlank immediately before every non-palette name-table flip.
 #        Reuse-only frames and the DEBUG Window write can otherwise reach reg2
 #        during active display and splice two adjacent movie frames at one
@@ -358,5 +366,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260718
-e=49
-p=50
+e=50
+p=51

@@ -31,8 +31,8 @@
 
 .equ SUB_BANK_1M, 0x000C0000
 
-/* --- TTRC v7 packed-routing contract (checked by tools/check_player_ring.py) --- */
-.equ ROUTING_VERSION,       7
+/* --- TTRC v8 packed-routing contract (checked by tools/check_player_ring.py) --- */
+.equ ROUTING_VERSION,       8
 .equ ROUTING_BYTES,         16384
 .equ ROUTING_MAX_FRAMES,    16384
 .equ ROUTING_SECTOR_BYTES,  2048
@@ -41,6 +41,8 @@
 .equ ROUTING_CTRL_MASK,     0x0007
 .equ ROUTING_TOTAL_SHIFT,   3
 .equ ROUTING_MAX_ENTRY,     0x002D
+.equ FEATURE_COLD_RUNS_BIT, 0
+.equ FEATURE_FIXED_N2_BIT,  1
 .equ ROUTING_COPY_LONGS,    4096
 .equ ROUTING_BANK_COPIES,   2
 
@@ -65,7 +67,7 @@
 .equ CTRL_SCR,    0x000D0000        /* control block 線形化(<=2246B) */
 .equ PAD_SCR,     0x000D2000        /* pad セクタ捨て場 */
 .equ ROUTING,     0x000DC000        /* 所有中の1M Word-RAM bank末尾16KB。bootで両bankに同じ
-                                       v7 1-byte tableを複製し、drain/display parityの不一致を吸収。 */
+                                       v7+ 1-byte tableを複製し、drain/display parityの不一致を吸収。 */
 
 /* --- Word-RAM 出力(MDが読む) ---
    フル画面H40(最大1120セル)対応: loads は最大 1120*32B+ランヘッダ ≈ 36.5KB。
@@ -82,7 +84,7 @@
                                        control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
 .equ O_CTRLWAIT,SUB_BANK_1M+0xAF18  /* DEBUG: current-control blocking sector pumps */
 .equ O_BODYWAIT,SUB_BANK_1M+0xAF1A  /* DEBUG: prior BODY payload/pad blocking pumps */
-.equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: v7 reserved zero (legacy startup-audio skip count) */
+.equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: always zero; legacy startup-audio skip field is ignored */
 .equ O_RESYNC, SUB_BANK_1M+0xAF20   /* 計測: 音声re-sync回数(リード下限/上限逸脱で書込ジャンプ=乱れの元) */
 .equ O_LEAD,   SUB_BANK_1M+0xAF22   /* 計測: 現コマの音声リード(write-play, バイト)。SYNC_MINに近づく=枯渇 */
 .equ O_HDR,    SUB_BANK_1M+0xAF80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
@@ -121,7 +123,7 @@
 
 .equ HEADER_SECTORS,  1
 /* frames/tcols/trows/cells/pool/base/prebuf/routing/mode は HEADER.DAT の
-   v7ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
+   v8ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
@@ -272,30 +274,41 @@ bad_header:
 pm_set:
 	move.w	d1, pump_mask
 	move.w	d2, wave_pump_mask
+	tst.w	d0
+	beq	bad_header			/* v8 rate modulus must be nonzero */
+	.if 0	/* unreachable before the exact v8 version gate */
 	move.w	54(a0), d0			/* AUDIO(1コマ音声B) */
 	bne	1f
 	move.w	#AUDIO_BYTES, d0		/* v2/v3(0)は887 */
 1:
+	.endif
+	move.w	54(a0), d0
 	move.w	d0, h_audio_bytes
-	/* v4: 名目fps@56(レートマッチpadding用)。v2/v3(=0)は15。CD 1x=75sec/s を fps で割った整数
-	   割当(累積器)まで各コマをpad=ディスク読み速度を表示速度に一致(過剰配送/CDCスリップ防止)。
-	   15fpsでは常に5(=v3固定と一致)、30fpsは2/3平均。sec_acc は累積器の初期化。 */
+	/* v8: feature bit 1なら2 NTSC VBlankに正確な1001/400 sectors/frame
+	   (base=2, rem=201, mod=400)。bit clearの24/15fpsは従来の75/fpsを維持する。
+	   packerと同じ累積器まで各コマをpadし、表示よりCDが先行してRINGを圧迫しない。 */
+	move.w	62(a0), h_features		/* bit0: post-audio cold-run descriptor suffix */
 	move.w	56(a0), d0			/* 名目fps(15/30) */
+	.if 0	/* unreachable before the exact v8 version gate */
 	bne	1f
 	moveq	#15, d0				/* v2/v3(0)は15 */
 1:
-	move.w	d0, h_fps_int
+	.endif
+	move.w	d0, d2				/* legacy modulus = nominal fps */
 	move.w	#75, d1				/* precompute 75/fps quotient+remainder once */
-	divu.w	d0, d1
+	btst	#FEATURE_FIXED_N2_BIT, 63(a0)	/* v8 fixed-N2 feature; 24fps leaves it clear */
+	beq	2f
+	move.w	#1001, d1			/* exact CD sectors across 400 fixed-N2 frames */
+	move.w	#400, d2
+2:
+	move.w	d2, sec_mod
+	divu.w	d2, d1
 	move.w	d1, sec_base
 	swap	d1
 	move.w	d1, sec_rem
-	/* v7 keeps the legacy startup-audio skip field only as a required zero.
-	   Current controls carry future chunks, so no live audio write is skipped. */
-	tst.w	58(a0)
-	bne	bad_header
+	/* v8 ignores the obsolete startup-audio skip field at offset 58. Current
+	   controls carry future chunks, so no live audio write is skipped. */
 	move.w	60(a0), h_audio_pre_sec
-	move.w	62(a0), h_features		/* bit0: post-audio cold-run descriptor suffix */
 	clr.w	sec_acc
 	clr.w	lead
 	/* MDへヘッダ写しを渡す(frame0と同じバンクに書く=swap後にMDが読める) */
@@ -367,7 +380,7 @@ pb_lp:
 	subq.w	#1, d7
 	bne	pb_lp
 pb_done:
-	/* Validate every v7 route once before it can steer BODY sectors. Values above
+	/* Validate every v7+ route once before it can steer BODY sectors. Values above
 	   0x2D cover reserved bits or total 6/7; the second comparison rejects
 	   n_ctrl > total. Frame 0 must have the single zero entry. */
 	lea	ROUTING_TMP, a0
@@ -831,9 +844,9 @@ dls_loop:
 /* 1セクタを取り込む(ブロッキング)。CD→常にWord-RAM STAGE(実績ある経路)→
    BODYの control→payload→pad 順に apply/PRG ring/捨て場へ振り分け。
    (CDC_TRN→PRG直行はリトライ中にセクタが滑る事故が起きる: 実測+1/2フレーム) */
-/* v4 レートマッチpadding。各フレーム = fsec = max(n_pay+n_ctrl, ratedelta-lead) セクタ。
-   ratedelta = CD 1x(75 sec/s)を fps で割った整数割当(累積器 sec_acc)= ディスク読み速度を
-   表示速度に一致させる pad。15fpsでは常に5(=v3固定)、30fpsは2/3平均。n_pay+n_ctrl を超える
+/* v4+ レートマッチpadding。各フレーム = fsec = max(n_pay+n_ctrl, ratedelta-lead) セクタ。
+   ratedelta はv8 feature bit 1で1001/400、それ以外は75/fpsの整数割当(累積器sec_acc)。
+   15fpsでは常に5、24fpsは75/24、固定N2は400コマに2×199+3×201。n_pay+n_ctrl を超える
    ぶん(pad)は読んで捨てる。fsec はコマ先頭(drain_k==0)で1回計算し cur_fsec に保持。
 	   routingはコマ先頭でcacheし、drain1(BIOS呼びでd1等破壊)後はcacheから復元。 */
 /* Non-preserving sector pump. Every caller either reloads its live state from
@@ -846,7 +859,7 @@ p1_top:
 	bhs	p1_ret				/* ストリーム終端: 読まずに戻る */
 	tst.w	drain_k
 	bne	p1_read				/* コマ途中: cur_fsec は計算済み */
-	/* --- コマ先頭: v7 routingを展開し cur_fsec を計算 --- */
+	/* --- コマ先頭: v7+ routingを展開し cur_fsec を計算 --- */
 	lea	ROUTING, a0
 	moveq	#0, d2
 	move.b	(a0,d0.w), d2			/* bits 3..5=total, 0..2=n_ctrl */
@@ -855,14 +868,14 @@ p1_top:
 	move.w	d1, cur_n_ctrl
 	lsr.w	#ROUTING_TOTAL_SHIFT, d2
 	move.w	d2, cur_total
-	/* ratedelta = floor((acc+75)/fps).  75/fps quotient and remainder were
-	   computed once at header load, so the per-frame path needs no DIVU. */
+	/* ratedelta = base + carry(acc+rem, mod). Numerator/modulus quotient and
+	   remainder were computed once at header load, so this path needs no DIVU. */
 	move.w	sec_base, d5			/* d5 = base quotient */
 	move.w	sec_acc, d0
 	add.w	sec_rem, d0
-	cmp.w	h_fps_int, d0
+	cmp.w	sec_mod, d0
 	blo	1f
-	sub.w	h_fps_int, d0
+	sub.w	sec_mod, d0
 	addq.w	#1, d5
 1:
 	move.w	d0, sec_acc			/* accumulator remainder */
@@ -1004,7 +1017,7 @@ pf_pump:
 	   is intentionally ready immediately because its bytes arrived earlier. */
 	lea	ROUTING, a0
 	moveq	#ROUTING_CTRL_MASK, d1
-	and.b	(a0,d0.w), d1			/* v7 low three bits = n_ctrl */
+	and.b	(a0,d0.w), d1			/* v7+ low three bits = n_ctrl */
 	cmp.w	drain_k, d1
 	bls	pf_ready
 .ifdef DEBUG
@@ -1199,7 +1212,7 @@ ef_count_ready:
 	   exactly one CDC poll at the end, so the descriptor path preserves that
 	   cadence while removing the duplicate entry scan and run reconstruction. */
 	move.w	h_features, d0
-	btst	#0, d0
+	btst	#FEATURE_COLD_RUNS_BIT, d0
 	beq	ef_entries
 	cmpi.w	#0x03FF, pump_mask
 	bne	ef_entries			/* lower rates retain their proven 64-entry cadence */
@@ -1742,18 +1755,22 @@ wave_pump_mask:
 	.space 2				/* wave書込みpump頻度: 15fps=0xFF(256B毎), 30fps=0x1FF(512B毎) */
 h_audio_bytes:
 	.space 2				/* v4: 1コマの音声バイト(N2=444, N4=888 in current packs) */
+	.if 0	/* v8 no longer stores the already-consumed nominal fps */
 h_fps_int:
-	.space 2				/* v4: nominal fps and accumulator modulus */
+	.space 2				/* v4: nominal fps from header offset 56 */
+	.endif
 h_audio_pre_sec:
 	.space 2				/* v5: STARTUP_AUDIO sector count (one chunk per sector) */
 h_features:
-	.space 2				/* v6+ optional control suffix features (header offset 62) */
+	.space 2				/* offset 62: bit0 cold runs, bit1 authoritative fixed N2 */
 sec_base:
-	.space 2				/* floor(75/fps), precomputed at header load */
+	.space 2				/* floor(rate numerator/sec_mod), precomputed at header load */
 sec_rem:
-	.space 2				/* 75 mod fps, precomputed at header load */
+	.space 2				/* rate numerator mod sec_mod, precomputed at header load */
+sec_mod:
+	.space 2				/* rate accumulator modulus: fixed N2=400, otherwise fps */
 sec_acc:
-	.space 2				/* v4: CD 1x レート累積器の余り(0..fps-1) */
+	.space 2				/* v4: CD 1x レート累積器の余り(0..sec_mod-1) */
 cur_fsec:
 	.space 2				/* v4: 現コマのディスクセクタ数 fsec=max(total,ratedelta-lead) */
 cur_n_ctrl:

@@ -11,7 +11,7 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v7): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
+TTRCレイアウト(v8): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
               n_seg×128B, boot時Main-RAM表へ) + startup audio prefetch(1 sector/frame)
               + frame0(control+patterns) + routing(1B/frame: total<<3 | n_ctrl_sec)
               + prebuffer(payload先頭Bpat)
@@ -82,7 +82,8 @@ RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
 DBG_NCAT = 7                 # カテゴリ数 [raw,same,near,coa,flbk,buf,miss]
 DBG_RESERVED = 4             # 予約u16スロット(将来の16bitデバッグ値用)
 DBG_LEN = (DBG_NCAT + DBG_RESERVED) * 2   # = 22B(偶数)
-FEATURE_COLD_RUNS = 0x0001   # header offset 62: control suffix has cold-run descriptors
+FEATURE_COLD_RUNS = ttrc_routing.FEATURE_COLD_RUNS
+FEATURE_FIXED_N2 = ttrc_routing.FEATURE_FIXED_N2
 ROUTING_MAX_FRAMES = ttrc_routing.MAX_FRAMES
 
 
@@ -178,21 +179,21 @@ def require_canonical_p0_debug_colours(log):
     """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
     if not seg_pals:
-        raise SystemExit("pack v7: decision log has no segment palettes; re-run sim")
+        raise SystemExit("pack v8: decision log has no segment palettes; re-run sim")
     for seg, pals in enumerate(seg_pals):
         a = np.asarray(pals, np.uint8)
         if a.shape != (4, 15, 3):
             raise SystemExit(
-                f"pack v7: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
+                f"pack v8: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
                 "re-run sim")
         brightness = a.astype(np.int16).sum(axis=2)
         if int(brightness[0, 0]) != int(brightness.min()):
             raise SystemExit(
-                f"pack v7: decision log segment {seg} P0 index1 is not tied for globally "
+                f"pack v8: decision log segment {seg} P0 index1 is not tied for globally "
                 "darkest usable CRAM colour (RGB sum); re-run sim with the current encoder")
         if int(brightness[0, 14]) != int(brightness.max()):
             raise SystemExit(
-                f"pack v7: decision log segment {seg} P0 index15 is not tied for globally "
+                f"pack v8: decision log segment {seg} P0 index15 is not tied for globally "
                 "brightest usable CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
@@ -445,19 +446,21 @@ def rate_deltas(nfr):
     """Return the CD-1x sector allowance for BODY frames 1..N-1.
 
     Frame 0 lives in HEADER.DAT, so its allowance is zero.  The accumulator is
-    intentionally identical to the player and to the BODY writer: at 30 fps it
-    emits 2,3,2,3... sectors, at 24 fps it averages 3.125 sectors, and at 15 fps
-    it emits five every frame.
+    intentionally identical to the player and to the BODY writer. Nominal
+    30fps fixed-N2 content uses the exact 1001/400 sectors needed by two NTSC
+    VBlanks. The 24/15 fps paths retain their legacy 75/nominal-fps delivery
+    schedule.
     """
-    fps_int = int(round(FPS))
-    if fps_int <= 0:
-        raise SystemExit(f"pack: invalid nominal fps {FPS!r}")
+    try:
+        rate_num, rate_mod = av_config.cd_sector_rate(FPS)
+    except ValueError as exc:
+        raise SystemExit(f"pack: {exc}") from exc
     out = np.zeros(nfr, np.int64)
     acc = 0
     for i in range(1, nfr):
-        acc += 75
-        out[i] = acc // fps_int
-        acc -= int(out[i]) * fps_int
+        acc += rate_num
+        out[i] = acc // rate_mod
+        acc -= int(out[i]) * rate_mod
     return out
 
 
@@ -509,7 +512,7 @@ def schedule(per, n_load, blocks):
     # PACK_FILL(default ON): use only the sectors that CD 1x can deliver by this
     # frame, replacing rate padding with useful payload whenever ring space is
     # available.  The old forward fill used all five routing sectors even at
-    # 30 fps, where the real-time allowance is only 2/3 alternating.  Starting
+    # 30 fps, where the real-time allowance is only two or three sectors. Starting
     # with a full ring and immediately refilling every consumed pattern made the
     # first 30 Sonic frames carry 102 sectors instead of 75.  BODY is data-paced,
     # so that policy itself slowed startup and exhausted the PCM preload.
@@ -594,7 +597,7 @@ def schedule(per, n_load, blocks):
         if ready_bad.size:
             frame = int(ready_bad[0]) + 1
             raise SystemExit(
-                f"pack v7 control-first invariant failed at frame {frame}: "
+                f"pack v8 control-first invariant failed at frame {frame}: "
                 f"only {int(A[frame - 1]) * PAT_PER_SEC} patterns delivered before control, "
                 f"but {int(d[frame])} are consumed through that frame "
                 f"(short by {-int(ready_margin[frame - 1])})")
@@ -615,7 +618,7 @@ def schedule(per, n_load, blocks):
     if ctrl_bad.size:
         frame = int(ctrl_bad[0])
         raise SystemExit(
-            f"pack v7 control completeness failed at frame {frame}: "
+            f"pack v8 control completeness failed at frame {frame}: "
             f"{int(ctrl_delivered[frame])} bytes delivered, "
             f"{int(ctrl_need[frame])} bytes required")
 
@@ -726,7 +729,7 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
 
 
 def write_stream(path, log, per, blocks, Plist, sc, POOL):
-    """Write the v7 split stream and a combined tooling container.
+    """Write the v8 split stream and a combined tooling container.
 
     HEADER.DAT:
       Header(1sec) | PALTAB | STARTUP_AUDIO | FRAME0(control+patterns)
@@ -845,9 +848,9 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     # CDレート累積器が実際のfpsを決める。Nは整数VBlank cadenceのヒントで、24fpsのN2を
     # 29.97fpsへ丸める指定ではない。AUDIOも実効fps由来。FRAME_SECTORS(=5)は最大スロット。
     vsync_n = VSYNC_N                                  # N: 近似VBLANK間隔(30/24→2, 15→4)
-    fps_int = int(round(FPS))                         # 名目fps(15/24/30)。レートマッチpadding用
+    fps_int = int(round(FPS))                         # 名目fps。FEATURE_FIXED_N2時はplayerが1001/400を選ぶ
     if not f0_header:
-        raise SystemExit("pack v7 requires frame0 in HEADER.DAT")
+        raise SystemExit("pack v8 requires frame0 in HEADER.DAT")
     header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
@@ -858,7 +861,10 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     header += struct.pack(">HH", vsync_n, AUDIO)     # offset 52: N(vsync/コマ), 54: AUDIO(1コマ音声B) (v4)
     header += struct.pack(">H", fps_int)             # offset 56: 名目fps(レートマッチpadding用) (v4)
     header += struct.pack(">HH", audio_preload_frames, audio_preload_sec)  # offset 58,60 (v5)
-    header += struct.pack(">H", FEATURE_COLD_RUNS)  # offset 62: optional control suffix features
+    features = FEATURE_COLD_RUNS
+    if av_config.uses_fixed_n2_cadence(FPS):
+        features |= FEATURE_FIXED_N2
+    header += struct.pack(">H", features)          # offset 62: optional stream features
     header += b"\0" * (64 - len(header)) + seg0
     header += b"\0" * (SECTOR - len(header))
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
@@ -892,15 +898,15 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     fsec_schedule = sc["fsec"]
     with body_path.open("wb") as f:
         # v4 レートマッチpadding: 各frameを「CD 1x が1コマ時間に届けるセクタ数」までpaddingする。
-        # CD 1x = 75セクタ/秒。1コマ=75/fps_int セクタ(15fps→5, 30fps→2.5)。この整数割り当てを
-        # 累積器で出す(30fpsは2,3,2,3…平均2.5)。fsec=max(実データ, レート割当)。これで「ディスク
+        # CD 1x = 75セクタ/秒。FEATURE_FIXED_N2時は1001/400 sectors/frame、その他は75/fps_int。
+        # この整数割り当てを累積器で出し、fsec=max(実データ, レート割当)として「ディスク
         # 読み速度=表示速度」になり、paddingを外したv4で起きた過剰配送→バッファ溢れ→CDCスリップ
         # を根絶する(15fpsでは5固定=v3と同一)。padセクタはプレイヤが読んで捨てる(累積器で同期)。
-        # レートマッチpadding(有界累積器 sec_acc/lead)。CD 1x = 75 sec/s。1コマの CD 1x セクタ配分
-        # ratedelta を累積器で整数化(15fps→5固定, 30fps→2/3平均)。lead = ディスクが CD 1x 予定より
+        # レートマッチpadding(有界累積器 sec_acc/lead)。1コマのCD 1xセクタ配分ratedeltaを
+        # 累積器で整数化(15fps→5固定, 24fps→75/24, FIXED_N2→1001/400)。lead = CD 1x予定より
         # 先行しているセクタ数(≥0)。重いコマ(実データ超過)は lead を増やし、後続の軽いコマは pad を
         # lead ぶん減らして吸収する。fsec = max(実データ, ratedelta - lead)。総ディスク量が CD 1x 相当
-        # (=nfr*75/fps_int)に収束し、過剰配送(→バッファ溢れ→CDCスリップ)も過小配送も起きない。
+        # 指定された実効表示rateに収束し、過剰配送(→バッファ溢れ→CDCスリップ)も過小配送も起きない。
         # プレイヤ(sp.s pump1)と同一の整数演算=ディスク上のフレーム境界が完全一致。
         # schedule() has already applied that accumulator while choosing useful
         # payload in place of padding, so write the proven result directly.
@@ -944,7 +950,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
           f"startup_audio prefetch {audio_prefetch_frames}f/skip {audio_preload_frames}f "
           f"frame0 {f0_ctrl_sec}+{f0_pat_sec} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v7 N={vsync_n}(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO}")
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v8 N={vsync_n}(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
     print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS}(最大スロット) PALTAB_SEC={paltab_sec} "
           f"F0_CTRL_SEC={f0_ctrl_sec} F0_PAT_SEC={f0_pat_sec} ROUTING_SEC={routing_sec} "

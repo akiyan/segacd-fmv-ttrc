@@ -80,6 +80,7 @@
 .equ VB_WORDS_H32, 2800		/* H32 V28 NTSC */
 .equ VB_WORDS_H40, 3400		/* H40 V28 NTSC(理論~3895語より保守的) */
 .equ CPU_DIRECT_MAX_WORDS, 32	/* 1-2 tiles: CPU writes beat per-run DMA setup */
+.equ FEATURE_FIXED_N2_BIT, 1	/* header features bit 1 */
 
 .text
 
@@ -150,6 +151,14 @@ ip_entry:
 	move.w	52(a0), d0
 	bne	1f
 	moveq	#4, d0
+1:
+	/* v8 feature bit 1 is the authoritative fixed-N2 contract. Force N=2
+	   from that bit so a stale hint cannot desynchronise display and BODY. */
+	clr.w	md_fixed_n2
+	btst	#FEATURE_FIXED_N2_BIT, 63(a0)
+	beq	1f
+	moveq	#2, d0
+	move.w	#1, md_fixed_n2
 1:
 	move.w	d0, md_vsync_n
 	/* Select the VDP width from the stream's mode byte, not from N.
@@ -240,16 +249,16 @@ ip_entry:
 	clr.w	frame_no
 	clr.w	started
 	clr.w	vsync_acc			/* v4: ペーシングカウンタ初期化(.bssはMD上でクリアされない) */
+	move.w	md_vsync_n, pace_vblanks	/* frame0 has no preceding movie flip */
+	clr.w	pace_in_vblank
 .ifdef DEBUG
 	clr.w	sub_wait_lines
 	clr.w	dma_elapsed_ticks
 	clr.w	dma_start_tick
 .endif
 play_loop:
-	/* v4: ディスクが CD 1x レートマッチpadding済み(pack)=1コマぶんのデータ配送が表示レートに
-	   一致。よって旧来のデータ律速(Subシグナル=CMD_SWAP handshake)で正しい fps になる(15fps=
-	   5セクタ配送=~15fps, 30fps=2.5セクタ=~30fps)。vsync明示ペーシングは不要(むしろMainを
-	   ディスクレートから僅かにずらしSub過剰pump→スリップを招くため撤去)。 */
+	/* v8: feature bit 1ならSubの1001/400 sector rateと対になるflip直前N2
+	   deadlineで1/3 VBlankの表示揺れを除く。bit clearの24/15fpsはCD配送律速。 */
 	tst.w	started
 	beq	1f
 	bsr	swap_or_end			/* CMD_SWAP → READY(継続) or END(映画終端) */
@@ -273,6 +282,8 @@ movie_end_md:
 	clr.w	frame_no
 	clr.w	started
 	clr.w	dbg_seg
+	move.w	md_vsync_n, pace_vblanks	/* 15s tail already satisfies frame0 cadence */
+	clr.w	pace_in_vblank
 	bra	play_loop
 
 .ifdef MAIN_CODEGEN
@@ -458,6 +469,7 @@ build_frame:
 	movem.l	d0-d7/a0-a3, -(sp)
 .ifdef DEBUG
 	clr.w	vsync_acc			/* per-frame VBlank-start waits shown as Mxx */
+	clr.w	frame_vblank_waits
 	clr.w	dma_elapsed_ticks		/* H40 Uxxxx: Main pattern-transfer stopwatch ticks */
 .endif
 	/* Pass1: パターンコピー無し。(dst.w, len.w, src.l)のラン表だけ作る。
@@ -716,7 +728,11 @@ bf_flip:
 	andi.w	#0x0FFF, d0			/* stopwatch wraps naturally after 4096 ticks */
 	move.w	d0, dma_elapsed_ticks
 1:
-	bsr	render_dbg			/* fixed Window最上段を更新(reg2 flipと独立) */
+	move.w	vsync_acc, frame_vblank_waits	/* exclude display pacing from workload HUD M */
+	tst.w	md_fixed_n2
+	bne.s	1f
+	bsr	render_dbg			/* non-N2 paths retain the existing HUD timing */
+1:
 .endif
 	/* パレット区間切替: CRAM総入替(64語≈0.1ms)→flip を新しいvblank頭で連続実行=
 	   同一VBLANK内で原子的。DEBUGフォントはP0/index15固定なので切替時作業はない。
@@ -731,12 +747,24 @@ bf_flip:
 	lsl.w	#7, d0				/* *128B */
 	lea	PALTAB_RAM, a0
 	adda.w	d0, a0				/* src = 表[区間] (最大63*128=8064<32767でadda.w可) */
+	tst.w	md_fixed_n2
+	beq.s	1f
+	bsr	wait_fixed_palette_flip		/* cadence target plus a fresh CRAM VBlank */
+	bra.s	2f
+1:
 	bsr	wait_vb_start			/* 頭から使える新しいvblank(CRAM+flipが確実に収まる) */
+2:
 	move.l	#0xC0000000, (VDP_CTRL).l	/* CRAM addr 0 */
 	move.w	#64-1, d1
 1:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
+.ifdef DEBUG
+	tst.w	md_fixed_n2
+	beq.s	1f
+	bsr	render_dbg			/* publish F and its picture in the same VBlank */
+1:
+.endif
 	bsr	do_flip				/* CRAM直後・同vblank内にflip */
 	bra	bf_after_flip
 bf_doflip:
@@ -745,11 +773,25 @@ bf_doflip:
 	   switch there horizontally splices the old and new name tables at the
 	   current scanline.  Re-check immediately before the atomic flip; count a
 	   newly waited VBlank through wait_vb_start just like a split DMA. */
+	tst.w	md_fixed_n2
+	beq.s	1f
+	bsr	wait_fixed_flip			/* normal frame: exactly N flip-to-flip VBlanks */
+.ifdef DEBUG
+	bsr	render_dbg			/* never show the new F over the old movie frame */
+.endif
+	/* DEBUG rendering may begin near the end of the target VBlank. Keep the
+	   final reg2 write inside VBlank even if that diagnostic work crosses out. */
 	move.w	(VDP_CTRL).l, d0
 	btst	#3, d0
-	bne.s	1f
+	bne.s	2f
 	bsr	wait_vb_start
+	bra.s	2f
 1:
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	bne.s	2f
+	bsr	wait_vb_start
+2:
 	bsr	do_flip
 bf_after_flip:
 .ifndef DEBUG
@@ -782,6 +824,70 @@ wait_vb_start:
 	btst	#3, d0
 	beq	2b				/* vblankに入るまで */
 	addq.w	#1, vsync_acc			/* v4: 1コマのVBLANK数を計上(表示ペーシング用) */
+	tst.w	md_fixed_n2
+	beq.s	3f
+	move.w	#1, pace_in_vblank
+	move.w	pace_vblanks, d0
+	cmp.w	md_vsync_n, d0
+	bcc.s	3f				/* saturate once the deadline is met */
+	addq.w	#1, pace_vblanks
+3:
+	rts
+
+/* Count a VBlank crossed while waiting on the Sub CPU rather than through
+   wait_vb_start. The state bit prevents counting the VBlank containing the
+   previous flip twice. Trashes d0. */
+pace_poll_vblank:
+	tst.w	md_fixed_n2
+	beq.s	3f
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	beq.s	2f
+	tst.w	pace_in_vblank
+	bne.s	3f
+	move.w	#1, pace_in_vblank
+	move.w	pace_vblanks, d0
+	cmp.w	md_vsync_n, d0
+	bcc.s	3f
+	addq.w	#1, pace_vblanks
+	bra.s	3f
+2:
+	clr.w	pace_in_vblank
+3:
+	rts
+
+/* Return inside the first VBlank whose flip-to-flip count reaches N. A frame
+   that truly finishes late may use N+1; an early frame can never use N-1. */
+wait_fixed_flip:
+1:
+	bsr	pace_poll_vblank
+	move.w	pace_vblanks, d0
+	cmp.w	md_vsync_n, d0
+	bcc.s	2f
+	bsr	wait_vb_start
+	bra.s	1b
+2:
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	bne.s	3f
+	bsr	wait_vb_start			/* target VBlank already ended: genuine late frame */
+3:
+	rts
+
+/* CRAM replacement needs the beginning of a fresh VBlank. Reach N-1 first,
+   then make the final wait the CRAM+flip VBlank. */
+wait_fixed_palette_flip:
+1:
+	bsr	pace_poll_vblank
+	move.w	pace_vblanks, d0
+	move.w	md_vsync_n, d1
+	subq.w	#1, d1
+	cmp.w	d1, d0
+	bcc.s	2f
+	bsr	wait_vb_start
+	bra.s	1b
+2:
+	bsr	wait_vb_start
 	rts
 
 /* NT flip: reg2をback_baseへ(1ワード書き=原子的)。d5=back_base。trashes d0 */
@@ -793,6 +899,11 @@ do_flip:
 	ori.w	#0x8200, d0			/* reg2 = 0x82xx */
 	move.w	d0, (VDP_CTRL).l
 	eori.w	#1, back_idx			/* 裏を反転 */
+	tst.w	md_fixed_n2
+	beq.s	1f
+	clr.w	pace_vblanks			/* next deadline is measured from this exact flip */
+	move.w	#1, pace_in_vblank
+1:
 	rts
 
 /* d6語を Word-RAM(a3) → VRAM(d3) へDMA。完了待ち。trashes d0,d2
@@ -943,12 +1054,14 @@ swap_or_end:
 .endif
 	move.w	#CMD_SWAP, (GA_COMCMD0).l
 1:
+	bsr	pace_poll_vblank
 	move.w	(GA_COMSTAT0).l, d0
 	cmp.w	#STAT_READY, d0
 	beq	2f
 	cmp.w	#STAT_END, d0
 	bne	1b
 2:
+	move.w	d0, d3				/* preserve READY/END across cadence polling */
 .ifdef DEBUG
 	move.w	(VDP_HV).l, d2
 	lsr.w	#8, d2
@@ -958,8 +1071,10 @@ swap_or_end:
 .endif
 	move.w	#0, (GA_COMCMD0).l
 3:
+	bsr	pace_poll_vblank
 	tst.w	(GA_COMSTAT0).l
 	bne	3b
+	move.w	d3, d0				/* swap_or_end return contract */
 	rts
 
 wait_vblank:
@@ -1031,7 +1146,7 @@ render_dbg:
 	bsr	dbg_put2
 	/* M: VBlank starts waited by this frame's Main-side pattern path */
 	move.w	#18, d3				/* glyph 'M' */
-	move.w	vsync_acc, d4
+	move.w	frame_vblank_waits, d4
 	bsr	dbg_put2
 	/* A: startup-audio duplicate chunks still skipped after this frame */
 	move.w	#10, d3				/* glyph 'A'(=hex A) */
@@ -1089,8 +1204,14 @@ md_mode:
 	.space 2
 md_vsync_n:
 	.space 2				/* v4: 1コマの表示VBLANK数(15fps=4, 30fps=2) */
+md_fixed_n2:
+	.space 2				/* v8 header feature bit 1; 24fps N2 hint alone stays unpaced */
 vsync_acc:
 	.space 2				/* v4: 現コマで消費したVBLANK数(ペーシング用) */
+pace_vblanks:
+	.space 2				/* v8: VBlanks since the preceding fixed-N2 flip */
+pace_in_vblank:
+	.space 2				/* v8: current VBlank has already been counted */
 md_tcols:
 	.space 2
 md_trows:
@@ -1119,6 +1240,8 @@ dbg_seg:
 	.space 2
 sub_wait_lines:
 	.space 2				/* DEBUG HUD W: Main wait for Sub at last bank swap */
+frame_vblank_waits:
+	.space 2				/* DEBUG HUD M snapshot before display pacing */
 dma_elapsed_ticks:
 	.space 2				/* DEBUG H40 Uxxxx: 30.72 us stopwatch ticks */
 dma_start_tick:

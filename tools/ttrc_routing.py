@@ -1,11 +1,13 @@
-"""TTRC v7 one-byte routing entry codec and table bounds."""
+"""TTRC v7+ one-byte routing entry codec and current stream version."""
 
 from __future__ import annotations
 
 import operator
 
 
-VERSION = 7
+VERSION = 8
+FEATURE_COLD_RUNS = 0x0001
+FEATURE_FIXED_N2 = 0x0002
 SECTOR_BYTES = 2048
 ROUTE_BYTES = 16 * 1024
 # Compatibility name for callers that describe the allocation as a table.
@@ -41,7 +43,7 @@ def encode_route(n_pay: object, n_ctrl: object) -> int:
 
 
 def decode_route(entry: object) -> tuple[int, int, int]:
-    """Decode and validate one v7 entry as ``(pay, ctrl, total)``."""
+    """Decode and validate one packed entry as ``(pay, ctrl, total)``."""
     value = _index(entry, "routing entry")
     if not 0 <= value <= 0xFF:
         raise ValueError(f"routing entry is outside one byte: {value}")
@@ -59,7 +61,7 @@ def decode_route(entry: object) -> tuple[int, int, int]:
 
 
 def routing_sector_count(nframes: object) -> int:
-    """Return the exact v7 table sector count for a valid frame count."""
+    """Return the exact packed table sector count for a valid frame count."""
     count = _index(nframes, "nframes")
     if not 1 <= count <= MAX_FRAMES:
         raise ValueError(f"nframes must be 1..{MAX_FRAMES}, got {count}")
@@ -71,7 +73,7 @@ def validate_route_table(
     nframes: object,
     routing_sec: object,
 ) -> None:
-    """Validate the complete sector-padded v7 routing region."""
+    """Validate the complete sector-padded packed routing region."""
     count = _index(nframes, "nframes")
     expected_sec = routing_sector_count(count)
     sectors = _index(routing_sec, "routing_sec")

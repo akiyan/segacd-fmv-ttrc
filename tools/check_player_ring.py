@@ -29,7 +29,7 @@ def _require_asm(pattern, description):
         sys.exit(f"check_player_ring: ASM does not use {description}")
 
 
-# --- TTRC v7 packed-routing contract ---
+# --- TTRC v8 contract, retaining the v7+ packed-routing layout ---
 # The Python codec is the format source of truth. The Sub-CPU player keeps
 # literal `.equ` values because the assembler cannot import Python; compare all
 # of them before every player build and also require the copy loops to use the
@@ -42,6 +42,8 @@ routing_equ_contract = {
     "ROUTING_CTRL_MASK": ttrc_routing.CTRL_MASK,
     "ROUTING_TOTAL_SHIFT": ttrc_routing.TOTAL_SHIFT,
     "ROUTING_MAX_ENTRY": ttrc_routing.MAX_ENTRY,
+    "FEATURE_COLD_RUNS_BIT": ttrc_routing.FEATURE_COLD_RUNS.bit_length() - 1,
+    "FEATURE_FIXED_N2_BIT": ttrc_routing.FEATURE_FIXED_N2.bit_length() - 1,
 }
 for equ_name, expected in routing_equ_contract.items():
     actual = _equ(text, equ_name, SP)

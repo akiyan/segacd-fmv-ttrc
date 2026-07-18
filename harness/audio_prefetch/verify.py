@@ -14,6 +14,7 @@ import numpy as np
 SECTOR = 2048
 DBG_LEN = 22
 ROUTING_TOTAL_MAX = 5
+FEATURE_FIXED_N2 = 0x0002
 
 
 def sign_magnitude_audio(path: Path, target_len: int) -> bytes:
@@ -72,12 +73,13 @@ def decode_routes(
     routing: bytes, nframes: int, version: int
 ) -> list[tuple[int, int]]:
     """Decode and validate the versioned routing table independently."""
-    entry_bytes = 1 if version == 7 else 2
+    compact = version >= 7
+    entry_bytes = 1 if compact else 2
     required = nframes * entry_bytes
     if len(routing) < required:
         raise SystemExit("truncated routing table")
 
-    if version != 7:
+    if not compact:
         return [
             (routing[frame * 2], routing[frame * 2 + 1])
             for frame in range(nframes)
@@ -86,12 +88,12 @@ def decode_routes(
     expected_bytes = ((nframes + SECTOR - 1) // SECTOR) * SECTOR
     if len(routing) != expected_bytes:
         raise SystemExit(
-            f"v7 routing region is {len(routing)} bytes, expected {expected_bytes}"
+            f"v7+ routing region is {len(routing)} bytes, expected {expected_bytes}"
         )
     if not nframes or routing[0] != 0:
-        raise SystemExit("v7 frame 0 routing entry must be zero")
+        raise SystemExit("v7+ frame 0 routing entry must be zero")
     if any(routing[nframes:]):
-        raise SystemExit("v7 routing sector padding must be zero")
+        raise SystemExit("v7+ routing sector padding must be zero")
 
     routes = []
     for frame, packed in enumerate(routing[:nframes]):
@@ -115,15 +117,24 @@ def decode_routes(
 
 
 def body_control_bytes(
-    body: bytes, routes: list[tuple[int, int]], fps: int
+    body: bytes,
+    routes: list[tuple[int, int]],
+    version: int,
+    fps: int,
+    vsync_n: int,
+    features: int,
 ) -> bytes:
+    if version >= 8 and features & FEATURE_FIXED_N2:
+        rate_numerator, rate_modulus = 1001, 400
+    else:
+        rate_numerator, rate_modulus = 75, fps
     pos = 0
     sec_acc = 0
     lead = 0
     chunks = []
     for frame, (n_pay, n_ctrl) in enumerate(routes[1:], 1):
-        sec_acc += 75
-        rate_delta, sec_acc = divmod(sec_acc, fps)
+        sec_acc += rate_numerator
+        rate_delta, sec_acc = divmod(sec_acc, rate_modulus)
         actual = n_pay + n_ctrl
         due = max(0, rate_delta - lead)
         fsec = max(actual, due)
@@ -153,8 +164,8 @@ def main() -> int:
         raise SystemExit("HEADER.DAT and BODY.DAT must be sector aligned")
 
     version = struct.unpack_from(">H", header, 4)[0]
-    if version not in (6, 7):
-        raise SystemExit(f"expected split TTRC v6/v7, got v{version}")
+    if version not in (6, 7, 8):
+        raise SystemExit(f"expected split TTRC v6-v8, got v{version}")
     nframes = struct.unpack_from(">H", header, 6)[0]
     cells = struct.unpack_from(">H", header, 12)[0]
     routing_sec = struct.unpack_from(">L", header, 26)[0]
@@ -162,10 +173,12 @@ def main() -> int:
     f0_ctrl_sec = struct.unpack_from(">L", header, 40)[0]
     f0_pat_sec = struct.unpack_from(">L", header, 44)[0]
     paltab_sec = struct.unpack_from(">L", header, 48)[0]
+    vsync_n = struct.unpack_from(">H", header, 52)[0]
     audio_bytes = struct.unpack_from(">H", header, 54)[0]
     fps = struct.unpack_from(">H", header, 56)[0]
     skip_frames = struct.unpack_from(">H", header, 58)[0]
     audio_pre_sec = struct.unpack_from(">H", header, 60)[0]
+    features = struct.unpack_from(">H", header, 62)[0]
     if not nframes or not cells or not audio_bytes or not fps:
         raise SystemExit("invalid zero header field")
 
@@ -195,7 +208,7 @@ def main() -> int:
         raise SystemExit("missing frame-0 control block")
     f0_len = struct.unpack_from(">H", f0_region, 0)[0]
     control_stream = f0_region[:f0_len] + body_control_bytes(
-        body, routes, fps)
+        body, routes, version, fps, vsync_n, features)
     blocks = split_blocks(control_stream, nframes)
     live_chunks = [control_audio(block, cells, audio_bytes) for block in blocks]
 
