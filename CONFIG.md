@@ -207,6 +207,13 @@ text is 3,754 bytes in Release and 3,804 bytes in DEBUG, versus 4,034 and 4,084
 bytes for the generic path. Both remain below the 4,096-byte boot-SP limit; any
 future change must check the DEBUG size as well as Release.
 
+The same generated constants specialize the Main object. For Sonic H32 the
+complete IP binary is 5,024 bytes in Release and 5,216 bytes in DEBUG, versus
+5,360 and 5,584 bytes for the generic build. The existing issue #27 runtime
+bitmap-handler and name-table code generation remains enabled; specialization
+removes the remaining per-frame RAM reads and the zero `col0` additions around
+that generated fast path.
+
 `sim.py` resolves the profile once and stores the exact geometry, timing, audio,
 stream, hardware, palette, and pack settings plus the TOML SHA-256 in
 `decisions.pkl`. `pack_stream.py` then uses that frozen configuration only. It

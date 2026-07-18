@@ -11,9 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
-#   p54 : Bind Sub-CPU frame, geometry, audio, polling and CD-rate hot values
-#        to generated HEADER constants. Verify the per-profile header signature
-#        at startup and retain PLAYER_SPECIALIZE=0 as the generic A/B build.
+#   p54 : Bind Main/Sub frame, geometry, audio, polling, DMA and CD-rate hot
+#        values to generated HEADER constants. Verify the per-profile header
+#        signature at startup and retain PLAYER_SPECIALIZE=0 as the generic A/B
+#        build. Existing Main runtime codegen remains the bitmap/blitter fast path.
 #   e51 : Store a CRC-32 signature of HEADER.DAT's fixed 64-byte player
 #        contract and generate deterministic per-profile assembler constants.
 #        The signature occupies previously reserved bytes in header sector 0;

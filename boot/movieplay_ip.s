@@ -83,6 +83,50 @@
 .equ FEATURE_FIXED_N2_BIT, 1	/* header features bit 1 */
 .equ PACE_N2_ARM_TICKS, 800	/* 24.576ms: safely between VBlank 1 and 2 */
 
+.ifdef PLAYER_SPECIALIZED
+	.include "player_constants.inc"
+.endif
+
+.macro PC_MOVE_W runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	move.w	#\constant, \dest
+.else
+	move.w	\runtime, \dest
+.endif
+.endm
+
+.macro PC_MOVE_L runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	move.l	#\constant, \dest
+.else
+	move.l	\runtime, \dest
+.endif
+.endm
+
+.macro PC_CMP_W runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	cmpi.w	#\constant, \dest
+.else
+	cmp.w	\runtime, \dest
+.endif
+.endm
+
+.macro PC_ADD_W runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	addi.w	#\constant, \dest
+.else
+	add.w	\runtime, \dest
+.endif
+.endm
+
+.macro PC_ADDA_W runtime, constant, dest
+.ifdef PLAYER_SPECIALIZED
+	adda.w	#\constant, \dest
+.else
+	adda.w	\runtime, \dest
+.endif
+.endm
+
 .text
 
 	.incbin "security.bin"
@@ -133,6 +177,7 @@ ip_entry:
 	/* frame0準備完了=バンクにヘッダ写し(O_HDR)がある。mode/tcols/trows/pool/base を読み
 	   モード依存のVDP設定と実行時変数を確定する(汎用化: H32/H40, mode4は将来) */
 	lea	(PROBE_BANK+0xAF80), a0
+.ifndef PLAYER_SPECIALIZED
 	move.w	8(a0), md_tcols
 	move.w	10(a0), md_trows
 	move.w	12(a0), d0			/* cells; supported grids are multiples of 8 */
@@ -174,6 +219,15 @@ ip_entry:
 	move.w	#40, d2
 	move.w	#VB_WORDS_H40, d3
 1:
+.else
+.if PC_MODE == 0
+	move.w	#0x8C00, (VDP_CTRL).l		/* generated H32 profile */
+.elseif PC_MODE == 1
+	move.w	#0x8C81, (VDP_CTRL).l		/* generated H40 profile */
+.else
+	.error "unsupported generated player mode"
+.endif
+.endif
 	/* DEBUG HUDはPlane Aと独立したWindow name tableを使う。reg3=0x34は
 	   D000/0x400。D000はH40の4KB境界とH32の2KB境界の両方を満す。
 	   reg17=left,pos0で横Windowを空にし、reg18=top,pos1で上1タイル行だけ
@@ -183,6 +237,7 @@ ip_entry:
 	move.w	#0x9100, (VDP_CTRL).l		/* reg17: left of column-pair 0 = no side strip */
 	move.w	#0x9201, (VDP_CTRL).l		/* reg18: rows above 1 = top row only */
 .endif
+.ifndef PLAYER_SPECIALIZED
 	move.w	d3, md_vbudget
 	sub.w	md_tcols, d2			/* col0 = (screen_cols-tcols)/2 */
 	lsr.w	#1, d2
@@ -191,6 +246,7 @@ ip_entry:
 	sub.w	md_trows, d2			/* row0 = (screen_rows-trows)/2 */
 	lsr.w	#1, d2
 	move.w	d2, md_row0
+.endif
 .ifdef MAIN_CODEGEN
 	/* Generate once, before playback.  A failed range/size proof leaves
 	   md_codegen=0 and the per-bit reference path remains active. */
@@ -198,12 +254,14 @@ ip_entry:
 .endif
 	/* CRAM pre-load: PALTAB(全区間パレット)をWord-RAM(frame0バンク)からMain-RAM表へ
 	   一度だけコピー。n_seg=O_HDR+20。以降の区間切替はこの表を引くだけ(bf_flip)。 */
-	move.w	20(a0), d1			/* n_seg (a0=O_HDR) */
+	PC_MOVE_W 20(a0), PC_NSEG, d1		/* n_seg */
+.ifndef PLAYER_SPECIALIZED
 	cmp.w	#PALTAB_MAX_SEG, d1		/* 壊れたヘッダ対策: 表容量にクランプ */
 	bls	1f
 	move.w	#PALTAB_MAX_SEG, d1
 1:
 	move.w	d1, md_nseg
+.endif
 	lsl.w	#6, d1				/* n_seg*64語(=128B) */
 	beq	2f
 	subq.w	#1, d1
@@ -218,7 +276,7 @@ ip_entry:
 	   P0/index1(最暗色)へ展開する。Windowは動画の上に不透明に重なるが、
 	   背後の動画NTはDEBUGでも全行を通常どおり更新する。 */
 .ifdef DEBUG
-	move.l	md_font_addr, d0
+	PC_MOVE_L md_font_addr, PC_FONT_ADDR, d0
 	bsr	set_vram_write
 	lea	dbgfont, a0
 	move.w	#DBGFONT_N*16-1, d1
@@ -239,7 +297,7 @@ ip_entry:
 	   overwrites 32 H32 or 40 H40 HUD entries and never clears the row again. */
 	move.l	#WIN_NT, d0
 	bsr	set_vram_write
-	move.w	md_font_vtile, d0
+	PC_MOVE_W md_font_vtile, PC_FONT_VTILE, d0
 	add.w	#24, d0				/* dbgfont glyph 24 = blank */
 	move.w	#64-1, d1
 1:
@@ -363,7 +421,7 @@ init_main_codegen:
 
 	/* Phase 2 needs a valid H32/H40 aperture.  Reject before emitting so the
 	   existing generic blitter remains an untouched fallback. */
-	move.w	md_mode, d0
+	PC_MOVE_W md_mode, PC_MODE, d0
 	cmpi.w	#1, d0
 	bhi	10f
 	move.w	#32, d1
@@ -371,19 +429,19 @@ init_main_codegen:
 	beq	11f
 	move.w	#40, d1
 11:
-	move.w	md_tcols, d0
+	PC_MOVE_W md_tcols, PC_TCOLS, d0
 	beq	10f
 	cmp.w	d1, d0
 	bhi	10f
-	move.w	md_col0, d2
+	PC_MOVE_W md_col0, PC_COL0, d2
 	add.w	d0, d2
 	cmp.w	d1, d2
 	bhi	10f
-	move.w	md_trows, d0
+	PC_MOVE_W md_trows, PC_TROWS, d0
 	beq	10f
 	cmpi.w	#28, d0
 	bhi	10f
-	move.w	md_row0, d2
+	PC_MOVE_W md_row0, PC_ROW0, d2
 	add.w	d0, d2
 	cmpi.w	#28, d2
 	bhi	10f
@@ -415,15 +473,15 @@ init_main_codegen:
 emit_main_blitter:
 	move.w	#CG_OP_LEA_SHADOW_A1, (a0)+
 	move.l	#shadow, (a0)+
-	move.w	md_row0, d4
-	move.w	md_trows, d5
+	PC_MOVE_W md_row0, PC_ROW0, d4
+	PC_MOVE_W md_trows, PC_TROWS, d5
 	subq.w	#1, d5
 1:
 	/* Precompute the exact command produced by set_vram_write for this row. */
 	moveq	#0, d0
 	move.w	d4, d0
 	lsl.w	#7, d0				/* plane row * 128 bytes */
-	move.w	md_col0, d1
+	PC_MOVE_W md_col0, PC_COL0, d1
 	add.w	d1, d1				/* centered column * 2 bytes */
 	add.w	d1, d0
 	add.l	d6, d0				/* NT0/NT1 base */
@@ -439,7 +497,7 @@ emit_main_blitter:
 	move.l	d0, (a0)+
 	move.l	#VDP_CTRL, (a0)+
 
-	move.w	md_tcols, d2
+	PC_MOVE_W md_tcols, PC_TCOLS, d2
 	lsr.w	#1, d2				/* two name-table words per MOVE.L */
 	beq	3f
 	subq.w	#1, d2
@@ -448,7 +506,7 @@ emit_main_blitter:
 	move.l	#VDP_DATA, (a0)+
 	dbra	d2, 2b
 3:
-	move.w	md_tcols, d2
+	PC_MOVE_W md_tcols, PC_TCOLS, d2
 	andi.w	#1, d2
 	beq	4f
 	move.w	#CG_OP_MOVE_W_A1_ABS, (a0)+
@@ -519,9 +577,9 @@ bf_upd:
 	adda.w	#22, a0				/* optional debug block */
 1:
 	movea.l	a0, a2				/* bitmap */
-	adda.w	md_bmbytes, a0			/* entries */
+	PC_ADDA_W md_bmbytes, PC_BMBYTES, a0	/* entries */
 	lea	shadow, a1
-	move.w	md_bmbytes, d5
+	PC_MOVE_W md_bmbytes, PC_BMBYTES, d5
 	subq.w	#1, d5
 .ifdef MAIN_CODEGEN
 	/* PC-relative flag check is the only fixed success-path overhead.  The
@@ -603,19 +661,25 @@ bf_blit:
 bf_blit_reference:
 .endif
 	lea	shadow, a1
-	move.w	md_row0, d4			/* plane_row = (screen_rows-trows)/2 */
-	move.w	md_trows, d6
+	PC_MOVE_W md_row0, PC_ROW0, d4	/* plane_row = (screen_rows-trows)/2 */
+	PC_MOVE_W md_trows, PC_TROWS, d6
 	subq.w	#1, d6
 bf_row:
 	move.w	d4, d1
 	lsl.w	#7, d1				/* plane_row*128 */
+.ifdef PLAYER_SPECIALIZED
+.if PC_COL0 != 0
+	addi.w	#PC_COL0*2, d1			/* generated horizontal centering */
+.endif
+.else
 	add.w	md_col0, d1
 	add.w	md_col0, d1			/* +col0*2 (横センタリング) */
+.endif
 	move.l	d5, d0
 	andi.l	#0xFFFF, d1
 	add.l	d1, d0				/* NT addr */
 	bsr	set_vram_write
-	move.w	md_tcols, d2
+	PC_MOVE_W md_tcols, PC_TCOLS, d2
 	move.w	d2, d1
 	lsr.w	#3, d1
 	beq.s	bf_btail
@@ -656,7 +720,7 @@ bf_dma:
 	move.w	(GA_STOPWATCH).l, d0
 	move.w	d0, dma_start_tick		/* begin inside the first transfer VBlank */
 .endif
-	move.w	md_vbudget, d7			/* d7 = 残VBLANK予算(語, モード別) */
+	PC_MOVE_W md_vbudget, PC_VBUDGET, d7	/* d7 = 残VBLANK予算(語) */
 bf_run_lp:
 	move.w	(a2)+, d3			/* dst(VRAMバイト) */
 	move.w	(a2)+, d1			/* len(語, このランの残) */
@@ -671,7 +735,7 @@ bf_chunk:
 	tst.w	d7				/* 予算切れなら次vblank開始まで待って補充 */
 	bgt	1f
 	bsr	wait_vb_start
-	move.w	md_vbudget, d7
+	PC_MOVE_W md_vbudget, PC_VBUDGET, d7
 1:
 	move.w	d1, d6				/* chunk = min(ラン残, 予算) */
 	cmp.w	d7, d6
@@ -700,7 +764,7 @@ bf_short_run:
 	cmp.w	d7, d1
 	bls.s	1f
 	bsr	wait_vb_start
-	move.w	md_vbudget, d7
+	PC_MOVE_W md_vbudget, PC_VBUDGET, d7
 1:
 	move.w	d3, d0
 	bsr	set_vram_write
@@ -728,10 +792,16 @@ bf_flip:
 	move.w	d0, dma_elapsed_ticks
 1:
 	move.w	vsync_acc, frame_vblank_waits	/* exclude display pacing from workload HUD M */
+.ifdef PLAYER_SPECIALIZED
+.if (PC_FEATURES & 0x0002) == 0
+	bsr	render_dbg			/* delivery-paced path keeps the existing HUD timing */
+.endif
+.else
 	tst.w	md_fixed_n2
 	bne.s	1f
 	bsr	render_dbg			/* non-N2 paths retain the existing HUD timing */
 1:
+.endif
 .endif
 	/* パレット区間切替: CRAM総入替(64語≈0.1ms)→flip を新しいvblank頭で連続実行=
 	   同一VBLANK内で原子的。DEBUGフォントはP0/index15固定なので切替時作業はない。
@@ -739,13 +809,20 @@ bf_flip:
 	   (ストリーム到着タイミング非依存=スリップ回復でも色が壊れない)。 */
 	move.w	(PROBE_BANK).l, d0		/* pal(=区間番号+1) @ +0 */
 	beq	bf_doflip
-	cmp.w	md_nseg, d0			/* 壊れた参照対策: 表の範囲外は切替しない */
+	PC_CMP_W md_nseg, PC_NSEG, d0	/* 壊れた参照対策: 表の範囲外は切替しない */
 	bhi	bf_doflip
 	subq.w	#1, d0				/* 区間番号 */
 	move.w	d0, dbg_seg			/* 絶対値で更新(増分でなく自己修復) */
 	lsl.w	#7, d0				/* *128B */
 	lea	PALTAB_RAM, a0
 	adda.w	d0, a0				/* src = 表[区間] (最大63*128=8064<32767でadda.w可) */
+.ifdef PLAYER_SPECIALIZED
+.if (PC_FEATURES & 0x0002) != 0
+	bsr	wait_fixed_palette_flip		/* cadence target plus a fresh CRAM VBlank */
+.else
+	bsr	wait_vb_start			/* 頭から使える新しいvblank(CRAM+flipが確実に収まる) */
+.endif
+.else
 	tst.w	md_fixed_n2
 	beq.s	1f
 	bsr	wait_fixed_palette_flip		/* cadence target plus a fresh CRAM VBlank */
@@ -753,16 +830,23 @@ bf_flip:
 1:
 	bsr	wait_vb_start			/* 頭から使える新しいvblank(CRAM+flipが確実に収まる) */
 2:
+.endif
 	move.l	#0xC0000000, (VDP_CTRL).l	/* CRAM addr 0 */
 	move.w	#64-1, d1
 1:
 	move.w	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
 .ifdef DEBUG
+.ifdef PLAYER_SPECIALIZED
+.if (PC_FEATURES & 0x0002) != 0
+	bsr	render_dbg			/* publish F and its picture in the same VBlank */
+.endif
+.else
 	tst.w	md_fixed_n2
 	beq.s	1f
 	bsr	render_dbg			/* publish F and its picture in the same VBlank */
 1:
+.endif
 .endif
 	bsr	do_flip				/* CRAM直後・同vblank内にflip */
 	bra	bf_after_flip
@@ -772,14 +856,33 @@ bf_doflip:
 	   switch there horizontally splices the old and new name tables at the
 	   current scanline.  Re-check immediately before the atomic flip; count a
 	   newly waited VBlank through wait_vb_start just like a split DMA. */
-	tst.w	md_fixed_n2
-	beq.s	1f
+.ifdef PLAYER_SPECIALIZED
+.if (PC_FEATURES & 0x0002) != 0
 	bsr	wait_fixed_flip			/* normal frame: exactly N flip-to-flip VBlanks */
 .ifdef DEBUG
 	bsr	render_dbg			/* never show the new F over the old movie frame */
 .endif
 	/* DEBUG rendering may begin near the end of the target VBlank. Keep the
 	   final reg2 write inside VBlank even if that diagnostic work crosses out. */
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	bne.s	1f
+	bsr	wait_vb_start
+	bra.s	1f
+.else
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	bne.s	1f
+	bsr	wait_vb_start
+1:
+.endif
+.else
+	tst.w	md_fixed_n2
+	beq.s	1f
+	bsr	wait_fixed_flip			/* normal frame: exactly N flip-to-flip VBlanks */
+.ifdef DEBUG
+	bsr	render_dbg			/* never show the new F over the old movie frame */
+.endif
 	move.w	(VDP_CTRL).l, d0
 	btst	#3, d0
 	bne.s	2f
@@ -791,6 +894,7 @@ bf_doflip:
 	bne.s	2f
 	bsr	wait_vb_start
 2:
+.endif
 	bsr	do_flip
 bf_after_flip:
 .ifndef DEBUG
@@ -828,6 +932,14 @@ wait_vb_start:
 /* Make frame 0 immediately eligible: its synthetic preceding flip is one
    midpoint threshold in the past. Trashes d0. */
 prime_fixed_cadence:
+.ifdef PLAYER_SPECIALIZED
+.if (PC_FEATURES & 0x0002) != 0
+	move.w	(GA_STOPWATCH).l, d0
+	sub.w	#PACE_N2_ARM_TICKS, d0
+	andi.w	#0x0FFF, d0
+	move.w	d0, pace_flip_tick
+.endif
+.else
 	tst.w	md_fixed_n2
 	beq.s	1f
 	move.w	(GA_STOPWATCH).l, d0
@@ -835,6 +947,7 @@ prime_fixed_cadence:
 	andi.w	#0x0FFF, d0
 	move.w	d0, pace_flip_tick
 1:
+.endif
 	rts
 
 /* The stopwatch midpoint is safely after VBlank 1 ends and before VBlank 2
@@ -879,10 +992,16 @@ do_flip:
 	ori.w	#0x8200, d0			/* reg2 = 0x82xx */
 	move.w	d0, (VDP_CTRL).l
 	eori.w	#1, back_idx			/* 裏を反転 */
+.ifdef PLAYER_SPECIALIZED
+.if (PC_FEATURES & 0x0002) != 0
+	move.w	(GA_STOPWATCH).l, pace_flip_tick	/* exact flip-to-flip deadline */
+.endif
+.else
 	tst.w	md_fixed_n2
 	beq.s	1f
 	move.w	(GA_STOPWATCH).l, pace_flip_tick	/* exact flip-to-flip deadline */
 1:
+.endif
 	rts
 
 /* d6語を Word-RAM(a3) → VRAM(d3) へDMA。完了待ち。trashes d0,d2
@@ -1131,6 +1250,16 @@ render_dbg:
 	bsr	dbg_put2
 	/* H40 has exactly eight additional visible Window cells.  Keep the shared
 	   H32 prefix stable and use the tail for direct Main/DMA correlation. */
+.ifdef PLAYER_SPECIALIZED
+.if PC_MODE == 1
+	move.w	#20, d3				/* glyph 'U': Main pattern-transfer stopwatch ticks */
+	move.w	dma_elapsed_ticks, d4
+	bsr	dbg_put4
+	move.w	#27, d3				/* glyph 'N': cold-run descriptor count */
+	move.w	n_runs, d4
+	bsr	dbg_put2
+.endif
+.else
 	cmpi.w	#1, md_mode
 	bne.s	1f
 	move.w	#20, d3				/* glyph 'U': Main pattern-transfer stopwatch ticks */
@@ -1140,6 +1269,7 @@ render_dbg:
 	move.w	n_runs, d4
 	bsr	dbg_put2
 1:
+.endif
 	movem.l	(sp)+, d0-d4
 	rts
 
@@ -1155,13 +1285,13 @@ dbg_put2:
 	moveq	#1, d2
 dbg_put_digits:
 	move.w	d3, d1				/* label */
-	add.w	md_font_vtile, d1
+	PC_ADD_W md_font_vtile, PC_FONT_VTILE, d1
 	move.w	d1, (VDP_DATA).l
 1:
 	rol.w	#4, d4
 	move.w	d4, d1
 	andi.w	#0xF, d1
-	add.w	md_font_vtile, d1
+	PC_ADD_W md_font_vtile, PC_FONT_VTILE, d1
 	move.w	d1, (VDP_DATA).l
 	dbra	d2, 1b
 	rts
@@ -1177,16 +1307,19 @@ dbgfont:
 	.align 2
 shadow:
 	.space 1120*2				/* 最大グリッド(H40 40x28)ぶん */
+.ifndef PLAYER_SPECIALIZED
 md_mode:
 	.space 2
 md_vsync_n:
 	.space 2				/* v4: 1コマの表示VBLANK数(15fps=4, 30fps=2) */
 md_fixed_n2:
 	.space 2				/* v8 header feature bit 1; 24fps N2 hint alone stays unpaced */
+.endif
 vsync_acc:
 	.space 2				/* v4: 現コマで消費したVBLANK数(ペーシング用) */
 pace_flip_tick:
 	.space 2				/* v8: GA stopwatch tick at preceding fixed-N2 flip */
+.ifndef PLAYER_SPECIALIZED
 md_tcols:
 	.space 2
 md_trows:
@@ -1203,6 +1336,7 @@ md_font_vtile:
 	.space 2
 md_font_addr:
 	.space 4
+.endif
 back_idx:
 	.space 2
 frame_no:
@@ -1221,8 +1355,10 @@ dma_elapsed_ticks:
 	.space 2				/* DEBUG H40 Uxxxx: 30.72 us stopwatch ticks */
 dma_start_tick:
 	.space 2				/* DEBUG stopwatch sample at first pattern transfer */
+.ifndef PLAYER_SPECIALIZED
 md_nseg:
 	.space 2				/* PALTAB区間数(表コピー時にクランプ済み) */
+.endif
 .ifdef MAIN_CODEGEN
 md_codegen:
 	.space 2				/* 1 only after the complete runtime proof succeeds */
