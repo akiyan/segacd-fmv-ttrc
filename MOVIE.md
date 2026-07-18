@@ -17,7 +17,7 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 6               (bump for an incompatible base-layout change)
+VERSION        = 7               (bump for an incompatible base-layout change)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = header field    (888 B at N4; 444 B at N2)
@@ -39,6 +39,9 @@ put frame 0 entirely in `HEADER.DAT`, and changed each timed frame from
 payload-first to control-first. The `[n_pay_sec, n_ctrl_sec]` routing-byte order
 did not change. Header feature bit 0 is an optional v6 extension that appends
 cold-slot run descriptors after audio without moving any legacy field.
+**v7** packed each routing entry from two bytes into one byte containing the
+control-sector count and total-sector count. This doubled the resident-table
+limit from 8192 to 16384 frames without changing the BODY sector order.
 
 ## File layout
 
@@ -53,7 +56,7 @@ HEADER.DAT
 +--------------------------------------------------+
 | FRAME 0 (f0_ctrl_sec + f0_pat_sec sectors)       |  control, then patterns
 +--------------------------------------------------+
-| ROUTING (routing_sec sectors)                    |  2 bytes per frame, max 8192 frames
+| ROUTING (routing_sec sectors)                    |  v7: 1 byte per frame, max 16384 frames
 +--------------------------------------------------+
 | PREBUFFER (prebuf_sec sectors)                   |  frame-1 ring prefill (Bpat patterns)
 +--------------------------------------------------+
@@ -76,9 +79,10 @@ until the Main CPU confirms that display; timed playback then begins while the
 no time budget and never competes with frame 1 delivery, while the ring starts
 frame 1 pre-filled to `RING_CAP`.
 
-During boot, frame 0's patterns temporarily occupy the 40 KiB physical-ring
-jitter reserve above `RING_CAP`; the largest H40 frame needs 36 KiB after sector
-rounding. The on-disc routing table is staged in the not-yet-active APPLY ring,
+During boot, frame 0's patterns temporarily occupy the 40 KiB jitter reserve
+between the 388 KiB usable `RING_CAP` and the 428 KiB physical ring; the largest
+H40 frame needs 36 KiB after sector rounding. The on-disc routing table is
+staged in the not-yet-active APPLY ring,
 then copied identically into the final 16 KiB of both 1M Word-RAM banks after
 `HEADER.DAT` has been drained. Frame 0 is expanded before `BODY.DAT` can reuse
 its temporary PRG-RAM bytes. Duplicating routing is required because the bank
@@ -92,7 +96,7 @@ First 22 bytes: `struct ">4sHHHHHHHHH"`.
 | Off | Size | Field          | Meaning |
 |-----|------|----------------|---------|
 | 0   | 4    | magic          | `"TTRC"` |
-| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body) |
+| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body; 7 = packed routing entries) |
 | 6   | 2    | frames         | total frame count (`nfr`) |
 | 8   | 2    | tcols          | tile grid columns |
 | 10  | 2    | trows          | tile grid rows |
@@ -112,8 +116,9 @@ Next 16 bytes: `struct ">LLLL"`.
 | 34  | 4    | ring_peak    | peak PRG-RAM ring usage (patterns), for buffer sizing |
 
 The player reserves the final 16 KiB of each 1M Word-RAM bank for an identical
-ROUTING copy, so a v6 stream may contain at most 8192 frames. The packer rejects
-a longer stream before the table can exceed either resident copy.
+ROUTING copy. A v7 stream uses one byte per frame and may therefore contain at
+most 16384 frames. The packer rejects a longer stream before the table can
+exceed either resident copy.
 
 Then:
 
@@ -143,7 +148,7 @@ Then:
 - offset 60: `u16 audio_preload_sec` (v5+) — sectors in STARTUP_AUDIO. v5+
   uses one chunk per sector. Current streams normally store `30`, independently
   of the legacy skip count at offset 58;
-- offset 62: `u16 features` (v6 optional extensions). Bit 0
+- offset 62: `u16 features` (v6+ optional extensions). Bit 0
   (`FEATURE_COLD_RUNS`) means every control block appends the cold-slot run
   suffix described below. Unknown bits must not move any legacy field;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
@@ -201,18 +206,38 @@ movie frame rather than starting during the Mega-CD boot screen.
 
 ## Routing table
 
-`routing_sec` sectors in `HEADER.DAT`, holding **2 bytes per frame**:
-`[n_pay_sec, n_ctrl_sec]` (one byte each). The byte order remains payload count
-then control count for format compatibility, but v6 stores and reads the
-`n_ctrl_sec` control sectors first in each `BODY.DAT` frame slot. The following
+In v7, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
+byte has this layout:
+
+| Bits | Field | Meaning |
+|------|-------|---------|
+| 0-2  | `n_ctrl_sec` | control sectors at the start of this BODY frame slot |
+| 3-5  | `total_sec` | control plus payload sectors stored in this slot |
+| 6-7  | reserved | must be zero |
+
+The encoded byte is `(total_sec << 3) | n_ctrl_sec`, and the payload count is
+recovered as `n_pay_sec = total_sec - n_ctrl_sec`. The player validates that
+the reserved bits are zero and `n_ctrl_sec <= total_sec <= FRAME_SECTORS` before
+using an entry. It also requires the header field to be exactly
+`routing_sec = ceil(nfr / 2048)`; unused bytes in the final sector are zero.
+Frame 0's routing byte is zero because its control and patterns live entirely
+in `HEADER.DAT`, not in `BODY.DAT`; the player validates this zero entry too.
+
+The final 16 KiB of each 1M Word-RAM bank holds an identical resident copy, so
+v7 supports at most 16384 frames. For comparison, v6 used two bytes per frame,
+`[n_pay_sec, n_ctrl_sec]`, and the same 16 KiB allocation limited it to 8192
+frames. v6 already stored and read the `n_ctrl_sec` control sectors first in
+each `BODY.DAT` frame slot despite the historical payload-first byte order.
+
+In v7, the first `n_ctrl_sec` sectors contain control data. The following
 `n_pay_sec` sectors refill the PRG-RAM payload ring, and any sectors through the
-frame's total `fsec` are padding. `n_pay_sec + n_ctrl_sec <= 5`.
+frame's rate-matched `fsec` are padding.
 
 The control and payload data are each continuous byte streams split at sector
 boundaries. A frame slot's sectors therefore do not necessarily belong only to
 that numbered frame: one control sector can finish several future control
 blocks, and payload is normally a forward prefetch for later frames. The packer
-guarantees both of these before writing v6:
+guarantees both of these before writing v6 or v7:
 
 - after frame `i`'s complete control-sector prefix has arrived, control block
   `i` is present in the apply ring; `n_ctrl_sec = 0` is valid when an earlier
@@ -220,8 +245,9 @@ guarantees both of these before writing v6:
 - before frame `i`'s control prefix is read, PREBUFFER plus payload sectors from
   earlier frame slots already contain every cold pattern frame `i` consumes.
 
-The table covers all `nfr` frames. Frame 0's entry is `(0, 0)` because its
-control and patterns live entirely in `HEADER.DAT`, not in `BODY.DAT`.
+The table covers all `nfr` frames. In the historical v6 layout, frame 0's entry
+was the two-byte pair `(0, 0)`; in v7 it is the single zero byte described
+above.
 
 **Rate-matched frame size (v4).** A frame's total on-disc sectors is
 `fsec = max(n_pay_sec + n_ctrl_sec, ratedelta - lead)`. `ratedelta` is the number
@@ -236,7 +262,7 @@ stream converges to the CD 1x display-rate total without overflowing the ring.
 v2/v3 streams have `fps_int = 0`; the player defaults it to 15, which yields
 the constant 5 and reproduces the old fixed-slot behaviour exactly.
 
-The v6 packer first spends that frame's allowance on control, then replaces
+The v6-and-later packer first spends that frame's allowance on control, then replaces
 otherwise-unused rate padding with future payload while ring space is
 available. It exceeds the allowance only when a backwards deadline proof says
 a later cold-pattern burst cannot otherwise be armed within the five-sector

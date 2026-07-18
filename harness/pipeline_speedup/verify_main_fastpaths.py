@@ -24,6 +24,7 @@ from pathlib import Path
 
 
 SECTOR = 2048
+ROUTING_TOTAL_MAX = 5
 DEFAULT_DECISIONS = Path(
     "videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl"
 )
@@ -57,6 +58,51 @@ def frame_sectors(routes: list[tuple[int, int]], fps: int) -> list[int]:
         lead += sectors - rated
         out.append(sectors)
     return out
+
+
+def decode_routes(
+    routing: bytes, nframes: int, version: int
+) -> list[tuple[int, int]]:
+    """Decode routing without depending on the production packer."""
+    entry_bytes = 1 if version == 7 else 2
+    required = nframes * entry_bytes
+    if len(routing) < required:
+        raise AssertionError("routing table is truncated")
+    if version != 7:
+        return [
+            (routing[frame * 2], routing[frame * 2 + 1])
+            for frame in range(nframes)
+        ]
+
+    expected_bytes = ((nframes + SECTOR - 1) // SECTOR) * SECTOR
+    if len(routing) != expected_bytes:
+        raise AssertionError(
+            f"v7 routing region is {len(routing)} bytes, expected {expected_bytes}"
+        )
+    if not nframes or routing[0] != 0:
+        raise AssertionError("v7 frame 0 routing entry must be zero")
+    if any(routing[nframes:]):
+        raise AssertionError("v7 routing sector padding must be zero")
+
+    routes = []
+    for frame, packed in enumerate(routing[:nframes]):
+        if packed & 0xC0:
+            raise AssertionError(
+                f"frame {frame}: routing reserved bits are set in 0x{packed:02X}"
+            )
+        n_ctrl = packed & 0x07
+        total = (packed >> 3) & 0x07
+        if total > ROUTING_TOTAL_MAX:
+            raise AssertionError(
+                f"frame {frame}: routing total {total} exceeds "
+                f"{ROUTING_TOTAL_MAX} sectors"
+            )
+        if n_ctrl > total:
+            raise AssertionError(
+                f"frame {frame}: routing control {n_ctrl} exceeds total {total}"
+            )
+        routes.append((total - n_ctrl, n_ctrl))
+    return routes
 
 
 def parse_control(raw: bytes, seq: int, cells: int) -> ControlBlock:
@@ -93,8 +139,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, _pool = struct.unpack_from(
         ">4sHHHHHH", header
     )
-    if magic != b"TTRC" or version != 6:
-        raise AssertionError(f"expected split TTRC v6, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7):
+        raise AssertionError(f"expected split TTRC v6/v7, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -115,10 +161,10 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     routing_offset = (
         1 + paltab_sec + audio_preload_sec + f0_ctrl_sec + f0_pat_sec
     ) * SECTOR
-    routing_raw = header[routing_offset : routing_offset + 2 * nfr]
-    if len(routing_raw) != 2 * nfr:
-        raise AssertionError("routing table is truncated")
-    routes = [(routing_raw[2 * i], routing_raw[2 * i + 1]) for i in range(nfr)]
+    routing_raw = header[
+        routing_offset : routing_offset + routing_sec * SECTOR
+    ]
+    routes = decode_routes(routing_raw, nfr, version)
     if routes[0] != (0, 0):
         raise AssertionError(f"frame 0 route must be (0, 0), got {routes[0]}")
     expected_header_len = (routing_offset // SECTOR + routing_sec + prebuf_sec) * SECTOR

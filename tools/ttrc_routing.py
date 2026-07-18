@@ -1,0 +1,88 @@
+"""TTRC v7 one-byte routing entry codec and table bounds."""
+
+from __future__ import annotations
+
+import operator
+
+
+SECTOR_BYTES = 2048
+TABLE_BYTES = 16 * 1024
+ENTRY_BYTES = 1
+MAX_FRAMES = TABLE_BYTES // ENTRY_BYTES
+MAX_TABLE_SECTORS = TABLE_BYTES // SECTOR_BYTES
+FRAME_SECTORS = 5
+
+
+def _index(value: object, name: str) -> int:
+    try:
+        return operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+
+
+def encode_route(n_pay: object, n_ctrl: object) -> int:
+    """Encode one valid ``(payload sectors, control sectors)`` pair."""
+    pay = _index(n_pay, "n_pay")
+    ctrl = _index(n_ctrl, "n_ctrl")
+    total = pay + ctrl
+    if pay < 0 or ctrl < 0:
+        raise ValueError(f"routing counts must be non-negative: pay={pay}, ctrl={ctrl}")
+    if total > FRAME_SECTORS:
+        raise ValueError(
+            f"routing total {total} exceeds FRAME_SECTORS={FRAME_SECTORS}: "
+            f"pay={pay}, ctrl={ctrl}")
+    return (total << 3) | ctrl
+
+
+def decode_route(entry: object) -> tuple[int, int, int]:
+    """Decode and validate one v7 entry as ``(pay, ctrl, total)``."""
+    value = _index(entry, "routing entry")
+    if not 0 <= value <= 0xFF:
+        raise ValueError(f"routing entry is outside one byte: {value}")
+    if value & 0xC0:
+        raise ValueError(f"routing entry uses reserved bits: 0x{value:02X}")
+    ctrl = value & 0x07
+    total = (value >> 3) & 0x07
+    if total > FRAME_SECTORS:
+        raise ValueError(
+            f"routing total {total} exceeds FRAME_SECTORS={FRAME_SECTORS}: "
+            f"0x{value:02X}")
+    if ctrl > total:
+        raise ValueError(f"routing control {ctrl} exceeds total {total}: 0x{value:02X}")
+    return total - ctrl, ctrl, total
+
+
+def routing_sector_count(nframes: object) -> int:
+    """Return the exact v7 table sector count for a valid frame count."""
+    count = _index(nframes, "nframes")
+    if not 1 <= count <= MAX_FRAMES:
+        raise ValueError(f"nframes must be 1..{MAX_FRAMES}, got {count}")
+    return (count + SECTOR_BYTES - 1) // SECTOR_BYTES
+
+
+def validate_route_table(
+    table: bytes | bytearray | memoryview,
+    nframes: object,
+    routing_sec: object,
+) -> None:
+    """Validate the complete sector-padded v7 routing region."""
+    count = _index(nframes, "nframes")
+    expected_sec = routing_sector_count(count)
+    sectors = _index(routing_sec, "routing_sec")
+    if sectors != expected_sec:
+        raise ValueError(
+            f"routing_sec={sectors} does not match {count} frames ({expected_sec})")
+    raw = bytes(table)
+    expected_bytes = sectors * SECTOR_BYTES
+    if len(raw) != expected_bytes:
+        raise ValueError(
+            f"routing region has {len(raw)} bytes, expected {expected_bytes}")
+    if raw[0] != 0:
+        raise ValueError(f"frame 0 routing entry must be zero, got 0x{raw[0]:02X}")
+    for frame, entry in enumerate(raw[:count]):
+        try:
+            decode_route(entry)
+        except ValueError as exc:
+            raise ValueError(f"invalid routing entry at frame {frame}: {exc}") from exc
+    if any(raw[count:]):
+        raise ValueError("routing sector padding must be zero")

@@ -1,13 +1,14 @@
 # Palette-flash detection harness
 
-Catches the bright-garbage flash at palette-segment boundaries by comparing the
+Catches the bright-garbage flash at palette-segment boundaries in the legacy
+monolithic TTRC v1 format by comparing the
 **real recording** against **pixel-exact GT decodes of `MOVIE.DAT`**, synced by
 the debug HUD frame counter (not by wall-clock — linear time-sync drifts and
 produces false positives on moving content).
 
 ## Files
 
-- `decode.py` — TTRC decoder. Streams `MOVIE.DAT`, snapshots per-frame
+- `decode.py` — legacy TTRC v1 decoder. Streams `MOVIE.DAT`, snapshots per-frame
   `(cells=name-table (palrow,slot), pool=slot→index-tile, cram)`, and renders any
   `(cells, pool)` with **any** segment's CRAM. The arbitrary-CRAM render is what
   lets us model "old tiles under the new palette".
@@ -18,6 +19,11 @@ produces false positives on moving content).
   wide window + moving content can still fool a pure score.
 
 ## How to use
+
+This historical detector does not decode current v6/v7 streams. Those formats
+use split HEADER/BODY files, PALTAB, boot-loaded frame 0, control-first slots,
+and rate-matched frame sizes; `decode.py` rejects them explicitly instead of
+silently producing a false comparison.
 
 ```sh
 python3 harness/palette_flash/detect.py tmp/<rec>.mkv out/movieplay/MOVIE.DAT \

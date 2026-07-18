@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e49 : Introduce TTRC v7 packed routing. Each frame stores control sectors
+#        and total sectors in one validated byte, doubling the 16 KiB resident
+#        table limit to 16384 frames while preserving every BODY boundary and
+#        payload/control byte. This intentionally bumps the disc format to v7.
 #   e48/p48 : Extend the payload ring from the hardware-used 420 KiB waypoint
 #        to the PRG memory-map limit at 428 KiB. The 40 KiB jitter reserve and
 #        36 KiB gap below pump back-pressure stay unchanged, giving sim/pack a
@@ -345,5 +349,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260718
-e=48
+e=49
 p=48

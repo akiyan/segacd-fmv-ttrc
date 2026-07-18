@@ -219,7 +219,7 @@ Main CPU unchanged.
 
 The same pass removes fixed work from the 75 Hz CDC path:
 
-- cache the current routing bytes across the BIOS transfer;
+- cache the current routing counts across the BIOS transfer;
 - copy each 2 KB stage sector with seven six-way MOVEM groups instead of 42
   loop iterations;
 - remove dead full-register saves from non-preserving frame paths;

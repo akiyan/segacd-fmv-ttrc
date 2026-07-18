@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MOVIE.DAT (TTRC) pixel-exact decoder with per-frame snapshot + arbitrary-CRAM render.
+"""Legacy TTRC v1 decoder with per-frame snapshot + arbitrary-CRAM render.
 
 Used by the palette-flash detector: at a palette boundary we need to render the
 same displayed content with EITHER segment's CRAM to model the "CRAM applied too
@@ -26,6 +26,11 @@ def _w2rgb(w):
 def load(path):
     d = open(path, "rb").read()
     (mg, ver, nfr, TC, TR, CC, POOL, BASE, FS, NS) = struct.unpack(">4sHHHHHHHHH", d[:22])
+    if mg != b"TTRC" or ver != 1:
+        raise SystemExit(
+            "palette_flash/decode.py supports only the legacy monolithic TTRC v1 "
+            f"layout, not {mg!r} v{ver}; v6/v7 use split files, PALTAB, frame-0 "
+            "boot data, control-first BODY slots, and rate-matched frame sizes")
     Bpat, RSEC, PSEC, RPEAK = struct.unpack(">LLLL", d[22:38])
     return dict(d=d, mg=mg, nfr=nfr, TC=TC, TR=TR, CC=CC, POOL=POOL, BASE=BASE,
                 FS=FS, NS=NS, Bpat=Bpat, RSEC=RSEC, PSEC=PSEC, BMB=(CC + 7) // 8)

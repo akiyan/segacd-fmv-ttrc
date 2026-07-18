@@ -6,7 +6,7 @@ needs cold entries in stream order to pop patterns and build DMA runs.  This
 checker walks every real control block in the packed TTRC files both ways and
 verifies that the entry stream, cold-slot order and run grouping are identical.
 
-For v6 it prefers the on-disc HEADER.DAT + BODY.DAT pair, verifies that each
+For v6/v7 it prefers the on-disc HEADER.DAT + BODY.DAT pair, verifies that each
 frame's control block and cold patterns are ready before that frame can run,
 and also accepts the off-disc MOVIE.DAT compatibility concatenation.  v4/v5
 combined MOVIE.DAT files remain readable for regression checks.
@@ -20,6 +20,7 @@ from pathlib import Path
 
 
 SECTOR = 2048
+ROUTING_TOTAL_MAX = 5
 
 
 def frame_sectors(routes: list[tuple[int, int]], fps: int) -> list[int]:
@@ -35,6 +36,51 @@ def frame_sectors(routes: list[tuple[int, int]], fps: int) -> list[int]:
         lead += fsec - ratedelta
         out.append(fsec)
     return out
+
+
+def decode_routes(
+    routing: bytes, nframes: int, version: int
+) -> list[tuple[int, int]]:
+    """Decode routing without importing the production packer."""
+    entry_bytes = 1 if version == 7 else 2
+    required = nframes * entry_bytes
+    if len(routing) < required:
+        raise AssertionError("truncated routing table")
+    if version != 7:
+        return [
+            (routing[frame * 2], routing[frame * 2 + 1])
+            for frame in range(nframes)
+        ]
+
+    expected_bytes = ((nframes + SECTOR - 1) // SECTOR) * SECTOR
+    if len(routing) != expected_bytes:
+        raise AssertionError(
+            f"v7 routing region is {len(routing)} bytes, expected {expected_bytes}"
+        )
+    if not nframes or routing[0] != 0:
+        raise AssertionError("v7 frame 0 routing entry must be zero")
+    if any(routing[nframes:]):
+        raise AssertionError("v7 routing sector padding must be zero")
+
+    routes = []
+    for frame, packed in enumerate(routing[:nframes]):
+        if packed & 0xC0:
+            raise AssertionError(
+                f"frame {frame}: routing reserved bits are set in 0x{packed:02X}"
+            )
+        n_ctrl = packed & 0x07
+        total = (packed >> 3) & 0x07
+        if total > ROUTING_TOTAL_MAX:
+            raise AssertionError(
+                f"frame {frame}: routing total {total} exceeds "
+                f"{ROUTING_TOTAL_MAX} sectors"
+            )
+        if n_ctrl > total:
+            raise AssertionError(
+                f"frame {frame}: routing control {n_ctrl} exceeds total {total}"
+            )
+        routes.append((total - n_ctrl, n_ctrl))
+    return routes
 
 
 def runs(entries: list[int]) -> list[tuple[int, int]]:
@@ -132,8 +178,8 @@ def main() -> None:
     magic, version, nfr, _cols, _rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", data, 0
     )
-    if magic != b"TTRC" or version not in (4, 5, 6):
-        raise SystemExit(f"expected TTRC v4/v5/v6, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (4, 5, 6, 7):
+        raise SystemExit(f"expected TTRC v4-v7, got {magic!r} v{version}")
     prebuf_pat = struct.unpack_from(">L", data, 22)[0]
     routing_sec = struct.unpack_from(">L", data, 26)[0]
     prebuf_sec = struct.unpack_from(">L", data, 30)[0]
@@ -146,10 +192,8 @@ def main() -> None:
     controls = [data[f0_off : f0_off + f0_len]]
 
     routing_off = (1 + paltab_sec + audio_preload_sec + f0_ctrl_sec + f0_pat_sec) * SECTOR
-    routing_raw = data[routing_off : routing_off + 2 * nfr]
-    if len(routing_raw) != 2 * nfr:
-        raise AssertionError("truncated routing table")
-    routes = [(routing_raw[2 * i], routing_raw[2 * i + 1]) for i in range(nfr)]
+    routing_raw = data[routing_off : routing_off + routing_sec * SECTOR]
+    routes = decode_routes(routing_raw, nfr, version)
     if routes[0] != (0, 0):
         raise AssertionError(f"frame 0 must live entirely in the header, route is {routes[0]}")
     fsecs = frame_sectors(routes, fps)
@@ -159,7 +203,7 @@ def main() -> None:
         raise AssertionError(
             f"truncated boot prefix: {len(data)} bytes, expected {frames_off}"
         )
-    if version == 6:
+    if version >= 6:
         if args.body:
             if len(data) != frames_off:
                 raise AssertionError(
@@ -177,7 +221,7 @@ def main() -> None:
             frames = data[frames_off:]
     else:
         if args.body:
-            raise AssertionError("separate HEADER.DAT/BODY.DAT requires TTRC v6")
+            raise AssertionError("separate HEADER.DAT/BODY.DAT requires TTRC v6/v7")
         body_path = None
         frames = data[frames_off:]
 
@@ -189,7 +233,7 @@ def main() -> None:
         frame = frames[cursor : cursor + frame_len]
         if len(frame) != frame_len:
             raise AssertionError(f"frame {i}: truncated sector slot")
-        if version == 6:
+        if version >= 6:
             control_stream += frame[: n_ctrl * SECTOR]
         else:
             control_stream += frame[n_pay * SECTOR : (n_pay + n_ctrl) * SECTOR]
@@ -218,7 +262,7 @@ def main() -> None:
         cold += frame_cold
         cold_by_frame.append(frame_cold)
 
-    if version == 6:
+    if version >= 6:
         control_delivered = 0
         control_needed = 0
         payload_delivered = prebuf_pat

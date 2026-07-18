@@ -11,9 +11,9 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v6): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
+TTRCレイアウト(v7): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
               n_seg×128B, boot時Main-RAM表へ) + startup audio prefetch(1 sector/frame)
-              + frame0(control+patterns) + routing(2B/frame: n_pay_sec,n_ctrl_sec)
+              + frame0(control+patterns) + routing(1B/frame: total<<3 | n_ctrl_sec)
               + prebuffer(payload先頭Bpat)
               BODY.DAT = frame1以降の [control][payload][rate pad]
 MOVIE.DAT はツール互換用の HEADER.DAT || BODY.DAT 連結コンテナ。
@@ -37,6 +37,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import av_config
+import ttrc_routing
 from encode_config import load_profile
 from cbr_paths import sim_work_dir
 from quantize_global4_tiles import pals_to_bytes
@@ -45,9 +46,9 @@ from tile_alloc import slot_runs
 
 SECTOR = 2048
 MAGIC = b"TTRC"             # Tile Texture Reuse Codec
-VERSION = 6
+VERSION = 7
 BASE = 1                     # POOL_TILE_BASE (VRAM tile index = BASE+slot)
-FRAME_SECTORS = 5
+FRAME_SECTORS = ttrc_routing.FRAME_SECTORS
 PAT = 32
 PAT_PER_SEC = SECTOR // PAT  # 64
 NTSC_VSYNC = av_config.NTSC_VSYNC
@@ -82,7 +83,7 @@ DBG_NCAT = 7                 # カテゴリ数 [raw,same,near,coa,flbk,buf,miss]
 DBG_RESERVED = 4             # 予約u16スロット(将来の16bitデバッグ値用)
 DBG_LEN = (DBG_NCAT + DBG_RESERVED) * 2   # = 22B(偶数)
 FEATURE_COLD_RUNS = 0x0001   # header offset 62: control suffix has cold-run descriptors
-ROUTING_MAX_FRAMES = 8192     # duplicated Word-RAM table: 16 KiB, two bytes per frame
+ROUTING_MAX_FRAMES = ttrc_routing.MAX_FRAMES
 
 
 def debug_block(cats):
@@ -177,21 +178,21 @@ def require_canonical_p0_debug_colours(log):
     """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
     if not seg_pals:
-        raise SystemExit("pack v6: decision log has no segment palettes; re-run sim")
+        raise SystemExit("pack v7: decision log has no segment palettes; re-run sim")
     for seg, pals in enumerate(seg_pals):
         a = np.asarray(pals, np.uint8)
         if a.shape != (4, 15, 3):
             raise SystemExit(
-                f"pack v6: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
+                f"pack v7: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
                 "re-run sim")
         brightness = a.astype(np.int16).sum(axis=2)
         if int(brightness[0, 0]) != int(brightness.min()):
             raise SystemExit(
-                f"pack v6: decision log segment {seg} P0 index1 is not tied for globally "
+                f"pack v7: decision log segment {seg} P0 index1 is not tied for globally "
                 "darkest usable CRAM colour (RGB sum); re-run sim with the current encoder")
         if int(brightness[0, 14]) != int(brightness.max()):
             raise SystemExit(
-                f"pack v6: decision log segment {seg} P0 index15 is not tied for globally "
+                f"pack v7: decision log segment {seg} P0 index15 is not tied for globally "
                 "brightest usable CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
@@ -481,7 +482,7 @@ def schedule(per, n_load, blocks):
     """Schedule control JIT and rate-shaped payload prefetch sectors."""
     nfr = len(per)
     blk_len = np.array([len(b) for b in blocks], np.int64)
-    # v6 always arms frame 0 from HEADER.DAT.  Keeping a switch here would
+    # v6+ always arms frame 0 from HEADER.DAT.  Keeping a switch here would
     # produce a file whose layout disagrees with its version, so reject the
     # removed legacy mode explicitly instead of silently emitting it.
     F0_HEADER = True
@@ -593,7 +594,7 @@ def schedule(per, n_load, blocks):
         if ready_bad.size:
             frame = int(ready_bad[0]) + 1
             raise SystemExit(
-                f"pack v6 control-first invariant failed at frame {frame}: "
+                f"pack v7 control-first invariant failed at frame {frame}: "
                 f"only {int(A[frame - 1]) * PAT_PER_SEC} patterns delivered before control, "
                 f"but {int(d[frame])} are consumed through that frame "
                 f"(short by {-int(ready_margin[frame - 1])})")
@@ -614,7 +615,7 @@ def schedule(per, n_load, blocks):
     if ctrl_bad.size:
         frame = int(ctrl_bad[0])
         raise SystemExit(
-            f"pack v6 control completeness failed at frame {frame}: "
+            f"pack v7 control completeness failed at frame {frame}: "
             f"{int(ctrl_delivered[frame])} bytes delivered, "
             f"{int(ctrl_need[frame])} bytes required")
 
@@ -632,7 +633,7 @@ def schedule(per, n_load, blocks):
 
 
 def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None):
-    """Simulate the v6 control-first player and compare it with sim output.
+    """Simulate the current control-first player and compare it with sim output.
 
     A frame consumes its already-armed cold patterns before that frame's BODY
     payload is appended to the ring.  This intentionally models the earliest
@@ -725,7 +726,7 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
 
 
 def write_stream(path, log, per, blocks, Plist, sc, POOL):
-    """Write the v6 split stream and a combined tooling container.
+    """Write the v7 split stream and a combined tooling container.
 
     HEADER.DAT:
       Header(1sec) | PALTAB | STARTUP_AUDIO | FRAME0(control+patterns)
@@ -800,10 +801,22 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
         stream_ctrl = control
         stream_pay = payload
         f0_ctrl_sec = f0_pat_sec = 0
+    if len(n_pay_sec) != nfr or len(n_ctrl_sec) != nfr:
+        raise AssertionError(
+            f"routing array length mismatch: frames={nfr}, "
+            f"pay={len(n_pay_sec)}, ctrl={len(n_ctrl_sec)}")
     routing = bytearray()
-    for i in range(nfr):
-        routing += bytes([int(n_pay_sec[i]) & 0xFF, int(n_ctrl_sec[i]) & 0xFF])
-    routing_sec = -(-len(routing) // SECTOR)
+    for frame, (n_pay, n_ctrl) in enumerate(zip(n_pay_sec, n_ctrl_sec)):
+        try:
+            routing.append(ttrc_routing.encode_route(n_pay, n_ctrl))
+        except ValueError as exc:
+            raise SystemExit(f"pack: invalid routing at frame {frame}: {exc}") from exc
+    routing_sec = ttrc_routing.routing_sector_count(nfr)
+    routing_blob = bytes(routing).ljust(routing_sec * SECTOR, b"\0")
+    try:
+        ttrc_routing.validate_route_table(routing_blob, nfr, routing_sec)
+    except ValueError as exc:
+        raise AssertionError(f"packer produced an invalid routing table: {exc}") from exc
     prebuf_bytes = stream_pay[:Bpat * PAT]           # frame1用プリバッファ(RING_CAP)
     prebuf_sec = -(-len(prebuf_bytes) // SECTOR)
     ring_peak = int(sc["ring_peak"])
@@ -834,7 +847,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
     vsync_n = VSYNC_N                                  # N: 近似VBLANK間隔(30/24→2, 15→4)
     fps_int = int(round(FPS))                         # 名目fps(15/24/30)。レートマッチpadding用
     if not f0_header:
-        raise SystemExit("pack v6 requires frame0 in HEADER.DAT")
+        raise SystemExit("pack v7 requires frame0 in HEADER.DAT")
     header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
@@ -854,7 +867,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
                    + paltab.ljust(paltab_sec * SECTOR, b"\0")
                    + audio_preload
                    + frame0_blk
-                   + bytes(routing).ljust(routing_sec * SECTOR, b"\0")
+                   + routing_blob
                    + prebuf_bytes.ljust(prebuf_sec * SECTOR, b"\0"))
     if len(header_blob) % SECTOR:
         raise AssertionError(f"HEADER.DAT is not sector aligned: {len(header_blob)} bytes")
@@ -899,7 +912,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
             fsec_list.append(fsec)
             npb = int(n_pay_sec[i]) * SECTOR
             ncb = int(n_ctrl_sec[i]) * SECTOR
-            # v6 physical order: complete the current control first, then
+            # v6+ physical order: complete the current control first, then
             # carry only payload that has been armed for future frames.
             fr = stream_ctrl[cc:cc + ncb].ljust(ncb, b"\0"); cc += ncb
             fr += stream_pay[pc:pc + npb].ljust(npb, b"\0"); pc += npb
@@ -931,7 +944,7 @@ def write_stream(path, log, per, blocks, Plist, sc, POOL):
           f"startup_audio prefetch {audio_prefetch_frames}f/skip {audio_preload_frames}f "
           f"frame0 {f0_ctrl_sec}+{f0_pat_sec} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v6 N={vsync_n}(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO}")
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v7 N={vsync_n}(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
     print(f"  実機定数: NUM_FRAMES={nfr} FRAME_SECTORS={FRAME_SECTORS}(最大スロット) PALTAB_SEC={paltab_sec} "
           f"F0_CTRL_SEC={f0_ctrl_sec} F0_PAT_SEC={f0_pat_sec} ROUTING_SEC={routing_sec} "

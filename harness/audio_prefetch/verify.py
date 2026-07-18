@@ -13,6 +13,7 @@ import numpy as np
 
 SECTOR = 2048
 DBG_LEN = 22
+ROUTING_TOTAL_MAX = 5
 
 
 def sign_magnitude_audio(path: Path, target_len: int) -> bytes:
@@ -67,14 +68,60 @@ def split_blocks(data: bytes, count: int) -> list[bytes]:
     return blocks
 
 
-def body_control_bytes(body: bytes, routing: bytes, nframes: int, fps: int) -> bytes:
+def decode_routes(
+    routing: bytes, nframes: int, version: int
+) -> list[tuple[int, int]]:
+    """Decode and validate the versioned routing table independently."""
+    entry_bytes = 1 if version == 7 else 2
+    required = nframes * entry_bytes
+    if len(routing) < required:
+        raise SystemExit("truncated routing table")
+
+    if version != 7:
+        return [
+            (routing[frame * 2], routing[frame * 2 + 1])
+            for frame in range(nframes)
+        ]
+
+    expected_bytes = ((nframes + SECTOR - 1) // SECTOR) * SECTOR
+    if len(routing) != expected_bytes:
+        raise SystemExit(
+            f"v7 routing region is {len(routing)} bytes, expected {expected_bytes}"
+        )
+    if not nframes or routing[0] != 0:
+        raise SystemExit("v7 frame 0 routing entry must be zero")
+    if any(routing[nframes:]):
+        raise SystemExit("v7 routing sector padding must be zero")
+
+    routes = []
+    for frame, packed in enumerate(routing[:nframes]):
+        if packed & 0xC0:
+            raise SystemExit(
+                f"frame {frame}: routing reserved bits are set in 0x{packed:02X}"
+            )
+        n_ctrl = packed & 0x07
+        total = (packed >> 3) & 0x07
+        if total > ROUTING_TOTAL_MAX:
+            raise SystemExit(
+                f"frame {frame}: routing total {total} exceeds "
+                f"{ROUTING_TOTAL_MAX} sectors"
+            )
+        if n_ctrl > total:
+            raise SystemExit(
+                f"frame {frame}: routing control {n_ctrl} exceeds total {total}"
+            )
+        routes.append((total - n_ctrl, n_ctrl))
+    return routes
+
+
+def body_control_bytes(
+    body: bytes, routes: list[tuple[int, int]], fps: int
+) -> bytes:
     pos = 0
     sec_acc = 0
     lead = 0
     chunks = []
-    for frame in range(1, nframes):
-        n_pay = routing[frame * 2]
-        n_ctrl = routing[frame * 2 + 1]
+    for frame, (n_pay, n_ctrl) in enumerate(routes[1:], 1):
         sec_acc += 75
         rate_delta, sec_acc = divmod(sec_acc, fps)
         actual = n_pay + n_ctrl
@@ -105,6 +152,9 @@ def main() -> int:
     if len(header) % SECTOR or len(body) % SECTOR:
         raise SystemExit("HEADER.DAT and BODY.DAT must be sector aligned")
 
+    version = struct.unpack_from(">H", header, 4)[0]
+    if version not in (6, 7):
+        raise SystemExit(f"expected split TTRC v6/v7, got v{version}")
     nframes = struct.unpack_from(">H", header, 6)[0]
     cells = struct.unpack_from(">H", header, 12)[0]
     routing_sec = struct.unpack_from(">L", header, 26)[0]
@@ -135,14 +185,17 @@ def main() -> int:
     cursor += (routing_sec + prebuf_sec) * SECTOR
     if cursor != len(header):
         raise SystemExit(f"HEADER.DAT walk ended at {cursor}, file has {len(header)} bytes")
-    if len(routing) < nframes * 2:
-        raise SystemExit("truncated routing table")
+    routes = decode_routes(routing, nframes, version)
+    if routes[0] != (0, 0):
+        raise SystemExit(
+            f"frame 0 must live entirely in the header, route is {routes[0]}"
+        )
 
     if len(f0_region) < 2:
         raise SystemExit("missing frame-0 control block")
     f0_len = struct.unpack_from(">H", f0_region, 0)[0]
     control_stream = f0_region[:f0_len] + body_control_bytes(
-        body, routing, nframes, fps)
+        body, routes, fps)
     blocks = split_blocks(control_stream, nframes)
     live_chunks = [control_audio(block, cells, audio_bytes) for block in blocks]
 
