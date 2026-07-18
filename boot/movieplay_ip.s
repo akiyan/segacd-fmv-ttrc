@@ -740,6 +740,16 @@ bf_flip:
 	bsr	do_flip				/* CRAM直後・同vblank内にflip */
 	bra	bf_after_flip
 bf_doflip:
+	/* Pattern DMA normally leaves us inside VBlank, but reuse-only frames and
+	   the DEBUG Window write can reach here during active display.  A reg2
+	   switch there horizontally splices the old and new name tables at the
+	   current scanline.  Re-check immediately before the atomic flip; count a
+	   newly waited VBlank through wait_vb_start just like a split DMA. */
+	move.w	(VDP_CTRL).l, d0
+	btst	#3, d0
+	bne.s	1f
+	bsr	wait_vb_start
+1:
 	bsr	do_flip
 bf_after_flip:
 .ifndef DEBUG

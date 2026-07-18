@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p50 : Re-check VBlank immediately before every non-palette name-table flip.
+#        Reuse-only frames and the DEBUG Window write can otherwise reach reg2
+#        during active display and splice two adjacent movie frames at one
+#        horizontal scanline.
 #   p49 : Require TTRC v7 and validate the exact routing-sector count, frame
 #        limit, frame-0 zero, reserved bits, total and control bounds once at
 #        boot. Hot paths decode total/control directly from one resident byte.
@@ -355,4 +359,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260718
 e=49
-p=49
+p=50
