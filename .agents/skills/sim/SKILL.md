@@ -54,8 +54,7 @@ Other fixed defaults:
   system Python or an older venv:
 
 ```sh
-PY=.venv-gpu/bin/python
-[ -x "$PY" ] || { echo "run the locked .venv-gpu bootstrap from README.md" >&2; exit 1; }
+tools/python.sh --gpu -c 'import sys; print(sys.executable)'
 ```
 
 The encoder can fall back when CuPy is missing, but do not use that silent path
@@ -163,9 +162,7 @@ parsing error or stale environment cannot silently reuse another comparison's
 inputs.
 
 ```sh
-PY=.venv-gpu/bin/python
-[ -x "$PY" ] || { echo "run the locked .venv-gpu bootstrap from README.md" >&2; exit 1; }
-"$PY" tools/sim.py --config configs/<source>-<mode>.toml
+tools/python.sh --gpu tools/sim.py --config configs/<source>-<mode>.toml
 ```
 
 TOML values replace inherited per-source `CBRSIM_*` values. `sim.py` freezes
@@ -201,7 +198,7 @@ function on real data.
 ```sh
 CBRSIM_SRCLABEL="Source (<source name>, <platform/year>)" \
 ANALYSIS_OUT=videos/<stem>_analysis.mp4 \
-"$PY" tools/render_analysis.py --config configs/<source>-<mode>.toml
+tools/python.sh --gpu tools/render_analysis.py --config configs/<source>-<mode>.toml
 ```
 
 The full render generates all PNG frames in parallel (`nproc-2`) and then calls

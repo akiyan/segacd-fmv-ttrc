@@ -2,7 +2,7 @@
 name = "segacd-fmv-ttrc-tools"
 version = "0.0.0"
 description = "Host-side tools for the SEGA-CD Tile Texture Reuse Codec"
-requires-python = "==3.14.4"
+requires-python = ">=3.13.14,<3.15"
 dependencies = [
     "numpy==2.3.5",
     "pillow==12.1.1",

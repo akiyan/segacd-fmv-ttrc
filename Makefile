@@ -65,7 +65,7 @@ movieplay-setup: setup
 disc: movieplay
 
 check-tools:
-	@test -x "$(PYTHON)" || (echo "missing project Python launcher: $(PYTHON). Run uv sync --managed-python --locked" && exit 1)
+	@test -x "$(PYTHON)" || (echo "missing project Python launcher: $(PYTHON). Run tools/bootstrap_python.sh --cpu" && exit 1)
 	@test -x "$(AS)" || (echo "missing assembler: $(AS). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
 	@test -x "$(CC)" || (echo "missing compiler: $(CC). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
 	@test -x "$(LD)" || (echo "missing linker: $(LD). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)

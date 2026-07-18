@@ -160,8 +160,7 @@ CPython. The CPU environment is fully isolated under `.venv`: it does not use
 
 ```sh
 pipx install 'uv==0.11.29'
-uv python install 3.14.4
-uv sync --managed-python --locked
+tools/bootstrap_python.sh --cpu
 tools/python.sh -c \
   'import sys, numpy, PIL; print(sys.base_prefix, numpy.__version__, PIL.__version__)'
 ```
@@ -172,15 +171,17 @@ system CUDA Toolkit; the host NVIDIA driver is still required. Run the CUDA
 probe outside a sandbox that hides `/dev/nvidia*`.
 
 ```sh
-UV_PROJECT_ENVIRONMENT=.venv-gpu \
-  uv sync --managed-python --locked --extra gpu
+tools/bootstrap_python.sh --gpu
 tools/python.sh --gpu -c \
   'import cupy as cp; assert int(cp.arange(16).sum()) == 120'
 ```
 
 `tools/python.sh` selects `.venv`; `tools/python.sh --gpu` selects
-`.venv-gpu`. It never falls back to a system Python. The lock keeps CPython
-3.14.4, NumPy 2.3.5, Pillow 12.1.1, and CuPy 14.1.1 reproducible.
+`.venv-gpu`. It never falls back to a system Python or system site-packages.
+The CPU environment uses managed CPython 3.14.4; the long-sim-qualified GPU
+environment uses managed CPython 3.13.14. Both pin NumPy 2.3.5 and Pillow
+12.1.1, while the GPU extra pins CuPy 14.1.1. The version files and lock make
+both environments reproducible.
 
 Install a Marsdev `m68k-elf` toolchain at `~/toolchains/mars`. The Makefile
 expects these executables by default:

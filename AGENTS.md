@@ -428,15 +428,16 @@ coordination rule (previously in the `/sim` skill) to cover the emulator too.
 Do not run project tools with the system `python3` or inherit distribution
 site-packages. The repository pins `uv`, CPython and every Python package:
 
-- `uv sync --managed-python --locked` creates the CPU environment in `.venv`.
+- `tools/bootstrap_python.sh --cpu` creates the CPU environment in `.venv`.
   Use `tools/python.sh` for pack, tests, builds, recording checks and CPU tools.
-- `UV_PROJECT_ENVIRONMENT=.venv-gpu uv sync --managed-python --locked --extra gpu`
-  creates the separate CUDA environment in `.venv-gpu`. Use
+- `tools/bootstrap_python.sh --gpu` creates the separate CUDA environment in
+  `.venv-gpu`. Use
   `tools/python.sh --gpu` for GPU sim/render.
 - The launcher must fail when its selected environment is absent. Never add a
   silent fallback to `/usr/bin/python`, a distro NumPy/Pillow, or an older venv.
-- `.python-version`, `pyproject.toml` and `uv.lock` are the reproducible source
-  of truth. The environments themselves remain git-ignored.
+- `.python-version`, `.python-version-gpu`, `pyproject.toml` and `uv.lock` are
+  the reproducible source of truth. The environments themselves remain
+  git-ignored.
 - The YouTube credential environment is intentionally separate and is not part
   of the codec tool lock.
 
@@ -453,20 +454,22 @@ evidence alone.
 - Run GPU `tools/sim.py` and `tools/render_analysis.py` outside the sandbox so
   they can access the NVIDIA device nodes.
 - Use `tools/python.sh --gpu`, which selects the isolated `.venv-gpu` containing
-  CPython 3.14.4 + NumPy 2.3.5 + Pillow 12.1.1 + CuPy 14.1.1. The former
+  managed CPython 3.13.14 + NumPy 2.3.5 + Pillow 12.1.1 + CuPy 14.1.1. This
+  exact environment completed a full 2,535-frame Lunar H32 sim. The CPU
+  `.venv` remains on managed CPython 3.14.4. The former
   `cbrsim-gpu-stable` venv inherited system NumPy/Pillow and is rollback-only.
   The still older `cbrsim-gpu` venv's NumPy 2.5.1 corrupted long runs (segfaults
   and NumPy `SystemError`) even though short CUDA allocations passed. The sim
   rejects that exact unsafe combination before doing work.
 - The GPU sim initializes CUDA before its CPU frame-loader pool. Those workers
   must use multiprocessing `spawn`, never `fork`: forking the live CUDA parent
-  can segfault the Python 3.14 interpreter part-way through precomputation.
+  can segfault the parent interpreter part-way through precomputation.
   CPU-only sim runs may keep the cheaper `fork` path. GPU runs default to the
   verified four feeder processes; `CBRSIM_WORKERS` remains a diagnostic override.
-- CPython 3.14 also defaults sim PNG output to synchronous writes. Six concurrent
-  Pillow/NumPy writer threads have caused an interpreter segfault late in long
-  encodes. Older Python versions retain six writers; `CBRSIM_PNG_WORKERS` is a
-  diagnostic override, not a normal tuning knob.
+- All supported Python versions default sim PNG output to synchronous writes.
+  Six concurrent Pillow/NumPy writer threads corrupted NumPy array metadata on
+  CPython 3.13 and crashed CPython 3.14 during long encodes.
+  `CBRSIM_PNG_WORKERS` is a diagnostic override, not a normal tuning knob.
 - If `/sbin/ub-device-create --verbose` says the `/dev/nvidia*` nodes already
   exist with correct permissions outside the sandbox, the host device setup is
   healthy; the missing nodes seen inside the sandbox are an isolation artifact.

@@ -85,8 +85,7 @@ run two captures together, and never kill another session's process.
 Use the locked GPU Python environment without a system or legacy fallback:
 
 ```sh
-PY=.venv-gpu/bin/python
-[ -x "$PY" ] || { echo "run the locked .venv-gpu bootstrap from README.md" >&2; exit 1; }
+tools/python.sh --gpu -c 'import sys; print(sys.executable)'
 ```
 
 Verify `nvidia-smi` and a small CuPy allocation outside a restricted sandbox

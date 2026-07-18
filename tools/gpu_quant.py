@@ -1,15 +1,14 @@
-"""GPU(cupy)で量子化の重い部分(パレット割当・索引)を一括計算する任意モジュール。
+"""Optional CuPy acceleration for palette assignment and index generation.
 
-差分コーデック sim.py の量子化は「各コマ独立」で実行時間の大半を占める。
-中でも重いのは各セル(8x8=64px)を4面×15色パレットへ二乗誤差最小で割り当てる部分
-(assign_palette)と、選んだパレットで最近傍量子化する部分(idx_for)＝まさに行列演算。
-ここを GPU に載せる。CPU版と結果はビット単位で一致することを確認済み。
+Quantization is frame-independent and accounts for much of sim.py's runtime.
+This module moves the squared-error palette assignment and nearest-colour index
+work to the GPU. Its output is bit-identical to the CPU implementation.
 
-GPU実行は既定で有効。CBRSIM_GPU=0/off/false/no のときだけ明示的に無効化する。
-cupy が無い/GPU が使えない場合は自動でCPUへフォールバック(enabled()==False)。
-CUDA 実行環境は専用venv ~/.config/cbrsim-gpu-stable/venv に隔離。
-これはsystem NumPy 2.3.5と既存cupy-cuda12x[ctk]を組み合わせる。
-sim を GPU で回すときはその venv の python で起動する。
+GPU use defaults on and can be disabled explicitly with
+``CBRSIM_GPU=0/off/false/no``. Missing CuPy or CUDA falls back to the CPU. The
+CUDA runtime lives in the repository's uv-managed ``.venv-gpu`` and does not
+inherit system Python, NumPy, or Pillow. Start GPU sims with
+``tools/python.sh --gpu tools/sim.py ...``.
 """
 import os
 import numpy as np
@@ -18,8 +17,7 @@ _STATE = {"checked": False, "on": False, "cp": None}
 
 
 def enabled():
-    """GPUエンコードは既定ON、CPUはフォールバック先。cupy/GPUが実際に使えるときだけ True。一度だけ判定。
-    明示無効化は CBRSIM_GPU=0/off/false/no（cupy未導入のシステムpythonでは自動でCPUへ退避）。"""
+    """Return whether the default-on GPU path is available, checking once."""
     if _STATE["checked"]:
         return _STATE["on"]
     _STATE["checked"] = True
