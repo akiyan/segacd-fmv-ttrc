@@ -29,6 +29,20 @@ class RoutingEntryTests(unittest.TestCase):
             with self.subTest(entry=entry), self.assertRaises(ValueError):
                 routing.decode_route(entry)
 
+    def test_all_byte_values_match_the_v7_contract(self) -> None:
+        expected = {
+            routing.encode_route(total - ctrl, ctrl): (total - ctrl, ctrl, total)
+            for total in range(routing.FRAME_SECTORS + 1)
+            for ctrl in range(total + 1)
+        }
+        for entry in range(256):
+            with self.subTest(entry=f"0x{entry:02X}"):
+                if entry in expected:
+                    self.assertEqual(routing.decode_route(entry), expected[entry])
+                else:
+                    with self.assertRaises(ValueError):
+                        routing.decode_route(entry)
+
 
 class RoutingTableTests(unittest.TestCase):
     def test_frame_and_sector_boundaries(self) -> None:
@@ -45,14 +59,28 @@ class RoutingTableTests(unittest.TestCase):
         table = entries.ljust(routing.SECTOR_BYTES, b"\0")
         routing.validate_route_table(table, len(entries), 1)
 
+    def test_boundary_last_entry_and_padding(self) -> None:
+        sentinel = routing.encode_route(4, 1)
+        for nframes, expected_sectors in ((2048, 1), (2049, 2), (16384, 8)):
+            with self.subTest(nframes=nframes):
+                table = bytearray(expected_sectors * routing.SECTOR_BYTES)
+                table[nframes - 1] = sentinel
+                routing.validate_route_table(table, nframes, expected_sectors)
+                self.assertEqual(table[nframes - 1], sentinel)
+                self.assertFalse(any(table[nframes:]))
+                if nframes < len(table):
+                    table[nframes] = sentinel
+                    with self.assertRaises(ValueError):
+                        routing.validate_route_table(table, nframes, expected_sectors)
+
     def test_bad_header_entry_and_padding_are_rejected(self) -> None:
-        for table in (
-            bytes([8]).ljust(routing.SECTOR_BYTES, b"\0"),
-            bytes([0, 0x40]).ljust(routing.SECTOR_BYTES, b"\0"),
-            bytes([0]).ljust(routing.SECTOR_BYTES - 1, b"\0") + b"\1",
+        for table, nframes in (
+            (bytes([8]).ljust(routing.SECTOR_BYTES, b"\0"), 1),
+            (bytes([0, 0x40]).ljust(routing.SECTOR_BYTES, b"\0"), 2),
+            (bytes([0]).ljust(routing.SECTOR_BYTES - 1, b"\0") + b"\1", 1),
         ):
-            with self.subTest(table=table[:2]), self.assertRaises(ValueError):
-                routing.validate_route_table(table, 1, 1)
+            with self.subTest(table=table[:2], nframes=nframes), self.assertRaises(ValueError):
+                routing.validate_route_table(table, nframes, 1)
 
     def test_wrong_sector_count_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

@@ -46,7 +46,7 @@ from tile_alloc import slot_runs
 
 SECTOR = 2048
 MAGIC = b"TTRC"             # Tile Texture Reuse Codec
-VERSION = 7
+VERSION = ttrc_routing.VERSION
 BASE = 1                     # POOL_TILE_BASE (VRAM tile index = BASE+slot)
 FRAME_SECTORS = ttrc_routing.FRAME_SECTORS
 PAT = 32

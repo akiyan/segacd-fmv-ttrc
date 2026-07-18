@@ -5,12 +5,18 @@ from __future__ import annotations
 import operator
 
 
+VERSION = 7
 SECTOR_BYTES = 2048
-TABLE_BYTES = 16 * 1024
+ROUTE_BYTES = 16 * 1024
+# Compatibility name for callers that describe the allocation as a table.
+TABLE_BYTES = ROUTE_BYTES
 ENTRY_BYTES = 1
-MAX_FRAMES = TABLE_BYTES // ENTRY_BYTES
-MAX_TABLE_SECTORS = TABLE_BYTES // SECTOR_BYTES
+MAX_FRAMES = ROUTE_BYTES // ENTRY_BYTES
+MAX_TABLE_SECTORS = ROUTE_BYTES // SECTOR_BYTES
 FRAME_SECTORS = 5
+CTRL_MASK = 0x07
+TOTAL_SHIFT = 3
+MAX_ENTRY = (FRAME_SECTORS << TOTAL_SHIFT) | FRAME_SECTORS
 
 
 def _index(value: object, name: str) -> int:
@@ -31,7 +37,7 @@ def encode_route(n_pay: object, n_ctrl: object) -> int:
         raise ValueError(
             f"routing total {total} exceeds FRAME_SECTORS={FRAME_SECTORS}: "
             f"pay={pay}, ctrl={ctrl}")
-    return (total << 3) | ctrl
+    return (total << TOTAL_SHIFT) | ctrl
 
 
 def decode_route(entry: object) -> tuple[int, int, int]:
@@ -41,8 +47,8 @@ def decode_route(entry: object) -> tuple[int, int, int]:
         raise ValueError(f"routing entry is outside one byte: {value}")
     if value & 0xC0:
         raise ValueError(f"routing entry uses reserved bits: 0x{value:02X}")
-    ctrl = value & 0x07
-    total = (value >> 3) & 0x07
+    ctrl = value & CTRL_MASK
+    total = (value >> TOTAL_SHIFT) & CTRL_MASK
     if total > FRAME_SECTORS:
         raise ValueError(
             f"routing total {total} exceeds FRAME_SECTORS={FRAME_SECTORS}: "

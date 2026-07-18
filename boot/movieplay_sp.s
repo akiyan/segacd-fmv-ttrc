@@ -31,6 +31,19 @@
 
 .equ SUB_BANK_1M, 0x000C0000
 
+/* --- TTRC v7 packed-routing contract (checked by tools/check_player_ring.py) --- */
+.equ ROUTING_VERSION,       7
+.equ ROUTING_BYTES,         16384
+.equ ROUTING_MAX_FRAMES,    16384
+.equ ROUTING_SECTOR_BYTES,  2048
+.equ ROUTING_SECTOR_SHIFT_A,8
+.equ ROUTING_SECTOR_SHIFT_B,3
+.equ ROUTING_CTRL_MASK,     0x0007
+.equ ROUTING_TOTAL_SHIFT,   3
+.equ ROUTING_MAX_ENTRY,     0x002D
+.equ ROUTING_COPY_LONGS,    4096
+.equ ROUTING_BANK_COPIES,   2
+
 /* --- PRG-RAM レイアウト(program 0x6000〜, <0x1000) --- */
 /* 0x6800-0x8000 は連続読み中にBIOSが踏む(実証)。0x8000以上は安全(マーカー実証)。 */
 .equ ISO_BUF,     0x00007000        /* ISO初期化用(streaming前のみ・BIOS領域を一時利用) */
@@ -206,7 +219,7 @@ stream_start:
 	bsr	drain_lin
 	cmpi.l	#0x54545243, (PAD_SCR).l	/* "TTRC" */
 	bne	bad_header_magic
-	cmpi.w	#7, (PAD_SCR+4).l
+	cmpi.w	#ROUTING_VERSION, (PAD_SCR+4).l
 	beq	1f
 	move.w	#0xBAD7, (COMSTAT1).l		/* packed-routing format required */
 	bra	bad_header
@@ -220,12 +233,12 @@ bad_header:
 	moveq	#0, d1
 	move.w	6(a0), d1
 	beq.s	bad_header
-	cmpi.w	#0x4000, d1			/* one-byte table: 16KB = 16384 frames */
+	cmpi.w	#ROUTING_MAX_FRAMES, d1		/* one-byte table: 16KB = 16384 frames */
 	bhi.s	bad_header
 	move.w	d1, h_frames
-	addi.w	#0x07FF, d1
-	lsr.w	#8, d1
-	lsr.w	#3, d1				/* exact routing_sec = ceil(frames/2048) */
+	addi.w	#ROUTING_SECTOR_BYTES-1, d1
+	lsr.w	#ROUTING_SECTOR_SHIFT_A, d1
+	lsr.w	#ROUTING_SECTOR_SHIFT_B, d1	/* exact routing_sec = ceil(frames/2048) */
 	cmp.l	26(a0), d1			/* long compare also rejects a nonzero high half */
 	bne.s	bad_header
 	move.w	d1, h_routing_sec
@@ -365,11 +378,11 @@ pb_done:
 rt_validate:
 	moveq	#0, d0
 	move.b	(a0)+, d0
-	cmpi.b	#0x2D, d0
+	cmpi.b	#ROUTING_MAX_ENTRY, d0
 	bhi	bad_header
 	move.w	d0, d2
-	andi.w	#0x0007, d0			/* n_ctrl */
-	lsr.w	#3, d2				/* total (reserved bits already proved zero) */
+	andi.w	#ROUTING_CTRL_MASK, d0		/* n_ctrl */
+	lsr.w	#ROUTING_TOTAL_SHIFT, d2	/* total (reserved bits already proved zero) */
 	cmp.w	d2, d0
 	bhi	bad_header
 	dbra	d7, rt_validate
@@ -378,11 +391,11 @@ rt_validate:
 	   1M Word-RAM banks. drain_frame may run ahead of frame_idx, so splitting the
 	   table by frame parity would select the wrong bank. Two toggles return to
 	   the original frame-0/PALTAB bank before expansion. */
-	moveq	#1, d1
+	moveq	#ROUTING_BANK_COPIES-1, d1
 rt_bank:
 	lea	ROUTING_TMP, a0
 	lea	ROUTING, a1
-	move.w	#4096-1, d0
+	move.w	#ROUTING_COPY_LONGS-1, d0
 rt_copy:
 	move.l	(a0)+, (a1)+
 	dbra	d0, rt_copy
@@ -837,10 +850,10 @@ p1_top:
 	lea	ROUTING, a0
 	moveq	#0, d2
 	move.b	(a0,d0.w), d2			/* bits 3..5=total, 0..2=n_ctrl */
-	moveq	#7, d1
+	moveq	#ROUTING_CTRL_MASK, d1
 	and.w	d2, d1
 	move.w	d1, cur_n_ctrl
-	lsr.w	#3, d2
+	lsr.w	#ROUTING_TOTAL_SHIFT, d2
 	move.w	d2, cur_total
 	/* ratedelta = floor((acc+75)/fps).  75/fps quotient and remainder were
 	   computed once at header load, so the per-frame path needs no DIVU. */
@@ -990,7 +1003,7 @@ pf_pump:
 	/* Same frame: control-first means drain_k>=n_ctrl is sufficient.  n_ctrl=0
 	   is intentionally ready immediately because its bytes arrived earlier. */
 	lea	ROUTING, a0
-	moveq	#7, d1
+	moveq	#ROUTING_CTRL_MASK, d1
 	and.b	(a0,d0.w), d1			/* v7 low three bits = n_ctrl */
 	cmp.w	drain_k, d1
 	bls	pf_ready

@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import av_config
+import ttrc_routing
 
 SP = Path(__file__).resolve().parent.parent / "boot" / "movieplay_sp.s"
 text = SP.read_text()
@@ -21,6 +22,59 @@ def _equ(source, name, path):
     if not m:
         sys.exit(f"check_player_ring: could not find `.equ {name}` in {path}")
     return int(m.group(1), 0)
+
+
+def _require_asm(pattern, description):
+    if not re.search(pattern, text, re.M):
+        sys.exit(f"check_player_ring: ASM does not use {description}")
+
+
+# --- TTRC v7 packed-routing contract ---
+# The Python codec is the format source of truth. The Sub-CPU player keeps
+# literal `.equ` values because the assembler cannot import Python; compare all
+# of them before every player build and also require the copy loops to use the
+# named values rather than disconnected immediate constants.
+routing_equ_contract = {
+    "ROUTING_VERSION": ttrc_routing.VERSION,
+    "ROUTING_BYTES": ttrc_routing.ROUTE_BYTES,
+    "ROUTING_MAX_FRAMES": ttrc_routing.MAX_FRAMES,
+    "ROUTING_SECTOR_BYTES": ttrc_routing.SECTOR_BYTES,
+    "ROUTING_CTRL_MASK": ttrc_routing.CTRL_MASK,
+    "ROUTING_TOTAL_SHIFT": ttrc_routing.TOTAL_SHIFT,
+    "ROUTING_MAX_ENTRY": ttrc_routing.MAX_ENTRY,
+}
+for equ_name, expected in routing_equ_contract.items():
+    actual = _equ(text, equ_name, SP)
+    if actual != expected:
+        sys.exit(
+            f"check_player_ring: player {equ_name}={actual} (0x{actual:X}) != "
+            f"ttrc_routing={expected} (0x{expected:X})")
+
+route_copy_longs = _equ(text, "ROUTING_COPY_LONGS", SP)
+route_bank_copies = _equ(text, "ROUTING_BANK_COPIES", SP)
+if ttrc_routing.ROUTE_BYTES != 16 * 1024:
+    sys.exit(
+        "check_player_ring: resident routing allocation must remain 16KB, got "
+        f"{ttrc_routing.ROUTE_BYTES} bytes")
+if route_copy_longs * 4 != ttrc_routing.ROUTE_BYTES:
+    sys.exit(
+        "check_player_ring: routing MOVE.L copy does not cover the complete "
+        f"table: {route_copy_longs} longs vs {ttrc_routing.ROUTE_BYTES} bytes")
+if route_bank_copies != 2:
+    sys.exit(
+        "check_player_ring: routing must be copied into both physical 1M Word-RAM "
+        f"banks, got {route_bank_copies} copies")
+_require_asm(
+    r"^\s*move\.w\s+#ROUTING_COPY_LONGS-1,\s*d0\s*$",
+    "ROUTING_COPY_LONGS in the MOVE.L copy loop")
+_require_asm(
+    r"^\s*moveq\s+#ROUTING_BANK_COPIES-1,\s*d1\s*$",
+    "ROUTING_BANK_COPIES in the Word-RAM bank loop")
+print(
+    "check_player_ring: OK  TTRC routing "
+    f"v{ttrc_routing.VERSION}, {ttrc_routing.ROUTE_BYTES // 1024}KB, "
+    f"{ttrc_routing.MAX_FRAMES} frames, {route_copy_longs} MOVE.L x "
+    f"{route_bank_copies} banks")
 
 
 ring_bytes = _equ(text, "RING_SIZE", SP)
@@ -40,8 +94,8 @@ print(f"check_player_ring: OK  RING_SIZE={ring_bytes//1024}KB "
 # reuse that memory only after frame 0 has expanded. ROUTING_TMP borrows APPLY
 # before steady streaming starts. The validated table is duplicated at the end
 # of both 128 KiB Word-RAM banks, so routing remains visible after every swap.
-route_bytes = 16 * 1024
-sector = 2048
+route_bytes = ttrc_routing.ROUTE_BYTES
+sector = ttrc_routing.SECTOR_BYTES
 max_f0_bytes = ((40 * 28 * 32 + sector - 1) // sector) * sector
 ring_base = _equ(text, "RING_BASE", SP)
 ring_cap_end = _equ(text, "RING_CAP_END", SP)
