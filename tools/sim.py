@@ -581,6 +581,24 @@ def render_cells(idx, assign, pals_arr):
     return rgb333_to_rgb888(rgb333).reshape(C, TILE, TILE, 3)
 
 
+def own_pattern_cache_arrays(rgb, sig):
+    """Return compact owned arrays for one cached 8x8 pattern.
+
+    ``plain_rgb[c]`` and ``sig2[c]`` are views. Keeping either view in the
+    pattern dictionary keeps its complete per-frame backing array alive, which
+    grows into hundreds of MiB on long sources. Owning the two small arrays
+    also makes their shape an explicit cache invariant.
+    """
+    owned_rgb = np.array(rgb, dtype=np.uint8, order="C", copy=True)
+    owned_sig = np.array(sig, dtype=np.float32, order="C", copy=True)
+    if owned_rgb.shape != (TILE, TILE, 3):
+        raise ValueError(
+            f"pattern RGB shape {owned_rgb.shape}, expected {(TILE, TILE, 3)}")
+    if owned_sig.shape != (12,):
+        raise ValueError(f"pattern signature shape {owned_sig.shape}, expected (12,)")
+    return owned_rgb, owned_sig
+
+
 def pin_p0_debug_extremes(seg_pals):
     """Put the darkest colour at P0/index1 and brightest at P0/index15.
 
@@ -823,8 +841,15 @@ def quant_pool_start_method(gpu_enabled):
 
 
 def default_png_workers(version_info):
-    """Return the safe default PNG writer count for this CPython version."""
-    return 1 if tuple(version_info[:2]) >= (3, 14) else 6
+    """Return the safe default PNG writer count for supported CPython versions.
+
+    Concurrent Pillow PNG writes corrupted live NumPy metadata during a long
+    CPython 3.13 encode, and had already crashed CPython 3.14. Keep writes
+    synchronous on every supported interpreter. The argument remains for API
+    compatibility with older callers.
+    """
+    del version_info
+    return 1
 
 
 def png_workers():
@@ -1015,6 +1040,18 @@ def main():
                                         # そのまま新区間の量子化なので安全=対象外。
     coa_bucket = defaultdict(list)      # 平均色バケツ -> [key,...] (末尾=最新)
 
+    def cache_pattern(key, rgb, sig, pal, seg):
+        if not isinstance(key, bytes) or len(key) != 64:
+            length = len(key) if hasattr(key, "__len__") else "unknown"
+            raise ValueError(
+                f"pattern key must be exactly 64 bytes, got "
+                f"{type(key).__name__} length {length}")
+        cached_rgb, cached_sig = own_pattern_cache_arrays(rgb, sig)
+        pat_rgb[key] = cached_rgb
+        pat_sig[key] = cached_sig
+        pat_pal[key] = int(pal)
+        pat_seg[key] = int(seg)
+
     def touch(key, fi):
         pass                            # residency は alloc が真(コマ末に cell順で place)
 
@@ -1106,8 +1143,8 @@ def main():
     _t = _mark("量子化", _t)
 
     _t_render = 0.0        # ループ内訳: 描画+PNG保存に費やした時間(残りがcommit/探索)
-    # PNG保存(3枚/コマ)。CPython <=3.13は裏スレッドで圧縮を重ねられるが、3.14は
-    # Pillow/NumPy保存中にinterpreter自体がsegfaultした実績があるため既定同期保存。
+    # PNG保存(3枚/コマ)。Pillowの並列保存はCPython 3.13/3.14の長時間simで
+    # NumPy配列を壊した実績があるため、全対応版で既定同期保存。
     from concurrent.futures import ThreadPoolExecutor
     import collections as _collections
     _png_workers = png_workers()
@@ -1272,7 +1309,7 @@ def main():
                     prg_hits += 1; prg_mask[c] = True
                 else:
                     tile_recs += 1; raw_mask[c] = True
-                pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c]); pat_seg[key] = cur_seg
+                cache_pattern(key, plain_rgb[c], sig2[c], assign[c], cur_seg)
                 coa_bucket[(int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))].append(key)
             name_recs += 1; spent_tiles += cost
             repoint(c, rep_key, rep_pal, rep_rgb, i)
@@ -1314,8 +1351,6 @@ def main():
                     return (None, 1e9, 1e9, 1e9)
                 arr = np.stack([pat_rgb[k] for k in cand]).astype(np.float64)   # (N,8,8,3)
                 dY = np.abs(arr @ _LWv - tl)
-                # Keep one scalar per candidate even if a cached tile carries
-                # an extra singleton dimension from an accelerated path.
                 dYm = dY.reshape(len(cand), -1).mean(1)
                 dYp = dY.reshape(len(cand), -1).max(1)
                 dCm = np.sqrt(
@@ -1366,7 +1401,7 @@ def main():
                         prg_hits += 1; prg_mask[c] = True
                     else:
                         tile_recs += 1; raw_mask[c] = True
-                    pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c]); pat_seg[key] = cur_seg
+                    cache_pattern(key, plain_rgb[c], sig2[c], assign[c], cur_seg)
                     coa_bucket[(int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))].append(key)
                     name_recs += 1; spent_tiles += cost
                     repoint(c, key, int(assign[c]), plain_rgb[c], i); committed_plain[c] = key; updated[c] = True
@@ -1436,7 +1471,7 @@ def main():
                     else:
                         cold_spent += 1
                         loaded_keys.add(key); tile_recs += 1; raw_mask[c] = True
-                        pat_rgb[key] = plain_rgb[c]; pat_sig[key] = sig2[c]; pat_pal[key] = int(assign[c]); pat_seg[key] = cur_seg
+                        cache_pattern(key, plain_rgb[c], sig2[c], assign[c], cur_seg)
                         coa_bucket[(int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))].append(key)
                     name_recs += 1; spent_tiles += cost
                     repoint(c, key, int(assign[c]), plain_rgb[c], i)
