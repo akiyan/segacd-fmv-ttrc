@@ -116,7 +116,7 @@ cadence, 2,714 frames.
 | Audio re-sync / blocking pumps | `R=0`, `C=0` for all 2,714 frames |
 | Wave-RAM lead | 14,336 through 15,360 bytes |
 | Display cadence | all 2,713 timed intervals exactly two VBlanks; no extra scanout |
-| Main pattern transfer | 17.63 ms maximum; at most one VBlank wait |
+| Main pattern transfer | 17.69 ms maximum; at most one VBlank wait |
 | Offline IMA SNR on this source | 25.2 dB |
 | Capture jump gate | 0 candidates at a 12,000 threshold; no clipped samples |
 | Sim model | shared packer-reference IMA decode plus RF5C164 8-bit conversion |

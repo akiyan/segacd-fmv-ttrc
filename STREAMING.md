@@ -14,7 +14,7 @@ The short answer is:
 | Word RAM bank A | 46.34 KiB | 76.20 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
 | Word RAM bank B | 46.34 KiB | 76.20 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
 | Main RAM | 27.29 KiB | 28.63 KiB | None counted from palette or stack reservations |
-| Main CPU | no hard positive guarantee | about 40,402 local cycles (5.27 ms) | qualified H40 reference only; Sub must already be ready |
+| Main CPU | no hard positive guarantee | about 39,930 local cycles (5.21 ms) | qualified H40 reference only; Sub must already be ready |
 | Sub CPU | no hard positive guarantee | ADPCM decoder measured 7.62-8.11 ms in H40/N2 | full Sonic capture passes; BIOS/CD/Word-RAM waits remain outside that stopwatch |
 
 “Safe fixed” means that the address can be assigned a fixed purpose and still
@@ -202,9 +202,9 @@ sequenceDiagram
         M->>V: Write complete 40 x 28 name table
         Note right of M: M2 at most 55,280 modeled cycles<br/>remaining 190,657
         M->>V: Wait for VBlank; transfer cold runs; repair DMA first words
-        Note right of M: M3 135,255 elapsed Main cycles in the qualified full H40 capture<br/>remaining 55,402
+        Note right of M: M3 135,727 elapsed Main cycles in the qualified full H40 capture<br/>remaining 54,930
         M->>V: DEBUG HUD, optional CRAM load, atomic name-table flip
-        Note right of M: M4 15k-cycle planning reserve<br/>qualified local remainder about 40,402 cycles (5.27 ms)
+        Note right of M: M4 15k-cycle planning reserve<br/>qualified local remainder about 39,930 cycles (5.21 ms)
     end
 
     M->>S: Next CMD_SWAP
@@ -222,12 +222,12 @@ For H40 full screen:
 | Load-run parsing and fixed setup | 10,000 cycles | conservative planning envelope; 178 records is the format maximum at N2 |
 | Bitmap handler | 38,690 cycles | theoretical worst of all 256 bitmap-byte handlers across 140 bytes |
 | Generated 40 x 28 name-table blit | 16,590 cycles | exact instruction model |
-| Pattern-transfer interval | 135,255 cycles | 574 hardware stopwatch ticks at 30.72 us/tick in the full 2,714-frame H40 Sonic capture |
+| Pattern-transfer interval | 135,727 cycles | 576 hardware stopwatch ticks at 30.72 us/tick in the full 2,714-frame H40 Sonic capture |
 | DEBUG HUD, CRAM/flip, residual setup | 15,000 cycles | planning reserve around code not covered by the two exact models |
-| **Total planning envelope** | **215,535 cycles** | values above summed conservatively |
-| **Local remainder** | **40,402 cycles / 5.27 ms** | 255,937 - 215,535 |
+| **Total planning envelope** | **216,007 cycles** | values above summed conservatively |
+| **Local remainder** | **39,930 cycles / 5.21 ms** | 255,937 - 216,007 |
 
-The 574-tick measurement is from the current p56 full-length Sonic
+The 576-tick measurement is from the current p56 full-length Sonic
 qualification at cold 178. The frame with the largest pattern interval is not
 necessarily the frame with the theoretical worst bitmap, which is why summing
 both is conservative.
@@ -237,8 +237,8 @@ isolated one-tile runs, but the current contiguous allocator normally produces
 fewer (129 maximum in the reference H40 pack). There is no pack-time limit
 on run count or Main elapsed transfer time. A pathological but currently
 accepted stream can therefore consume the complete two-VBlank deadline. Until
-such a guard exists, **40,402 cycles is a qualification target, not permission
-to spend 40,402 cycles unconditionally**.
+such a guard exists, **39,930 cycles is a qualification target, not permission
+to spend 39,930 cycles unconditionally**.
 
 ### Sub cycle basis
 
@@ -345,6 +345,6 @@ tools/python.sh harness/main_codegen/measure_cycles.py \
   --body out/sonic-jam-op-h40/BODY.DAT
 ```
 
-Re-run the full DEBUG recording and HUD extraction before revising the 574-tick
+Re-run the full DEBUG recording and HUD extraction before revising the 576-tick
 qualified maximum. Do not replace that elapsed measurement with the instruction
 model: VBlank alignment and DMA completion are part of the real Main deadline.
