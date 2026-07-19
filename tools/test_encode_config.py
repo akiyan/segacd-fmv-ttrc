@@ -65,6 +65,12 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         env = apply_profile_env(profile, {"CBRSIM_ACTIVE_TILES": "1"})
         self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "720")
 
+    def test_machi_ed_declares_its_confirmed_active_tile_area(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        profile = load_profile(root / "configs/machi-ed-h40.toml")
+        env = apply_profile_env(profile, {"CBRSIM_ACTIVE_TILES": "1"})
+        self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "1040")
+
     def test_profile_without_preprocess_clears_inherited_snap(self) -> None:
         root = Path(__file__).resolve().parents[1]
         h32 = load_profile(root / "configs/bad-apple-h32.toml")

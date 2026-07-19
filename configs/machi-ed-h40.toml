@@ -10,6 +10,9 @@ sar = "1:1"
 mode = "H40"
 width = 320
 height = 224
+# The H40 PAR-preserving 320x204 picture at y=10 touches 26 tile rows.
+# Count both partially covered boundary rows; the remaining two rows are black.
+active_tiles = 1040
 fit = "pad"
 
 [audio]
