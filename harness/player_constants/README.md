@@ -2,8 +2,9 @@
 
 This harness verifies the disc-specific Main/Sub assembly path without
 reusing stale packed movies. It creates current TTRC v9 headers for H32 and H40
-at 15, 24 and 30 fps, generates `player_constants.inc`, then assembles and links
-both the generic and specialized DEBUG players.
+at 15, 24 and 30 fps, plus H40 ADPCM22 headers at 15 and 30 fps, generates
+`player_constants.inc`, then assembles and links both the generic and
+specialized DEBUG players.
 
 For every case it requires:
 
@@ -13,7 +14,9 @@ For every case it requires:
   `0xBAD1` mismatch diagnostic;
 - Main's specialized flip branches cannot escape the `bf_doflip` control-flow
   region before `do_flip`;
-- all six geometry/timing combinations assemble and link successfully.
+- the specialized 15 fps ADPCM decoder services the CDC during its long decode,
+  while the 30 fps decoder contains no such call or counter overhead;
+- all eight geometry/timing/audio combinations assemble and link successfully.
 
 Run it with the project Python environment:
 

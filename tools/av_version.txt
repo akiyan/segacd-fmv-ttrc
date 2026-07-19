@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p56 : Service the CDC during low-rate ADPCM decode. An N4 decode can run
+#        for about 16 ms, longer than one 13.3 ms CD-sector interval, so the
+#        Sub CPU now polls at most every 512 packed bytes. Specialized 24/30
+#        fps players emit none of this counter or call overhead.
 #   e55 : Make ADPCM22 the encoder default for new profiles and direct sim
 #        runs. PCM13 remains an explicit physical-console-qualified fallback.
 #   e54 : Make sim audio reproduce the current ADPCM22 signal. Analysis and
@@ -401,4 +405,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
 e=55
-p=55
+p=56

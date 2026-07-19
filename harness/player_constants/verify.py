@@ -27,6 +27,7 @@ class Case:
     name: str
     mode: int
     fps: int
+    adpcm22: bool = False
 
 
 CASES = (
@@ -36,6 +37,8 @@ CASES = (
     Case("h40-15", 1, 15),
     Case("h40-24", 1, 24),
     Case("h40-30", 1, 30),
+    Case("h40-15-adpcm", 1, 15, True),
+    Case("h40-30-adpcm", 1, 30, True),
 )
 
 
@@ -57,7 +60,12 @@ def make_header(case: Case) -> bytes:
     features = ttrc_routing.FEATURE_COLD_RUNS
     if av_config.uses_fixed_n2_cadence(case.fps):
         features |= ttrc_routing.FEATURE_FIXED_N2
-    audio = av_config.pcm_frame_bytes(case.fps, 13_300)
+    if case.adpcm22:
+        _rate, audio, _control = av_config.audio_frame_layout(
+            "adpcm22", case.fps)
+        features |= ttrc_routing.FEATURE_ADPCM22
+    else:
+        audio = av_config.pcm_frame_bytes(case.fps, 13_300)
     audio_fd = av_config.rf5c164_fd(
         audio, av_config.playback_fps_for_content(case.fps))
     prefix = struct.pack(
@@ -124,8 +132,28 @@ def verify_doflip_branches(objdump: Path, obj: Path) -> None:
         raise AssertionError(f"{obj}: bf_doflip branch escaped its region: {details}")
 
 
+def verify_adpcm_decode_pump(
+    objdump: Path, obj: Path, *, expected: bool,
+) -> None:
+    """Require the low-rate specialized decoder to service the CDC mid-chunk."""
+    disassembly = run([str(objdump), "-d", str(obj)])
+    start_match = re.search(
+        r"^[0-9a-f]+ <decode_adpcm_chunk>:$", disassembly, re.MULTILINE)
+    end_match = re.search(
+        r"^[0-9a-f]+ <write_wave_chunk>:$", disassembly, re.MULTILINE)
+    if not start_match or not end_match:
+        raise AssertionError(f"{obj}: missing ADPCM decoder symbols")
+    block = disassembly[start_match.end():end_match.start()]
+    found = bool(re.search(r"\bbsr\w*\s+[^\n]*<pump_poll>", block))
+    if found != expected:
+        state = "present" if found else "absent"
+        wanted = "present" if expected else "absent"
+        raise AssertionError(
+            f"{obj}: decoder pump is {state}, expected {wanted}")
+
+
 def build_case(
-    case_dir: Path, *, specialized: bool,
+    case: Case, case_dir: Path, *, specialized: bool,
     assembler: Path, linker: Path, size: Path, objdump: Path,
 ) -> Build:
     tag = "specialized" if specialized else "generic"
@@ -157,6 +185,9 @@ def build_case(
         str(linker), "-nostdlib", "--oformat", "binary",
         "-T", str(ROOT / "cfg/sp.ld"), "-o", str(sp_bin), str(sp_obj),
     ])
+    if specialized and case.adpcm22:
+        verify_adpcm_decode_pump(
+            objdump, sp_obj, expected=case.fps < 24)
 
     return Build(
         ip_text=text_size(size, ip_obj),
@@ -188,10 +219,10 @@ def main() -> None:
                 header_path, case_dir / "player_constants.inc")
 
             generic = build_case(
-                case_dir, specialized=False,
+                case, case_dir, specialized=False,
                 assembler=assembler, linker=linker, size=size, objdump=objdump)
             specialized = build_case(
-                case_dir, specialized=True,
+                case, case_dir, specialized=True,
                 assembler=assembler, linker=linker, size=size, objdump=objdump)
 
             if specialized.ip_bin > generic.ip_bin:

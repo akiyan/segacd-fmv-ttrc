@@ -1,7 +1,8 @@
 # 22.05 kHz IMA ADPCM playback
 
 **Status: implementation complete; H40 Sonic is full-length emulator- and
-listening-qualified.** The current v9 path decodes 22.05 kHz mono IMA ADPCM
+listening-qualified, and H40/15 Machi OP is full-length emulator- and
+automated-check-qualified.** The current v9 path decodes 22.05 kHz mono IMA ADPCM
 directly on the Sub CPU and writes the reconstructed 8-bit samples to the
 RF5C164. H40 Sonic Jam completed all 2,714 frames in the lossless Genesis Plus
 GX recording with no CD slip, stream desync, audio re-sync, or blocking CD
@@ -81,12 +82,22 @@ Once the current control block is linear in Word RAM, the player:
 4. sends the PCM buffer through the existing batched RF5C164 writer; and
 5. continues with bitmap and cold-pattern expansion.
 
+At 15 fps the N4 chunk contains 1,472 decoded samples and its table decode runs
+for about 16 ms. That is longer than the 13.3 ms CD-sector interval, so the
+low-rate decoder also performs a non-blocking CDC poll at most every 512 packed
+bytes. This prevents a long uninterrupted decode from letting a ready sector
+age out. The profile-specialized 24/30 fps decoder emits no polling counter or
+call in this loop, preserving the qualified Sonic N2 path.
+
 No codec state is carried in PRG-RAM. A malformed step index is clamped to 88,
 and the fixed chunk size bounds every table and output-buffer access.
 
-The DEBUG `Axx` HUD field measures decoder time. One displayed unit is four
+The DEBUG `Axx` HUD field measures the decode phase, including an opportunistic
+CDC pump on low-rate profiles. One displayed unit is four
 30.72 microsecond Mega-CD stopwatch ticks, about 0.1229 ms. PCM builds report
-zero.
+zero. In the Machi OP qualification, `A` was typically about `BC` because the
+low-rate measurement also includes real sector draining performed by these
+polls.
 
 ## H40 Sonic Jam qualification
 
@@ -121,6 +132,31 @@ conversion, the reconstructed sim audio and captured playback were also checked
 by listening and accepted. This closes the ADPCM22 implementation. Physical
 Mega-CD playback remains a separate portability qualification.
 
+## H40/15 Machi OP qualification
+
+Profile: 320x224 H40, 40x28 tiles, 15 fps content on the N4 cadence, 2,293
+movie frames. This qualification was added after the original recording showed
+long holds at `F0107`, `F0166`, and `F0391`.
+
+| Result | Before p56 | p56 low-rate CDC polling |
+|---|---:|---:|
+| Decoded audio | 1,472 samples/frame | 1,472 samples/frame |
+| ADPCM control audio | 740 B/frame | 740 B/frame |
+| Final CD slip / stream desync / audio re-sync | `S3 D0 R0` | `S0 D0 R0` |
+| Main VBlank waits | maximum `M2` | maximum `M2` |
+| `F0107` capture hold at about 59.94 fps | 16 display frames | 3 display frames |
+| Capture jump gate | not used for the diagnosis | 0 candidates at a 12,000 threshold |
+| Clipped samples | not used for the diagnosis | 0 |
+
+The old `F0107` hold was therefore not a Main-CPU four-VBlank stall. The N4
+decode ran longer than a CD-sector interval without reaching a CDC poll, after
+which the Sub CPU had to recover the missed delivery. Player p56 polls inside
+that decode, and the full replacement recording completed with no slips,
+desyncs, or audio re-syncs. Startup, movie start, `F0107`, middle, and tail were
+also checked visually. This recording received automated audio checks but no
+new listening comparison; the accepted listening qualification remains the H40
+Sonic result above.
+
 ## Why the retry fits when the old one did not
 
 The codec cost per second has not disappeared. H40/N2 merely splits it into
@@ -149,6 +185,6 @@ show that the Sub path cannot hold its deadline.
 ## Broader qualification (not implementation blockers)
 
 - run on physical Mega-CD hardware;
-- record full H32/30, H40/24, and H40/15 profiles;
+- record full H32/30 and H40/24 profiles; repeat H40/15 on more sources;
 - confirm the RF5C164 frequency delta and stable wave-RAM lead for each cadence;
 - keep PCM13 available when a physical-console-qualified fallback is required.

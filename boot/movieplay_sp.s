@@ -1723,6 +1723,23 @@ decode_adpcm_chunk:
 	lsr.w	#1, d7				/* two samples per packed byte */
 	beq	adpcm_decode_done
 	subq.w	#1, d7
+	/* At low frame rates one N4 ADPCM decode lasts about 16 ms, longer than
+	   the 13.3 ms CD-sector interval.  Poll the CDC at most every 512 packed
+	   bytes so it cannot sit unattended for a whole sector while decoding.
+	   The specialized 24/30 fps player emits none of this counter work. */
+.ifdef PLAYER_SPECIALIZED
+.if PC_FPS_INT < 24
+	move.w	d7, d5
+	andi.w	#0x01FF, d5			/* first poll at the next 512-byte boundary */
+.endif
+.else
+	moveq	#-1, d5				/* high-rate generic path: DBRA never expires */
+	cmpi.w	#0x03FF, pump_mask		/* 24/30 fps use the sparse pump profile */
+	beq.s	adpcm_pump_ready
+	move.w	d7, d5
+	andi.w	#0x01FF, d5
+adpcm_pump_ready:
+.endif
 adpcm_decode_loop:
 	moveq	#0, d0
 	move.b	(a0)+, d0
@@ -1762,6 +1779,19 @@ adpcm_high_clamped:
 	move.w	d6, -(sp)
 	move.b	(sp)+, d0
 	move.b	(a4,d0.w), (a1)+
+.ifdef PLAYER_SPECIALIZED
+.if PC_FPS_INT < 24
+	dbra	d5, adpcm_decode_no_pump
+	bsr	pump_poll			/* preserves decoder registers and table pointers */
+	move.w	#0x01FF, d5
+adpcm_decode_no_pump:
+.endif
+.else
+	dbra	d5, adpcm_decode_no_pump
+	bsr	pump_poll
+	move.w	#0x01FF, d5
+adpcm_decode_no_pump:
+.endif
 	dbra	d7, adpcm_decode_loop
 adpcm_decode_done:
 	movem.l	(sp)+, d0-d7/a0-a4

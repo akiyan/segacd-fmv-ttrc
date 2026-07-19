@@ -10,7 +10,7 @@ The short answer is:
 
 | Domain | Safe fixed space, all supported playback | H40 fixed-N2 steady-stream space | Conditional space |
 |---|---:|---:|---:|
-| Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 32 bytes of SP boot-slot growth, not data RAM |
+| Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 16 bytes of SP boot-slot growth, not data RAM |
 | Word RAM bank A | 46.34 KiB | 76.30 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
 | Word RAM bank B | 46.34 KiB | 76.30 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
 | Main RAM | 27.29 KiB | 28.66 KiB | None counted from palette or stack reservations |
@@ -68,8 +68,8 @@ allocation and a build-time overlap check before use.
 | Address | Size | Current owner | Available to a new feature? |
 |---|---:|---|---|
 | `0x00000..0x05FFF` | 24.00 KiB | BIOS / low PRG work area | No |
-| `0x06000..0x06FDF` | 4,064 B | current specialized DEBUG Sub boot image (4,050 B text plus link padding) | No |
-| `0x06FE0..0x06FFF` | 32 B | remainder of the 4,096-byte SP boot slot | Code growth only |
+| `0x06000..0x06FEF` | 4,080 B | largest current specialized DEBUG Sub boot image (4,072 B text plus link padding, H40/15 ADPCM) | No |
+| `0x06FF0..0x06FFF` | 16 B | remainder of the 4,096-byte SP boot slot | Code growth only |
 | `0x07000..0x07FFF` | 4.00 KiB | boot ISO scratch and BIOS-unsafe streaming range | No |
 | `0x08000..0x097FF` | **6.00 KiB** | unused, previously marker-verified safe | **Yes, fixed PRG feature area** |
 | `0x09800..0x0BFFF` | 10.00 KiB | touched by BIOS during continuous reads | No |
@@ -253,8 +253,8 @@ assembly instructions in the H40/N2 path:
 | **Visible subtotal** | **170,000 cycles** | all exclusions above |
 | **Raw remainder before waits** | **247,083 cycles / 19.77 ms** | not safe spendable time |
 
-The ADPCM22 decoder stopwatch surrounds only the table decode, not the following
-736-byte RF5C164 write. In the 2,714-frame H40 Sonic capture it reported 62-66
+For specialized H40/N2, the ADPCM22 stopwatch surrounds only the table decode,
+not the following 736-byte RF5C164 write. In the 2,714-frame H40 Sonic capture it reported 62-66
 display units. One unit is four 30.72 microsecond ticks, giving 7.62-8.11 ms or
 about 95,000-101,000 Sub cycles. Adding that to the PCM13 baseline already
 raises visible work to roughly 265,000-271,000 cycles, and ADPCM writes 292
@@ -262,6 +262,14 @@ more RF5C164 samples than PCM13; that extra writer cost is not included in this
 number. Thus the pre-wait arithmetic remainder is less than about 146,000
 cycles, not 247,083. The same capture nevertheless completed with `S=0`,
 `D=0`, `R=0`, `C=0`, and 14-15 KiB of audio lead.
+
+At H40/15, the 1,472-sample decode is about 16 ms and crosses a 13.3 ms
+CD-sector interval. Player p56 therefore performs non-blocking CDC polls during
+the decode; `Axx` includes any sector draining done by those polls. The 2,293-
+frame Machi OP replacement recording completed with `S=0`, `D=0`, and `R=0`,
+while the pre-fix recording ended at `S=3` and held `F0107`, `F0166`, and
+`F0391` during recovery. This qualifies that low-rate path without turning its
+variable BIOS time into spendable Sub-CPU margin.
 
 This explains why a static instruction count can look comfortable even when a
 real stream is near its limit: the expensive uncertainty lives in BIOS calls,
@@ -290,8 +298,8 @@ Use the low-risk spaces in this order:
 
 For CPU time, assume zero shared deadline margin until the new path has:
 
-- a per-frame Sub stopwatch around the new sustained work (ADPCM already
-  exports decoder-only `Axx`);
+- a per-frame Sub stopwatch around the new sustained work (ADPCM exports
+  decode-phase `Axx`, including low-rate CDC service);
 - a pack-time Main guard for cold-run count or predicted transfer time;
 - full-length H40/30, H40/24, H32/30, and H40/15 recordings with `S=0`, `D=0`,
   `R=0`, stable audio lead, and no extra cadence slips;

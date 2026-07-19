@@ -103,8 +103,14 @@ audible click). See the `R`/`L` HUD readouts below.
 Both `pcm13` and `adpcm22` are supported profile choices. `adpcm22` is the
 default for new profiles and for direct sim runs that do not set
 `CBRSIM_AUDIO`. ADPCM22 implementation is complete and H40 Sonic is full-length
-emulator-, automated-check-, and listening-qualified; physical hardware and
-the other cadence/mode combinations remain broader compatibility checks.
+emulator-, automated-check-, and listening-qualified. H40/15 Machi OP is also
+full-length emulator- and automated-check-qualified. Physical hardware and the
+other cadence/mode combinations remain broader compatibility checks.
+
+Low-rate ADPCM chunks need one extra streaming safeguard. An N4 decode is about
+16 ms, longer than the 13.3 ms interval between CD sectors, so the Sub CPU polls
+the CDC during the decode at intervals of at most 512 packed bytes. The
+profile-specialized 24/30 fps decoder omits that counter and call entirely.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
@@ -309,6 +315,6 @@ red indicator because they do not have the HUD.
 | `C` | `Cxx` | Blocking CD pumps needed before the current control could run, including an older BODY slot. Zero means delivery was already armed. |
 | `W` | `Wxx` | Approximate Main-CPU wait for Sub completion at `CMD_SWAP`, in V-counter scanlines. It wraps at 256, so use it as a short-wait diagnostic rather than an absolute stopwatch. |
 | `M` | `Mxx` | VBlank starts waited by the Main pattern path this frame. Values of 2 or more prove an extra VBlank spill. |
-| `A` | `Axx` | Sub ADPCM decoder time. One displayed unit is four 30.72 us stopwatch ticks (about 0.1229 ms); PCM builds display zero. H40 Sonic ADPCM measured `3E..42`, about 7.62..8.11 ms. |
+| `A` | `Axx` | Sub ADPCM decode phase time. One displayed unit is four 30.72 us stopwatch ticks (about 0.1229 ms); PCM builds display zero. H40 Sonic ADPCM measured `3E..42`, about 7.62..8.11 ms. At low frame rates this phase includes any opportunistic CDC pump performed inside the longer decode. |
 | `U` | `Uxxxx` (H40) | Main pattern-transfer time in Mega-CD stopwatch ticks, measured from the first run through the final DMA repair or CPU-direct write. One tick is 30.72 us; the 12-bit counter wraps after 4096 ticks (about 125.83 ms). |
 | `N` | `Nxx` (H40) | Low byte of the packed cold-run descriptor count for this frame. This is the fragmentation count before a long run is split by the VBlank word budget and wraps at 256. |

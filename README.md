@@ -64,10 +64,11 @@ source within what the hardware allows — not fixed project constants:
 - **Audio format:** **ADPCM22** is the default: checkpointed 22.05 kHz mono IMA
   decoded directly by the Sub CPU. **PCM13** (RF5C164), 13.3 kHz mono 8-bit,
   remains supported as the physical-console-qualified fallback. ADPCM22
-  implementation is complete and the full H40 Sonic path is
-  emulator-, automated-check-, and listening-qualified. PCM13 remains the
+  implementation is complete: the full H40 Sonic path is emulator-,
+  automated-check-, and listening-qualified, and H40/15 Machi OP is
+  full-length emulator- and automated-check-qualified. PCM13 remains the
   conservative choice when physical-console qualification is required; real
-  hardware and the other ADPCM cadence profiles are broader compatibility
+  hardware and the remaining ADPCM cadence profiles are broader compatibility
   checks, not implementation blockers. See [ADPCM.md](ADPCM.md). The separate
   Z80-offload experiment remains shelved because BUSREQ feeding contends with
   Main CPU video work.
