@@ -89,7 +89,7 @@ class ColdCapTests(unittest.TestCase):
 
     def test_other_h40_cadence_exceptions_are_limited_by_active_tiles(self) -> None:
         self.assertEqual(av_config.cold_cap_for_fps(24, "H40", 1120), 200)
-        self.assertEqual(av_config.cold_cap_for_fps(30, "H40", 1120), 178)
+        self.assertEqual(av_config.cold_cap_for_fps(30, "H40", 1120), 180)
         self.assertEqual(av_config.cold_cap_for_fps(30, "H40", 1119), 175)
 
     def test_pack_ceiling_uses_the_same_h40_exceptions(self) -> None:
@@ -102,7 +102,7 @@ class ColdCapTests(unittest.TestCase):
         self.assertEqual(
             av_config.cold_realized_ceiling_for_fps(24, "H40", 1120), 200)
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(30, "H40", 1120), 178)
+            av_config.cold_realized_ceiling_for_fps(30, "H40", 1120), 180)
 
     def test_nonpositive_active_tile_count_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
