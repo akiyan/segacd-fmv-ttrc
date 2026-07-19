@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e59 : Add a 375 cold-cap qualification candidate for Machi ED's
+#        H40/15fps/1,040-active-tile raster. Keep the qualified 720-tile value
+#        at 400 and full 1,120-tile H40 at 350.
 #   e58 : Scope the H40/15fps 400 cold cap to the qualified 720-active-tile
 #        raster. Full 1,120-tile H40 and every other active-tile count retain
 #        350. Freeze active_tiles into sim stats and the decision log so the
@@ -414,5 +417,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
-e=58
+e=59
 p=56
