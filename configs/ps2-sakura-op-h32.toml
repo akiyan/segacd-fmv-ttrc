@@ -15,11 +15,11 @@ master_filter = "setsar=1,crop=640:376:0:52,scale=1280:752:flags=lanczos,hqdn3d=
 raw_filter = "setsar=1,crop=640:376:0:52,scale=256:172:flags=lanczos,pad=256:224:0:26:color=black,setsar=1"
 
 [audio]
-kind = "pcm13"
+kind = "adpcm22"
 
 [output]
-directory = "videos/ps2_sakura_op_H32_256x224_pcm/tmp"
-reuse = true
+directory = "videos/ps2_sakura_op_H32_256x224_adpcm22/tmp"
+reuse = false
 emit_decisions = true
 
 [encoder]

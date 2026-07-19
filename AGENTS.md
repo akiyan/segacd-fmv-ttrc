@@ -160,8 +160,9 @@ within Sega CD limits, not fixed presets:
 - Display mode / resolution / aspect (H32 / H40 / mode4), tile grid sized to the
   per-frame DMA budget.
 - Frame rate = the source's native rate.
-- Audio = per-profile `pcm13` or `adpcm22`. **PCM13** (RF5C164, 13.3 kHz mono
-  8-bit) is the conservative physical-hardware-qualified path. **ADPCM22** is
+- Audio = per-profile `pcm13` or `adpcm22`; **ADPCM22 is the default**.
+  **PCM13** (RF5C164, 13.3 kHz mono 8-bit) is the conservative
+  physical-hardware-qualified fallback. **ADPCM22** is
   the completed checkpointed 22.05 kHz mono IMA path, decoded directly by the
   Sub CPU through full lookup tables duplicated in both physical 1M Word-RAM
   banks. H40 Sonic is full-length emulator-, automated-check-, and

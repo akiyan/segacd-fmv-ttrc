@@ -15,10 +15,11 @@ master_filter = "setsar=1,crop=320:144:0:38,scale=640:260:flags=lanczos,hqdn3d=6
 raw_filter = "setsar=1,crop=320:144:0:38,scale=320:130:flags=lanczos,pad=320:224:0:47:color=black,setsar=1"
 
 [audio]
-kind = "pcm13"
+kind = "adpcm22"
 
 [output]
-directory = "videos/machi_op_H40_320x224_pcm/tmp"
+directory = "videos/machi_op_H40_320x224_adpcm22/tmp"
+reuse = false
 emit_decisions = true
 
 [encoder]

@@ -108,10 +108,11 @@ Follow `sim` source inspection exactly:
 - allow starvation instead of shrinking the raster.
 
 Create or update one strict `schema_version = 1` profile under `configs/`. Put
-the exact full duration, source timing and aspect, mode raster, PCM audio,
+the exact full duration, source timing and aspect, mode raster, audio format,
 output path, encoder settings, palette settings, and DEBUG pack settings in the
-profile. Use the filename-derived profile identity and canonical `videos/`
-artifact paths from `AGENTS.md`.
+profile. Use ADPCM22 unless the user explicitly requests PCM13 or a
+physical-console-qualified fallback. Use the filename-derived profile identity
+and canonical `videos/` artifact paths from `AGENTS.md`.
 
 Do not bump `tools/av_version.txt` merely for a new source profile. Apply the
 version policy in `AGENTS.md` if output-affecting encoder or player code changes.

@@ -46,6 +46,8 @@ Argument: source MP4 path, optionally plus display name or upload instruction.
 Other fixed defaults:
 
 - All features on: `DITHER`, `SEGPAL`, `NEAR`, `VBV`, `COA`.
+- Audio = `adpcm22`. Use `pcm13` only when explicitly requested or when a
+  physical-console-qualified fallback is required.
 - Tank size comes from `tools/av_config.py`, matching the
   packer's usable ring cap. Do not set `CBRSIM_TANK_KB` in normal runs.
 - Rate = 144 KiB/s by default.

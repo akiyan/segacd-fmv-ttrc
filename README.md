@@ -61,9 +61,10 @@ source within what the hardware allows — not fixed project constants:
 - **Display mode / resolution / aspect:** H32, H40, or mode4, with the tile grid
   sized to the per-frame DMA budget and the source's display aspect.
 - **Frame rate:** the source's native rate is kept (15 / 24 / 30 fps, etc.).
-- **Audio format:** **PCM13** (RF5C164), 13.3 kHz mono 8-bit, and **ADPCM22**,
-  checkpointed 22.05 kHz mono IMA decoded directly by the Sub CPU, are both
-  supported. ADPCM22 implementation is complete and the full H40 Sonic path is
+- **Audio format:** **ADPCM22** is the default: checkpointed 22.05 kHz mono IMA
+  decoded directly by the Sub CPU. **PCM13** (RF5C164), 13.3 kHz mono 8-bit,
+  remains supported as the physical-console-qualified fallback. ADPCM22
+  implementation is complete and the full H40 Sonic path is
   emulator-, automated-check-, and listening-qualified. PCM13 remains the
   conservative choice when physical-console qualification is required; real
   hardware and the other ADPCM cadence profiles are broader compatibility

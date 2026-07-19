@@ -100,10 +100,11 @@ RF5C164 playback is a fixed rate, so playback must trail the write pointer by a 
 lead drifts out of `[SYNC_MIN, SYNC_MAX]`, the writer jumps (a re-sync = an
 audible click). See the `R`/`L` HUD readouts below.
 
-Both `pcm13` and `adpcm22` are supported profile choices. ADPCM22 implementation
-is complete and H40 Sonic is full-length emulator-, automated-check-, and
-listening-qualified; physical hardware and the other cadence/mode combinations
-remain broader compatibility checks.
+Both `pcm13` and `adpcm22` are supported profile choices. `adpcm22` is the
+default for new profiles and for direct sim runs that do not set
+`CBRSIM_AUDIO`. ADPCM22 implementation is complete and H40 Sonic is full-length
+emulator-, automated-check-, and listening-qualified; physical hardware and
+the other cadence/mode combinations remain broader compatibility checks.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
@@ -251,7 +252,7 @@ and on the disc because those are TTRC format names read by the player.
 | `[source]` | `path`, `fps`, `duration`, optional `sar` | Input identity and native timing. `sar` repairs missing/wrong source metadata; it does not crop. |
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `fit="pad"` preserves every source pixel; use `crop` only for confirmed black margins. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
-| `[audio]` | `kind` | `pcm13` is the shipping RF5C164 path. |
+| `[audio]` | `kind` | Write `adpcm22` for the default 22.05 kHz Sub-CPU IMA path. Use `pcm13` for the physical-console-qualified 13.3 kHz fallback. The strict profile keeps this choice explicit. |
 | `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. Normal hardware work sets `emit_decisions=true`. |
 | `[encoder]` | `gpu`, `rate_kib`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `coa` | Common codec controls. GPU is the default; CPU fallback remains automatic. |
 | `[palette]` | `algorithm`, sampling/validation keys, MOSAIC-GM seam keys | Palette-selection algorithm and its training controls. |

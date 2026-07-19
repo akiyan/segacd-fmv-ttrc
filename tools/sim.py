@@ -94,9 +94,9 @@ CD_RATE = 153_600               # CD 1x, B/s (= 150 KiB/s, 絶対上限)
 TARGET_RATE = int(os.environ.get("CBRSIM_RATE_KIB", "144")) * 1024  # CBRレート(既定144 KiB/s)。env で調整可
 FRAME_BYTES = int(TARGET_RATE / FPS)   # 純CBR: 1フレームで転送できる固定バイト
                                     # 実機1M/1Mダブルバッファ相当。フレーム間の繰り越し無し。
-# 音声: 既定 13.3kHz mono 8bit PCM(RF5C164)。adpcm22 は22.05kHzの
-# s16 sourceをcheckpoint付き4bit IMAへpackし、Sub CPUが復号する。
-AUDIO_KIND = os.environ.get("CBRSIM_AUDIO", "pcm13")
+# 音声: 既定は22.05kHz mono ADPCM。s16 sourceをcheckpoint付き4bit IMAへ
+# packし、Sub CPUが復号する。pcm13は物理実機資格済みの互換フォールバック。
+AUDIO_KIND = os.environ.get("CBRSIM_AUDIO", "adpcm22")
 if AUDIO_KIND == "pcm13":
     AUDIO_FFCODEC = "pcm_u8"
     AUDIO_LABEL = "13.3kHz mono 8bit PCM"; AUDIO_FILE = "audio_13k3_u8_mono.wav"

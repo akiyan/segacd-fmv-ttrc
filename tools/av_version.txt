@@ -11,6 +11,8 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e55 : Make ADPCM22 the encoder default for new profiles and direct sim
+#        runs. PCM13 remains an explicit physical-console-qualified fallback.
 #   e54 : Make sim audio reproduce the current ADPCM22 signal. Analysis and
 #        straight sim videos now use the shared continuous checkpointed IMA
 #        encode/decode path followed by RF5C164 8-bit output conversion; the
@@ -398,5 +400,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
-e=54
+e=55
 p=55
