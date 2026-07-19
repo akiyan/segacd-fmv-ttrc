@@ -11,6 +11,14 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e62 : Replace the encoder's fixed 40%/70% optional-upgrade reserves, 40%
+#        recovery holdback, and separate terminal ramp with a whole-movie
+#        reserve plan. A dry run of the quantized exact target through the
+#        shared VRAM allocator predicts future demand; a backwards pass keeps
+#        only the bytes future bursts require and ends at zero reserve. The
+#        optional-upgrade plan uses complete exact demand. Normal exact updates
+#        use a narrower Coa-exceeding risk trace, deferring work only where
+#        Coa can degrade gracefully while protecting future Flbk/Miss bursts.
 #   e61 : Qualify the H40/30fps/1,120-active-tile Sonic cold cap at 178.
 #        All 2,713 timed intervals stayed at exact N=2 with S/D/R/C=0; 179
 #        inserted one extra scanout, and 200 exhausted delivery margin.
@@ -423,5 +431,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
-e=61
+e=62
 p=56

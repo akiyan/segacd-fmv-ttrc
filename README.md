@@ -37,11 +37,14 @@ Everything else is shaped by Sega CD hardware, not by video theory:
   *close* resident is accepted under graded thresholds: `Near` (near-perfect),
   `Coa` (coarse), and `Flbk` (a wide fallback that fills what would otherwise be
   a hole). Accuracy is traded for zero pattern transfer.
-- **Constant CD bitrate + scheduled payload RING.** The encoder uses a virtual
-  VBV budget to move spare capacity from easy frames to hard ones. The packer
-  then schedules the chosen pattern payload into the physical PRG-RAM RING in
-  whole CD sectors. Both share one safe capacity, but their occupancy curves
-  are deliberately separate.
+- **Whole-movie quality budget + scheduled payload RING.** The encoder first
+  dry-runs the quantized movie through the same VRAM allocator used for the
+  final encode. A backwards pass reserves only the virtual VBV bytes needed by
+  future update bursts, while allowing Coa-safe changes to yield before likely
+  Flbk/Miss bursts. The packer separately schedules the chosen pattern payload
+  into the physical PRG-RAM RING in whole CD sectors. Both share one safe
+  capacity, but the virtual reserve and physical occupancy are deliberately
+  separate.
 - **DMA-limited refresh.** How many tiles can be written to VRAM per frame is
   bounded by the VBLANK DMA window for the screen mode and fps, so the tile grid
   size is chosen to fit that budget.
@@ -89,10 +92,11 @@ Sega CD-specific compression is the "Encode" step.
    rendered RGB333 image stays exactly the same.
 4. **Quantize** each 8x8 tile to the chosen Genesis palettes (position-fixed
    Bayer dithering).
-5. **Encode (the codec):** maintain the resident VRAM tile pool; per frame,
-   reuse exact / near / coarse / fallback residents where possible, load fresh
-   patterns only where needed, spend the CBR budget by priority, and bank/spend
-   the virtual VBV budget.
+5. **Plan and encode (the codec):** dry-run the exact target to predict
+   name-table and cold-pattern demand, build backwards reserve curves that end
+   at zero, then maintain the resident VRAM tile pool; per frame, reuse exact /
+   near / coarse / fallback residents where possible and spend only the
+   virtual VBV bytes not reserved for a harder future burst.
 6. **Pack** video control, tile payload, palettes, and the selected PCM13 or
    ADPCM22 audio into the two-file CD stream: an armed startup `HEADER.DAT` and
    a continuously read `BODY.DAT`.

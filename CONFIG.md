@@ -214,7 +214,6 @@ values in this document.
 | `CBRSIM_FLBK_IMPROVE_ONLY` / `_MIN_IMPROVE` | 1 / 0 | Flbk = fill a Miss with a resident tile only if it improves the picture. |
 | `CBRSIM_TFLBK_YM` / `_YP` / `_C` | 120 / 252 / 200 | Flbk match thresholds (loose — a coarse fill beats a hole). |
 | `AGING_ALPHA` / `WAIT_CAP` | 0.6 / 10 | Priority boost per waited frame, saturating at WAIT_CAP frames. |
-| `UPGRADE_NEAR_RESERVE` | 0.7 | Apply Near only when 70%+ of the tile budget is still free. |
 | `encoder.dither` / `encoder.segment_palettes` | on / on | Dithering / per-segment palette swaps. |
 | `palette.algorithm` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. A selected one-line candidate receives a complete flattened-RGB333 histogram refinement and all-frame error proof before segment palettes are considered. |
 | `palette.map_weight` | 1.0 | MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |
@@ -224,6 +223,20 @@ values in this document.
 | `palette.sample_counts` / `palette.validate_frames` | `[120,240,480]` / 120 | Whole-movie learning candidates and the separate validation sample used to select among them. |
 | `palette.segment_train_frames` / `palette.segment_validate_frames` | 240 / 60 | Maximum learning/validation frames per dark or uniform CRAM-segment candidate. |
 | `palette.segment_gain_relative` / `palette.segment_gain_per_pixel` | 0.005 / 0.002 | Improvement required before a local segment palette replaces the selected global palette. Adjacent identical choices are merged. |
+
+After quantization, the encoder dry-runs the exact target through the shared
+VRAM allocator and predicts each frame's name-table and cold-pattern demand. A
+backwards pass derives the minimum virtual-tank reserve needed after every
+frame. This whole-movie plan is the only virtual-budget allocation path.
+
+Optional Raw/Buf upgrades protect against the complete exact-demand trace.
+Normal exact updates use a narrower Miss-risk trace: source changes that fit
+the existing Coa visual bound are excluded because they can degrade gracefully
+to resident reuse, while changes beyond Coa reserve tank against future Flbk
+and Miss bursts. The risk trace is independent from optional quality spending.
+Both curves end at zero by definition, so the useful tail naturally drains the
+virtual tank without a separate end-of-movie rule. The physical payload RING
+sector schedule remains a separate exact proof in `stream_schedule.py`.
 
 ## H. Per-source TOML profiles
 

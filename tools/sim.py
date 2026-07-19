@@ -47,6 +47,7 @@ import av_config  # noqa: E402
 import ima_adpcm  # noqa: E402
 import stream_schedule  # noqa: E402
 import ttrc_routing  # noqa: E402
+import upgrade_planner  # noqa: E402
 
 from quantize_md_video import (  # noqa: E402
     rgb888_to_rgb333, rgb333_to_rgb888, run, prepare_dir, MD_LEVELS,
@@ -183,16 +184,19 @@ MIDFAR_TIERS = [
 ]
 
 
-def near_mask_eval(cur, plain, changed):
-    """cur(表示中),plain(target): (C,8,8,3)。changed のうち、輝度・色差の変化が十分小さいものを
-    True(=更新省略)。各画素の輝度差の平均(dYm)/最大(dYp)と色差の平均(dCm)で見る。形の変化も
-    “変化量”として効くが、厳しい構造ゲート(SSIM/エッジ)は外し、しきいを緩めて「形は軽く」効かせる。"""
+def f3_mask_eval(cur, plain, changed, thresholds):
+    """Return changed cells within mean/max luma and mean chroma bounds."""
     o = cur.astype(np.float64); r = plain.astype(np.float64)
     dY = np.abs(o @ _LWv - r @ _LWv)
     dYm = dY.mean(axis=(1, 2)); dYp = dY.max(axis=(1, 2))
     dCm = np.sqrt((o @ _CBv - r @ _CBv) ** 2 + (o @ _CRv - r @ _CRv) ** 2).mean(axis=(1, 2))
-    t = NEAR_F3
+    t = thresholds
     return changed & (dYm <= t['Ym']) & (dYp <= t['Yp']) & (dCm <= t['C'])
+
+
+def near_mask_eval(cur, plain, changed):
+    """Return changed cells whose displayed error already fits Near."""
+    return f3_mask_eval(cur, plain, changed, NEAR_F3)
 # L3(PRG-RAM victim cache): VRAMから追い出したパターンを捨てずRAMに退避しておき、
 # 再登場したらCDから読み直さずRAM→VRAM DMAで復帰させる(CDバイト0)。CDが唯一の
 # ボトルネックなのでDMAは実質フリー扱い。0=無効(既定)。512KB/32B=16384枚。
@@ -223,15 +227,6 @@ UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
 _mc = os.environ.get("CBRSIM_MAX_COLD", "").strip()
 MAX_COLD = (int(_mc) if (_mc and int(_mc) > 0)
             else av_config.cold_cap_for_fps(FPS, MODE, ACTIVE_TILES))
-# タンク(Buff)の温存率。Coa〜Miss(劣化の重い格上げ)にはこの割合を最低残す=将来の劣化タイル需要用に予約。
-# Nearの格上げは「余裕があるとき」だけ=より高い割合を残す(NEAR_RESERVE)まで温存。終盤はrampで両方0へ。
-UPGRADE_RESERVE = float(os.environ.get("CBRSIM_UPGRADE_RESERVE", "0.4"))       # Coa〜Miss用に最低4割予約
-UPGRADE_NEAR_RESERVE = float(os.environ.get("CBRSIM_UPGRADE_NEAR_RESERVE", "0.7"))  # Nearは7割超の余裕時のみ
-# 終盤rampの広さ(タンク1杯を吐くコマ数の倍率)。広いほど画質上昇が緩やか(一気に上がらない)。
-UPGRADE_RAMP = float(os.environ.get("CBRSIM_UPGRADE_RAMP", "5"))
-# Issue#5: Miss0(破綻していない)フレームは、格上げに使える余り帯域のこの割合をTank回復に予約し
-# 将来の重いフレームに備える(最大40%)。Missがあるフレームは破綻回復を優先=予約しない。0で無効。
-TANK_RECOVER_RESERVE = float(os.environ.get("CBRSIM_TANK_RECOVER_RESERVE", "0.40"))
 # 近似流用(Near/Coa/Flbk)が「この秒数」以上そのまま居座ったら、格上げ優先度を Miss級(sev=0)へ
 # 昇格させる。一過性の近似は目に見えないが、居座った近似は静的なゴースト=視線が固定される。時間で切る
 # のは知覚(何秒出続けたか)がfps非依存だから(重み付けaging=予算コンテストのフレーム数とは別軸)。0で無効。
@@ -1199,6 +1194,74 @@ def main():
           f"{pal15_stats['reindexed_pixels']} indices remapped, frame0 included)")
     _t = _mark("量子化", _t)
 
+    # Optional quality upgrades use a whole-movie reserve plan. The dry run
+    # follows the exact quantized target with the shared VRAM allocator. A
+    # backwards pass then retains only the virtual-tank bytes that future
+    # bursts cannot replenish from their own frame supply. Its final target is
+    # zero, so future protection, recovery, and end draining share one policy.
+    upgrade_supply = np.full(
+        n, max(FRAME_BYTES - AUDIO_CONTROL_BYTES - NAME_BYTES, 0), np.int64)
+    if PAL_WRITE_BYTES:
+        for i in range(1, n):
+            if int(frame_seg[i]) != int(frame_seg[i - 1]):
+                upgrade_supply[i] = max(
+                    0, int(upgrade_supply[i]) - PAL_WRITE_BYTES)
+    # Normal exact updates need a narrower risk reserve. Changes that fit Coa
+    # can degrade gracefully to a resident approximation; only changes beyond
+    # Coa are likely to become Flbk or Miss and justify moving tank capacity
+    # away from an earlier frame.
+    main_protected = np.zeros((n, C_CELLS), bool)
+    previous_target_rgb = None
+    coa_bounds = dict(
+        Ym=MIDFAR_TIERS[1][1],
+        Yp=MIDFAR_TIERS[1][2],
+        C=MIDFAR_TIERS[1][3],
+    )
+    for i in range(n):
+        target_pals = seg_pals[int(frame_seg[i])]
+        target_rgb = render_cells(Q_pidx[i], Q_assign[i], target_pals)
+        if i == 0:
+            main_protected[i] = True
+        else:
+            if int(frame_seg[i]) == int(frame_seg[i - 1]):
+                previous_display_rgb = previous_target_rgb
+            else:
+                previous_display_rgb = render_cells(
+                    Q_pidx[i - 1], Q_assign[i - 1], target_pals)
+            target_changed = (
+                np.any(Q_pidx[i] != Q_pidx[i - 1], axis=1)
+                | (Q_assign[i] != Q_assign[i - 1])
+            )
+            graceful = f3_mask_eval(
+                previous_display_rgb, target_rgb, target_changed, coa_bounds)
+            main_protected[i] = target_changed & ~graceful
+        previous_target_rgb = target_rgb
+    upgrade_demand, main_demand = upgrade_planner.predict_update_demands(
+        Q_pidx,
+        Q_assign,
+        vram_tiles=VRAM_TILES,
+        name_bytes=NAME_BYTES,
+        pattern_bytes=PATTERN_BYTES,
+        max_cold=MAX_COLD,
+        protected_frames=main_protected,
+    )
+    upgrade_reserve = upgrade_planner.build_reserve_curve(
+        upgrade_demand, upgrade_supply, TANK_CAP_BYTES)
+    main_reserve = upgrade_planner.build_reserve_curve(
+        main_demand, upgrade_supply, TANK_CAP_BYTES)
+    print(
+        "tank plan: upgrade exact reserve "
+        f"start={upgrade_reserve[0] // 1024 if n else 0}KB "
+        f"peak={upgrade_reserve.max() // 1024 if n else 0}KB "
+        f"end={upgrade_reserve[-1] // 1024 if n else 0}KB; "
+        "main Miss-risk reserve "
+        f"start={main_reserve[0] // 1024 if n else 0}KB "
+        f"peak={main_reserve.max() // 1024 if n else 0}KB "
+        f"end={main_reserve[-1] // 1024 if n else 0}KB",
+        flush=True,
+    )
+    _t = _mark("格上げ残量計画", _t)
+
     _t_render = 0.0        # ループ内訳: 描画+PNG保存に費やした時間(残りがcommit/探索)
     # PNG保存(3枚/コマ)。Pillowの並列保存はCPython 3.13/3.14の長時間simで
     # NumPy配列を壊した実績があるため、全対応版で既定同期保存。
@@ -1281,7 +1344,17 @@ def main():
         # リング/Tankを一切消費しない)。よってframe0は予算無制限で全面フルロードし、Tankは
         # 満タンのままframe1へ渡す(下のtank更新もスキップ)。実機の崩壊はframe0の大バーストが
         # リングを削っていたのが原因で、ヘッダ化で根絶する。
-        tile_budget = (1 << 30) if i == 0 else frame_cd + (tank if VBV_ON else 0)
+        if i == 0:
+            tile_budget = 1 << 30
+        elif VBV_ON:
+            tile_budget = upgrade_planner.planned_spend_limit(
+                tank_before=tank,
+                frame_supply=frame_cd,
+                reserve_after=int(main_reserve[i]),
+                already_spent=0,
+            )
+        else:
+            tile_budget = frame_cd
         frame_patch = frozenset() if VBV_ON else prg_patch.get(i, frozenset())   # VBVは全編先読み割当を使わない
 
         updated = np.zeros(C_CELLS, bool)
@@ -1485,28 +1558,17 @@ def main():
         for c in order:
             (commit_unified if MIDFAR_ON else commit_plain)(c)
 
-        # 格上げパス: 余ったCD + タンクの余剰(reserveは温存)で、近似(Near/Coa/Flbk)や
-        # 持ち越し(前コマまで近似で今コマ変化なし)を Raw/Buf(正確) に格上げ。Bufの余りを画質へ回す。
+        # Upgrade approximate or carried cells to exact Raw/Buf using only
+        # bytes above this frame's whole-movie reserve target.
         upgraded = 0
         if UPGRADE_ON and VBV_ON:
-            # 終盤(残り≈タンクを吐き切れるコマ数×UPGRADE_RAMP)ほど reserve を線形に0へ→タンクを吐き切る。
-            # rampが広いほど画質上昇は緩やか(一気に上がらない)。Coa〜Miss=budget_lo(4割予約),
-            # Near=budget_hi(7割予約=余裕時のみ)。将来の劣化タイル需要のためタンクを一定残す。
-            ramp = max(1, int(UPGRADE_RAMP * TANK_CAP_BYTES / max(frame_cd, 1)))
-            rf = max(0.0, min(1.0, (n - 1 - i) / ramp))
-            budget_lo = frame_cd + max(0, tank - int(TANK_CAP_BYTES * UPGRADE_RESERVE * rf))
-            budget_hi = frame_cd + max(0, tank - int(TANK_CAP_BYTES * UPGRADE_NEAR_RESERVE * rf))
-            # Issue#5: このフレームが破綻していない(内側Missが無い)なら、余り帯域の一部をTank回復に予約
-            # (格上げ予算を圧縮=使わない分が貯水池に戻る)。終盤rampでは温存不要なので徐々に解除。
-            _near_eff = near_mask if MIDFAR_ON else near
-            # Flbk は Miss のフォールバック(荒い近似)なので「未解決」に含める。これらだけのフレームを
-            # 「破綻なし」と見なすと Tank回復予約が働いて格上げ予算を絞り、Flbk が Raw に上がりにくくなる。
-            inner_miss = int((((changed & ~updated & ~_near_eff) | flbk_mask) & ~border_bool).sum())
-            if inner_miss == 0 and TANK_RECOVER_RESERVE > 0:
-                keep = 1.0 - TANK_RECOVER_RESERVE * rf      # 40%をTank回復へ(終盤ほど解除)
-                budget_lo = spent_tiles + int(max(0, budget_lo - spent_tiles) * keep)
-                budget_hi = spent_tiles + int(max(0, budget_hi - spent_tiles) * keep)
-            if spent_tiles < budget_lo:
+            upgrade_limit = upgrade_planner.planned_spend_limit(
+                tank_before=tank,
+                frame_supply=frame_cd,
+                reserve_after=int(upgrade_reserve[i]),
+                already_spent=spent_tiles,
+            )
+            if spent_tiles < upgrade_limit:
                 def raw_upgrade(c, lim):
                     nonlocal tile_recs, name_recs, dedup_saved, coa_hits, spent_tiles, upgraded, cold_spent
                     key = plain_keys[c]
@@ -1534,16 +1596,13 @@ def main():
                 sev = np.full(C_CELLS, 9, np.int16)             # 劣化が重い順に格上げ(sev小=先)
                 sev[carried] = cell_tier[carried]
                 sev[flbk_mask] = 1; sev[coa_mask] = 2; sev[near_mask] = 3
-                # 0.3秒以上居座った近似ゴーストは Miss級(sev=0)へ昇格: Near温存(budget_hi)の壁を越え、
-                # 手厚い budget_lo レーンで最優先に正確化(Rawへ差替)。表示は届くまで近似のまま=悪化しない。
+                # A persistent approximation remains the highest-priority
+                # exact correction; every severity shares the same reserve.
                 if GHOST_ESCALATE_N:
                     sev[(approx_carry >= GHOST_ESCALATE_N) & cand_mask] = 0
                 for c in sorted((int(x) for x in np.where(cand_mask)[0]),
                                 key=lambda c: (int(sev[c]), -int(approx_carry[c]), -score[c])):
-                    lim = budget_lo if sev[c] <= 2 else budget_hi   # Flbk〜Miss=lo, Near=hi(余裕時のみ)
-                    if spent_tiles >= lim and sev[c] <= 2:
-                        break                                        # Coa〜Miss予算尽き=以降も不可
-                    raw_upgrade(c, lim)
+                    raw_upgrade(c, upgrade_limit)
 
         # 貯水池更新(漏れバケツ): このフレームのCD余り(frame_cd-使った分)を貯める / 引いた分を減らす
         if VBV_ON:
@@ -1756,7 +1815,12 @@ def main():
         f"starved_frames={starved_frames} ({starved_frames/n*100:.1f}%)",
         f"avg_bps={fb.mean()*FPS:.0f} (target={TARGET_RATE}, CD1x={CD_RATE})",
         (f"upgrade(格上げ): 余剰でRaw化 avg {np.mean([u for u, _ in upgrade_log]):.1f}/コマ, "
-         f"まだ近似のセル avg {np.mean([a for _, a in upgrade_log]):.1f} (reserve={UPGRADE_RESERVE})"
+         f"まだ近似のセル avg {np.mean([a for _, a in upgrade_log]):.1f}; "
+         f"upgrade reserve start/peak/end="
+         f"{upgrade_reserve[0]//1024}/{upgrade_reserve.max()//1024}/"
+         f"{upgrade_reserve[-1]//1024}KB; main risk="
+         f"{main_reserve[0]//1024}/{main_reserve.max()//1024}/"
+         f"{main_reserve[-1]//1024}KB"
          if upgrade_log else "upgrade: (off)"),
     ])
     (OUT / "report.txt").write_text(report)
@@ -1791,6 +1855,10 @@ def main():
             remaining=ring_remaining,
             total=TANK_CAP_BYTES // PATTERN_BYTES,
             vbv_remaining=vbv_remaining,
+            upgrade_demand_bytes=upgrade_demand,
+            upgrade_reserve_bytes=upgrade_reserve,
+            main_risk_demand_bytes=main_demand,
+            main_risk_reserve_bytes=main_reserve,
             cd_used=np.array(cd_used_log, np.int64),
             block_lengths=control_lengths,
             payload_sectors=np.asarray(

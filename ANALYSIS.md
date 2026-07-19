@@ -207,6 +207,15 @@ The value comes from the encoder's own
 (like the effective-transfer timeline's) is the CD 1x per-frame byte count
 (`153600 / fps`).
 
+Before making these per-frame choices, the encoder dry-runs the complete
+quantized movie through the shared VRAM allocator. A backwards pass builds two
+virtual reserve curves: complete exact-update demand limits optional Raw/Buf
+upgrades, while changes beyond the Coa bound form the narrower reserve that
+protects normal updates from future Flbk/Miss bursts. Both curves finish at
+zero. They are saved as `upgrade_reserve_bytes` and
+`main_risk_reserve_bytes` in `buffer_remaining.npz`; neither is the physical
+Tank meter below.
+
 ### Tank meter
 `Tank:NNNNN` = actual end-of-frame PRG-RAM **payload RING occupancy**, in
 32-byte pattern slots. The sim runs the same sector scheduler as the packer,
