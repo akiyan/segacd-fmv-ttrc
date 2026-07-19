@@ -11,10 +11,13 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
-#   e57 : Raise the H40/15fps cold cap from 375 to the full-length-qualified
-#        limit of 400. Machi OP kept S/D/R=0, Main VBlank waits <=2, pack
-#        under=0, and exact decoded frames. This remains below the two-VBLANK
-#        425-pattern word-budget edge; all other mode/rate limits stay unchanged.
+#   e58 : Scope the H40/15fps 400 cold cap to the qualified 720-active-tile
+#        raster. Full 1,120-tile H40 and every other active-tile count retain
+#        350. Freeze active_tiles into sim stats and the decision log so the
+#        pack validates the same mode/fps/tile-count tuple.
+#   e57 : Raise the Machi OP H40/15fps/720-active-tile cold cap from 375 to the
+#        full-length-qualified limit of 400. S/D/R stayed zero, Main VBlank
+#        waits <=2, pack under=0, and every decoded frame matched exactly.
 #   e56 : Raise the H40/15fps cold cap from 350 to 375 after the low-rate
 #        ADPCM decoder gained periodic CDC service. Keep H32, mode4, H40/24,
 #        and H40/30 limits unchanged until they have their own measurements.
@@ -411,5 +414,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
-e=57
+e=58
 p=56

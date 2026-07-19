@@ -57,6 +57,13 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN"], "253")
         self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "area")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
+        self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "1120")
+
+    def test_machi_op_declares_its_confirmed_active_tile_area(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        profile = load_profile(root / "configs/machi-op-h40.toml")
+        env = apply_profile_env(profile, {"CBRSIM_ACTIVE_TILES": "1"})
+        self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "720")
 
     def test_profile_without_preprocess_clears_inherited_snap(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -97,6 +104,14 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             path.write_text(PROFILE.replace(
                 "fit = \"pad\"", "fit = \"pad\"\nresize_filter = \"magic\""))
             with self.assertRaisesRegex(ValueError, "video.resize_filter"):
+                load_profile(path)
+
+    def test_active_tiles_must_fit_the_output_grid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad-active-tiles.toml"
+            path.write_text(PROFILE.replace(
+                'fit = "pad"', 'fit = "pad"\nactive_tiles = 897'))
+            with self.assertRaisesRegex(ValueError, "video.active_tiles"):
                 load_profile(path)
 
     def test_unknown_audio_kind_is_rejected(self) -> None:

@@ -84,6 +84,10 @@ DEDITHER_VF = _MASTER_VF_OVERRIDE or ""
 RAW_VF = _RAW_VF_OVERRIDE or ""
 TCOLS, TROWS = W // TILE, H // TILE     # 既定 32 x 18 = 576 cells
 C_CELLS = TCOLS * TROWS
+ACTIVE_TILES = int(os.environ.get("CBRSIM_ACTIVE_TILES", str(C_CELLS)))
+if not 1 <= ACTIVE_TILES <= C_CELLS:
+    raise SystemExit(
+        f"CBRSIM_ACTIVE_TILES must be within 1..{C_CELLS}, got {ACTIVE_TILES}")
 # CBRSIM_FPS は整数 "15" でも分数 "30000/1001"(=59.94/2=29.97, NTSCソース準拠) でも受ける。
 # FPS_STR は ffmpeg にそのまま渡す(分数を厳密に間引く)。FPS は計算用の float。
 FPS_STR = os.environ.get("CBRSIM_FPS", "15").strip()
@@ -212,13 +216,13 @@ TANK_CAP_BYTES = TANK_KB * 1024
 UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
 # cold(=新規パターン転送: Raw+Buf)の1コマ上限。実機MDの実時間デコード天井対策
 # (BUDGETS.md 'Encoder cap')。超過セルは Flbk近似 or Miss繰越。0=無効。
-# 1コマの cold 上限はモードとfpsから実測上限を計算
+# 1コマの cold 上限はモード、fps、黒帯を除くactiveタイル数から実測上限を計算
 # (av_config.cold_cap_for_fps: H32 24fps→219, H40 24fps→200)。
 # uncapped(0)は禁止(実機で描画不能なバーストを sim が見逃すため)。CBRSIM_MAX_COLD を正の値で
 # 明示した時だけ上書き(特殊ケース用)。frame0 は下の frame_max_cold で別途免除。
 _mc = os.environ.get("CBRSIM_MAX_COLD", "").strip()
 MAX_COLD = (int(_mc) if (_mc and int(_mc) > 0)
-            else av_config.cold_cap_for_fps(FPS, MODE))
+            else av_config.cold_cap_for_fps(FPS, MODE, ACTIVE_TILES))
 # タンク(Buff)の温存率。Coa〜Miss(劣化の重い格上げ)にはこの割合を最低残す=将来の劣化タイル需要用に予約。
 # Nearの格上げは「余裕があるとき」だけ=より高い割合を残す(NEAR_RESERVE)まで温存。終盤はrampで両方0へ。
 UPGRADE_RESERVE = float(os.environ.get("CBRSIM_UPGRADE_RESERVE", "0.4"))       # Coa〜Miss用に最低4割予約
@@ -990,7 +994,19 @@ def main():
     _t = _mark("展開(reuse)" if cached else "抽出(ffmpeg)", _t)
     frames = sorted(master_dir.glob("*.png"))
     n = len(frames)
-    print(f"  {n} frames @ {W}x{H} ({TCOLS}x{TROWS}={C_CELLS} cells)")
+    if ACTIVE_TILES < C_CELLS:
+        ever_nonblack = np.zeros((TROWS, TCOLS), dtype=bool)
+        for frame_path in frames:
+            image = np.asarray(Image.open(frame_path).convert("RGB"), dtype=np.uint8)
+            tiles = image.reshape(TROWS, TILE, TCOLS, TILE, 3).transpose(0, 2, 1, 3, 4)
+            ever_nonblack |= np.any(tiles != 0, axis=(2, 3, 4))
+        measured_active_tiles = int(ever_nonblack.sum())
+        if measured_active_tiles != ACTIVE_TILES:
+            raise SystemExit(
+                f"configured active_tiles={ACTIVE_TILES}, but the master frames contain "
+                f"{measured_active_tiles} tiles that are ever non-black")
+    print(f"  {n} frames @ {W}x{H} ({TCOLS}x{TROWS}={C_CELLS} cells, "
+          f"active={ACTIVE_TILES})")
 
     # The source WAV remains the packer's input.  Analysis must instead audition
     # the exact stream reconstructed by the Sub CPU and quantized for RF5C164.
@@ -1719,7 +1735,7 @@ def main():
     vbv_remaining = np.asarray(tank_tiles_log, np.int64)
 
     report = "\n".join([
-        f"resolution={W}x{H} cells/frame={C_CELLS} fps={FPS}",
+        f"resolution={W}x{H} cells/frame={C_CELLS} active_tiles={ACTIVE_TILES} fps={FPS}",
         f"cbr_frame_bytes={FRAME_BYTES} (純CBR, 繰り越し無し)",
         f"avg_bytes_per_frame={fb.mean():.1f} (<= {FRAME_BYTES})",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
@@ -1754,6 +1770,7 @@ def main():
     cat_uniq = np.array([len(guniq["same"]), len(guniq["near"]), len(guniq["coa"]),
                          len(guniq["flbk"])], np.int64)
     np.savez(OUT / "stats.npz", stats=stats, cols=cols, fps=FPS, cells=C_CELLS,
+             active_tiles=ACTIVE_TILES, max_cold=MAX_COLD,
              target=TARGET_RATE, cd1x=CD_RATE, frame_bytes=FRAME_BYTES, cat_uniq=cat_uniq,
              audio_label=AUDIO_LABEL, audio_frame_bytes=AUDIO_CONTROL_BYTES,
              audio_pcm_bytes=AUDIO_PCM_BYTES,
@@ -1800,6 +1817,7 @@ def main():
             "video": {
                 "mode": MODE.upper(), "width": int(W), "height": int(H),
                 "cols": int(TCOLS), "rows": int(TROWS), "cells": int(C_CELLS),
+                "active_tiles": int(ACTIVE_TILES),
                 "tile": int(TILE), "fit": GEOMETRY_FIT,
                 "resize_filter": RESIZE_FILTER,
                 "master_denoise": bool(MASTER_DENOISE),

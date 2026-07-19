@@ -73,22 +73,34 @@ class ColdCapTests(unittest.TestCase):
     def test_common_caps_are_unchanged(self) -> None:
         for mode in ("H32", "MODE4"):
             with self.subTest(mode=mode):
-                self.assertEqual(av_config.cold_cap_for_fps(15, mode), 350)
-                self.assertEqual(av_config.cold_cap_for_fps(24, mode), 219)
-                self.assertEqual(av_config.cold_cap_for_fps(30, mode), 175)
+                self.assertEqual(
+                    av_config.cold_cap_for_fps(15, mode, 896), 350)
+                self.assertEqual(
+                    av_config.cold_cap_for_fps(24, mode, 896), 219)
+                self.assertEqual(
+                    av_config.cold_cap_for_fps(30, mode, 896), 175)
 
-    def test_h40_cadence_exceptions_are_explicit(self) -> None:
-        self.assertEqual(av_config.cold_cap_for_fps(15, "H40"), 400)
-        self.assertEqual(av_config.cold_cap_for_fps(24, "H40"), 200)
-        self.assertEqual(av_config.cold_cap_for_fps(30, "H40"), 175)
+    def test_h40_15fps_400_is_limited_to_720_active_tiles(self) -> None:
+        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 720), 400)
+        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 719), 350)
+        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 721), 350)
+        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 1120), 350)
+
+    def test_other_h40_cadence_exceptions_are_unchanged(self) -> None:
+        self.assertEqual(av_config.cold_cap_for_fps(24, "H40", 1120), 200)
+        self.assertEqual(av_config.cold_cap_for_fps(30, "H40", 1120), 175)
 
     def test_pack_ceiling_uses_the_same_h40_exceptions(self) -> None:
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(15, "H40"), 400)
+            av_config.cold_realized_ceiling_for_fps(15, "H40", 720), 400)
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(24, "H40"), 200)
+            av_config.cold_realized_ceiling_for_fps(15, "H40", 1120), 350)
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(30, "H40"), 175)
+            av_config.cold_realized_ceiling_for_fps(24, "H40", 1120), 200)
+
+    def test_nonpositive_active_tile_count_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            av_config.cold_cap_for_fps(15, "H40", 0)
 
 
 if __name__ == "__main__":

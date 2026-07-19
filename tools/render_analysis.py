@@ -89,6 +89,9 @@ z = np.load(f"{SIM}/stats.npz", allow_pickle=True)
 S = z["stats"]
 idx = {k: i for i, k in enumerate(str(z["cols"]).split())}
 FPS = float(z["fps"]); C = int(z["cells"]); BUDGET = int(z["budget_tiles"])
+ACTIVE_TILES = int(z["active_tiles"]) if "active_tiles" in z else C
+COLD_CAP = (int(z["max_cold"]) if "max_cold" in z else
+            L.av_config.cold_cap_for_fps(FPS, MODE, ACTIVE_TILES))
 NF = len(S)
 if "audio_label" in z:
     AUDIO_STR = str(z["audio_label"])        # sim側の音声形式(13.3kHz PCM / 22.05kHz ADPCM 等)
@@ -501,7 +504,7 @@ def frame_data(i):
                 raw_bytes=int(RAW_BYTES[i]), buf_bytes=int(BUF_BYTES[i]), ovh_bytes=int(OVH_BYTES[i]),
                 band_kbps=int(BAND[i]), cd1x_bpf=CD1X_BPF,
                 cold=cn["Raw"] + cn["Buf"], cold_raw=cn["Raw"], cold_buf=cn["Buf"],
-                cold_cap=L.av_config.cold_cap_for_fps(FPS, MODE),
+                cold_cap=COLD_CAP,
                 tank_delta=int(TANK_DELTA[i]), max_raw=MAX_RAW,
                 pl_info=frame_plinfo(i),
                 frame=i, total_frames=NF, time_s=i / FPS, palettes=frame_palettes(i),

@@ -21,6 +21,7 @@ import av_config  # noqa: E402
 PER_SOURCE_ENV = {
     "CBRSIM_SRC", "CBRSIM_FPS", "CBRSIM_DURATION", "CBRSIM_SOURCE_SAR",
     "CBRSIM_MODE", "CBRSIM_W", "CBRSIM_H", "CBRSIM_GEOMETRY_FIT",
+    "CBRSIM_ACTIVE_TILES",
     "CBRSIM_MASTER_VF", "CBRSIM_RAW_VF", "CBRSIM_AUDIO", "CBRSIM_OUT",
     "CBRSIM_VRAM_TILES", "CBRSIM_TANK_KB", "CBRSIM_RING_CAP_KB",
     "CBRSIM_MAX_COLD", "CBRSIM_RATE_KIB", "CBRSIM_PACK_DEBUG",
@@ -68,16 +69,21 @@ def check_profiles() -> None:
 
 
 def check_cold_caps() -> None:
-    expected = {
-        "H32": {15: 350, 24: 219, 30: 175},
-        "H40": {15: 400, 24: 200, 30: 175},
-        "MODE4": {15: 350, 24: 219, 30: 175},
-    }
-    for mode, values in expected.items():
-        for fps, cap in values.items():
-            assert av_config.cold_cap_for_fps(fps, mode) == cap
-            assert av_config.cold_realized_ceiling_for_fps(fps, mode) == cap
-    print("Cold caps: OK (mode/fps sim and pack limits agree)")
+    expected = (
+        ("H32", 15, 896, 350),
+        ("H32", 24, 896, 219),
+        ("H32", 30, 896, 175),
+        ("H40", 15, 720, 400),
+        ("H40", 15, 1120, 350),
+        ("H40", 24, 1120, 200),
+        ("H40", 30, 1120, 175),
+        ("MODE4", 15, 896, 350),
+    )
+    for mode, fps, active_tiles, cap in expected:
+        assert av_config.cold_cap_for_fps(fps, mode, active_tiles) == cap
+        assert av_config.cold_realized_ceiling_for_fps(
+            fps, mode, active_tiles) == cap
+    print("Cold caps: OK (mode/fps/active-tile sim and pack limits agree)")
 
 
 def main() -> None:

@@ -199,8 +199,9 @@ def audio_frame_layout(kind, fps):
 # at most a fixed number of fresh (cold) 8x8 tiles per VBLANK (raw-share DMA + buffer
 # drain). The confirmed common 15fps point is 350, scaled inversely with fps:
 #   15->350, 24->219, 30->175
-# Full-raster H40 keeps two cadence-specific limits explicit. At 15fps, servicing
-# the CDC during the long ADPCM decode makes 400 the full-length-qualified limit.
+# H40 keeps cadence-specific limits explicit. At 15fps, servicing the CDC
+# during the long ADPCM decode makes 400 qualified only for Machi OP's 720
+# active tiles. Any other active-tile count keeps the common 350 limit.
 # At exactly 24fps, Lunar repeated S=2 at 219 and stayed at S=0 at 200. Unlike
 # 30fps's steady two VBLANKs per frame, 24fps alternates between two and three
 # VBLANKs, so keep both H40 limits explicit instead of extrapolating them.
@@ -212,13 +213,14 @@ def audio_frame_layout(kind, fps):
 # from it. MODE4 retains the common reference until it has its own measurement.
 COLD_CAP_15FPS = 350
 H40_15FPS_COLD_CAP = 400
+H40_15FPS_QUALIFIED_ACTIVE_TILES = 720
 H40_24FPS_COLD_CAP = 200
 _CAP_REF_FPS = 15
 _COLD_CAP_MODES = {"H32", "H40", "MODE4"}
 
 
-def cold_cap_for_fps(fps, mode="H32"):
-    """Per-frame cold cap with measured H40 cadence exceptions.
+def cold_cap_for_fps(fps, mode, active_tiles):
+    """Per-frame cold cap from cadence, mode, and active picture tiles.
 
     Frame 0 is exempt because the header loads it before timed playback.
     """
@@ -226,15 +228,19 @@ def cold_cap_for_fps(fps, mode="H32"):
     if mode_key not in _COLD_CAP_MODES:
         raise ValueError(f"unsupported display mode for cold cap: {mode!r}")
     fps_value = float(fps)
-    if mode_key == "H40" and fps_value == 15.0:
+    active_tiles_value = int(active_tiles)
+    if active_tiles_value <= 0:
+        raise ValueError(f"active tile count must be positive: {active_tiles!r}")
+    if (mode_key == "H40" and fps_value == 15.0
+            and active_tiles_value == H40_15FPS_QUALIFIED_ACTIVE_TILES):
         return H40_15FPS_COLD_CAP
     if mode_key == "H40" and fps_value == 24.0:
         return H40_24FPS_COLD_CAP
     return int(round(COLD_CAP_15FPS * _CAP_REF_FPS / fps_value))
 
 
-def cold_realized_ceiling_for_fps(fps, mode="H32"):
+def cold_realized_ceiling_for_fps(fps, mode, active_tiles):
     """Pack-time realized-cold ceiling. Now == the cap: the shared two-pass allocator
     makes the pack's realized cold equal the sim's cap exactly, so the ceiling is the
     cap itself (the assert `realized <= ceiling` holds by construction)."""
-    return cold_cap_for_fps(fps, mode)
+    return cold_cap_for_fps(fps, mode, active_tiles)

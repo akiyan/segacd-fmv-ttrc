@@ -10,6 +10,9 @@ sar = "1:1"
 mode = "H40"
 width = 320
 height = 224
+# The 320x130 picture at y=47 touches 18 tile rows; all other rows are
+# confirmed black throughout the source. Count partially covered rows.
+active_tiles = 720
 fit = "pad"
 master_filter = "setsar=1,crop=320:144:0:38,scale=640:260:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=320:130:flags=lanczos,pad=320:224:0:47:color=black,setsar=1"
 raw_filter = "setsar=1,crop=320:144:0:38,scale=320:130:flags=lanczos,pad=320:224:0:47:color=black,setsar=1"

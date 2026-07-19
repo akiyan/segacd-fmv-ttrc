@@ -202,7 +202,7 @@ def dummy_data():
                 comp=counts["Same"] + counts["Near"] + counts["Coa"] + counts["Flbk"],
                 buf_cap=buf_cap, buf_rem=13900,
                 cold=counts["Raw"] + counts["Buf"], cold_raw=counts["Raw"], cold_buf=counts["Buf"],
-                cold_cap=av_config.cold_cap_for_fps(15, "H32"),
+                cold_cap=av_config.cold_cap_for_fps(15, "H32", 22 * 18),
                 dma_tiles=dma_tiles, dma_runs=23,
                 tl=tl, buf_rem_series=rem, dma_tl=dma_tl, tln=tln,
                 time_s=42.0, frame=1260, total_frames=2712)

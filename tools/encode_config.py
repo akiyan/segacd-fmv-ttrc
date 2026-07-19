@@ -35,6 +35,7 @@ ENV_MAP = {
     ("video", "mode"): "CBRSIM_MODE",
     ("video", "width"): "CBRSIM_W",
     ("video", "height"): "CBRSIM_H",
+    ("video", "active_tiles"): "CBRSIM_ACTIVE_TILES",
     ("video", "fit"): "CBRSIM_GEOMETRY_FIT",
     ("video", "resize_filter"): "CBRSIM_RESIZE_FILTER",
     ("video", "master_denoise"): "CBRSIM_MASTER_DENOISE",
@@ -181,6 +182,11 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         raise ValueError(f"{profile_path}: unsupported video.mode {mode!r}")
     if int(data["video"]["width"]) % 8 or int(data["video"]["height"]) % 8:
         raise ValueError(f"{profile_path}: video width and height must be multiples of 8")
+    total_tiles = int(data["video"]["width"]) * int(data["video"]["height"]) // 64
+    active_tiles = int(data["video"].get("active_tiles", total_tiles))
+    if not 1 <= active_tiles <= total_tiles:
+        raise ValueError(
+            f"{profile_path}: video.active_tiles must be within 1..{total_tiles}")
     if str(data["video"]["fit"]).lower() not in {"pad", "crop"}:
         raise ValueError(f"{profile_path}: video.fit must be 'pad' or 'crop'")
     audio_kind = str(data["audio"]["kind"]).lower()
@@ -242,6 +248,14 @@ def apply_profile_env(
         value = _toml_scalar(values[key])
         env[name] = value
         applied[name] = value
+    # Profiles without confirmed black-only tiles conservatively use the full
+    # output grid. Always overwrite an inherited value so one source cannot
+    # silently lend its smaller active area to the next encode.
+    if "CBRSIM_ACTIVE_TILES" not in applied:
+        video = profile.data["video"]
+        value = str(int(video["width"]) * int(video["height"]) // 64)
+        env["CBRSIM_ACTIVE_TILES"] = value
+        applied["CBRSIM_ACTIVE_TILES"] = value
     for name, value in PROFILE_ENV_DEFAULTS.items():
         if name not in applied:
             env[name] = value
