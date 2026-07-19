@@ -220,13 +220,12 @@ TANK_CAP_BYTES = TANK_KB * 1024
 UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
 # cold(=新規パターン転送: Raw+Buf)の1コマ上限。実機MDの実時間デコード天井対策
 # (BUDGETS.md 'Encoder cap')。超過セルは Flbk近似 or Miss繰越。0=無効。
-# 1コマの cold 上限はモード、fps、黒帯を除くactiveタイル数から実測上限を計算
-# (av_config.cold_cap_for_fps: H32 24fps→219, H40 24fps→200)。
-# uncapped(0)は禁止(実機で描画不能なバーストを sim が見逃すため)。CBRSIM_MAX_COLD を正の値で
-# 明示した時だけ上書き(特殊ケース用)。frame0 は下の frame_max_cold で別途免除。
-_mc = os.environ.get("CBRSIM_MAX_COLD", "").strip()
-MAX_COLD = (int(_mc) if (_mc and int(_mc) > 0)
-            else av_config.cold_cap_for_fps(FPS, MODE, ACTIVE_TILES))
+# 1コマの cold 上限は、同じモード/fpsで要求activeタイル数を覆う最小の
+# 全編計測済みtupleから選ぶ。計測のない組合せは明示エラーにし、未計測値や
+# inherited envへfallbackしない。frame0 は下の frame_max_cold で別途免除。
+COLD_CAP_QUALIFICATION = av_config.cold_cap_qualification(
+    FPS, MODE, ACTIVE_TILES)
+MAX_COLD = COLD_CAP_QUALIFICATION.cap
 # 近似流用(Near/Coa/Flbk)が「この秒数」以上そのまま居座ったら、格上げ優先度を Miss級(sev=0)へ
 # 昇格させる。一過性の近似は目に見えないが、居座った近似は静的なゴースト=視線が固定される。時間で切る
 # のは知覚(何秒出続けたか)がfps非依存だから(重み付けaging=予算コンテストのフレーム数とは別軸)。0で無効。
@@ -1002,6 +1001,10 @@ def main():
                 f"{measured_active_tiles} tiles that are ever non-black")
     print(f"  {n} frames @ {W}x{H} ({TCOLS}x{TROWS}={C_CELLS} cells, "
           f"active={ACTIVE_TILES})")
+    print(
+        f"  measured cold cap={MAX_COLD}: {COLD_CAP_QUALIFICATION.mode} "
+        f"{COLD_CAP_QUALIFICATION.fps:g}fps qualification covers up to "
+        f"{COLD_CAP_QUALIFICATION.active_tiles} active tiles")
 
     # The source WAV remains the packer's input.  Analysis must instead audition
     # the exact stream reconstructed by the Sub CPU and quantized for RF5C164.

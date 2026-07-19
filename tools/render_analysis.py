@@ -431,7 +431,7 @@ def draw_status_real(data):
     xr = L.draw_field(d, xq + 10, ly, "Raw:", cn["Raw"], 3, L.f_leg, L.COL_DIM)
     L.draw_field(d, xr + 8, ly, "Comp:", data["comp"], 3, L.f_leg, L.COL_DIM)
     x += REQ_W + GAP
-    # 1.5) Cold = このコマの新規タイル(Raw+Buf)。フルスケール=COLD_CAP_REALIZED
+    # 1.5) Cold = このコマの新規タイル(Raw+Buf)。フルスケール=計測済みcold cap
     stacked([(data["cold_raw"], L.CAT_RAW), (data["cold_buf"], L.CAT_BUF)], data["cold_cap"], COLD_W)
     L.draw_field(d, x, ly, "Cold:", data["cold"], 3, L.f_leg, L.COL_TXT)
     x += COLD_W + GAP

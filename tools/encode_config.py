@@ -15,9 +15,12 @@ import os
 import re
 import sys
 import tomllib
+from fractions import Fraction
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, MutableMapping
+
+import av_config
 
 
 SCHEMA_VERSION = 1
@@ -187,6 +190,11 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
     if not 1 <= active_tiles <= total_tiles:
         raise ValueError(
             f"{profile_path}: video.active_tiles must be within 1..{total_tiles}")
+    try:
+        source_fps = float(Fraction(str(data["source"]["fps"])))
+        av_config.cold_cap_for_fps(source_fps, mode, active_tiles)
+    except av_config.ColdCapMeasurementRequired as exc:
+        raise ValueError(f"{profile_path}: {exc}") from exc
     if str(data["video"]["fit"]).lower() not in {"pad", "crop"}:
         raise ValueError(f"{profile_path}: video.fit must be 'pad' or 'crop'")
     audio_kind = str(data["audio"]["kind"]).lower()

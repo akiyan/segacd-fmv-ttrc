@@ -1022,15 +1022,17 @@ def main():
     stream_active_tiles = int(
         (((log.get("config") or {}).get("video") or {}).get("active_tiles"))
         or C_CELLS)
-    cold_ceiling = av_config.cold_realized_ceiling_for_fps(
+    cold_qualification = av_config.cold_cap_qualification(
         FPS, stream_mode, stream_active_tiles)
+    cold_ceiling = cold_qualification.cap
     realized_max = max([int(x) for x in n_load[1:]], default=0)
     if realized_max > cold_ceiling:
         raise SystemExit(
             f"pack: realized per-frame cold max={realized_max} > cap={cold_ceiling}. "
             f"共有 TileAllocator では realized=cap のはず=想定外。sim/pack の割り当て食い違いを疑う。")
     print(f"  realized cold: max={realized_max} <= {stream_mode}/{stream_active_tiles} "
-          f"active tiles cap {cold_ceiling} (共有割り当て)")
+          f"active tiles cap {cold_ceiling} (measured through "
+          f"{cold_qualification.active_tiles} tiles, 共有割り当て)")
     packed_tiles, packed_runs = run_stats(per)
     if not np.array_equal(packed_tiles, n_load):
         frame = int(np.flatnonzero(packed_tiles != n_load)[0])

@@ -17,11 +17,13 @@ underruns even when the encode looked feasible.
 Here we define the physical ring **once** and derive both safe capacity ceilings
 from it. The player's ``RING_SIZE`` is asserted equal to
 ``RING_SIZE_KB`` at build time (``tools/check_player_ring.py``, run by the
-Makefile). The per-source *cold cap* is deliberately NOT here: it belongs to the
-encoder alone (``CBRSIM_MAX_COLD`` in the sim). The packer refuses to re-cap.
+Makefile). This module also owns the measured cold-cap qualification table used
+by the encoder, packer, profile validator, and analysis renderer. The packer
+refuses to re-cap an already encoded stream.
 """
 
 import math
+from dataclasses import dataclass
 
 # Physical PRG-RAM ring in the player. MUST equal boot/movieplay_sp.s
 # `.equ RING_SIZE` (0x6B000 = 428 KB). Build-time assertion enforces it.
@@ -193,64 +195,88 @@ def audio_frame_layout(kind, fps):
 # realized <= cap as a guard (it must hold by construction). frame0 (the full-load header)
 # is exempt.
 
-# --- Per-frame cold cap as a PHYSICAL DRAW LIMIT (scales with fps) ---
-# This project ships to real hardware, so the sim MUST model what the player can
-# actually DRAW per frame, not just what the CD/tank can deliver. The player renders
-# at most a fixed number of fresh (cold) 8x8 tiles per VBLANK (raw-share DMA + buffer
-# drain). The confirmed common 15fps point is 350, scaled inversely with fps:
-#   15->350, 24->219, 30->175
-# H40 keeps cadence-specific limits explicit. At 15fps, servicing the CDC
-# during the long ADPCM decode makes 400 qualified for Machi OP's 720 active
-# tiles and Machi ED's 1,040 active tiles. Any other active-tile count keeps
-# the common 350 limit.
-# At exactly 24fps, Lunar repeated S=2 at 219 and stayed at S=0 at 200. Unlike
-# 30fps's steady two VBLANKs per frame, 24fps alternates between two and three
-# VBLANKs, so keep both H40 limits explicit instead of extrapolating them.
-# H40/30fps full-raster qualification is measured separately because it has
-# only two VBLANKs per frame. Sonic held exact N=2 cadence at 178; 179 inserted
-# one extra scanout, so keep the limit tied to all 1,120 active tiles.
-# Uncapped is no longer allowed — an uncapped sim shows impossible bursts (Sonic H32
-# 30fps wanted 600-738 cold on the opening frames, far above what the hardware draws)
-# that would collapse live.
-#
-# Keep the measured exception explicit instead of deriving unmeasured H40 rates
-# from it. MODE4 retains the common reference until it has its own measurement.
-COLD_CAP_15FPS = 350
-H40_15FPS_COLD_CAP_BY_ACTIVE_TILES = {
-    720: 400,
-    1040: 400,
-}
-H40_24FPS_COLD_CAP = 200
-H40_30FPS_COLD_CAP_BY_ACTIVE_TILES = {
-    1120: 178,
-}
-_CAP_REF_FPS = 15
+# --- Per-frame cold cap as a qualified physical draw/delivery limit ---
+# A qualification applies only to the same display mode and nominal fps.  It
+# may cover a smaller active picture: choose the smallest measured active-tile
+# count that is still >= the requested count.  Never extrapolate a measurement
+# to more active tiles or another cadence.  Missing coverage is a measurement
+# task, not a reason to silently fall back to a scaled/default cap.
 _COLD_CAP_MODES = {"H32", "H40", "MODE4"}
 
 
-def cold_cap_for_fps(fps, mode, active_tiles):
-    """Per-frame cold cap from cadence, mode, and active picture tiles.
+@dataclass(frozen=True)
+class ColdCapQualification:
+    mode: str
+    fps: float
+    active_tiles: int
+    cap: int
 
-    Frame 0 is exempt because the header loads it before timed playback.
+
+class ColdCapMeasurementRequired(ValueError):
+    """No measured cold-cap tuple covers the requested playback geometry."""
+
+
+# Full-length pipeline qualifications.  Keep this ordered data as the single
+# source of truth; sim, pack, profile validation, and analysis all call the
+# selector below.
+COLD_CAP_QUALIFICATIONS = (
+    ColdCapQualification("H32", 24.0, 896, 219),
+    ColdCapQualification("H32", 30.0, 896, 175),
+    ColdCapQualification("H40", 15.0, 720, 400),
+    ColdCapQualification("H40", 15.0, 1040, 400),
+    ColdCapQualification("H40", 24.0, 1120, 200),
+    ColdCapQualification("H40", 30.0, 1120, 178),
+)
+
+
+def cold_cap_qualification(fps, mode, active_tiles):
+    """Return the narrowest measured tuple that covers the request.
+
+    A result measured with more active tiles is conservative for a smaller
+    active picture at the same display mode and nominal frame rate.  A result
+    measured with fewer tiles, or at another rate/mode, is not reused.
     """
     mode_key = str(mode).upper()
     if mode_key not in _COLD_CAP_MODES:
         raise ValueError(f"unsupported display mode for cold cap: {mode!r}")
     fps_value = float(fps)
+    if fps_value <= 0:
+        raise ValueError(f"fps must be positive, got {fps!r}")
     active_tiles_value = int(active_tiles)
     if active_tiles_value <= 0:
         raise ValueError(f"active tile count must be positive: {active_tiles!r}")
-    if mode_key == "H40" and fps_value == 15.0:
-        return H40_15FPS_COLD_CAP_BY_ACTIVE_TILES.get(
-            active_tiles_value, COLD_CAP_15FPS)
-    if mode_key == "H40" and fps_value == 24.0:
-        return H40_24FPS_COLD_CAP
-    if mode_key == "H40" and fps_value == 30.0:
-        return H40_30FPS_COLD_CAP_BY_ACTIVE_TILES.get(
-            active_tiles_value,
-            int(round(COLD_CAP_15FPS * _CAP_REF_FPS / fps_value)),
+
+    same_rate = [
+        item for item in COLD_CAP_QUALIFICATIONS
+        if item.mode == mode_key and math.isclose(
+            item.fps, fps_value, rel_tol=0.0, abs_tol=1e-9)
+    ]
+    covering = [
+        item for item in same_rate
+        if item.active_tiles >= active_tiles_value
+    ]
+    if covering:
+        return min(covering, key=lambda item: item.active_tiles)
+
+    coverage = (
+        ", ".join(
+            f"{item.active_tiles} tiles -> cap {item.cap}"
+            for item in sorted(same_rate, key=lambda item: item.active_tiles)
         )
-    return int(round(COLD_CAP_15FPS * _CAP_REF_FPS / fps_value))
+        or "none"
+    )
+    raise ColdCapMeasurementRequired(
+        "cold-cap measurement required for "
+        f"mode={mode_key} fps={fps_value:g} active_tiles={active_tiles_value}; "
+        f"measured coverage at this mode/fps: {coverage}")
+
+
+def cold_cap_for_fps(fps, mode, active_tiles):
+    """Per-frame cold cap from measured mode/fps/active-picture coverage.
+
+    Frame 0 is exempt because the header loads it before timed playback.
+    """
+    return cold_cap_qualification(fps, mode, active_tiles).cap
 
 
 def cold_realized_ceiling_for_fps(fps, mode, active_tiles):

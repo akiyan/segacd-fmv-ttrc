@@ -202,7 +202,7 @@ def dummy_data():
                 comp=counts["Same"] + counts["Near"] + counts["Coa"] + counts["Flbk"],
                 buf_cap=buf_cap, buf_rem=13900,
                 cold=counts["Raw"] + counts["Buf"], cold_raw=counts["Raw"], cold_buf=counts["Buf"],
-                cold_cap=av_config.cold_cap_for_fps(15, "H32", 22 * 18),
+                cold_cap=av_config.cold_cap_for_fps(fps, "H32", 22 * 18),
                 dma_tiles=dma_tiles, dma_runs=23,
                 tl=tl, buf_rem_series=rem, dma_tl=dma_tl, tln=tln,
                 time_s=42.0, frame=1260, total_frames=2712)
@@ -427,7 +427,7 @@ def draw_status(w, h, data):
     xr = draw_field(d, xq + 10, ly, "Raw:", data["counts"]["Raw"], 3, f_leg, COL_DIM)
     draw_field(d, xr + 8, ly, "Comp:", data["comp"], 3, f_leg, COL_DIM)
     x += REQ_W + GAP
-    # 1.5) Cold = このコマの新規タイル(Raw+Buf)。フルスケール=COLD_CAP_REALIZED(drop-safe上限)。
+    # 1.5) Cold = このコマの新規タイル(Raw+Buf)。フルスケール=計測済みcold cap。
     #      これまで苦しんだcold値を視覚化。Req↔Bandの空間に配置。
     stacked([(data["cold_raw"], CAT_RAW), (data["cold_buf"], CAT_BUF)], data["cold_cap"], COLD_W)
     draw_field(d, x, ly, "Cold:", data["cold"], 3, f_leg, COL_TXT)

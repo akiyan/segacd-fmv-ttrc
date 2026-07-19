@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e63 : Select cold caps only from full-length-qualified mode/fps/active-tile
+#        tuples. A measurement covers smaller active pictures at the same mode
+#        and fps; uncovered tuples now stop with a measurement-required error.
 #   e62 : Replace the encoder's fixed 40%/70% optional-upgrade reserves, 40%
 #        recovery holdback, and separate terminal ramp with a whole-movie
 #        reserve plan. A dry run of the quantized exact target through the
@@ -431,5 +434,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
-e=62
+e=63
 p=56

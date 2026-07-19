@@ -42,6 +42,12 @@ output = "out/movieplay/MOVIE.DAT"
 
 
 class EncodeProfileArtifactTests(unittest.TestCase):
+    def test_all_repository_profiles_have_measured_cold_cap_coverage(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for path in sorted((root / "configs").glob("*.toml")):
+            with self.subTest(profile=path.name):
+                load_profile(path)
+
     def test_bad_apple_h40_uses_source_endpoint_snap(self) -> None:
         root = Path(__file__).resolve().parents[1]
         h40 = load_profile(root / "configs/bad-apple-h40.toml")
@@ -119,6 +125,25 @@ class EncodeProfileArtifactTests(unittest.TestCase):
                 'fit = "pad"', 'fit = "pad"\nactive_tiles = 897'))
             with self.assertRaisesRegex(ValueError, "video.active_tiles"):
                 load_profile(path)
+
+    def test_profile_without_measured_cold_cap_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "unmeasured-h32-15.toml"
+            path.write_text(PROFILE.replace('fps = "30"', 'fps = "15"'))
+            with self.assertRaisesRegex(
+                    ValueError, "cold-cap measurement required.*H32.*15"):
+                load_profile(path)
+
+    def test_smaller_picture_uses_covering_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "measured-h40-15.toml"
+            path.write_text(
+                PROFILE.replace('fps = "30"', 'fps = "15"')
+                .replace('mode = "H32"', 'mode = "H40"')
+                .replace('width = 256', 'width = 320')
+                .replace('fit = "pad"', 'fit = "pad"\nactive_tiles = 900'))
+            profile = load_profile(path)
+            self.assertEqual(profile.section("video")["active_tiles"], 900)
 
     def test_unknown_audio_kind_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

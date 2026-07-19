@@ -70,21 +70,32 @@ def check_profiles() -> None:
 
 def check_cold_caps() -> None:
     expected = (
-        ("H32", 15, 896, 350),
         ("H32", 24, 896, 219),
         ("H32", 30, 896, 175),
+        ("H40", 15, 500, 400),
         ("H40", 15, 720, 400),
+        ("H40", 15, 900, 400),
         ("H40", 15, 1040, 400),
-        ("H40", 15, 1120, 350),
         ("H40", 24, 1120, 200),
-        ("H40", 30, 1120, 175),
-        ("MODE4", 15, 896, 350),
+        ("H40", 30, 1120, 178),
     )
     for mode, fps, active_tiles, cap in expected:
         assert av_config.cold_cap_for_fps(fps, mode, active_tiles) == cap
         assert av_config.cold_realized_ceiling_for_fps(
             fps, mode, active_tiles) == cap
     print("Cold caps: OK (mode/fps/active-tile sim and pack limits agree)")
+    for fps, mode, active_tiles in (
+            (15, "H40", 1120),
+            (15, "H32", 896),
+            (15, "MODE4", 896)):
+        try:
+            av_config.cold_cap_for_fps(fps, mode, active_tiles)
+        except av_config.ColdCapMeasurementRequired:
+            pass
+        else:
+            raise AssertionError(
+                f"unmeasured tuple unexpectedly accepted: {mode}/{fps}/{active_tiles}")
+    print("Cold caps: OK (unmeasured tuples require qualification)")
 
 
 def main() -> None:
