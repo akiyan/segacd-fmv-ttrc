@@ -78,26 +78,31 @@ four rows. Frames are then quantised against this final palette grouping.
 resident tile). More cold = sharper picture, but a heavy frame that loads too
 many can overrun the CDC (a sector slip).
 
-The cap is **auto-derived** from `av_config.cold_cap_for_fps` by display mode and
-fps, and shared by the sim and the pack — no manual per-source env. The common
-limits are 15fps→350 / 24fps→219 / 30fps→175. Full-raster H40 has explicit
-cadence-specific limits: 400 at 15fps after the low-rate ADPCM CDC-pump fix,
-and 200 at exactly 24fps after Lunar measured S=2 at 219 and S=0 at 200. These
-limits are not extrapolated to other modes or rates. The sim and pack use
+The cap is **auto-derived** from `av_config.cold_cap_for_fps` by display mode,
+fps, and active picture-tile count, and shared by the sim and the pack — no
+manual per-source env. The common limits are 15fps→350 / 24fps→219 /
+30fps→175. H40 has two explicit measured exceptions: 400 at 15fps only for
+Machi OP's 720 active tiles after the low-rate ADPCM CDC-pump fix, and 200 at
+exactly 24fps after Lunar measured S=2 at 219 and S=0 at 200. H40/15 with the
+full 1,120 active tiles, or any count other than 720, stays at 350. These limits
+are not extrapolated to other modes, rates, or active areas. The sim and pack use
 ONE tile allocator (`tools/tile_alloc.py`), so the pack's **realized cold == the cap
 exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40: 400 at 15fps and 200 at 24fps | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit H40 cadence exceptions. Applied by the sim; the pack ships exactly this. |
+| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40 exceptions: 400 at 15fps/720 active tiles and 200 at 24fps | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit measured H40 tuple exceptions. Applied by the sim; the pack ships exactly this. |
 | `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
-| realized cold | at most the mode/fps cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
+| realized cold | at most the mode/fps/active-tile cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
-The H40/15 fps value of 400 is full-length-qualified with the 2,293-frame
-Machi OP stream. The packed stream had no ring underrun and decoded exactly;
-the DEBUG recording kept `S=0`, `D=0`, and `R=0`, with at most two Main-CPU
-VBlank waits. H40/24 remains at its separately measured value of 200; this
-15 fps result is not extrapolated to another cadence or display mode.
+The H40/15 fps/720-active-tile value of 400 is full-length-qualified with the
+2,293-frame Machi OP stream. Its 320x130 picture touches 40x18 tile cells after
+being placed at y=47 in the 320x224 raster; the remaining rows are confirmed
+black across every master frame. The packed stream had no ring underrun and
+decoded exactly; the DEBUG recording kept `S=0`, `D=0`, and `R=0`, with at most
+two Main-CPU VBlank waits. H40/24 remains at its separately measured value of
+200; this result is not extrapolated to another cadence, display mode, or
+active-tile count.
 
 ## C. Audio sync throttles
 
@@ -108,8 +113,9 @@ audible click). See the `R`/`L` HUD readouts below.
 Both `pcm13` and `adpcm22` are supported profile choices. `adpcm22` is the
 default for new profiles and for direct sim runs that do not set
 `CBRSIM_AUDIO`. ADPCM22 implementation is complete and H40 Sonic is full-length
-emulator-, automated-check-, and listening-qualified. H40/15 Machi OP is also
-full-length emulator- and automated-check-qualified. Physical hardware and the
+emulator-, automated-check-, and listening-qualified. Machi OP's H40/15 raster
+with 720 active tiles is also full-length emulator- and automated-check-qualified.
+Physical hardware and the
 other cadence/mode combinations remain broader compatibility checks.
 
 Low-rate ADPCM chunks need one extra streaming safeguard. An N4 decode is about
@@ -262,7 +268,7 @@ and on the disc because those are TTRC format names read by the player.
 |---|---|---|
 | `[source]` | `path`, `fps`, `duration`, optional `sar` | Input identity and native timing. `sar` repairs missing/wrong source metadata; it does not crop. |
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
-| `[video]` | `mode`, `width`, `height`, `fit`, optional `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `fit="pad"` preserves every source pixel; use `crop` only for confirmed black margins. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
+| `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when specified, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel; use `crop` only for confirmed black margins. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
 | `[audio]` | `kind` | Write `adpcm22` for the default 22.05 kHz Sub-CPU IMA path. Use `pcm13` for the physical-console-qualified 13.3 kHz fallback. The strict profile keeps this choice explicit. |
 | `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. Normal hardware work sets `emit_decisions=true`. |
 | `[encoder]` | `gpu`, `rate_kib`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `coa` | Common codec controls. GPU is the default; CPU fallback remains automatic. |
@@ -276,9 +282,11 @@ value. New path selection always uses the TOML filename.
 The profile loader is strict: misspelled sections/keys, unsupported display
 modes, non-tile-aligned dimensions, and unsafe TOML filename characters fail
 immediately. Profile values replace
-inherited per-source environment values unconditionally. Shared hardware limits
-such as ring size, virtual VBV capacity, and the automatic cold cap stay in
-`tools/av_config.py`; they are deliberately not per-source TOML fields.
+inherited per-source environment values unconditionally. Shared hardware
+limits such as ring size, virtual VBV capacity, and the cold-cap selection table
+stay in `tools/av_config.py`; they are deliberately not per-source TOML fields.
+`video.active_tiles` supplies measured source geometry to that shared table,
+not a per-source cap override.
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 

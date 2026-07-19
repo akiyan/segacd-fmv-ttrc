@@ -65,8 +65,8 @@ source within what the hardware allows — not fixed project constants:
   decoded directly by the Sub CPU. **PCM13** (RF5C164), 13.3 kHz mono 8-bit,
   remains supported as the physical-console-qualified fallback. ADPCM22
   implementation is complete: the full H40 Sonic path is emulator-,
-  automated-check-, and listening-qualified, and H40/15 Machi OP is
-  full-length emulator- and automated-check-qualified. PCM13 remains the
+  automated-check-, and listening-qualified, and Machi OP's H40/15 raster with
+  720 active tiles is full-length emulator- and automated-check-qualified. PCM13 remains the
   conservative choice when physical-console qualification is required; real
   hardware and the remaining ADPCM cadence profiles are broader compatibility
   checks, not implementation blockers. See [ADPCM.md](ADPCM.md). The separate

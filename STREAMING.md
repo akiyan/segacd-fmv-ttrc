@@ -48,10 +48,11 @@ The live throughput reference is the largest current fixed-cadence raster:
 | Maximum BODY routing slot | 5 sectors |
 | Build | specialized DEBUG player, Main code generation and short-run fast path enabled |
 
-Memory that must work for every supported rate uses the larger H40/15 fps
-limits where necessary: 400 cold patterns, 888 PCM bytes, and a 4,900-byte
-control block. Frame 0 is outside timed streaming and may contain all 1,120
-patterns. Its initial ascending slot allocation makes one 35,844-byte load run.
+Memory that must work for every supported rate uses the qualified
+H40/15 fps/720-active-tile limit where necessary: 400 cold patterns, 888 PCM
+bytes, and a 4,900-byte control block. H40/15 with all 1,120 tiles active stays
+at 350. Frame 0 is outside timed streaming and may contain all 1,120 patterns.
+Its initial ascending slot allocation makes one 35,844-byte load run.
 
 Instruction-cycle models use the standard MC68000 four-clock memory cycle.
 They do not include platform wait states or time spent inside Sega CD BIOS
@@ -271,14 +272,17 @@ while the pre-fix recording ended at `S=3` and held `F0107`, `F0166`, and
 `F0391` during recovery. This qualifies that low-rate path without turning its
 variable BIOS time into spendable Sub-CPU margin.
 
-The same stream then qualified the H40/15 cold cap at 400. The pack reported
-`under=0`, a 43-pattern minimum ready payload, and exact reconstruction of all
-2,293 frames. Across the 2,292 timed DEBUG HUD groups, `S`, `D`, and `R` stayed
-zero; Main-CPU VBlank waits were at most two, cold-run count was at most 131,
-and the longest pattern-update interval was 1,636 ticks (50.26 ms), within the
-66.7 ms 15 fps frame period. The lossless recording also passed packet, frame,
-audio, and extracted-frame checks. This evidence applies to H40/15 only; it
-does not raise H40/24, H40/30, H32, or mode4 limits.
+The same stream then qualified the H40/15 fps/720-active-tile cold cap at 400.
+Its 320x130 picture occupies 40 columns by 18 partially or fully covered tile
+rows in the 320x224 raster; all other tiles stayed black throughout the source.
+The pack reported `under=0`, a 43-pattern minimum ready payload, and exact
+reconstruction of all 2,293 frames. Across the 2,292 timed DEBUG HUD groups,
+`S`, `D`, and `R` stayed zero; Main-CPU VBlank waits were at most two, cold-run
+count was at most 131, and the longest pattern-update interval was 1,636 ticks
+(50.26 ms), within the 66.7 ms 15 fps frame period. The lossless recording also
+passed packet, frame, audio, and extracted-frame checks. This evidence applies
+only to that mode/fps/active-tile tuple; it does not raise full-raster H40/15,
+H40/24, H40/30, H32, or mode4 limits.
 
 This explains why a static instruction count can look comfortable even when a
 real stream is near its limit: the expensive uncertainty lives in BIOS calls,
