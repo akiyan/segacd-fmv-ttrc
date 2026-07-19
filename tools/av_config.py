@@ -196,11 +196,10 @@ def audio_frame_layout(kind, fps):
 # is exempt.
 
 # --- Per-frame cold cap as a qualified physical draw/delivery limit ---
-# A qualification applies only to the same display mode and nominal fps.  It
-# may cover a smaller active picture: choose the smallest measured active-tile
-# count that is still >= the requested count.  Never extrapolate a measurement
-# to more active tiles or another cadence.  Missing coverage is a measurement
-# task, not a reason to silently fall back to a scaled/default cap.
+# A qualification applies only to the exact display mode, nominal fps, and
+# active-tile count that was measured.  Never extrapolate a measurement to
+# another active area or cadence.  A missing tuple is a measurement task, not
+# a reason to silently fall back to a scaled/default cap.
 _COLD_CAP_MODES = {"H32", "H40", "MODE4"}
 
 
@@ -213,7 +212,7 @@ class ColdCapQualification:
 
 
 class ColdCapMeasurementRequired(ValueError):
-    """No measured cold-cap tuple covers the requested playback geometry."""
+    """No measured cold-cap tuple exactly matches the playback geometry."""
 
 
 # Full-length pipeline qualifications.  Keep this ordered data as the single
@@ -230,11 +229,10 @@ COLD_CAP_QUALIFICATIONS = (
 
 
 def cold_cap_qualification(fps, mode, active_tiles):
-    """Return the narrowest measured tuple that covers the request.
+    """Return the measured tuple that exactly matches the request.
 
-    A result measured with more active tiles is conservative for a smaller
-    active picture at the same display mode and nominal frame rate.  A result
-    measured with fewer tiles, or at another rate/mode, is not reused.
+    Results are not reused across active-tile counts, display modes, or nominal
+    frame rates even when another measurement looks more conservative.
     """
     mode_key = str(mode).upper()
     if mode_key not in _COLD_CAP_MODES:
@@ -251,12 +249,12 @@ def cold_cap_qualification(fps, mode, active_tiles):
         if item.mode == mode_key and math.isclose(
             item.fps, fps_value, rel_tol=0.0, abs_tol=1e-9)
     ]
-    covering = [
+    exact = [
         item for item in same_rate
-        if item.active_tiles >= active_tiles_value
+        if item.active_tiles == active_tiles_value
     ]
-    if covering:
-        return min(covering, key=lambda item: item.active_tiles)
+    if exact:
+        return exact[0]
 
     coverage = (
         ", ".join(
@@ -268,11 +266,11 @@ def cold_cap_qualification(fps, mode, active_tiles):
     raise ColdCapMeasurementRequired(
         "cold-cap measurement required for "
         f"mode={mode_key} fps={fps_value:g} active_tiles={active_tiles_value}; "
-        f"measured coverage at this mode/fps: {coverage}")
+        f"measured tuples at this mode/fps: {coverage}")
 
 
 def cold_cap_for_fps(fps, mode, active_tiles):
-    """Per-frame cold cap from measured mode/fps/active-picture coverage.
+    """Per-frame cold cap from an exact measured mode/fps/active-tile tuple.
 
     Frame 0 is exempt because the header loads it before timed playback.
     """

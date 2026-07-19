@@ -134,16 +134,17 @@ class EncodeProfileArtifactTests(unittest.TestCase):
                     ValueError, "cold-cap measurement required.*H32.*15"):
                 load_profile(path)
 
-    def test_smaller_picture_uses_covering_measurement(self) -> None:
+    def test_profile_without_exact_active_tile_measurement_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "measured-h40-15.toml"
+            path = Path(tmp) / "unmeasured-h40-15-900.toml"
             path.write_text(
                 PROFILE.replace('fps = "30"', 'fps = "15"')
                 .replace('mode = "H32"', 'mode = "H40"')
                 .replace('width = 256', 'width = 320')
                 .replace('fit = "pad"', 'fit = "pad"\nactive_tiles = 900'))
-            profile = load_profile(path)
-            self.assertEqual(profile.section("video")["active_tiles"], 900)
+            with self.assertRaisesRegex(
+                    ValueError, "cold-cap measurement required.*H40.*900"):
+                load_profile(path)
 
     def test_unknown_audio_kind_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

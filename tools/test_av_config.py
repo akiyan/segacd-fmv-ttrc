@@ -70,28 +70,28 @@ class PlaybackTimingTests(unittest.TestCase):
 
 
 class ColdCapTests(unittest.TestCase):
-    def test_h32_measurements_cover_smaller_active_pictures(self) -> None:
+    def test_h32_measurements_require_exact_active_tiles(self) -> None:
         self.assertEqual(av_config.cold_cap_for_fps(24, "H32", 896), 219)
-        self.assertEqual(av_config.cold_cap_for_fps(24, "H32", 500), 219)
         self.assertEqual(av_config.cold_cap_for_fps(30, "H32", 896), 175)
-        self.assertEqual(av_config.cold_cap_for_fps(30, "H32", 500), 175)
 
-    def test_h40_15fps_uses_narrowest_covering_measurement(self) -> None:
-        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 719), 400)
+    def test_h40_15fps_measurements_require_exact_active_tiles(self) -> None:
         self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 720), 400)
-        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 721), 400)
-        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 900), 400)
         self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 1040), 400)
 
-    def test_full_h40_measurements_cover_smaller_active_pictures(self) -> None:
+    def test_full_h40_measurements_require_exact_active_tiles(self) -> None:
         self.assertEqual(av_config.cold_cap_for_fps(24, "H40", 1120), 200)
-        self.assertEqual(av_config.cold_cap_for_fps(24, "H40", 720), 200)
         self.assertEqual(av_config.cold_cap_for_fps(30, "H40", 1120), 178)
-        self.assertEqual(av_config.cold_cap_for_fps(30, "H40", 720), 178)
 
-    def test_uncovered_tuple_requires_measurement(self) -> None:
+    def test_nonexact_tuple_requires_measurement(self) -> None:
         cases = (
+            (24, "H32", 500),
+            (30, "H32", 500),
+            (15, "H40", 719),
+            (15, "H40", 721),
+            (15, "H40", 900),
             (15, "H40", 1041),
+            (24, "H40", 720),
+            (30, "H40", 720),
             (15, "H32", 896),
             (15, "MODE4", 896),
             (24, "MODE4", 896),
@@ -103,21 +103,21 @@ class ColdCapTests(unittest.TestCase):
                         "cold-cap measurement required"):
                     av_config.cold_cap_for_fps(fps, mode, active_tiles)
 
-    def test_measurement_error_lists_available_coverage(self) -> None:
+    def test_measurement_error_lists_available_tuples(self) -> None:
         with self.assertRaisesRegex(
                 av_config.ColdCapMeasurementRequired,
                 "720 tiles -> cap 400, 1040 tiles -> cap 400"):
-            av_config.cold_cap_for_fps(15, "H40", 1120)
+            av_config.cold_cap_for_fps(15, "H40", 900)
 
     def test_pack_ceiling_uses_the_same_measurement_selector(self) -> None:
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(15, "H40", 500), 400)
+            av_config.cold_realized_ceiling_for_fps(15, "H40", 720), 400)
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(15, "H40", 900), 400)
+            av_config.cold_realized_ceiling_for_fps(15, "H40", 1040), 400)
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(24, "H40", 900), 200)
+            av_config.cold_realized_ceiling_for_fps(24, "H40", 1120), 200)
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(30, "H40", 900), 178)
+            av_config.cold_realized_ceiling_for_fps(30, "H40", 1120), 178)
 
     def test_nonpositive_active_tile_count_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

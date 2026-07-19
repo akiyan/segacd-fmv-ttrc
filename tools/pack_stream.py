@@ -1031,7 +1031,7 @@ def main():
             f"pack: realized per-frame cold max={realized_max} > cap={cold_ceiling}. "
             f"共有 TileAllocator では realized=cap のはず=想定外。sim/pack の割り当て食い違いを疑う。")
     print(f"  realized cold: max={realized_max} <= {stream_mode}/{stream_active_tiles} "
-          f"active tiles cap {cold_ceiling} (measured through "
+          f"active tiles cap {cold_ceiling} (measured at "
           f"{cold_qualification.active_tiles} tiles, 共有割り当て)")
     packed_tiles, packed_runs = run_stats(per)
     if not np.array_equal(packed_tiles, n_load):

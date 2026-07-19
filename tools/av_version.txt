@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e64 : Require an exact measured mode/fps/active-tile tuple for cold-cap
+#        selection. Measurements from larger active areas are no longer reused
+#        for smaller profile areas; every distinct tuple must be qualified.
 #   e63 : Select cold caps only from full-length-qualified mode/fps/active-tile
 #        tuples. A measurement covers smaller active pictures at the same mode
 #        and fps; uncovered tuples now stop with a measurement-required error.
@@ -434,5 +437,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
-e=63
+e=64
 p=56

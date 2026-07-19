@@ -220,7 +220,7 @@ TANK_CAP_BYTES = TANK_KB * 1024
 UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
 # cold(=新規パターン転送: Raw+Buf)の1コマ上限。実機MDの実時間デコード天井対策
 # (BUDGETS.md 'Encoder cap')。超過セルは Flbk近似 or Miss繰越。0=無効。
-# 1コマの cold 上限は、同じモード/fpsで要求activeタイル数を覆う最小の
+# 1コマの cold 上限は、モード/fps/activeタイル数が完全一致する
 # 全編計測済みtupleから選ぶ。計測のない組合せは明示エラーにし、未計測値や
 # inherited envへfallbackしない。frame0 は下の frame_max_cold で別途免除。
 COLD_CAP_QUALIFICATION = av_config.cold_cap_qualification(
@@ -1003,7 +1003,7 @@ def main():
           f"active={ACTIVE_TILES})")
     print(
         f"  measured cold cap={MAX_COLD}: {COLD_CAP_QUALIFICATION.mode} "
-        f"{COLD_CAP_QUALIFICATION.fps:g}fps qualification covers up to "
+        f"{COLD_CAP_QUALIFICATION.fps:g}fps qualification measured at "
         f"{COLD_CAP_QUALIFICATION.active_tiles} active tiles")
 
     # The source WAV remains the packer's input.  Analysis must instead audition

@@ -72,9 +72,7 @@ def check_cold_caps() -> None:
     expected = (
         ("H32", 24, 896, 219),
         ("H32", 30, 896, 175),
-        ("H40", 15, 500, 400),
         ("H40", 15, 720, 400),
-        ("H40", 15, 900, 400),
         ("H40", 15, 1040, 400),
         ("H40", 24, 1120, 200),
         ("H40", 30, 1120, 178),
@@ -85,6 +83,8 @@ def check_cold_caps() -> None:
             fps, mode, active_tiles) == cap
     print("Cold caps: OK (mode/fps/active-tile sim and pack limits agree)")
     for fps, mode, active_tiles in (
+            (24, "H32", 500),
+            (15, "H40", 900),
             (15, "H40", 1120),
             (15, "H32", 896),
             (15, "MODE4", 896)):
