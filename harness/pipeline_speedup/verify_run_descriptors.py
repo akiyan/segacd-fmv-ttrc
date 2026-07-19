@@ -7,7 +7,7 @@ absolute-address alignment pad:
     n_runs:u16, repeated (slot_start:u16, count:u16)
 
 This checker does not import the packer.  It independently reads the real split
-TTRC v6-v8 files, reconstructs every current control and payload byte, and compares
+TTRC v6-v9 files, reconstructs every current control and payload byte, and compares
 two consumers:
 
 * the legacy/fallback Sub path scans all update entries, selects cold entries, builds
@@ -34,6 +34,8 @@ PATTERN_BYTES = 32
 DEBUG_BYTES = 22
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
+FEATURE_ADPCM22 = 0x0004
+ADPCM_TABLE_SECTORS = 5
 ROUTING_TOTAL_MAX = 5
 DEFAULT_DECISIONS = Path(
     "videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl"
@@ -191,8 +193,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, pool, base = struct.unpack_from(
         ">4sHHHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8):
-        raise AssertionError(f"expected split TTRC v6-v8, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7, 8, 9):
+        raise AssertionError(f"expected split TTRC v6-v9, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -202,16 +204,25 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     f0_ctrl_sectors, f0_pattern_sectors, palette_sectors = struct.unpack_from(
         ">LLL", header, 40
     )
-    audio_bytes = struct.unpack_from(">H", header, 54)[0]
+    decoded_audio_bytes = struct.unpack_from(">H", header, 54)[0]
     vsync_n = struct.unpack_from(">H", header, 52)[0]
     fps = struct.unpack_from(">H", header, 56)[0] or 15
     audio_preload_sectors = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
-    unknown_features = features & ~(FEATURE_COLD_RUNS | FEATURE_FIXED_N2)
+    unknown_features = features & ~(
+        FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_ADPCM22)
     if unknown_features:
         raise AssertionError(f"unsupported header feature bits 0x{unknown_features:04X}")
+    audio_bytes = (
+        4 + decoded_audio_bytes // 2
+        if features & FEATURE_ADPCM22
+        else decoded_audio_bytes
+    )
 
-    frame0_offset = (1 + palette_sectors + audio_preload_sectors) * SECTOR
+    table_sectors = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
+    frame0_offset = (
+        1 + palette_sectors + table_sectors + audio_preload_sectors
+    ) * SECTOR
     frame0_len = struct.unpack_from(">H", header, frame0_offset)[0]
     controls = [
         parse_control(
@@ -235,6 +246,7 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     routing_offset = (
         1
         + palette_sectors
+        + table_sectors
         + audio_preload_sectors
         + f0_ctrl_sectors
         + f0_pattern_sectors
@@ -418,7 +430,7 @@ def verify_descriptor_alignment() -> None:
     """Prove the assembly's absolute alignment for even and odd audio starts."""
     for bitmap_bytes in range(1, 141):
         for debug_bytes in (0, DEBUG_BYTES):
-            for audio_bytes in (443, 887, 444, 888):
+            for audio_bytes in (372, 443, 887, 444, 888):
                 audio_start = 8 + debug_bytes + bitmap_bytes + 2 * 17
                 packed_suffix = (audio_start + audio_bytes + 1) & ~1
                 player_suffix = audio_start + audio_bytes

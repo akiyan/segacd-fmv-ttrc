@@ -6,7 +6,7 @@ needs cold entries in stream order to pop patterns and build DMA runs.  This
 checker walks every real control block in the packed TTRC files both ways and
 verifies that the entry stream, cold-slot order and run grouping are identical.
 
-For v6-v8 it prefers the on-disc HEADER.DAT + BODY.DAT pair, verifies that each
+For v6-v9 it prefers the on-disc HEADER.DAT + BODY.DAT pair, verifies that each
 frame's control block and cold patterns are ready before that frame can run,
 and also accepts the off-disc MOVIE.DAT compatibility concatenation.  v4/v5
 combined MOVIE.DAT files remain readable for regression checks.
@@ -22,6 +22,8 @@ from pathlib import Path
 SECTOR = 2048
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
+FEATURE_ADPCM22 = 0x0004
+ADPCM_TABLE_SECTORS = 5
 
 
 def frame_sectors(
@@ -187,8 +189,8 @@ def main() -> None:
     magic, version, nfr, _cols, _rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", data, 0
     )
-    if magic != b"TTRC" or version not in (4, 5, 6, 7, 8):
-        raise SystemExit(f"expected TTRC v4-v8, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (4, 5, 6, 7, 8, 9):
+        raise SystemExit(f"expected TTRC v4-v9, got {magic!r} v{version}")
     prebuf_pat = struct.unpack_from(">L", data, 22)[0]
     routing_sec = struct.unpack_from(">L", data, 26)[0]
     prebuf_sec = struct.unpack_from(">L", data, 30)[0]
@@ -197,12 +199,16 @@ def main() -> None:
     fps = struct.unpack_from(">H", data, 56)[0] or 15
     audio_preload_sec = struct.unpack_from(">H", data, 60)[0]
     features = struct.unpack_from(">H", data, 62)[0]
+    table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
 
-    f0_off = (1 + paltab_sec + audio_preload_sec) * SECTOR
+    f0_off = (1 + paltab_sec + table_sec + audio_preload_sec) * SECTOR
     f0_len = struct.unpack_from(">H", data, f0_off)[0]
     controls = [data[f0_off : f0_off + f0_len]]
 
-    routing_off = (1 + paltab_sec + audio_preload_sec + f0_ctrl_sec + f0_pat_sec) * SECTOR
+    routing_off = (
+        1 + paltab_sec + table_sec + audio_preload_sec
+        + f0_ctrl_sec + f0_pat_sec
+    ) * SECTOR
     routing_raw = data[routing_off : routing_off + routing_sec * SECTOR]
     routes = decode_routes(routing_raw, nfr, version)
     if routes[0] != (0, 0):

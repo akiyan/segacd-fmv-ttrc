@@ -58,13 +58,16 @@ def make_header(case: Case) -> bytes:
     if av_config.uses_fixed_n2_cadence(case.fps):
         features |= ttrc_routing.FEATURE_FIXED_N2
     audio = av_config.pcm_frame_bytes(case.fps, 13_300)
+    audio_fd = av_config.rf5c164_fd(
+        audio, av_config.playback_fps_for_content(case.fps))
     prefix = struct.pack(
         ">4s9H4LBB3L6H",
         b"TTRC", ttrc_routing.VERSION, frames, tcols, trows, cells,
         1400, 1, ttrc_routing.FRAME_SECTORS, 1,
         12416, ttrc_routing.routing_sector_count(frames), 194, 12416,
         case.mode, 0, 2, 18 if case.mode else 14, 1,
-        av_config.vsync_n_for_fps(case.fps), audio, case.fps, 0, 30, features,
+        av_config.vsync_n_for_fps(case.fps), audio, case.fps,
+        audio_fd, 30, features,
     )
     sector = prefix + bytes(128) + bytes(player_constants.SECTOR - 192)
     return player_constants.stamp_header_sector(sector)

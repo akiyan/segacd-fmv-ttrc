@@ -228,10 +228,24 @@ import wave as _wave  # noqa: E402
 WAVE_WIN_S = 2.0                                          # 前後2s
 WAVE_BW = L.WAVE_FRAME[2] - L.WAVE_FRAME[0] - 2
 try:
-    _wf = _wave.open(f"{SIM}/audio_13k3_u8_mono.wav", "rb")
+    _audio_wavs = sorted(glob.glob(f"{SIM}/audio_*.wav"))
+    if len(_audio_wavs) != 1:
+        raise FileNotFoundError(
+            f"expected one extracted audio WAV, found {len(_audio_wavs)}")
+    _wf = _wave.open(_audio_wavs[0], "rb")
     AUDIO_RATE = _wf.getframerate()
-    _araw = np.abs(np.frombuffer(_wf.readframes(_wf.getnframes()), np.uint8).astype(np.int16) - 128)
+    _audio_width = _wf.getsampwidth()
+    _audio_raw = _wf.readframes(_wf.getnframes())
     _wf.close()
+    if _audio_width == 1:
+        _araw = np.abs(
+            np.frombuffer(_audio_raw, np.uint8).astype(np.int16) - 128)
+    elif _audio_width == 2:
+        _araw = (
+            np.abs(np.frombuffer(_audio_raw, "<i2").astype(np.int32)) >> 8
+        ).astype(np.int16)
+    else:
+        raise ValueError(f"unsupported waveform sample width: {_audio_width}")
 except Exception as _e:
     AUDIO_RATE = 13300; _araw = np.zeros(1, np.int16); print("waveform: 音声wav 無し ->", _e)
 _PPS = WAVE_BW / (2 * WAVE_WIN_S)                         # pixels/秒

@@ -160,10 +160,13 @@ within Sega CD limits, not fixed presets:
 - Display mode / resolution / aspect (H32 / H40 / mode4), tile grid sized to the
   per-frame DMA budget.
 - Frame rate = the source's native rate.
-- Audio = **PCM** (RF5C164), 13.3 kHz mono 8-bit — the verified on-hardware
-  path. 22.05 kHz ADPCM decoded on the 68000s was shelved (structural limit;
-  see [ADPCM.md](ADPCM.md)). Z80 offload was also tested and shelved because
-  BUSREQ-based feeding contends with Main CPU video work.
+- Audio = per-profile `pcm13` or `adpcm22`. **PCM13** (RF5C164, 13.3 kHz mono
+  8-bit) is the conservative physical-hardware-qualified path. **ADPCM22** is
+  checkpointed 22.05 kHz mono IMA decoded directly by the Sub CPU through full
+  lookup tables duplicated in both physical 1M Word-RAM banks. H40 Sonic is
+  full-length emulator-qualified; physical hardware and the remaining modes
+  are still pending (see [ADPCM.md](ADPCM.md)). Z80 offload remains shelved
+  because BUSREQ-based feeding contends with Main CPU video work.
 
 The old `OP.STR` / RLE and `PROBE.BIN` bring-up paths have been removed.
 `make disc CONFIG=configs/PROFILE.toml` builds the `HEADER.DAT` + `BODY.DAT`
@@ -195,8 +198,8 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
 - `<resolution>`: the Sega CD output resolution in pixels, `WxH` (e.g. `256x144`).
-- `<audio-format>`: `pcm` (68000-decoded ADPCM and the later Z80-offload
-  experiment were shelved — see [ADPCM.md](ADPCM.md)).
+- `<audio-format>`: `pcm` for `pcm13`, or `adpcm22` for the experimental
+  Sub-CPU IMA path (see [ADPCM.md](ADPCM.md)).
 
 ## Hardware Facts
 
@@ -337,9 +340,10 @@ ffmpeg -i videos/<stem>_emu_lossless.mkv \
   freeze on top of it is a divergence). When the hardware cannot reproduce the
   sim *no matter how you tune*, STOP and question whether the sim mis-models the
   hardware's real limit — do not keep shaving the encoder to fit a symptom.
-  Precedents: the CRAM emulation had a sim-side bug; 22.05 kHz ADPCM decode was
-  simply infeasible on the 68000s, and Z80 offload introduced Main-bus
-  contention (see `ADPCM.md`); and the streaming
+  Precedents: the CRAM emulation had a sim-side bug; an older 22.05 kHz ADPCM
+  player exceeded the 68000 streaming margin, while the later optimized Sub
+  path had to be re-qualified rather than inheriting that conclusion; Z80
+  offload introduced Main-bus contention (see `ADPCM.md`); and the streaming
   ring: the sim's VBV tank was set equal to the player's ring
   (`RING_SIZE`=420 KB, TANK=440→400), i.e. it assumed the *entire* ring is usable
   for banking. Real CD-delivery jitter makes the usable ring smaller, so a

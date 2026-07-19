@@ -183,6 +183,10 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         raise ValueError(f"{profile_path}: video width and height must be multiples of 8")
     if str(data["video"]["fit"]).lower() not in {"pad", "crop"}:
         raise ValueError(f"{profile_path}: video.fit must be 'pad' or 'crop'")
+    audio_kind = str(data["audio"]["kind"]).lower()
+    if audio_kind not in {"pcm13", "adpcm22"}:
+        raise ValueError(
+            f"{profile_path}: audio.kind must be 'pcm13' or 'adpcm22'")
     resize_filter = str(data["video"].get("resize_filter", "lanczos")).lower()
     if resize_filter not in {"area", "bicubic", "bilinear", "lanczos", "neighbor"}:
         raise ValueError(

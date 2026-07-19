@@ -11,6 +11,15 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e53 : Introduce TTRC v9 checkpointed continuous IMA ADPCM. ADPCM22 controls
+#        carry a four-byte predictor/index checkpoint plus two samples per byte;
+#        HEADER startup audio remains reconstructed PCM. Header offset 58 now
+#        stores an RF5C164 frequency delta derived from fixed chunk cadence, and
+#        the full 8,800-byte decoder table image follows PALTAB.
+#   p55 : Decode ADPCM22 directly on the Sub CPU through full lookup tables
+#        duplicated at boot into both physical 1M Word-RAM banks. Reuse the PCM
+#        wave writer, export decoder time as DEBUG Axx, and retain PCM13 as a
+#        specialized zero-decoder path. H40 Sonic completes S=0/D=0/R=0/C=0.
 #   e52 : Separate the encoder's virtual VBV budget from physical payload-RING
 #        occupancy in analysis. Sim and pack now share the exact sector
 #        scheduler and cross-check every frame, so Tank follows prebuffer,
@@ -384,6 +393,6 @@
 #   e17: Raise requested startup PCM arming from 32 to 45 frames. The pack
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
-date=20260718
-e=52
-p=54
+date=20260719
+e=53
+p=55

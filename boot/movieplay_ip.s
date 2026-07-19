@@ -1243,9 +1243,10 @@ render_dbg:
 	move.w	#18, d3				/* glyph 'M' */
 	move.w	frame_vblank_waits, d4
 	bsr	dbg_put2
-	/* A: startup-audio duplicate chunks still skipped after this frame */
+	/* A: Sub ADPCM decode time in 4*30.72us units (zero for PCM builds). */
 	move.w	#10, d3				/* glyph 'A'(=hex A) */
 	move.w	(PROBE_BANK+0xAF1C).l, d4
+	lsr.w	#2, d4
 	bsr	dbg_put2
 	/* H40 has exactly eight additional visible Window cells.  Keep the shared
 	   H32 prefix stable and use the tail for direct Main/DMA correlation. */

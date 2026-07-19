@@ -13,10 +13,10 @@ height = 224
 fit = "pad"
 
 [audio]
-kind = "pcm13"
+kind = "adpcm22"
 
 [output]
-directory = "videos/SonicJamOp_H40_320x224_pcm/tmp"
+directory = "videos/SonicJamOp_H40_320x224_adpcm22/tmp"
 reuse = false
 emit_decisions = true
 

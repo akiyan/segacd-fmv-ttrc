@@ -7,20 +7,22 @@ import player_constants
 import ttrc_routing
 
 
-def make_header(*, mode=0, fps=30, features=None):
+def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x345):
     if features is None:
         features = ttrc_routing.FEATURE_COLD_RUNS | ttrc_routing.FEATURE_FIXED_N2
     tcols = 32 if mode == 0 else 40
     trows = 28
     cells = tcols * trows
     frames = 2714
+    if audio_bytes is None:
+        audio_bytes = 444 if fps == 30 else 888
     prefix = struct.pack(
         ">4s9H4LBB3L6H",
         b"TTRC", ttrc_routing.VERSION, frames, tcols, trows, cells,
         1400, 1, ttrc_routing.FRAME_SECTORS, 13,
         12416, ttrc_routing.routing_sector_count(frames), 194, 12416,
         mode, 0, 2, 14, 1, 2 if fps >= 24 else 4,
-        444 if fps == 30 else 888, fps, 0, 30, features,
+        audio_bytes, fps, audio_fd, 30, features,
     )
     sector = prefix + bytes(128) + bytes(player_constants.SECTOR - 192)
     return player_constants.stamp_header_sector(sector)
@@ -34,6 +36,7 @@ class PlayerConstantsTest(unittest.TestCase):
         self.assertEqual(values.row0, 0)
         self.assertEqual(values.vbudget, 2800)
         self.assertEqual(values.audio_bytes, 444)
+        self.assertEqual(values.audio_fd, 0x345)
         self.assertEqual((values.sec_num, values.sec_mod), (1001, 400))
         self.assertEqual((values.sec_base, values.sec_rem), (2, 201))
         self.assertEqual(values.pump_mask, 0x03FF)
@@ -56,6 +59,17 @@ class PlayerConstantsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "signature"):
             player_constants.parse_header_sector(bytes(sector))
 
+    def test_adpcm_derives_control_and_table_sizes(self):
+        values = player_constants.parse_header_sector(make_header(
+            features=(ttrc_routing.FEATURE_COLD_RUNS
+                      | ttrc_routing.FEATURE_FIXED_N2
+                      | ttrc_routing.FEATURE_ADPCM22),
+            audio_bytes=736,
+        ))
+        self.assertEqual(values.audio_bytes, 736)
+        self.assertEqual(values.audio_control_bytes, 372)
+        self.assertEqual(values.adpcm_table_sectors, 5)
+
     def test_generation_is_deterministic_and_preserves_mtime(self):
         with tempfile.TemporaryDirectory() as td:
             header = Path(td) / "HEADER.DAT"
@@ -69,6 +83,7 @@ class PlayerConstantsTest(unittest.TestCase):
             self.assertEqual(output.stat().st_mtime_ns, first_mtime)
             text = first.decode()
             self.assertIn(".equ PC_AUDIO_BYTES, 0x01BC", text)
+            self.assertIn(".equ PC_AUDIO_FD, 0x0345", text)
             self.assertIn(".equ PC_SEC_REM, 0x00C9", text)
 
 

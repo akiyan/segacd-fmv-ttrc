@@ -45,8 +45,9 @@ Everything else is shaped by Sega CD hardware, not by video theory:
 - **DMA-limited refresh.** How many tiles can be written to VRAM per frame is
   bounded by the VBLANK DMA window for the screen mode and fps, so the tile grid
   size is chosen to fit that budget.
-- **RF5C164 PCM audio, interleaved.** Audio is packed into the same CD stream at
-  a fixed byte rate and played on the PCM chip, kept in sync with video.
+- **RF5C164 audio, interleaved.** PCM13 bytes or checkpointed ADPCM22 controls
+  share the same CD stream. The Sub CPU reconstructs ADPCM into the same
+  wave-RAM writer, with a persistent startup lead keeping audio aligned.
 - **PRG-RAM discipline.** Buffers, queues, and the payload RING live in PRG-RAM regions
   that stay safe during continuous CD reads (see [AGENTS.md](AGENTS.md) hardware notes).
 
@@ -58,10 +59,12 @@ source within what the hardware allows — not fixed project constants:
 - **Display mode / resolution / aspect:** H32, H40, or mode4, with the tile grid
   sized to the per-frame DMA budget and the source's display aspect.
 - **Frame rate:** the source's native rate is kept (15 / 24 / 30 fps, etc.).
-- **Audio format:** **PCM** (RF5C164), 13.3 kHz mono 8-bit — the verified
-  on-hardware path. 22.05 kHz ADPCM decoded on the 68000s was shelved
-  (structural limit; see [ADPCM.md](ADPCM.md)). A later Z80-offload experiment
-  was also shelved because feeding the Z80 contends with the Main CPU bus.
+- **Audio format:** **PCM13** (RF5C164), 13.3 kHz mono 8-bit, is the conservative
+  physical-hardware-qualified path. **ADPCM22** is the experimental 22.05 kHz
+  mono IMA path decoded directly by the Sub CPU; the full H40 Sonic recording
+  is clean, while physical hardware and the other cadence profiles remain to
+  be qualified. See [ADPCM.md](ADPCM.md). The separate Z80-offload experiment
+  remains shelved because BUSREQ feeding contends with Main CPU video work.
 
 ## Pipeline
 
@@ -105,8 +108,8 @@ meter and tile category.
   Main/Sub CPU headroom for planning additional streaming features.
 - [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
   playback pipeline budgets used when choosing encoder targets.
-- [ADPCM.md](ADPCM.md): the 22.05 kHz ADPCM real-time-decode investigation and
-  why it was shelved (PCM remains the shipping audio path).
+- [ADPCM.md](ADPCM.md): the checkpointed 22.05 kHz Sub-CPU ADPCM design,
+  full-table Word-RAM allocation, qualification results, and remaining checks.
 - [AGENTS.md](AGENTS.md): agent and maintenance guidance, including hardware
   facts, recording rules, output paths, and documentation policy.
 - [CLAUDE.md](CLAUDE.md): compatibility entry point for Claude-based agents; it

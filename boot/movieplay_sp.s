@@ -25,6 +25,11 @@
 
 .ifdef PLAYER_SPECIALIZED
 	.include "player_constants.inc"
+.if (PC_FEATURES & 0x0004)
+.equ INCLUDE_ADPCM_DECODER, 1
+.endif
+.else
+.equ INCLUDE_ADPCM_DECODER, 1
 .endif
 
 .macro PC_MOVE_W runtime, constant, dest
@@ -80,11 +85,12 @@
 .equ COMCMD0,     SUB_GA_BASE+0x0010
 .equ COMSTAT0,    SUB_GA_BASE+0x0020
 .equ COMSTAT1,    SUB_GA_BASE+0x0022
+.equ GA_STOPWATCH,SUB_GA_BASE+0x000C    /* 12-bit, 30.72us/tick */
 
 .equ SUB_BANK_1M, 0x000C0000
 
-/* --- TTRC v8 packed-routing contract (checked by tools/check_player_ring.py) --- */
-.equ ROUTING_VERSION,       8
+/* --- TTRC v9 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
+.equ ROUTING_VERSION,       9
 .equ ROUTING_BYTES,         16384
 .equ ROUTING_MAX_FRAMES,    16384
 .equ ROUTING_SECTOR_BYTES,  2048
@@ -95,6 +101,7 @@
 .equ ROUTING_MAX_ENTRY,     0x002D
 .equ FEATURE_COLD_RUNS_BIT, 0
 .equ FEATURE_FIXED_N2_BIT,  1
+.equ FEATURE_ADPCM22_BIT,   2
 .equ ROUTING_COPY_LONGS,    4096
 .equ ROUTING_BANK_COPIES,   2
 
@@ -118,6 +125,15 @@
 /* --- Word-RAM スクラッチ(SPバンク内, 毎フレーム再利用=スワップ影響なし) --- */
 .equ CTRL_SCR,    0x000D0000        /* control block 線形化(<=2246B) */
 .equ PAD_SCR,     0x000D2000        /* pad セクタ捨て場 */
+.equ ADPCM_TABLE, 0x000D2800        /* owned 1M bank +0x12800: full IMA table, both banks */
+.equ ADPCM_INDICES, ADPCM_TABLE     /* 89*16 u16 new-index*32 = 2848B */
+.equ ADPCM_DELTAS, ADPCM_TABLE+2848 /* 89*16 s32 signed delta = 5696B */
+.equ ADPCM_LUT, ADPCM_TABLE+8544    /* offset-high -> RF5C164 sign-magnitude = 256B */
+.equ ADPCM_TABLE_BYTES, 8800
+.equ ADPCM_TABLE_LONGS, ADPCM_TABLE_BYTES/4
+.equ ADPCM_TABLE_SECTORS, 5
+.equ ADPCM_BANK_COPIES, 2
+.equ PCM_DEC_BUF, 0x000D4C00        /* +0x14C00: decoded PCM, max N4=1472B */
 .equ ROUTING,     0x000DC000        /* 所有中の1M Word-RAM bank末尾16KB。bootで両bankに同じ
                                        v7+ 1-byte tableを複製し、drain/display parityの不一致を吸収。 */
 
@@ -136,7 +152,7 @@
                                        control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
 .equ O_CTRLWAIT,SUB_BANK_1M+0xAF18  /* DEBUG: current-control blocking sector pumps */
 .equ O_BODYWAIT,SUB_BANK_1M+0xAF1A  /* DEBUG: prior BODY payload/pad blocking pumps */
-.equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: always zero; legacy startup-audio skip field is ignored */
+.equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: ADPCM decode stopwatch, raw 30.72us ticks */
 .equ O_RESYNC, SUB_BANK_1M+0xAF20   /* 計測: 音声re-sync回数(リード下限/上限逸脱で書込ジャンプ=乱れの元) */
 .equ O_LEAD,   SUB_BANK_1M+0xAF22   /* 計測: 現コマの音声リード(write-play, バイト)。SYNC_MINに近づく=枯渇 */
 .equ O_HDR,    SUB_BANK_1M+0xAF80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
@@ -146,7 +162,7 @@
                                        ip.s の PALTAB_OFF と一致必須(check_player_ring.pyが検証) */
 .equ O_PALTAB, SUB_BANK_1M+PALTAB_OFF
 
-/* --- RF5C164 PCM (13.3kHz) --- */
+/* --- RF5C164 PCM output (PCM13 direct or ADPCM22 reconstructed) --- */
 .equ AUDIO_BYTES, 887
 .equ PCM_ENV,   0x00FF0001
 .equ PCM_PAN,   0x00FF0003
@@ -175,7 +191,7 @@
 
 .equ HEADER_SECTORS,  1
 /* frames/tcols/trows/cells/pool/base/prebuf/routing/mode は HEADER.DAT の
-   v8ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
+   v9ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
@@ -339,25 +355,27 @@ pm_set:
 	move.w	d1, pump_mask
 	move.w	d2, wave_pump_mask
 	tst.w	d0
-	beq	bad_header			/* v8 rate modulus must be nonzero */
-	.if 0	/* unreachable before the exact v8 version gate */
-	move.w	54(a0), d0			/* AUDIO(1コマ音声B) */
-	bne	1f
-	move.w	#AUDIO_BYTES, d0		/* v2/v3(0)は887 */
-1:
-	.endif
+	beq	bad_header			/* v9 rate modulus must be nonzero */
 	move.w	54(a0), d0
 	move.w	d0, h_audio_bytes
-	/* v8: feature bit 1なら2 NTSC VBlankに正確な1001/400 sectors/frame
+	move.w	58(a0), d1			/* v9: RF5C164 frequency delta for fixed chunks */
+	tst.w	d1
+	beq	bad_header
+	move.w	d1, h_audio_fd
+	move.w	62(a0), h_features		/* bit0 runs, bit1 fixed N2, bit2 checkpointed ADPCM */
+	move.w	d0, d1
+	btst	#FEATURE_ADPCM22_BIT, 63(a0)
+	beq	1f
+	btst	#0, d1				/* two decoded samples per packed byte */
+	bne	bad_header
+	lsr.w	#1, d1
+	addq.w	#4, d1				/* predictor.w + index.b + reserved.b */
+1:
+	move.w	d1, h_audio_control_bytes
+	/* v9: feature bit 1なら2 NTSC VBlankに正確な1001/400 sectors/frame
 	   (base=2, rem=201, mod=400)。bit clearの24/15fpsは従来の75/fpsを維持する。
 	   packerと同じ累積器まで各コマをpadし、表示よりCDが先行してRINGを圧迫しない。 */
-	move.w	62(a0), h_features		/* bit0: post-audio cold-run descriptor suffix */
 	move.w	56(a0), d0			/* 名目fps(15/30) */
-	.if 0	/* unreachable before the exact v8 version gate */
-	bne	1f
-	moveq	#15, d0				/* v2/v3(0)は15 */
-1:
-	.endif
 	move.w	d0, d2				/* legacy modulus = nominal fps */
 	move.w	#75, d1				/* precompute 75/fps quotient+remainder once */
 	btst	#FEATURE_FIXED_N2_BIT, 63(a0)	/* v8 fixed-N2 feature; 24fps leaves it clear */
@@ -370,8 +388,7 @@ pm_set:
 	move.w	d1, sec_base
 	swap	d1
 	move.w	d1, sec_rem
-	/* v8 ignores the obsolete startup-audio skip field at offset 58. Current
-	   controls carry future chunks, so no live audio write is skipped. */
+	/* Controls carry future chunks, so no live audio write is skipped. */
 	move.w	60(a0), h_audio_pre_sec
 	clr.w	sec_acc
 	clr.w	lead
@@ -390,6 +407,31 @@ pm_set:
 	lea	(O_PALTAB).l, a0
 	bsr	drain_lin_staged		/* CDC_TRN直行を避けSTAGE経由(スリップ防止) */
 1:
+	/* v9 ADPCM full lookup tables follow PALTAB.  Stage one immutable 8,800B
+	   image in boot-only PRG RAM, then duplicate it into the same offset of both
+	   physical 1M banks.  Two toggles return to the frame-0/PALTAB bank. */
+.ifdef INCLUDE_ADPCM_DECODER
+.ifndef PLAYER_SPECIALIZED
+	PC_MOVE_W h_features, PC_FEATURES, d0
+	btst	#FEATURE_ADPCM22_BIT, d0
+	beq	adpcm_table_done
+.endif
+	move.w	#ADPCM_TABLE_SECTORS, d0
+	lea	ROUTING_TMP, a0
+	bsr	drain_lin_staged
+	moveq	#ADPCM_BANK_COPIES-1, d1
+adpcm_table_bank:
+	lea	ROUTING_TMP, a0
+	lea	ADPCM_TABLE, a1
+	move.w	#ADPCM_TABLE_LONGS-1, d0
+adpcm_table_copy:
+	move.l	(a0)+, (a1)+
+	dbra	d0, adpcm_table_copy
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	dbra	d1, adpcm_table_bank
+adpcm_table_done:
+.endif
 	/* v5 STARTUP_AUDIO follows PALTAB. Each sector starts with exactly one
 	   h_audio_bytes chunk, so no cross-sector staging is needed. Current packs
 	   queue the source prefix here and put future chunks in live controls, keeping
@@ -1261,8 +1303,51 @@ ef_bm:
 	move.w	d5, d0				/* n_upd */
 	add.w	d0, d0				/* two bytes per entry */
 	adda.w	d0, a5				/* audio start */
-	movea.l	a0, a6				/* preserve entries cursor across the call */
+	movea.l	a0, a6				/* preserve entries cursor across audio */
+.ifdef PLAYER_SPECIALIZED
+.if (PC_FEATURES & 0x0004)
+.ifdef DEBUG
+	move.w	(GA_STOPWATCH).l, -(sp)
+.endif
 	movea.l	a5, a0
+	bsr	decode_adpcm_chunk
+.ifdef DEBUG
+	move.w	(GA_STOPWATCH).l, d0
+	sub.w	(sp)+, d0
+	andi.w	#0x0FFF, d0
+	move.w	d0, (O_AUDIOLEFT).l
+.endif
+	lea	PCM_DEC_BUF, a0
+.else
+.ifdef DEBUG
+	move.w	#0, (O_AUDIOLEFT).l
+.endif
+	movea.l	a5, a0
+.endif
+.else
+	PC_MOVE_W h_features, PC_FEATURES, d0
+	btst	#FEATURE_ADPCM22_BIT, d0
+	beq.s	ef_pcm_audio
+.ifdef DEBUG
+	move.w	(GA_STOPWATCH).l, -(sp)
+.endif
+	movea.l	a5, a0
+	bsr	decode_adpcm_chunk
+.ifdef DEBUG
+	move.w	(GA_STOPWATCH).l, d0
+	sub.w	(sp)+, d0
+	andi.w	#0x0FFF, d0
+	move.w	d0, (O_AUDIOLEFT).l
+.endif
+	lea	PCM_DEC_BUF, a0
+	bra.s	ef_audio_ready
+ef_pcm_audio:
+.ifdef DEBUG
+	move.w	#0, (O_AUDIOLEFT).l
+.endif
+	movea.l	a5, a0
+ef_audio_ready:
+.endif
 	bsr	write_wave_chunk
 	movea.l	a6, a0
 	lea	(O_LOADS).l, a1
@@ -1296,7 +1381,7 @@ ef_count_ready:
 	cmpi.w	#1024, d5
 	bhi	ef_entries			/* H40 >1024 needs the legacy intermediate poll */
 	movea.l	a5, a0				/* audio start */
-	PC_MOVE_W h_audio_bytes, PC_AUDIO_BYTES, d0
+	PC_MOVE_W h_audio_control_bytes, PC_AUDIO_CONTROL_BYTES, d0
 	adda.w	d0, a0				/* first byte after audio */
 	move.l	a0, d0
 	btst	#0, d0				/* align the absolute block address, not AUDIO alone */
@@ -1429,7 +1514,6 @@ ef_store:
 .ifdef DEBUG
 	move.w	pf_ctrl_wait, (O_CTRLWAIT).l
 	move.w	pf_body_wait, (O_BODYWAIT).l
-	clr.w	(O_AUDIOLEFT).l
 .endif
 	tst.w	f0_expand
 	bne	1f
@@ -1569,10 +1653,20 @@ ip_loop:
 	move.b	#0xFF, (PCM_PAN).l
 	nop
 	nop
-	move.b	#0x45, (PCM_FDL).l
+.ifdef PLAYER_SPECIALIZED
+	move.b	#(PC_AUDIO_FD & 0x00FF), (PCM_FDL).l
+.else
+	move.w	h_audio_fd, d0
+	move.b	d0, (PCM_FDL).l
+.endif
 	nop
 	nop
-	move.b	#0x03, (PCM_FDH).l
+.ifdef PLAYER_SPECIALIZED
+	move.b	#((PC_AUDIO_FD >> 8) & 0x00FF), (PCM_FDH).l
+.else
+	lsr.w	#8, d0
+	move.b	d0, (PCM_FDH).l
+.endif
 	nop
 	nop
 	move.b	#0x00, (PCM_LSL).l
@@ -1601,6 +1695,78 @@ pcm_on:
 	move.b	#0xFF, (PCM_ONOFF).l
 	move.b	#0xFE, (PCM_ONOFF).l
 	rts
+
+.ifdef INCLUDE_ADPCM_DECODER
+/* Decode one checkpointed IMA chunk from a0 to PCM_DEC_BUF.  The full table is
+   resident at the same offset of both physical 1M banks, so no pointer or state
+   changes are required after a swap.  Each checkpoint records the continuous
+   movie state; no decoder state is carried in PRG RAM. */
+decode_adpcm_chunk:
+	movem.l	d0-d7/a0-a4, -(sp)
+	move.w	(a0)+, d6			/* checkpoint predictor (signed) */
+	ext.l	d6
+	add.l	#0x8000, d6			/* offset representation 0..0xFFFF */
+	moveq	#0, d2
+	move.b	(a0)+, d2			/* checkpoint step index 0..88 */
+	addq.l	#1, a0				/* reserved byte */
+	cmpi.w	#88, d2				/* corrupted control cannot walk beyond table */
+	bls.s	1f
+	moveq	#88, d2
+1:
+	lsl.w	#5, d2				/* full-table row offset=index*32 */
+	lea	PCM_DEC_BUF, a1
+	lea	ADPCM_DELTAS, a2
+	lea	ADPCM_INDICES, a3
+	lea	ADPCM_LUT, a4
+	moveq	#0, d4				/* clamp result keeps upper word zero */
+	PC_MOVE_W h_audio_bytes, PC_AUDIO_BYTES, d7
+	lsr.w	#1, d7				/* two samples per packed byte */
+	beq	adpcm_decode_done
+	subq.w	#1, d7
+adpcm_decode_loop:
+	moveq	#0, d0
+	move.b	(a0)+, d0
+	move.w	d0, d1				/* save high nibble */
+	andi.w	#0x000F, d0
+	/* low nibble: pre-signed delta and pre-scaled next index */
+	move.w	d2, d3
+	add.w	d0, d3
+	add.w	d0, d3				/* indices byte offset */
+	move.w	(a3,d3.w), d2
+	add.w	d3, d3				/* deltas long byte offset */
+	add.l	(a2,d3.w), d6
+	btst	#16, d6
+	beq.s	adpcm_low_clamped
+	spl	d4
+	ext.w	d4
+	move.l	d4, d6				/* clamp to 0 or 0xFFFF */
+adpcm_low_clamped:
+	move.w	d6, -(sp)
+	move.b	(sp)+, d0			/* high byte of offset predictor */
+	move.b	(a4,d0.w), (a1)+
+	/* high nibble */
+	move.w	d1, d0
+	lsr.w	#4, d0
+	move.w	d2, d3
+	add.w	d0, d3
+	add.w	d0, d3
+	move.w	(a3,d3.w), d2
+	add.w	d3, d3
+	add.l	(a2,d3.w), d6
+	btst	#16, d6
+	beq.s	adpcm_high_clamped
+	spl	d4
+	ext.w	d4
+	move.l	d4, d6
+adpcm_high_clamped:
+	move.w	d6, -(sp)
+	move.b	(sp)+, d0
+	move.b	(a4,d0.w), (a1)+
+	dbra	d7, adpcm_decode_loop
+adpcm_decode_done:
+	movem.l	(sp)+, d0-d7/a0-a4
+	rts
+.endif
 
 write_wave_chunk:
 	movem.l	d0-d5/a0-a1, -(sp)
@@ -1832,7 +1998,11 @@ pump_mask:
 wave_pump_mask:
 	.space 2				/* wave書込みpump頻度: 15fps=0xFF(256B毎), 30fps=0x1FF(512B毎) */
 h_audio_bytes:
-	.space 2				/* v4: 1コマの音声バイト(N2=444, N4=888 in current packs) */
+	.space 2				/* decoded RF5C164 bytes/samples per frame */
+h_audio_control_bytes:
+	.space 2				/* PCM=same; ADPCM=4-byte checkpoint + samples/2 */
+h_audio_fd:
+	.space 2				/* v9 header offset 58: RF5C164 frequency delta */
 	.if 0	/* v8 no longer stores the already-consumed nominal fps */
 h_fps_int:
 	.space 2				/* v4: nominal fps from header offset 56 */

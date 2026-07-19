@@ -99,6 +99,13 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "video.resize_filter"):
                 load_profile(path)
 
+    def test_unknown_audio_kind_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad-audio.toml"
+            path.write_text(PROFILE.replace('kind = "pcm13"', 'kind = "mp3"'))
+            with self.assertRaisesRegex(ValueError, "audio.kind"):
+                load_profile(path)
+
     def test_artifacts_follow_toml_filename(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sakura-h32.toml"

@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import av_config
+import ima_adpcm
 import ttrc_routing
 
 SP = Path(__file__).resolve().parent.parent / "boot" / "movieplay_sp.s"
@@ -29,7 +30,7 @@ def _require_asm(pattern, description):
         sys.exit(f"check_player_ring: ASM does not use {description}")
 
 
-# --- TTRC v8 contract, retaining the v7+ packed-routing layout ---
+# --- TTRC v9 contract, retaining the v7+ packed-routing layout ---
 # The Python codec is the format source of truth. The Sub-CPU player keeps
 # literal `.equ` values because the assembler cannot import Python; compare all
 # of them before every player build and also require the copy loops to use the
@@ -44,6 +45,7 @@ routing_equ_contract = {
     "ROUTING_MAX_ENTRY": ttrc_routing.MAX_ENTRY,
     "FEATURE_COLD_RUNS_BIT": ttrc_routing.FEATURE_COLD_RUNS.bit_length() - 1,
     "FEATURE_FIXED_N2_BIT": ttrc_routing.FEATURE_FIXED_N2.bit_length() - 1,
+    "FEATURE_ADPCM22_BIT": ttrc_routing.FEATURE_ADPCM22.bit_length() - 1,
 }
 for equ_name, expected in routing_equ_contract.items():
     actual = _equ(text, equ_name, SP)
@@ -77,6 +79,48 @@ print(
     f"v{ttrc_routing.VERSION}, {ttrc_routing.ROUTE_BYTES // 1024}KB, "
     f"{ttrc_routing.MAX_FRAMES} frames, {route_copy_longs} MOVE.L x "
     f"{route_bank_copies} banks")
+
+# --- v9 ADPCM full table duplicated into both physical Word-RAM banks ---
+adpcm_table = _equ(text, "ADPCM_TABLE", SP)
+adpcm_table_bytes = _equ(text, "ADPCM_TABLE_BYTES", SP)
+adpcm_table_sectors = _equ(text, "ADPCM_TABLE_SECTORS", SP)
+adpcm_bank_copies = _equ(text, "ADPCM_BANK_COPIES", SP)
+pcm_dec_buf = _equ(text, "PCM_DEC_BUF", SP)
+if adpcm_table_bytes != ima_adpcm.FULL_TABLE_BYTES:
+    sys.exit(
+        f"check_player_ring: ADPCM_TABLE_BYTES={adpcm_table_bytes} != "
+        f"reference full table {ima_adpcm.FULL_TABLE_BYTES}")
+expected_table_sectors = (
+    ima_adpcm.FULL_TABLE_BYTES + ttrc_routing.SECTOR_BYTES - 1
+) // ttrc_routing.SECTOR_BYTES
+if adpcm_table_sectors != expected_table_sectors:
+    sys.exit(
+        f"check_player_ring: ADPCM_TABLE_SECTORS={adpcm_table_sectors} != "
+        f"{expected_table_sectors}")
+if adpcm_bank_copies != 2:
+    sys.exit(
+        f"check_player_ring: ADPCM table needs two physical-bank copies, got "
+        f"{adpcm_bank_copies}")
+if adpcm_table % 4 or pcm_dec_buf % 4:
+    sys.exit("check_player_ring: ADPCM table and PCM buffer must be long-aligned")
+if adpcm_table + adpcm_table_bytes > pcm_dec_buf:
+    sys.exit(
+        f"check_player_ring: ADPCM table ends at "
+        f"{adpcm_table + adpcm_table_bytes:#x}, overlapping PCM buffer "
+        f"{pcm_dec_buf:#x}")
+if pcm_dec_buf + 1536 > _equ(text, "ROUTING", SP):
+    sys.exit("check_player_ring: ADPCM PCM buffer overlaps resident routing")
+_require_asm(
+    r"^\s*move\.w\s+#ADPCM_TABLE_LONGS-1,\s*d0\s*$",
+    "ADPCM_TABLE_LONGS in the full-table copy loop")
+_require_asm(
+    r"^\s*moveq\s+#ADPCM_BANK_COPIES-1,\s*d1\s*$",
+    "ADPCM_BANK_COPIES in the Word-RAM bank loop")
+print(
+    "check_player_ring: OK  ADPCM full table "
+    f"{adpcm_table:#x}..{adpcm_table + adpcm_table_bytes:#x}, "
+    f"{adpcm_table_sectors} sectors x {adpcm_bank_copies} banks, "
+    f"PCM buffer {pcm_dec_buf:#x}..{pcm_dec_buf + 1536:#x}")
 
 
 ring_bytes = _equ(text, "RING_SIZE", SP)

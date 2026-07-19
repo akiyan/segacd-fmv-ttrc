@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the exact PCM queue order from a real HEADER.DAT + BODY.DAT pair."""
+"""Verify the exact PCM13 queue order from a real HEADER.DAT + BODY.DAT pair."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ SECTOR = 2048
 DBG_LEN = 22
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
+FEATURE_ADPCM22 = 0x0004
 
 
 def sign_magnitude_audio(path: Path, target_len: int) -> bytes:
@@ -164,8 +165,8 @@ def main() -> int:
         raise SystemExit("HEADER.DAT and BODY.DAT must be sector aligned")
 
     version = struct.unpack_from(">H", header, 4)[0]
-    if version not in (6, 7, 8):
-        raise SystemExit(f"expected split TTRC v6-v8, got v{version}")
+    if version not in (6, 7, 8, 9):
+        raise SystemExit(f"expected split TTRC v6-v9, got v{version}")
     nframes = struct.unpack_from(">H", header, 6)[0]
     cells = struct.unpack_from(">H", header, 12)[0]
     routing_sec = struct.unpack_from(">L", header, 26)[0]
@@ -176,9 +177,15 @@ def main() -> int:
     vsync_n = struct.unpack_from(">H", header, 52)[0]
     audio_bytes = struct.unpack_from(">H", header, 54)[0]
     fps = struct.unpack_from(">H", header, 56)[0]
-    skip_frames = struct.unpack_from(">H", header, 58)[0]
+    # v8 and earlier stored the live-control skip count here. v9 repurposes
+    # the field as RF5C164 FD and shifts each live chunk by the startup count.
+    skip_frames = struct.unpack_from(">H", header, 58)[0] if version <= 8 else 0
     audio_pre_sec = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
+    if features & FEATURE_ADPCM22:
+        raise SystemExit(
+            "audio_prefetch verifies PCM13 bytes; use pack_stream --verify "
+            "for reconstructed ADPCM22 audio")
     if not nframes or not cells or not audio_bytes or not fps:
         raise SystemExit("invalid zero header field")
 

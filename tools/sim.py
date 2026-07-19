@@ -24,7 +24,7 @@
   (dirtyが継続する)タイルほど優先度を累積的に底上げ(1+AGING_ALPHA*wait)し、必ず
   いつか拾われるようにする(予算超過の強制更新はしない=CBR厳守)。内容が変わって
   不要になったタイルは changed から外れ wait=0 に戻り自然消滅する。
-- 音声: 13.3kHz mono 8bit (実機RF5C164相当)。Plane B オーバーレイは無し。
+- 音声: pcm13 または adpcm22 (TOML指定)。Plane B オーバーレイは無し。
 """
 import os
 import sys
@@ -93,22 +93,24 @@ CD_RATE = 153_600               # CD 1x, B/s (= 150 KiB/s, 絶対上限)
 TARGET_RATE = int(os.environ.get("CBRSIM_RATE_KIB", "144")) * 1024  # CBRレート(既定144 KiB/s)。env で調整可
 FRAME_BYTES = int(TARGET_RATE / FPS)   # 純CBR: 1フレームで転送できる固定バイト
                                     # 実機1M/1Mダブルバッファ相当。フレーム間の繰り越し無し。
-# 音声: 既定 13.3kHz mono 8bit PCM(RF5C164, 出荷経路)。CBRSIM_AUDIO=adpcm22 で 22.05kHz
-# mono ADPCM(4bit, 棚上げの調査用=ADPCM.md参照)。CD予算(audio_due)はバイト率で引く。
+# 音声: 既定 13.3kHz mono 8bit PCM(RF5C164)。adpcm22 は22.05kHzの
+# s16 sourceをcheckpoint付き4bit IMAへpackし、Sub CPUが復号する。
 AUDIO_KIND = os.environ.get("CBRSIM_AUDIO", "pcm13")
 if AUDIO_KIND == "pcm13":
-    AUDIO_RATE = 13_300; AUDIO_BPS = 1.0; AUDIO_FFCODEC = "pcm_u8"
+    AUDIO_FFCODEC = "pcm_u8"
     AUDIO_LABEL = "13.3kHz mono 8bit PCM"; AUDIO_FILE = "audio_13k3_u8_mono.wav"
+elif AUDIO_KIND == "adpcm22":
+    AUDIO_FFCODEC = "pcm_s16le"
+    AUDIO_LABEL = "22.05kHz mono IMA ADPCM"; AUDIO_FILE = "audio_22k05_s16_mono.wav"
 else:
-    AUDIO_RATE = 22_050; AUDIO_BPS = 0.5; AUDIO_FFCODEC = "adpcm_ima_wav"
-    AUDIO_LABEL = "22.05kHz mono ADPCM"; AUDIO_FILE = "audio_22k05_adpcm_mono.wav"
+    raise SystemExit(f"unsupported CBRSIM_AUDIO={AUDIO_KIND!r}; use pcm13 or adpcm22")
 # Integer-VBlank rates use their exact NTSC cadence (N4=14.985, N2=29.97).
 # Delivery-paced rates such as 24 fps keep their nominal long-term rate instead
 # of being rounded to N2. The packer shares these helpers through av_config.
 VSYNC_N = av_config.vsync_n_for_fps(FPS)
 PLAYBACK_FPS = av_config.playback_fps_for_content(FPS)
-AUDIO_FRAME_BYTES = (av_config.pcm_frame_bytes(FPS, AUDIO_RATE)
-                     if AUDIO_KIND == "pcm13" else 0)
+AUDIO_RATE, AUDIO_PCM_BYTES, AUDIO_CONTROL_BYTES = av_config.audio_frame_layout(
+    AUDIO_KIND, FPS)
 PATTERN_BYTES = 32              # 4bpp 8x8 パターン
 NAME_BYTES = 2                  # ネームテーブル1エントリ(tile index + palette + priority)
 VRAM_TILES = int(os.environ.get("CBRSIM_VRAM_TILES", "1400"))   # VRAM常駐パターン数(LRU)。
@@ -1104,7 +1106,6 @@ def main():
     stale_rows = []            # per-frame の Miss(stale)マスク(packbits, 72B/frame)
     wait_hist_rows = []        # per-frame の繰越年齢分布(MissCarryバー用)
     starved_frames = 0
-    audio_sent_total = 0
     dec_frames = []            # 実機決定ログ: 各要素 = そのフレームの [(cell, pal, key), ...]
     dec_miss = []              # per-frame Miss数(デバッグオーバーレイ用。デコード側では算出不能)
     dec_cats = []              # per-frame カテゴリ数[raw,same,near,coa,flbk,buf,miss](デバッグ欄用)
@@ -1216,11 +1217,7 @@ def main():
         order = np.lexsort((center_dist, -score)) if CENTERTIE_ON else np.argsort(-score)
         order = [int(c) for c in order if changed[c] and not near[c]]
 
-        if AUDIO_KIND == "pcm13":
-            audio_due = AUDIO_FRAME_BYTES             # fixed 888B@15 / 555B@24 / 444B@30, packと一致
-        else:
-            audio_due = round((i + 1) * AUDIO_RATE * AUDIO_BPS / FPS) - audio_sent_total
-            audio_sent_total += audio_due
+        audio_due = AUDIO_CONTROL_BYTES
 
         # 純CBR: 毎フレーム固定バイトのみ。繰り越し無し。強制更新も無し(CBR厳守)。
         # パレット差替フレームはCRAM書換分だけ予算を引く(暗転中なので影響は小)。
@@ -1657,7 +1654,7 @@ def main():
         stats[:, 3].astype(np.int64),
         np.asarray(transfer_runs_log, np.int64),
         cells=C_CELLS,
-        audio_frame_bytes=AUDIO_FRAME_BYTES,
+        audio_frame_bytes=AUDIO_CONTROL_BYTES,
         debug=bool(pack_config.get("debug", False)),
     )
     try:
@@ -1720,7 +1717,8 @@ def main():
                          len(guniq["flbk"])], np.int64)
     np.savez(OUT / "stats.npz", stats=stats, cols=cols, fps=FPS, cells=C_CELLS,
              target=TARGET_RATE, cd1x=CD_RATE, frame_bytes=FRAME_BYTES, cat_uniq=cat_uniq,
-             audio_label=AUDIO_LABEL, audio_frame_bytes=AUDIO_FRAME_BYTES,
+             audio_label=AUDIO_LABEL, audio_frame_bytes=AUDIO_CONTROL_BYTES,
+             audio_pcm_bytes=AUDIO_PCM_BYTES,
              budget_tiles=budget_tiles,
              wait_hist=np.array(wait_hist_rows), nbins=NBINS)
     np.save(OUT / "miss_masks.npy", np.array(stale_rows, np.uint8))   # (n,72) packbits
@@ -1771,7 +1769,13 @@ def main():
             },
             "audio": {
                 "kind": AUDIO_KIND, "rate": int(AUDIO_RATE),
-                "frame_bytes": int(AUDIO_FRAME_BYTES), "file": AUDIO_FILE,
+                "frame_bytes": int(AUDIO_CONTROL_BYTES),
+                "control_bytes": int(AUDIO_CONTROL_BYTES),
+                "pcm_bytes": int(AUDIO_PCM_BYTES),
+                "checkpoint_bytes": (
+                    int(av_config.IMA_CHECKPOINT_BYTES)
+                    if AUDIO_KIND == "adpcm22" else 0),
+                "file": AUDIO_FILE,
             },
             "stream": {
                 "target_rate": int(TARGET_RATE), "frame_bytes": int(FRAME_BYTES),
@@ -1816,7 +1820,8 @@ def main():
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]
             "frame_bytes": int(FRAME_BYTES), "audio_rate": int(AUDIO_RATE),
-            "audio_frame_bytes": int(AUDIO_FRAME_BYTES), "fps": float(FPS),
+            "audio_frame_bytes": int(AUDIO_CONTROL_BYTES),
+            "audio_pcm_bytes": int(AUDIO_PCM_BYTES), "fps": float(FPS),
             "vram_tiles": int(VRAM_TILES),
             # エンコード時の実効パラメータを焼き込む(pack/解析が同一値を使い二重管理を防ぐ)。
             "max_cold": int(MAX_COLD), "tank_kb": int(TANK_KB),

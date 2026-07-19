@@ -17,6 +17,7 @@ import zlib
 from pathlib import Path
 
 import ttrc_routing
+import ima_adpcm
 
 
 SECTOR = 2048
@@ -80,8 +81,10 @@ class PlayerConstants:
     paltab_sec: int
     vsync_n: int
     audio_bytes: int
+    audio_control_bytes: int
+    adpcm_table_sectors: int
     fps_int: int
-    audio_preload_frames: int
+    audio_fd: int
     audio_preload_sec: int
     features: int
     pump_mask: int
@@ -101,7 +104,7 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
         magic, version, frames, tcols, trows, cells, pool, base,
         frame_sectors, nseg, prebuf_pat, routing_sec, prebuf_sec, ring_peak,
         mode, pad, f0_ctrl_sec, f0_pat_sec, paltab_sec, vsync_n,
-        audio_bytes, fps_int, audio_preload_frames, audio_preload_sec, features,
+        audio_bytes, fps_int, audio_fd, audio_preload_sec, features,
     ) = values
 
     if magic != b"TTRC":
@@ -130,9 +133,10 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
     if frame_sectors != ttrc_routing.FRAME_SECTORS:
         raise ValueError(
             f"frame_sectors={frame_sectors} != {ttrc_routing.FRAME_SECTORS}")
-    if audio_bytes <= 0 or fps_int <= 0 or vsync_n <= 0:
+    if audio_bytes <= 0 or fps_int <= 0 or vsync_n <= 0 or audio_fd <= 0:
         raise ValueError(
-            f"invalid timing: vsync_n={vsync_n} audio={audio_bytes} fps={fps_int}")
+            f"invalid timing: vsync_n={vsync_n} audio={audio_bytes} "
+            f"fps={fps_int} fd={audio_fd}")
 
     signature = struct.unpack_from(">L", sector, HEADER_SIGNATURE_OFFSET)[0]
     expected_signature = header_signature(sector[:FIXED_HEADER_BYTES])
@@ -142,6 +146,13 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
             f"0x{expected_signature:08X}")
 
     fixed_n2 = bool(features & ttrc_routing.FEATURE_FIXED_N2)
+    adpcm22 = bool(features & ttrc_routing.FEATURE_ADPCM22)
+    if adpcm22 and audio_bytes & 1:
+        raise ValueError(f"ADPCM decoded audio_bytes must be even, got {audio_bytes}")
+    audio_control_bytes = (
+        ima_adpcm.encoded_bytes(audio_bytes) if adpcm22 else audio_bytes)
+    adpcm_table_sectors = (
+        (ima_adpcm.FULL_TABLE_BYTES + SECTOR - 1) // SECTOR if adpcm22 else 0)
     sec_num, sec_mod = (1001, 400) if fixed_n2 else (75, fps_int)
     sec_base, sec_rem = divmod(sec_num, sec_mod)
     fast_poll = fps_int >= 24
@@ -175,8 +186,10 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
         paltab_sec=paltab_sec,
         vsync_n=2 if fixed_n2 else vsync_n,
         audio_bytes=audio_bytes,
+        audio_control_bytes=audio_control_bytes,
+        adpcm_table_sectors=adpcm_table_sectors,
         fps_int=fps_int,
-        audio_preload_frames=audio_preload_frames,
+        audio_fd=audio_fd,
         audio_preload_sec=audio_preload_sec,
         features=features,
         pump_mask=0x03FF if fast_poll else 0x003F,
@@ -193,8 +206,9 @@ INCLUDE_ORDER = (
     "tcols", "trows", "cells", "bmbytes", "col0", "row0", "vbudget",
     "pool", "base", "font_vtile", "font_addr", "frame_sectors", "nseg",
     "prebuf_pat", "routing_sec", "prebuf_sec", "ring_peak", "f0_ctrl_sec",
-    "f0_pat_sec", "paltab_sec", "vsync_n", "audio_bytes", "fps_int",
-    "audio_preload_frames", "audio_preload_sec", "features", "pump_mask",
+    "f0_pat_sec", "paltab_sec", "vsync_n", "audio_bytes",
+    "audio_control_bytes", "adpcm_table_sectors", "fps_int",
+    "audio_fd", "audio_preload_sec", "features", "pump_mask",
     "wave_pump_mask", "sec_num", "sec_mod", "sec_base", "sec_rem",
 )
 

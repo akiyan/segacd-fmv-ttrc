@@ -8,7 +8,7 @@ therefore perform the same single poll after consuming its runs. H40 can
 contain up to 1120 cells, so the fallback retains its possible short-prefix
 poll followed by the final poll.
 
-This checker reads the real split TTRC v6-v8 stream, compares the fallback DBRA
+This checker reads the real split TTRC v6-v9 stream, compares the fallback DBRA
 countdown with an equivalent grouped model for every frame, and confirms that
 entry order and cold-slot run grouping are unchanged.  It additionally checks
 every synthetic update count up to the format's H40 maximum.
@@ -27,6 +27,8 @@ POLL_CHUNK_30FPS = 1024
 MAX_H40_CELLS = 40 * 28
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
+FEATURE_ADPCM22 = 0x0004
+ADPCM_TABLE_SECTORS = 5
 
 
 @dataclass(frozen=True)
@@ -136,8 +138,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, _cols, _rows, cells = struct.unpack_from(
         ">4sHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8):
-        raise AssertionError(f"expected split TTRC v6-v8, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7, 8, 9):
+        raise AssertionError(f"expected split TTRC v6-v9, got {magic!r} v{version}")
 
     routing_sec = struct.unpack_from(">L", header, 26)[0]
     prebuf_sec = struct.unpack_from(">L", header, 30)[0]
@@ -146,8 +148,9 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     fps = struct.unpack_from(">H", header, 56)[0] or 15
     audio_preload_sec = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
+    table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
 
-    frame0_offset = (1 + paltab_sec + audio_preload_sec) * SECTOR
+    frame0_offset = (1 + paltab_sec + table_sec + audio_preload_sec) * SECTOR
     frame0_len = struct.unpack_from(">H", header, frame0_offset)[0]
     entries = [
         parse_entries(
@@ -156,7 +159,7 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     ]
 
     routing_offset = (
-        1 + paltab_sec + audio_preload_sec + f0_ctrl_sec + f0_pat_sec
+        1 + paltab_sec + table_sec + audio_preload_sec + f0_ctrl_sec + f0_pat_sec
     ) * SECTOR
     routing_raw = header[
         routing_offset : routing_offset + routing_sec * SECTOR

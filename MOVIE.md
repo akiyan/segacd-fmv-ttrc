@@ -17,10 +17,11 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 8               (bump for an incompatible stream interpretation)
+VERSION        = 9               (bump for an incompatible stream interpretation)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
-AUDIO          = header field    (888 B at N4; 444 B at N2)
+AUDIO          = decoded header field (PCM: 888 B at N4 / 444 B at N2;
+                                      ADPCM22: 1472 / 736 samples)
 BASE           = 1               (POOL_TILE_BASE: VRAM tile index = BASE + slot)
 ```
 
@@ -49,6 +50,12 @@ assigns 1001 sectors per 400 frames. This changes the rate-padding boundaries
 in `BODY.DAT`, so an old v7 player must not read a v8 stream. The current packer
 sets the bit only for rates classified by `uses_fixed_n2_cadence`; 24fps and
 15fps leave it clear and retain their delivery-paced `75 / fps_int` schedule.
+**v9** adds feature bit 2 (`FEATURE_ADPCM22`) for checkpointed continuous IMA
+ADPCM. Header offset 54 remains the decoded RF5C164 sample count, while live
+controls store a four-byte checkpoint plus one nibble per sample. Offset 58 is
+repurposed from the obsolete duplicate-skip count to the RF5C164 frequency
+delta. An optional full decoder-table region follows PALTAB and is copied into
+both physical 1M Word-RAM banks at boot.
 
 ## File layout
 
@@ -58,6 +65,8 @@ HEADER.DAT
 | HEADER (1 sector, zero-padded)                   |
 +--------------------------------------------------+  sector 1
 | PALTAB (paltab_sec sectors)                      |  all n_seg palettes, 128 B each
++--------------------------------------------------+
+| ADPCM_TABLE (5 sectors when feature bit 2 set)   |  8,800 B full lookup image
 +--------------------------------------------------+
 | STARTUP_AUDIO (audio_preload_sec sectors)        |  one PCM chunk per sector
 +--------------------------------------------------+
@@ -96,6 +105,11 @@ its temporary PRG-RAM bytes. Duplicating routing is required because the bank
 owned by the Sub CPU follows the display handoff, while delivery may run ahead
 by more than one frame.
 
+When feature bit 2 is set, the Sub also stages the 8,800-byte ADPCM table after
+PALTAB and copies it to offset `+0x12800` of both physical banks. The decoded
+PCM buffer is bank-local at `+0x14C00`. Two boot-time copies avoid every
+per-frame table transfer or pointer change after a bank handoff.
+
 ## Header (1 sector = 2048 bytes)
 
 First 22 bytes: `struct ">4sHHHHHHHHH"`.
@@ -103,7 +117,7 @@ First 22 bytes: `struct ">4sHHHHHHHHH"`.
 | Off | Size | Field          | Meaning |
 |-----|------|----------------|---------|
 | 0   | 4    | magic          | `"TTRC"` |
-| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body; 7 = packed routing entries; 8 = feature-controlled fixed-N2 display and CD-rate cadence) |
+| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body; 7 = packed routing entries; 8 = feature-controlled fixed-N2 cadence; 9 = checkpointed ADPCM and RF5C164 frequency field) |
 | 6   | 2    | frames         | total frame count (`nfr`) |
 | 8   | 2    | tcols          | tile grid columns |
 | 10  | 2    | trows          | tile grid rows |
@@ -145,29 +159,31 @@ Then:
   `FEATURE_FIXED_N2` is clear. When that feature is set, it is authoritative
   and the Main CPU forces N=2 even if this hint is stale. A 24fps stream stores
   `N = 2` but leaves the feature clear, so it remains delivery-paced;
-- offset 54: `u16 audio_bytes` (v4) — fixed PCM bytes per effective playback
-  frame, rounded up to keep a positive reserve (15fps→888, 24fps→555,
-  30fps→444).
+- offset 54: `u16 audio_bytes` (v4) — decoded RF5C164 samples per effective
+  playback frame. PCM13 uses 888 at 15fps, 555 at 24fps, and 444 at 30fps.
+  ADPCM22 uses an even count, normally 1472 at 15fps and 736 at 30fps; its live
+  control size is derived as `4 + audio_bytes / 2`.
   `0` in v2/v3 (player defaults to 887);
 - offset 56: `u16 fps_int` (v4) — nominal fps (15/24/30). When
   `FEATURE_FIXED_N2` is clear, the Sub CPU uses this as the modulus of the
   delivery-paced 75/fps sector schedule (see Routing/Frame). The fixed-N2
   feature instead selects 1001/400. Historical v2/v3 streams stored `0`; the
-  v8 player requires a nonzero nominal fps and rejects `0`;
-- offset 58: `u16 audio_preload_frames` — historical v5/v6 count of leading
-  control chunks duplicated in STARTUP_AUDIO. The v8 packer writes zero and the
-  v8 player ignores this obsolete field; current streams shift controls ahead
-  instead of skipping live audio writes;
+  v8+ players require a nonzero nominal fps and reject `0`;
+- offset 58: `u16 audio_fd` (v9) — RF5C164 frequency delta derived from the
+  fixed decoded chunk size and effective playback cadence. Older formats used
+  this word as a duplicate-skip count; v9 requires a nonzero frequency value;
 - offset 60: `u16 audio_preload_sec` (v5+) — sectors in STARTUP_AUDIO. v5+
-  uses one chunk per sector. Current streams normally store `30`, independently
-  of the legacy skip count at offset 58;
+  uses one decoded PCM chunk per sector. The requested value is clamped by
+  wave-RAM capacity and the decoded chunk size;
 - offset 62: `u16 features` (v6+ optional extensions). Bit 0
   (`FEATURE_COLD_RUNS`) means every control block appends the cold-slot run
   suffix described below. Bit 1 (`FEATURE_FIXED_N2`, v8) is the authoritative
   two-VBlank timing flag: it makes the Main CPU force N=2 and the Sub CPU use
   the 1001/400 sector accumulator. The packer derives it with
   `uses_fixed_n2_cadence`; 24fps leaves it clear even though its nearest
-  `vsync_n` hint is also 2. Unknown bits must not move any legacy field;
+  `vsync_n` hint is also 2. Bit 2 (`FEATURE_ADPCM22`, v9) means live control
+  audio is a checkpointed IMA chunk and the boot table region is present.
+  Unknown bits must not move any legacy field;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
 - offset 192: `u32 player_signature` — CRC-32 of bytes 0 through 63. The build
@@ -212,15 +228,32 @@ minimum and P0/index15 is tied for the global maximum. These fixed entries let
 a DEBUG player upload an opaque dark background and bright font once. Palette
 switches require no colour search, glyph rewrite, font DMA, or extra VBlank wait.
 
+## ADPCM_TABLE (v9, feature bit 2)
+
+When `FEATURE_ADPCM22` is set, five sectors follow PALTAB. The first 8,800
+bytes are the immutable big-endian decoder image and the remaining 1,440 bytes
+are zero padding:
+
+| Offset | Size | Contents |
+|---:|---:|---|
+| 0 | 2,848 B | `u16 next_index_x32[89][16]` |
+| 2,848 | 5,696 B | `s32 signed_delta[89][16]` |
+| 8,544 | 256 B | predictor-high-byte to RF5C164 output lookup |
+
+At boot the Sub CPU stages this image in PRG-RAM and copies exactly 2,200 longs
+to Word-RAM offset `+0x12800` in each physical 1M bank. The table is absent when
+feature bit 2 is clear.
+
 ## STARTUP_AUDIO (v5)
 
-Each STARTUP_AUDIO sector in `HEADER.DAT` begins with one normal `audio_bytes`
-PCM chunk and is zero-padded to 2048 bytes. During boot the Sub CPU drains one
+Each STARTUP_AUDIO sector in `HEADER.DAT` begins with one decoded `audio_bytes`
+PCM chunk and is zero-padded to 2048 bytes. This remains PCM for an ADPCM22
+stream so boot requires no separate compressed staging. During boot the Sub CPU drains one
 sector, appends its chunk to
 wave RAM at `SYNC_LEAD`, and repeats while PCM is stopped. Current streams put
-source chunks 0-29 in this prefix, then put chunk 30 in frame 0's control,
-chunk 31 in frame 1's control, and so on. This preserves the exact source sample
-order while keeping a real 30-frame write reserve. Historical v5/v6 players
+as many leading source chunks here as fit below the wave-RAM safety limit, then
+put the next chunk in frame 0's control and continue the shifted order. This
+preserves exact source sample order and a persistent write reserve. Historical v5/v6 players
 could instead duplicate leading chunks and skip their live writes; the v7+
 player deliberately removes that obsolete path. PCM starts at the prefetched source prefix after frame 0
 is displayed, so the first audio sample remains aligned with the first visible
@@ -228,7 +261,7 @@ movie frame rather than starting during the Mega-CD boot screen.
 
 ## Routing table
 
-In v7 and v8, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
+In v7 through v9, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
 byte has this layout:
 
 | Bits | Field | Meaning |
@@ -276,13 +309,13 @@ above.
 of sectors CD 1x delivers in one frame's display time. Both packer and player
 generate the same integer sequence with a numerator/modulus accumulator.
 
-For a v8 stream with `FEATURE_FIXED_N2` set, the Main CPU forces N=2 and flips
+For a v8+ stream with `FEATURE_FIXED_N2` set, the Main CPU forces N=2 and flips
 every exactly two VBlanks; the Sub CPU rate accumulator uses numerator 1001,
 modulus 400:
 `acc += 1001; ratedelta = acc // 400; acc %= 400`. Every complete 400-frame
 cycle therefore contains 199 two-sector frames and 201 three-sector frames,
 for exactly 1001 sectors total. When the feature is clear, including current
-24fps and 15fps streams, v8 retains the earlier delivery-paced accumulator:
+24fps and 15fps streams, v8+ retains the earlier delivery-paced accumulator:
 `acc += 75; ratedelta = acc // fps_int;
 acc %= fps_int`. This gives 3.125 sectors/frame at 24fps and a constant 5 at
 15fps. v4-v7 used that same 75/fps rule for all supported nominal rates,
@@ -293,7 +326,7 @@ including the old 2.5-sector average at 30fps.
 light frames omit padding until that temporary lead is repaid. The complete
 stream converges to the CD 1x display-rate total without overflowing the ring.
 Historical v2/v3 players defaulted `fps_int = 0` to 15, yielding the constant 5
-and reproducing the old fixed-slot behaviour. The v8 player accepts only v8 and
+and reproducing the old fixed-slot behaviour. The current player accepts only v9 and
 rejects a zero nominal fps before entering this schedule.
 
 The v6-and-later packer first spends that frame's allowance on control, then replaces
@@ -302,7 +335,7 @@ available. It exceeds the allowance only when a backwards deadline proof says
 a later cold-pattern burst cannot otherwise be armed within the five-sector
 routing cap. The normal `lead` repayment then removes padding from following
 light frames. In particular, a full startup ring is not refilled with all five
-sectors merely to keep it full; with v8 `FEATURE_FIXED_N2`, an ordinary light
+sectors merely to keep it full; with `FEATURE_FIXED_N2`, an ordinary light
 region remains on the 1001/400 two-or-three-sector sequence.
 
 ## Prebuffer
@@ -344,7 +377,7 @@ pixels `(hi<<4)|lo`.
 | 22   | debug       | **present only if `dbg==1`**: fixed-length debug block (below) |
 | ceil(cells/8) | bitmap | one bit per cell; 1 = this cell is updated this frame |
 | n_upd x 2 | entries | one big-endian word per update, in cell order (see below) |
-| audio_bytes | audio | RF5C164 sign-magnitude PCM queued by this control block (header field; normally 888 B at N4 or 444 B at N2). Current prefetched streams carry the chunk `audio_preload_sec` frames ahead. |
+| PCM: audio_bytes; ADPCM22: 4 + audio_bytes/2 | audio | PCM stores RF5C164 sign-magnitude bytes directly. ADPCM22 stores `s16 predictor, u8 step_index, u8 reserved_zero`, then low-nibble-first IMA codes. Current prefetched streams carry this logical source chunk `audio_preload_sec` frames ahead. |
 | 0/1  | audio pad   | zero byte when needed to align the optional suffix to a word boundary and keep the legacy block end even |
 | 2    | n_runs      | present when header feature bit 0 is set; number of cold-slot runs |
 | n_runs x 4 | cold runs | present when feature bit 0 is set; repeated `u16 slot_start, u16 count` pairs in payload-consumption order |
@@ -393,10 +426,12 @@ The entry's low 15 bits are written to the VDP name table as-is (priority and
 flip bits are unused). This is the core *tile texture reuse*: most cells cost
 just this 2-byte entry.
 
-**Audio**: `audio_bytes` per frame of RF5C164 sign-magnitude 8-bit PCM (positive
+**Audio**: PCM streams carry `audio_bytes` per frame of RF5C164 sign-magnitude 8-bit PCM (positive
 = `0..0x7F`, negative = `0x80 | magnitude`, magnitude clamped to `0x7E` so the
 byte `0xFF` — the RF5C164 loop-stop marker — never appears), fed to the PCM chip
-in sync.
+in sync. ADPCM22 controls carry the smaller checkpointed chunk described above;
+the Sub CPU reconstructs exactly `audio_bytes` RF5C164 samples into its bank-local
+buffer before calling the same wave-RAM writer.
 
 ## How the player advances (and the extension points)
 

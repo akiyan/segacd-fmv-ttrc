@@ -1,113 +1,140 @@
-# ADPCM.md — 22.05 kHz ADPCM real-time decode: investigation & structural limit
+# 22.05 kHz IMA ADPCM playback
 
-**Status: shelved (structural limit).** The audio *decode* (~17–20 ms of 68000
-compute per 15 fps frame) does not robustly fit in the per-frame budget on either
-CPU during sustained motion. The verified **PCM** audio path remains the shipping
-choice. The full ADPCM implementation is preserved on branch `adpcm-h40`; this
-doc records why it doesn't fit so a future attempt starts informed.
+**Status: experimental, full-length emulator-qualified.** The current v9 path
+decodes 22.05 kHz mono IMA ADPCM directly on the Sub CPU and writes the
+reconstructed 8-bit samples to the RF5C164. H40 Sonic Jam completed all 2,714
+frames in the lossless Genesis Plus GX recording with no CD slip, stream
+desync, audio re-sync, or blocking CD pump. PCM 13.3 kHz remains the conservative
+physical-hardware-qualified choice until this path is checked on a real console
+and across the other supported rates and display modes.
 
-**Update 2026-07-18**: moving decode to the **Z80** was implemented and tested.
-The timer-driven playback worked, but Main-to-Z80 feeding through BUSREQ caused
-periodic audio artifacts and competed with video work. That path is therefore
-shelved as well; the preserved `z80-audio` branch contains the experiment.
+The earlier 68000 and Z80 experiments remain useful negative results. The old
+68000 player did not have enough end-to-end streaming margin, and the Z80 path
+made the Main CPU stop the Z80 through BUSREQ for every refill. That feeding
+contention produced periodic audio artifacts. The current design returns to the
+straight Sub-CPU path after the video and streaming players were substantially
+reduced in cost.
 
-Goal was: play the movie with **22.05 kHz IMA ADPCM** audio (fixed, no
-PCM/ADPCM switching) on real Mega-CD hardware, under the TTRC streaming pipeline,
-**without degrading video** and **without depending on the specific clip's motion
-distribution** (must hold even for all-motion content).
+## Current format and codec
 
-## What works (verified, reusable)
+- Source audio is extracted as 22,050 Hz mono signed 16-bit PCM.
+- The packer evenly retimes it to one fixed, even sample count per playback
+  frame. H40 fixed-N2 uses 736 decoded samples per frame.
+- IMA state is continuous across the movie. Every frame nevertheless begins
+  with a four-byte checkpoint: signed 16-bit predictor, 8-bit step index, and a
+  reserved zero byte. A chunk can therefore be decoded independently after a
+  seek or control-ring recovery without resetting the codec.
+- Two samples are packed per byte, low nibble first. An H40/N2 control carries
+  `4 + 736/2 = 372` audio bytes and reconstructs 736 RF5C164 samples.
+- `HEADER.DAT` startup audio is already reconstructed PCM, one chunk per sector.
+  Timed control blocks carry future checkpointed ADPCM chunks so the wave-RAM
+  write reserve remains persistent.
+- Header offset 54 always means decoded RF5C164 samples per frame. Feature bit 2
+  selects ADPCM and lets the player derive the smaller control size.
+- Header offset 58 stores the RF5C164 frequency delta calculated from the fixed
+  chunk size and actual playback cadence. This prevents wave-RAM lead drift.
 
-- **Codec**: `tools/ima_adpcm.py` — continuous (no-block) IMA, low-nibble-first,
-  735 B/frame → 1470 s16 samples. Bit-exact round-trip. State resets at loop head.
-- **Pack**: `tools/pack_stream.py --audio-format ima22` — embeds 735 B/frame in
-  the control block, `total_len` forced even. **Disc bandwidth is a non-issue**:
-  ADPCM 22 kHz = 735 B/frame, *less* than the current 13.3 kHz PCM (887 B/frame).
-- **Decoder (68000)**: offset representation (value = predictor+0x8000, kept in
-  [0,0xFFFF] by a branchless bit-16 clamp), high-byte-via-stack, sign-magnitude
-  output LUT, 2 nibbles inlined. Two Python-verified bit-exact table sets:
-  - reduced 3816 B (fits the 0x8000–0x9800 safe PRG window): ~140 cyc/sample.
-  - full 8.8 KB 2D (`ima_indices` = new_index*32 words, `ima_deltas` = signed
-    longs): ~104 cyc/sample. Fits the now-dead `DMA_STAGE` Main-RAM.
-- **A/V split proof**: `tools/verify_audio_split.py` proves the Main-offload ferry
-  (decode on Main, play one swap later) is byte-identical (delay1 = 1-frame audio
-  lag; preshift = exact) to the inline decode, across 2 loop iterations.
+The encoder and independent reference decoder are in `tools/ima_adpcm.py`.
+`tools/pack_stream.py --verify` reconstructs every audio chunk and proves that
+the startup prefix plus shifted controls reproduce the source chunk order for
+the complete movie.
 
-## Failure mode: the bistable ring ratchet
+## Full lookup tables in both 1M Word-RAM banks
 
-Always the same. On a run of frames where a CPU's per-frame work exceeds the
-15 fps period (66.7 ms), the CD (fixed ~75 sectors/s) outruns consumption, the
-pattern-ring prefetch depth (`drain_frame - frame_idx`) climbs monotonically,
-`pump_poll`'s ring back-pressure eventually stops draining the CDC, the CDC FIFO
-drops sectors, and the payload stream permanently desyncs → progressive tile
-garbage. `slip_count` spikes at onset. It is **bistable**: once prefetch climbs,
-the Sub races (data pre-buffered) and stops CD-blocking, so the idle that would
-have absorbed the decode evaporates — positive feedback, non-recovering.
+The decoder uses one 8,800-byte full table image:
 
-## What was tried, and how each failed (GPGX headless / real hardware)
+| Table | Size | Contents |
+|---|---:|---|
+| next index | 2,848 B | 89 step rows x 16 nibbles, stored as `new_index * 32` |
+| signed delta | 5,696 B | 89 x 16 precomputed signed 32-bit predictor deltas |
+| output conversion | 256 B | reconstructed predictor high byte to RF5C164 byte |
 
-| Placement | Collapse frame | Note |
-|---|---|---|
-| Sub inline (in `expand_frame`) | ~40–79 | decode is *sequential* → adds wall-clock |
-| Sub decode-in-wait (label-3 swap-wait, sliced + pumped) | ~79 | still ratchets |
-| Main offload, block decode before swap | ~120 | Main is the long pole on motion |
-| Main offload, sliced into `wait_vb_start` idle | ~120 | swap-wait idle evaporates during motion |
-| Main offload + full 8.8 KB tables | ~120 (unchanged) | 7 ms/frame saved didn't move it |
+The image is stored once on disc after PALTAB. At boot the Sub CPU stages it in
+PRG-RAM, copies it to Word-RAM offset `+0x12800`, swaps banks, copies the second
+physical bank, then swaps back. The same addresses are valid after every later
+frame handoff, so timed playback performs no table copy and no bank-dependent
+pointer adjustment.
 
-Diagnostic: the Sub exports prefetch depth to Word-RAM `O_PREFETCH` (0xAF7E); the
-Main renders it as backdrop-green intensity. Healthy = dark/flat; over-budget =
-green ramp before collapse.
+The decoded PCM buffer starts at bank offset `+0x14C00`. It reserves 1,536 bytes
+per bank, enough for the supported low-rate chunk maximum. The build check
+proves that the table, buffer, control scratch, and resident routing copies do
+not overlap.
 
-## The decisive experiment (settles budget vs bug)
+## Sub-CPU hot path
 
-Keep the **exact** Sub decode-in-wait structure but set `dec_left = 0` in
-`dec_begin` (decode work removed, everything else identical):
+Once the current control block is linear in Word RAM, the player:
 
-- **With decode**: clean to frame ~33, then prefetch ramps green, collapse ~79.
-- **Without decode (bypass)**: clean to frame 229+, prefetch flat/dark
-  (capture 4 MB → 39 MB).
+1. loads the checkpoint;
+2. decodes the two inlined nibbles of each packed byte through the full tables;
+3. converts each reconstructed sample through the output lookup table;
+4. sends the PCM buffer through the existing batched RF5C164 writer; and
+5. continues with bitmap and cold-pattern expansion.
 
-Video-alone fits real-time with margin on **both** CPUs; adding the decode's
-compute is what tips motion frames over budget. So it is the decode **time** —
-not disc bandwidth, not decoder correctness, not scheduling, not a
-danger-zone/CDC-frequency bug.
+No codec state is carried in PRG-RAM. A malformed step index is clamped to 88,
+and the fixed chunk size bounds every table and output-buffer access.
 
-Corollaries refuted along the way: the "danger zone" 0x6800–0x8000 is not fatal
-(the shipping PCM build runs per-frame code at 0x699C and works); `pump_poll`
-frequency is not the lever (it already has ring back-pressure); the swap-wait is
-CD-paced idle that only exists while the ring is *not* prefetched, so it can't be
-relied on during sustained motion.
+The DEBUG `Axx` HUD field measures decoder time. One displayed unit is four
+30.72 microsecond Mega-CD stopwatch ticks, about 0.1229 ms. PCM builds report
+zero.
 
-## Why the three constraints can't coexist on this pipeline
+## H40 Sonic Jam qualification
 
-22 kHz audio needs *either* ~17 ms decode CPU (ADPCM — doesn't fit) *or* the disc
-bandwidth of raw 22 kHz PCM (1470 B/frame, which eats the shared CBR video DMA
-budget). Both trade against the same maxed resource. With "no video degradation"
-+ "robust for any clip" + "22.05 kHz fixed" all hard, there is no free slot.
+Profile: 320x224 H40, 40x28 tiles, 30 fps content on the fixed 29.970 fps N2
+cadence, 2,714 frames.
 
-## Paths for a future retry (ranked, no-compromise first)
+| Result | Value |
+|---|---:|
+| Decoded audio | 736 samples/frame |
+| ADPCM control audio | 372 B/frame, 50.5% of decoded PCM bytes |
+| Full-table memory | 8,800 B in each physical Word-RAM bank |
+| Decoder `A` | 62 minimum; 66 median, p95, p99, and maximum |
+| Decoder time | 7.62 ms minimum; 8.11 ms typical/maximum |
+| CD slip / stream desync | `S=0`, `D=0` for all 2,714 frames |
+| Audio re-sync / blocking pumps | `R=0`, `C=0` for all 2,714 frames |
+| Wave-RAM lead | 14,336 through 15,360 bytes |
+| Offline IMA SNR on this source | 25.2 dB |
+| Capture jump gate | 0 candidates at a 12,000 threshold; no clipped samples |
 
-0. **Z80 decode + YM2612 DAC (shelved after hardware testing)** — timer-driven
-   playback and decode worked, but the Main CPU still had to stop the Z80 with
-   BUSREQ to refill its internal buffer. Those stops produced periodic audio
-   artifacts, and larger PCM feeds also increased video slips. A cartridge-ROM
-   variant could let the Z80 fetch pre-recorded audio without BUSREQ, but it
-   would require Mode 1 hardware and new A/V synchronization work.
-1. **Video codec efficiency** — reduce cold-tile count per motion frame at equal
-   picture quality (better tile reuse/matching). Frees per-frame CPU with no
-   visible loss and no rate change. Largest/most uncertain, but the only truly
-   free path — the intended re-entry point.
-2. **Surgical peak-shave** — cap cold tiles only on the handful of over-budget
-   peak-motion frames (a brief, localized smear where the eye already tracks
-   motion). Keeps 22.05 kHz and every calm scene untouched.
-3. **Lower audio rate** (16/11 kHz) — halving the rate ~halves the decode and
-   likely fits, but muffles the whole soundtrack always. Last resort.
+The same H40 Sonic PCM and ADPCM captures show no meaningful increase in the
+Main CPU's short-wait HUD distribution: after excluding the V-counter wrap
+values, mean `W` was 23.30 scanlines for PCM and 23.02 for ADPCM, with median 2
+for both. This is expected because the CPUs are pipelined: most Sub work runs
+while Main displays the preceding frame. The result proves this clip and build,
+not a universal deadline bound.
 
-Frame rate note: 30 fps neither helps nor hurts — per-frame decode, video DMA,
-and the frame period all halve together, so this limit is rate-invariant.
+The capture was checked programmatically and visually, but it has not been
+human-listened in this environment. Physical Mega-CD playback is also still
+unqualified.
 
-## Where the code is
+## Why the retry fits when the old one did not
 
-All committed on `adpcm-h40` (`git log main..adpcm-h40`). The latest commit is
-the Sub decode-in-wait build with the prefetch diagnostic still wired in — a good
-starting point once path 1 above creates headroom.
+The codec cost per second has not disappeared. H40/N2 merely splits it into
+smaller 736-sample frame jobs, and the measured decoder still consumes about
+8.1 ms of every 33.4 ms frame. The meaningful change is the surrounding player:
+control copying, cold-run expansion, CD pumping, Word-RAM handoff, Main pattern
+transfer, and fixed-geometry work have all been reduced since the first ADPCM
+attempt. The full bank-local tables also remove table transport and compact-table
+arithmetic from the timed path.
+
+The prior failure therefore remains a warning: static instruction counts are
+not enough. BIOS calls, CDC readiness, Word-RAM access, and bank timing are not
+captured by the decoder stopwatch. Every new profile still needs a full DEBUG
+recording with stable `S`, `D`, `R`, `L`, `C`, `W`, and `A`.
+
+## Main-CPU fallback
+
+Main-side decode was considered but is not implemented in v9. In 1M/1M mode it
+would have to decode a future chunk from the bank Main currently owns, return
+the reconstructed PCM through a later handoff, and preserve the same startup
+shift. That adds a one-frame ferry and competes with video DMA preparation.
+Sub-direct is simpler and now passes the first full qualification, so Main
+offload remains a fallback only if later physical-hardware or low-rate tests
+show that the Sub path cannot hold its deadline.
+
+## Remaining qualification
+
+- listen to the complete lossless capture for codec texture and boundary clicks;
+- run on physical Mega-CD hardware;
+- record full H32/30, H40/24, and H40/15 profiles;
+- confirm the RF5C164 frequency delta and stable wave-RAM lead for each cadence;
+- keep PCM13 available as the fallback until those checks pass.

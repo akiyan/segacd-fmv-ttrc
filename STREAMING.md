@@ -2,20 +2,20 @@
 
 This document answers one planning question: **what memory and CPU time can a
 new live-playback feature use without consuming an existing safety margin?** It
-describes the current TTRC v8 player in `boot/movieplay_sp.s` and
-`boot/movieplay_ip.s`, audited at commit `669e426` with player version p54 on
-2026-07-18.
+describes the current TTRC v9 player in `boot/movieplay_sp.s` and
+`boot/movieplay_ip.s`, audited on 2026-07-19 with the checkpointed ADPCM22
+path enabled for the H40 Sonic reference.
 
 The short answer is:
 
 | Domain | Safe fixed space, all supported playback | H40 fixed-N2 steady-stream space | Conditional space |
 |---|---:|---:|---:|
-| Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 288 bytes of SP binary growth, not data RAM |
-| Word RAM bank A | 56.43 KiB | 86.40 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Word RAM bank B | 56.43 KiB | 86.40 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
+| Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 32 bytes of SP boot-slot growth, not data RAM |
+| Word RAM bank A | 46.34 KiB | 76.30 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
+| Word RAM bank B | 46.34 KiB | 76.30 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
 | Main RAM | 27.29 KiB | 28.66 KiB | None counted from palette or stack reservations |
 | Main CPU | no hard positive guarantee | about 50,769 local cycles (6.62 ms) | qualified H40 reference only; Sub must already be ready |
-| Sub CPU | no hard positive guarantee | about 247,000 instruction cycles before waits | not safe to spend: BIOS/CD/Word-RAM waits are excluded |
+| Sub CPU | no hard positive guarantee | ADPCM decoder measured 7.62-8.11 ms in H40/N2 | full Sonic capture passes; BIOS/CD/Word-RAM waits remain outside that stopwatch |
 
 “Safe fixed” means that the address can be assigned a fixed purpose and still
 survive frame 0, movie replay, the largest control block, the largest supported
@@ -44,7 +44,7 @@ The live throughput reference is the largest current fixed-cadence raster:
 | Sub clock and frame budget | 12,500,000 Hz; 417,083 cycles |
 | Timed cold cap | 175 patterns/frame |
 | Maximum updates | 1,120 entries/frame |
-| PCM | 444 bytes/frame |
+| Audio | PCM13: 444 direct bytes/frame; ADPCM22: 372 control bytes -> 736 decoded samples |
 | Maximum BODY routing slot | 5 sectors |
 | Build | specialized DEBUG player, Main code generation and short-run fast path enabled |
 
@@ -68,8 +68,8 @@ allocation and a build-time overlap check before use.
 | Address | Size | Current owner | Available to a new feature? |
 |---|---:|---|---|
 | `0x00000..0x05FFF` | 24.00 KiB | BIOS / low PRG work area | No |
-| `0x06000..0x06EDF` | 3,808 B | current specialized DEBUG Sub player | No |
-| `0x06EE0..0x06FFF` | 288 B | remainder of the 4,096-byte SP boot slot | Code growth only |
+| `0x06000..0x06FDF` | 4,064 B | current specialized DEBUG Sub boot image (4,050 B text plus link padding) | No |
+| `0x06FE0..0x06FFF` | 32 B | remainder of the 4,096-byte SP boot slot | Code growth only |
 | `0x07000..0x07FFF` | 4.00 KiB | boot ISO scratch and BIOS-unsafe streaming range | No |
 | `0x08000..0x097FF` | **6.00 KiB** | unused, previously marker-verified safe | **Yes, fixed PRG feature area** |
 | `0x09800..0x0BFFF` | 10.00 KiB | touched by BIOS during continuous reads | No |
@@ -105,7 +105,10 @@ The table applies identically to both physical banks:
 | `+0x0D000..+0x0FFFF` | `0xCD000..0xCFFFF` | **12.00 KiB** | unused after maximum PALTAB | **12.00 KiB** |
 | `+0x10000..+0x11FFF` | `0xD0000..0xD1FFF` | 8.00 KiB | linear control scratch | 3.41 KiB after the all-rate 4,700-byte maximum; 4.53 KiB for H40/N2 |
 | `+0x12000..+0x127FF` | `0xD2000..0xD27FF` | 2.00 KiB | one CD-sector stage / pad discard | 0 |
-| `+0x12800..+0x1BFFF` | `0xD2800..0xDBFFF` | **38.00 KiB** | unused | **38.00 KiB** |
+| `+0x12800..+0x14A5F` | `0xD2800..0xD4A5F` | 8,800 B | full ADPCM next-index, signed-delta, and output tables | 0 |
+| `+0x14A60..+0x14BFF` | `0xD4A60..0xD4BFF` | **416 B** | alignment gap | **416 B** |
+| `+0x14C00..+0x151FF` | `0xD4C00..0xD51FF` | 1.50 KiB | ADPCM reconstructed-PCM buffer, sized for the supported maximum chunk | 0 |
+| `+0x15200..+0x1BFFF` | `0xD5200..0xDBFFF` | **27.50 KiB** | unused after ADPCM state | **27.50 KiB** |
 | `+0x1C000..+0x1FFFF` | `0xDC000..0xDFFFF` | 16.00 KiB | resident routing table | 0 |
 
 The fixed all-playback total in one bank is:
@@ -115,14 +118,14 @@ The fixed all-playback total in one bank is:
 0.152 KiB  fixed status/header holes
 12.000 KiB post-PALTAB hole
 3.410 KiB  control-scratch tail at the all-rate maximum
-38.000 KiB large unused hole
+27.906 KiB ADPCM-area tail and alignment gap
 -----------
-56.430 KiB safe fixed space per physical bank
+46.336 KiB safe fixed space per physical bank
 ```
 
 The H40/N2 steady-stream total substitutes a 6,300-byte worst load block
 (`175 * 32 + 175 * 4`) and a 3,556-byte worst control block, producing
-**86.398 KiB per bank**. It is not replay-safe because frame 0 overwrites most
+**76.305 KiB per bank**. It is not replay-safe because frame 0 overwrites most
 of the load-tail gain.
 
 `O_UPDS` is not read or written by normal playback anymore; Main re-walks the
@@ -131,9 +134,9 @@ bitmap and entries in the linear control block. The old area remains used by
 must be an explicit decision to retire or relocate those diagnostics.
 
 Routing costs 16 KiB **in each bank**, not one 32 KiB contiguous allocation.
-New persistent state that must follow the frame handoff usually also needs two
-copies. Ping-pong frame-local state can instead use different contents in the
-two banks.
+The ADPCM full table likewise costs 8,800 bytes in each bank. New persistent
+state that must follow the frame handoff usually also needs two copies.
+Ping-pong frame-local state can instead use different contents in the two banks.
 
 ## Main RAM map
 
@@ -185,12 +188,12 @@ sequenceDiagram
         CD-->>S: BODY sectors become ready
         S->>W: Drain to 2 KiB stage, then APPLY / payload RING
         Note right of S: S1 55k-cycle planning envelope for routing and five stage copies<br/>BIOS wait/retry cycles excluded; remaining before waits about 362k
-        S->>S: Fetch control, write 444 PCM bytes
-        Note right of S: S2 30k-cycle planning envelope<br/>cumulative remaining before waits about 332k
+        S->>S: Fetch control, decode ADPCM, write 736 reconstructed samples
+        Note right of S: S2 PCM13 baseline 30k cycles plus 95k-101k measured decode<br/>the extra 292 RF5C164 writes are not modeled; remaining before waits is less than 231k
         S->>W: Walk up to 1,120 entries and copy up to 175 cold patterns
-        Note right of S: S3 75k-cycle planning envelope<br/>cumulative remaining before waits about 257k
+        Note right of S: S3 75k-cycle planning envelope<br/>remaining before waits is less than 156k
         S->>S: Bookkeeping, polls, next READY preparation
-        Note right of S: S4 10k reserve; rounded visible planning subtotal 170k<br/>raw remainder about 247k, safe spendable remainder = 0
+        Note right of S: S4 10k reserve; ADPCM visible subtotal exceeds 271k cycles<br/>raw remainder before waits is less than 146k, safe spendable remainder = 0
     and Main consumes frame N
         M->>W: Parse load runs into RUN_TABLE
         Note right of M: M1 10k-cycle planning envelope<br/>remaining 245,937
@@ -238,33 +241,42 @@ to spend 50,769 cycles unconditionally**.
 
 ### Sub cycle basis
 
-The rounded 170,000-cycle Sub subtotal covers visible assembly instructions in
-the H40/N2 path:
+The rounded 170,000-cycle Sub subtotal is the PCM13 baseline for visible
+assembly instructions in the H40/N2 path:
 
 | Sub phase | Rounded instruction subtotal | Important exclusion |
 |---|---:|---|
 | Routing plus up to five 2 KiB stage copies | 55,000 cycles | time inside `CDC_STAT`, `CDC_READ`, `CDC_TRN`, and `CDC_ACK` |
-| Maximum 3,556-byte APPLY-to-control copy plus PCM write | 30,000 cycles | Word-RAM and RF5C164 wait states |
+| Maximum 3,556-byte APPLY-to-control copy plus 444-byte PCM13 write | 30,000 cycles | Word-RAM and RF5C164 wait states |
 | 1,120-entry legacy walk, 175 cold copies, run construction | 75,000 cycles | asynchronous CD work reached by polls |
 | Fixed bookkeeping and reserve | 10,000 cycles | bank-settle polling |
 | **Visible subtotal** | **170,000 cycles** | all exclusions above |
 | **Raw remainder before waits** | **247,083 cycles / 19.77 ms** | not safe spendable time |
 
+The ADPCM22 decoder stopwatch surrounds only the table decode, not the following
+736-byte RF5C164 write. In the 2,714-frame H40 Sonic capture it reported 62-66
+display units. One unit is four 30.72 microsecond ticks, giving 7.62-8.11 ms or
+about 95,000-101,000 Sub cycles. Adding that to the PCM13 baseline already
+raises visible work to roughly 265,000-271,000 cycles, and ADPCM writes 292
+more RF5C164 samples than PCM13; that extra writer cost is not included in this
+number. Thus the pre-wait arithmetic remainder is less than about 146,000
+cycles, not 247,083. The same capture nevertheless completed with `S=0`,
+`D=0`, `R=0`, `C=0`, and 14-15 KiB of audio lead.
+
 This explains why a static instruction count can look comfortable even when a
 real stream is near its limit: the expensive uncertainty lives in BIOS calls,
 CDC readiness, shared-memory access, and recovery. A successful full recording
 proves only that the margin was non-negative for that disc and machine run; it
-does not measure the unused Sub cycles. Sub-side ADPCM or another sustained task
-must therefore start with cycle instrumentation, not with the 247,083 raw
-number.
+does not measure the unused Sub cycles. The ADPCM result qualifies one profile;
+it does not turn either arithmetic remainder into spendable time.
 
 ## Allocation guidance for the next feature
 
 Use the low-risk spaces in this order:
 
-1. Put bank-local or ping-pong state in Word RAM
-   `+0x12800..+0x1BFFF` (38 KiB per bank). It is the largest clean hole and
-   does not borrow a delivery buffer.
+1. Put bank-local or ping-pong state in the remaining Word-RAM tail
+   `+0x15200..+0x1BFFF` (27.5 KiB per bank). It is the largest clean hole and
+   does not borrow a delivery buffer or the duplicated ADPCM table.
 2. Use Main RAM `0xFFD000..0xFFFAFF` (10.75 KiB) for Main-only state, retaining
    the 512-byte stack guard.
 3. Use the proved Main code-generation tail and RUN_TABLE tail only with
@@ -277,7 +289,8 @@ Use the low-risk spaces in this order:
 
 For CPU time, assume zero shared deadline margin until the new path has:
 
-- a per-frame Sub stopwatch around control fetch, PCM, and cold expansion;
+- a per-frame Sub stopwatch around the new sustained work (ADPCM already
+  exports decoder-only `Axx`);
 - a pack-time Main guard for cold-run count or predicted transfer time;
 - full-length H40/30, H40/24, H32/30, and H40/15 recordings with `S=0`, `D=0`,
   `R=0`, stable audio lead, and no extra cadence slips;
@@ -289,16 +302,16 @@ Use the project-managed Python and the current packed H40 stream:
 
 ```sh
 tools/python.sh tools/check_player_ring.py
-make movieplay CONFIG=configs/bad-apple-h40.toml \
+make movieplay CONFIG=configs/sonic-jam-op-h40.toml \
   DEBUG=1 MAIN_CODEGEN=1 DMA_RUN_FASTPATH=1 PLAYER_SPECIALIZE=1
 
 ~/toolchains/mars/m68k-elf/bin/m68k-elf-size -A \
-  tmp/bad-apple-h40/build/movieplay_ip.o \
-  tmp/bad-apple-h40/build/movieplay_sp.o
+  tmp/sonic-jam-op-h40/build/movieplay_ip.o \
+  tmp/sonic-jam-op-h40/build/movieplay_sp.o
 
 tools/python.sh harness/main_codegen/measure_cycles.py \
-  --header out/bad-apple-h40/HEADER.DAT \
-  --body out/bad-apple-h40/BODY.DAT
+  --header out/sonic-jam-op-h40/HEADER.DAT \
+  --body out/sonic-jam-op-h40/BODY.DAT
 ```
 
 Re-run the full DEBUG recording and HUD extraction before revising the 530-tick

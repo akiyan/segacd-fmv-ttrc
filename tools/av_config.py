@@ -75,6 +75,12 @@ assert PALTAB_MAX_SEG <= 255, "pal byte = seg+1 addresses at most 255 segments"
 NTSC_VSYNC = 60_000 / 1001
 _INTEGER_VBLANK_TOLERANCE = 0.01
 
+# RF5C164 phase-step conversion.  One output sample advances the 11-bit
+# frequency delta once per 384 clocks of the 12.5 MHz PCM clock.
+RF5C164_CLOCK_HZ = 12_500_000
+RF5C164_DIVIDER = 384
+RF5C164_FD_SCALE = 0x800
+
 
 def vsync_n_for_fps(fps):
     """Nearest integer VBlank interval used as the player's cadence hint."""
@@ -96,6 +102,24 @@ def playback_fps_for_content(fps):
     if abs(ratio - n) <= _INTEGER_VBLANK_TOLERANCE:
         return NTSC_VSYNC / n
     return value
+
+
+def rf5c164_fd(samples_per_frame, playback_fps):
+    """Return the RF5C164 frequency delta matching one fixed audio chunk.
+
+    Matching the player's actual fixed chunk rate matters more than matching
+    the nominal source rate after the packer has evenly retimed the source.
+    Otherwise the wave-RAM lead slowly walks into a re-sync threshold.
+    """
+    rate = int(samples_per_frame) * float(playback_fps)
+    if rate <= 0:
+        raise ValueError(
+            f"audio chunk rate must be positive, got {samples_per_frame!r} * "
+            f"{playback_fps!r}")
+    fd = round(rate / (RF5C164_CLOCK_HZ / RF5C164_DIVIDER) * RF5C164_FD_SCALE)
+    if not 0 < fd <= 0xFFFF:
+        raise ValueError(f"RF5C164 frequency delta is out of range: {fd}")
+    return fd
 
 
 def uses_fixed_n2_cadence(fps):
@@ -136,6 +160,27 @@ def cd_sector_rate(fps):
 def pcm_frame_bytes(fps, audio_rate=13_300):
     """Fixed mono u8 PCM bytes per frame, rounded up to avoid underrun."""
     return int(math.ceil(int(audio_rate) / playback_fps_for_content(fps)))
+
+
+IMA_CHECKPOINT_BYTES = 4
+
+
+def adpcm_frame_samples(fps, audio_rate=22_050):
+    """Fixed decoded samples per IMA chunk, rounded up to an even count."""
+    count = pcm_frame_bytes(fps, audio_rate)
+    return count + (count & 1)
+
+
+def audio_frame_layout(kind, fps):
+    """Return ``(rate, decoded_samples, control_bytes)`` for one audio chunk."""
+    name = str(kind).strip().lower()
+    if name == "pcm13":
+        samples = pcm_frame_bytes(fps, 13_300)
+        return 13_300, samples, samples
+    if name == "adpcm22":
+        samples = adpcm_frame_samples(fps, 22_050)
+        return 22_050, samples, IMA_CHECKPOINT_BYTES + samples // 2
+    raise ValueError(f"unsupported audio kind: {kind!r}")
 
 # --- Realized cold == cap, by construction ---
 # The sim (tools/sim.py) and the pack (tools/pack_stream.py) now share ONE tile-slot

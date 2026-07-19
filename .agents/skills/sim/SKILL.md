@@ -118,7 +118,8 @@ This can take about 10-13 minutes for 2700-3100 frames.
 Create one strict `schema_version = 1` profile under `configs/` for each
 source/mode combination. Use the schema in `CONFIG.md`; the checked-in Bad
 Apple H32/H40 profiles are complete examples. The profile must name the source,
-native fps, exact duration, full mode raster, HAR-aware `fit`, PCM audio,
+native fps, exact duration, full mode raster, HAR-aware `fit`, the selected
+`pcm13` or `adpcm22` audio,
 output directory, encoder/palette settings, and DEBUG pack settings.
 
 Before every `/sim`, perform these steps in this exact order:
@@ -181,7 +182,7 @@ After completion:
   - `catmap/`
   - `misscarry/`
   - `stats.npz`
-  - `audio_13k3_u8_mono.wav`
+  - `audio_13k3_u8_mono.wav` or `audio_22k05_s16_mono.wav`
 
 ### 4. Render the Analysis Video
 
