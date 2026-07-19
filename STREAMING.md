@@ -11,10 +11,10 @@ The short answer is:
 | Domain | Safe fixed space, all supported playback | H40 fixed-N2 steady-stream space | Conditional space |
 |---|---:|---:|---:|
 | Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 16 bytes of SP boot-slot growth, not data RAM |
-| Word RAM bank A | 46.34 KiB | 76.30 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Word RAM bank B | 46.34 KiB | 76.30 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Main RAM | 27.29 KiB | 28.66 KiB | None counted from palette or stack reservations |
-| Main CPU | no hard positive guarantee | about 50,769 local cycles (6.62 ms) | qualified H40 reference only; Sub must already be ready |
+| Word RAM bank A | 46.34 KiB | 76.20 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
+| Word RAM bank B | 46.34 KiB | 76.20 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
+| Main RAM | 27.29 KiB | 28.63 KiB | None counted from palette or stack reservations |
+| Main CPU | no hard positive guarantee | about 40,402 local cycles (5.27 ms) | qualified H40 reference only; Sub must already be ready |
 | Sub CPU | no hard positive guarantee | ADPCM decoder measured 7.62-8.11 ms in H40/N2 | full Sonic capture passes; BIOS/CD/Word-RAM waits remain outside that stopwatch |
 
 “Safe fixed” means that the address can be assigned a fixed purpose and still
@@ -42,7 +42,7 @@ The live throughput reference is the largest current fixed-cadence raster:
 | Frame time | 33.367 ms |
 | Main clock and frame budget | 7,670,454 Hz; 255,937 cycles |
 | Sub clock and frame budget | 12,500,000 Hz; 417,083 cycles |
-| Timed cold cap | 175 patterns/frame |
+| Timed cold cap | 178 patterns/frame |
 | Maximum updates | 1,120 entries/frame |
 | Audio | PCM13: 444 direct bytes/frame; ADPCM22: 372 control bytes -> 736 decoded samples |
 | Maximum BODY routing slot | 5 sectors |
@@ -98,7 +98,7 @@ The table applies identically to both physical banks:
 | Bank offset | Sub address | Size | Current owner / worst use | Fixed headroom |
 |---|---|---:|---|---:|
 | `+0x00000..+0x00083` | `0xC0000..0xC0083` | 132 B | palette reference, reserved CRAM area, `n_load` | 0 |
-| `+0x00084..+0x097FF` | `0xC0084..0xC97FF` | 37.87 KiB | cold load runs | 2.87 KiB after the 35,844-byte frame-0 maximum; 31.72 KiB during H40/N2 streaming |
+| `+0x00084..+0x097FF` | `0xC0084..0xC97FF` | 37.87 KiB | cold load runs | 2.87 KiB after the 35,844-byte frame-0 maximum; 31.61 KiB during H40/N2 streaming |
 | `+0x09800..+0x09801` | `0xC9800..0xC9801` | 2 B | `n_upd` | 0 |
 | `+0x09802..+0x0AEFF` | `0xC9802..0xCAEFF` | 5.75 KiB | obsolete normal-path `O_UPDS`; still used by dump diagnostics | Conditional 5.75 KiB |
 | `+0x0AF00..+0x0AFFF` | `0xCAF00..0xCAFFF` | 256 B | DEBUG counters and copied header | 156 B in three fixed holes |
@@ -124,9 +124,9 @@ The fixed all-playback total in one bank is:
 46.140 KiB safe fixed space per physical bank
 ```
 
-The H40/N2 steady-stream total substitutes a 6,300-byte worst load block
-(`175 * 32 + 175 * 4`) and a 3,556-byte worst control block, producing
-**76.305 KiB per bank**. It is not replay-safe because frame 0 overwrites most
+The H40/N2 steady-stream total substitutes a 6,408-byte worst load block
+(`178 * 32 + 178 * 4`) and a 3,556-byte worst control block, producing
+**76.200 KiB per bank**. It is not replay-safe because frame 0 overwrites most
 of the load-tail gain.
 
 `O_UPDS` is not read or written by normal playback anymore; Main re-walks the
@@ -153,14 +153,14 @@ a separate proof that its maximum output ends at `0xFF6580`.
 | `0xFF2000..0xFF657F` | 17.375 KiB | maximum generated bitmap handlers and two H40 blitters | 0 |
 | `0xFF6580..0xFF7FFF` | **6.625 KiB** | proved code-generation tail | **6.625 KiB** |
 | `0xFF8000..0xFF8C7F` | 3.125 KiB | 400 worst-case run records at 8 B each | 0 |
-| `0xFF8C80..0xFFAFFF` | **8.875 KiB** | all-rate RUN_TABLE tail | **8.875 KiB**; H40/N2 has 10.633 KiB |
+| `0xFF8C80..0xFFAFFF` | **8.875 KiB** | all-rate RUN_TABLE tail | **8.875 KiB**; H40/N2 has 10.609 KiB |
 | `0xFFB000..0xFFCFFF` | 8.00 KiB | 64-entry resident PALTAB | 0 |
 | `0xFFD000..0xFFFAFF` | **10.750 KiB** | unused below the stack guard | **10.750 KiB** |
 | `0xFFFB00..0xFFFCFF` | 512 B | conservative stack and interrupt reserve | 0 |
 | `0xFFFD00..0xFFFFFF` | 768 B | above configured stack top / BIOS reserve | 0 |
 
 This yields **26.900 KiB** safe across all supported rates. Restricting the run
-table to H40/N2's 175-cold cap raises it to **28.658 KiB**. The 512-byte stack
+table to H40/N2's 178-cold cap raises it to **28.635 KiB**. The 512-byte stack
 reserve is deliberately larger than the approximately 80-byte deepest visible
 player call chain; it leaves room for interrupt/BIOS use that the assembly call
 graph alone cannot prove.
@@ -191,7 +191,7 @@ sequenceDiagram
         Note right of S: S1 55k-cycle planning envelope for routing and five stage copies<br/>BIOS wait/retry cycles excluded; remaining before waits about 362k
         S->>S: Fetch control, decode ADPCM, write 736 reconstructed samples
         Note right of S: S2 PCM13 baseline 30k cycles plus 95k-101k measured decode<br/>the extra 292 RF5C164 writes are not modeled; remaining before waits is less than 231k
-        S->>W: Walk up to 1,120 entries and copy up to 175 cold patterns
+        S->>W: Walk up to 1,120 entries and copy up to 178 cold patterns
         Note right of S: S3 75k-cycle planning envelope<br/>remaining before waits is less than 156k
         S->>S: Bookkeeping, polls, next READY preparation
         Note right of S: S4 10k reserve; ADPCM visible subtotal exceeds 271k cycles<br/>raw remainder before waits is less than 146k, safe spendable remainder = 0
@@ -202,9 +202,9 @@ sequenceDiagram
         M->>V: Write complete 40 x 28 name table
         Note right of M: M2 at most 55,280 modeled cycles<br/>remaining 190,657
         M->>V: Wait for VBlank; transfer cold runs; repair DMA first words
-        Note right of M: M3 124,888 elapsed Main cycles in the qualified full H40 capture<br/>remaining 65,769
+        Note right of M: M3 135,255 elapsed Main cycles in the qualified full H40 capture<br/>remaining 55,402
         M->>V: DEBUG HUD, optional CRAM load, atomic name-table flip
-        Note right of M: M4 15k-cycle planning reserve<br/>qualified local remainder about 50,769 cycles (6.62 ms)
+        Note right of M: M4 15k-cycle planning reserve<br/>qualified local remainder about 40,402 cycles (5.27 ms)
     end
 
     M->>S: Next CMD_SWAP
@@ -219,26 +219,26 @@ For H40 full screen:
 
 | Main phase | Worst value used here | Basis |
 |---|---:|---|
-| Load-run parsing and fixed setup | 10,000 cycles | conservative planning envelope; 175 records is the format maximum at N2 |
+| Load-run parsing and fixed setup | 10,000 cycles | conservative planning envelope; 178 records is the format maximum at N2 |
 | Bitmap handler | 38,690 cycles | theoretical worst of all 256 bitmap-byte handlers across 140 bytes |
 | Generated 40 x 28 name-table blit | 16,590 cycles | exact instruction model |
-| Pattern-transfer interval | 124,888 cycles | 530 hardware stopwatch ticks at 30.72 us/tick in the full 6,576-frame H40 capture |
+| Pattern-transfer interval | 135,255 cycles | 574 hardware stopwatch ticks at 30.72 us/tick in the full 2,714-frame H40 Sonic capture |
 | DEBUG HUD, CRAM/flip, residual setup | 15,000 cycles | planning reserve around code not covered by the two exact models |
-| **Total planning envelope** | **205,168 cycles** | values above summed conservatively |
-| **Local remainder** | **50,769 cycles / 6.62 ms** | 255,937 - 205,168 |
+| **Total planning envelope** | **215,535 cycles** | values above summed conservatively |
+| **Local remainder** | **40,402 cycles / 5.27 ms** | 255,937 - 215,535 |
 
-The 530-tick capture predates p54's disc-specific immediate constants. Those
-changes only remove instructions, so it is conservative for p54's unchanged DMA
-path. The frame with the largest pattern interval is not necessarily the frame
-with the theoretical worst bitmap, which is why summing both is conservative.
+The 574-tick measurement is from the current p56 full-length Sonic
+qualification at cold 178. The frame with the largest pattern interval is not
+necessarily the frame with the theoretical worst bitmap, which is why summing
+both is conservative.
 
-This is still not a formal player-wide bound. The format permits up to 175
+This is still not a formal player-wide bound. The format permits up to 178
 isolated one-tile runs, but the current contiguous allocator normally produces
-far fewer (46 maximum in the reference H40 pack). There is no pack-time limit
+fewer (129 maximum in the reference H40 pack). There is no pack-time limit
 on run count or Main elapsed transfer time. A pathological but currently
 accepted stream can therefore consume the complete two-VBlank deadline. Until
-such a guard exists, **50,769 cycles is a qualification target, not permission
-to spend 50,769 cycles unconditionally**.
+such a guard exists, **40,402 cycles is a qualification target, not permission
+to spend 40,402 cycles unconditionally**.
 
 ### Sub cycle basis
 
@@ -249,7 +249,7 @@ assembly instructions in the H40/N2 path:
 |---|---:|---|
 | Routing plus up to five 2 KiB stage copies | 55,000 cycles | time inside `CDC_STAT`, `CDC_READ`, `CDC_TRN`, and `CDC_ACK` |
 | Maximum 3,556-byte APPLY-to-control copy plus 444-byte PCM13 write | 30,000 cycles | Word-RAM and RF5C164 wait states |
-| 1,120-entry legacy walk, 175 cold copies, run construction | 75,000 cycles | asynchronous CD work reached by polls |
+| 1,120-entry legacy walk, 178 cold copies, run construction | 75,000 cycles | asynchronous CD work reached by polls |
 | Fixed bookkeeping and reserve | 10,000 cycles | bank-settle polling |
 | **Visible subtotal** | **170,000 cycles** | all exclusions above |
 | **Raw remainder before waits** | **247,083 cycles / 19.77 ms** | not safe spendable time |
@@ -345,6 +345,6 @@ tools/python.sh harness/main_codegen/measure_cycles.py \
   --body out/sonic-jam-op-h40/BODY.DAT
 ```
 
-Re-run the full DEBUG recording and HUD extraction before revising the 530-tick
+Re-run the full DEBUG recording and HUD extraction before revising the 574-tick
 qualified maximum. Do not replace that elapsed measurement with the instruction
 model: VBlank alignment and DMA completion are part of the real Main deadline.

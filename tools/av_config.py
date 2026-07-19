@@ -207,8 +207,8 @@ def audio_frame_layout(kind, fps):
 # 30fps's steady two VBLANKs per frame, 24fps alternates between two and three
 # VBLANKs, so keep both H40 limits explicit instead of extrapolating them.
 # H40/30fps full-raster qualification is measured separately because it has
-# only two VBLANKs per frame. Keep the candidate tied to all 1,120 active tiles
-# while the upper boundary is being established with full-length playback.
+# only two VBLANKs per frame. Sonic held exact N=2 cadence at 178; 179 inserted
+# one extra scanout, so keep the limit tied to all 1,120 active tiles.
 # Uncapped is no longer allowed — an uncapped sim shows impossible bursts (Sonic H32
 # 30fps wanted 600-738 cold on the opening frames, far above what the hardware draws)
 # that would collapse live.
@@ -222,7 +222,7 @@ H40_15FPS_COLD_CAP_BY_ACTIVE_TILES = {
 }
 H40_24FPS_COLD_CAP = 200
 H40_30FPS_COLD_CAP_BY_ACTIVE_TILES = {
-    1120: 179,
+    1120: 178,
 }
 _CAP_REF_FPS = 15
 _COLD_CAP_MODES = {"H32", "H40", "MODE4"}

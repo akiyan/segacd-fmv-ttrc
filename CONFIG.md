@@ -82,16 +82,18 @@ The cap is **auto-derived** from `av_config.cold_cap_for_fps` by display mode,
 fps, and active picture-tile count, and shared by the sim and the pack — no
 manual per-source env. The common limits are 15fps→350 / 24fps→219 /
 30fps→175. H40 has explicit measured exceptions: 400 at 15fps for 720 or 1,040
-active tiles after the low-rate ADPCM CDC-pump fix, and 200 at exactly 24fps
-after Lunar measured S=2 at 219 and S=0 at 200. Full 1,120-active-tile H40/15
-and other counts stay at 350. These limits are not extrapolated to other modes,
-rates, or active areas. The sim and pack use
+active tiles after the low-rate ADPCM CDC-pump fix, 200 at exactly 24fps after
+Lunar measured S=2 at 219 and S=0 at 200, and 178 at 30fps for all 1,120 active
+tiles after Sonic held exact two-VBlank cadence at 178 but inserted one extra
+scanout at 179. Full 1,120-active-tile H40/15 and other counts stay at 350.
+These limits are not extrapolated to other modes, rates, or active areas. The
+sim and pack use
 ONE tile allocator (`tools/tile_alloc.py`), so the pack's **realized cold == the cap
 exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40 exceptions: 400 at 15fps/720 or 1,040 active tiles, and 200 at 24fps | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit measured H40 tuple exceptions. Applied by the sim; the pack ships exactly this. |
+| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40 exceptions: 400 at 15fps/720 or 1,040 active tiles, 200 at 24fps, and 178 at 30fps/1,120 active tiles | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit measured H40 tuple exceptions. Applied by the sim; the pack ships exactly this. |
 | `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
 | realized cold | at most the mode/fps/active-tile cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
@@ -103,6 +105,14 @@ decoded exactly; the DEBUG recording kept `S=0`, `D=0`, and `R=0`, with at most
 two Main-CPU VBlank waits. H40/24 remains at its separately measured value of
 200; this result is not extrapolated to another cadence, display mode, or
 active-tile count.
+
+The H40/30 fps/1,120-active-tile value of 178 is full-length-qualified with the
+2,714-frame Sonic Jam OP stream. The pack had `under=0`, exact reconstruction,
+and a 17-pattern minimum ready payload. The DEBUG recording kept `S=0`, `D=0`,
+`R=0`, and `C=0`; every one of the 2,713 timed frame intervals was exactly two
+VBlanks. Cold 179 inserted one extra scanout between frames 30 and 31, while
+200 depleted delivery margin and held `S=2` from frame 2,126 onward. This value
+is specific to H40, 30 fps, and the full 1,120-tile raster.
 
 The H40/15 fps/1,040-active-tile value of 400 is full-length-qualified with the
 3,998-frame Machi ED stream. Its 320x204 picture touches 40x26 tile cells after

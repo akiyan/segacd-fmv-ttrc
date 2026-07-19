@@ -106,6 +106,7 @@ cadence, 2,714 frames.
 
 | Result | Value |
 |---|---:|
+| Timed cold cap | 178 patterns/frame |
 | Decoded audio | 736 samples/frame |
 | ADPCM control audio | 372 B/frame, 50.5% of decoded PCM bytes |
 | Full-table memory | 8,800 B in each physical Word-RAM bank |
@@ -114,6 +115,8 @@ cadence, 2,714 frames.
 | CD slip / stream desync | `S=0`, `D=0` for all 2,714 frames |
 | Audio re-sync / blocking pumps | `R=0`, `C=0` for all 2,714 frames |
 | Wave-RAM lead | 14,336 through 15,360 bytes |
+| Display cadence | all 2,713 timed intervals exactly two VBlanks; no extra scanout |
+| Main pattern transfer | 17.63 ms maximum; at most one VBlank wait |
 | Offline IMA SNR on this source | 25.2 dB |
 | Capture jump gate | 0 candidates at a 12,000 threshold; no clipped samples |
 | Sim model | shared packer-reference IMA decode plus RF5C164 8-bit conversion |
@@ -131,6 +134,12 @@ muxing clean source PCM and began reproducing the IMA decode plus RF5C164 8-bit
 conversion, the reconstructed sim audio and captured playback were also checked
 by listening and accepted. This closes the ADPCM22 implementation. Physical
 Mega-CD playback remains a separate portability qualification.
+
+The 178 cold limit is also a delivery qualification, not a DMA ceiling. A cap
+of 179 kept the DEBUG slip counter at zero but inserted one extra scanout
+between frames 30 and 31. A cap of 200 still completed Main pattern transfer in
+19.81 ms, but exhausted payload delivery margin and held `S=2` from frame 2,126
+onward. This distinguishes the Sub/CD delivery margin from Main DMA time.
 
 ## H40/15 Machi OP qualification
 

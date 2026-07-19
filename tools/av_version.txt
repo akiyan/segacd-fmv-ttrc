@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e61 : Qualify the H40/30fps/1,120-active-tile Sonic cold cap at 178.
+#        All 2,713 timed intervals stayed at exact N=2 with S/D/R/C=0; 179
+#        inserted one extra scanout, and 200 exhausted delivery margin.
 #   e60 : Qualify the H40/15fps/1,040-active-tile Machi ED cold cap at 400.
 #        The full-length recording kept S/D/R=0, Main VBlank waits <=2, and
 #        pattern-update time <=50.63 ms; pack under=0 and decoded exactly.
@@ -420,5 +423,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
-e=60
+e=61
 p=56
