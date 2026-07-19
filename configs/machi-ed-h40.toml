@@ -17,7 +17,7 @@ kind = "pcm13"
 
 [output]
 directory = "videos/machi_ed_H40_320x224_pcm/tmp"
-reuse = true
+reuse = false
 emit_decisions = true
 
 [encoder]
