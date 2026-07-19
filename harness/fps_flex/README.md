@@ -88,7 +88,9 @@ needed.**
 Done + verified:
 - At this historical checkpoint the cold cap used the single confirmed
   `COLD_CAP_15FPS = 350` reference and `cap(fps)=350*15/fps` (30->175,
-  24->219). Current H40 cadence exceptions live in `tools/av_config.py`.
+  24->219). Current builds instead select only measured mode/fps/active-tile
+  qualifications from `tools/av_config.py`; uncovered tuples stop for
+  measurement rather than using this historical scaling rule.
 - `AUDIO` fps-derived in the pack (15->887, 30->443).
 - **MOVIE.DAT v4**: variable frames (no 5-sector padding; each frame = n_pay+n_ctrl
   sectors), header offset 52 = N (VBlanks/frame), 54 = AUDIO. Sonic H32 30fps packs to

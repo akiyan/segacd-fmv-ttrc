@@ -78,23 +78,33 @@ four rows. Frames are then quantised against this final palette grouping.
 resident tile). More cold = sharper picture, but a heavy frame that loads too
 many can overrun the CDC (a sector slip).
 
-The cap is **auto-derived** from `av_config.cold_cap_for_fps` by display mode,
-fps, and active picture-tile count, and shared by the sim and the pack — no
-manual per-source env. The common limits are 15fps→350 / 24fps→219 /
-30fps→175. H40 has explicit measured exceptions: 400 at 15fps for 720 or 1,040
-active tiles after the low-rate ADPCM CDC-pump fix, 200 at exactly 24fps after
-Lunar measured S=2 at 219 and S=0 at 200, and 178 at 30fps for all 1,120 active
-tiles after Sonic held exact two-VBlank cadence at 178 but inserted one extra
-scanout at 179. Full 1,120-active-tile H40/15 and other counts stay at 350.
-These limits are not extrapolated to other modes, rates, or active areas. The
-sim and pack use
-ONE tile allocator (`tools/tile_alloc.py`), so the pack's **realized cold == the cap
+The cap is selected from `av_config.COLD_CAP_QUALIFICATIONS` by display mode,
+nominal fps, and active picture-tile count, and shared by profile validation,
+sim, pack, and analysis. A measurement may cover a smaller active picture at
+the same mode and fps: the selector uses the smallest measured tile count that
+is still at least the requested count. It never applies a result to more tiles
+or another cadence. If no measurement covers the request, profile loading
+stops with `cold-cap measurement required`; there is no scaled/default fallback
+and no per-source environment override.
+
+| Mode | fps | Measured active tiles | Qualified cap |
+|---|---:|---:|---:|
+| H32 | 24 | 896 | 219 |
+| H32 | 30 | 896 | 175 |
+| H40 | 15 | 720 | 400 |
+| H40 | 15 | 1,040 | 400 |
+| H40 | 24 | 1,120 | 200 |
+| H40 | 30 | 1,120 | 178 |
+
+For example, H40/15 at 900 active tiles selects the 1,040-tile measurement and
+uses 400. H40/15 at 1,120 tiles has no covering measurement and is rejected
+until that tuple is measured. The sim and pack use ONE tile allocator
+(`tools/tile_alloc.py`), so the pack's **realized cold == the selected cap
 exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40 exceptions: 400 at 15fps/720 or 1,040 active tiles, 200 at 24fps, and 178 at 30fps/1,120 active tiles | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit measured H40 tuple exceptions. Applied by the sim; the pack ships exactly this. |
-| `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
+| cap `cold_cap_for_fps` | selected from the measured table above | cfg (auto) | **Per-frame cold cap** selected by mode, fps, and the narrowest measured active-tile coverage. Missing coverage is an error. |
 | realized cold | at most the mode/fps/active-tile cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
 The H40/15 fps/720-active-tile value of 400 is full-length-qualified with the
@@ -102,9 +112,8 @@ The H40/15 fps/720-active-tile value of 400 is full-length-qualified with the
 being placed at y=47 in the 320x224 raster; the remaining rows are confirmed
 black across every master frame. The packed stream had no ring underrun and
 decoded exactly; the DEBUG recording kept `S=0`, `D=0`, and `R=0`, with at most
-two Main-CPU VBlank waits. H40/24 remains at its separately measured value of
-200; this result is not extrapolated to another cadence, display mode, or
-active-tile count.
+two Main-CPU VBlank waits. The 720-tile result covers requests up to 720 tiles;
+the 1,040-tile measurement below covers requests from 721 through 1,040.
 
 The H40/30 fps/1,120-active-tile value of 178 is full-length-qualified with the
 2,714-frame Sonic Jam OP stream. The pack had `under=0`, exact reconstruction,
@@ -121,8 +130,8 @@ minimum ready payload, and exact reconstruction. Across the 3,997 timed DEBUG
 HUD groups, `S`, `D`, and `R` stayed zero, Main-CPU VBlank waits were at most
 two, cold-run count was at most 221, and the longest pattern-update interval was
 1,648 ticks (50.63 ms). The lossless recording passed packet, frame, audio, and
-extracted-frame checks. Full 1,120-active-tile H40/15 remains unqualified at 400
-and therefore stays at 350.
+extracted-frame checks. Full 1,120-active-tile H40/15 has no covering
+qualification and is rejected until it is measured.
 
 ## C. Audio sync throttles
 
@@ -317,10 +326,11 @@ The profile loader is strict: misspelled sections/keys, unsupported display
 modes, non-tile-aligned dimensions, and unsafe TOML filename characters fail
 immediately. Profile values replace
 inherited per-source environment values unconditionally. Shared hardware
-limits such as ring size, virtual VBV capacity, and the cold-cap selection table
+limits such as ring size, virtual VBV capacity, and the measured cold-cap table
 stay in `tools/av_config.py`; they are deliberately not per-source TOML fields.
-`video.active_tiles` supplies measured source geometry to that shared table,
-not a per-source cap override.
+`video.active_tiles` supplies source geometry to that shared selector, not a
+per-source cap override. Profile loading fails before encoding when no measured
+tuple covers the requested mode, fps, and active-tile count.
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 
