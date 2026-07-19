@@ -66,7 +66,8 @@ source within what the hardware allows — not fixed project constants:
   remains supported as the physical-console-qualified fallback. ADPCM22
   implementation is complete: the full H40 Sonic path is emulator-,
   automated-check-, and listening-qualified, and Machi OP's H40/15 raster with
-  720 active tiles is full-length emulator- and automated-check-qualified. PCM13 remains the
+  720 active tiles plus Machi ED's H40/15 raster with 1,040 active tiles are
+  full-length emulator- and automated-check-qualified. PCM13 remains the
   conservative choice when physical-console qualification is required; real
   hardware and the remaining ADPCM cadence profiles are broader compatibility
   checks, not implementation blockers. See [ADPCM.md](ADPCM.md). The separate

@@ -166,8 +166,9 @@ within Sega CD limits, not fixed presets:
   the completed checkpointed 22.05 kHz mono IMA path, decoded directly by the
   Sub CPU through full lookup tables duplicated in both physical 1M Word-RAM
   banks. H40 Sonic is full-length emulator-, automated-check-, and
-  listening-qualified; H40/15 Machi OP is full-length emulator- and
-  automated-check-qualified. Physical hardware and the remaining modes are
+  listening-qualified; H40/15 Machi OP with 720 active tiles and Machi ED with
+  1,040 active tiles are full-length emulator- and automated-check-qualified.
+  Physical hardware and the remaining modes are
   broader compatibility checks rather than implementation blockers (see
   [ADPCM.md](ADPCM.md)). Z80 offload remains shelved because BUSREQ-based
   feeding contends with Main CPU video work.

@@ -48,8 +48,8 @@ The live throughput reference is the largest current fixed-cadence raster:
 | Maximum BODY routing slot | 5 sectors |
 | Build | specialized DEBUG player, Main code generation and short-run fast path enabled |
 
-Memory that must work for every supported rate uses the qualified
-H40/15 fps/720-active-tile limit where necessary: 400 cold patterns, 888 PCM
+Memory that must work for every supported rate uses the qualified H40/15 fps
+720- and 1,040-active-tile limit where necessary: 400 cold patterns, 888 PCM
 bytes, and a 4,900-byte control block. H40/15 with all 1,120 tiles active stays
 at 350. Frame 0 is outside timed streaming and may contain all 1,120 patterns.
 Its initial ascending slot allocation makes one 35,844-byte load run.
@@ -283,6 +283,15 @@ count was at most 131, and the longest pattern-update interval was 1,636 ticks
 passed packet, frame, audio, and extracted-frame checks. This evidence applies
 only to that mode/fps/active-tile tuple; it does not raise full-raster H40/15,
 H40/24, H40/30, H32, or mode4 limits.
+
+Machi ED separately qualified H40/15 fps with 1,040 active tiles at the same
+400 cold cap. Its 320x204 picture touches 40 columns by 26 tile rows in the
+320x224 raster. The pack completed all 3,998 frames with `under=0`, exact
+reconstruction, and a one-pattern minimum ready payload. Across 3,997 timed
+DEBUG HUD groups, `S`, `D`, and `R` stayed zero; Main-CPU VBlank waits were at
+most two, cold-run count was at most 221, and the longest pattern-update
+interval was 1,648 ticks (50.63 ms). Audio and extracted-frame gates passed.
+The unmeasured 1,120-active-tile H40/15 case remains at 350.
 
 This explains why a static instruction count can look comfortable even when a
 real stream is near its limit: the expensive uncertainty lives in BIOS calls,

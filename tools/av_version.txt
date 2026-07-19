@@ -11,9 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
-#   e60 : Raise the H40/15fps/1,040-active-tile Machi ED qualification
-#        candidate from 375 to 400 after the 375 full-length recording kept
-#        S/D/R=0, Main VBlank waits <=2, and exact decoded frames.
+#   e60 : Qualify the H40/15fps/1,040-active-tile Machi ED cold cap at 400.
+#        The full-length recording kept S/D/R=0, Main VBlank waits <=2, and
+#        pattern-update time <=50.63 ms; pack under=0 and decoded exactly.
 #   e59 : Add a 375 cold-cap qualification candidate for Machi ED's
 #        H40/15fps/1,040-active-tile raster. Keep the qualified 720-tile value
 #        at 400 and full 1,120-tile H40 at 350.

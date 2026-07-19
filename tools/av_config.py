@@ -201,8 +201,8 @@ def audio_frame_layout(kind, fps):
 #   15->350, 24->219, 30->175
 # H40 keeps cadence-specific limits explicit. At 15fps, servicing the CDC
 # during the long ADPCM decode makes 400 qualified for Machi OP's 720 active
-# tiles. Machi ED's 1,040-active-tile raster uses the separately measured
-# candidate below. Any other active-tile count keeps the common 350 limit.
+# tiles and Machi ED's 1,040 active tiles. Any other active-tile count keeps
+# the common 350 limit.
 # At exactly 24fps, Lunar repeated S=2 at 219 and stayed at S=0 at 200. Unlike
 # 30fps's steady two VBLANKs per frame, 24fps alternates between two and three
 # VBLANKs, so keep both H40 limits explicit instead of extrapolating them.
@@ -214,7 +214,7 @@ def audio_frame_layout(kind, fps):
 # from it. MODE4 retains the common reference until it has its own measurement.
 COLD_CAP_15FPS = 350
 H40_15FPS_COLD_CAP = 400
-H40_15FPS_QUALIFIED_ACTIVE_TILES = 720
+H40_15FPS_720_ACTIVE_TILES = 720
 H40_15FPS_1040_ACTIVE_COLD_CAP = 400
 H40_24FPS_COLD_CAP = 200
 _CAP_REF_FPS = 15
@@ -234,7 +234,7 @@ def cold_cap_for_fps(fps, mode, active_tiles):
     if active_tiles_value <= 0:
         raise ValueError(f"active tile count must be positive: {active_tiles!r}")
     if (mode_key == "H40" and fps_value == 15.0
-            and active_tiles_value == H40_15FPS_QUALIFIED_ACTIVE_TILES):
+            and active_tiles_value == H40_15FPS_720_ACTIVE_TILES):
         return H40_15FPS_COLD_CAP
     if mode_key == "H40" and fps_value == 15.0 and active_tiles_value == 1040:
         return H40_15FPS_1040_ACTIVE_COLD_CAP

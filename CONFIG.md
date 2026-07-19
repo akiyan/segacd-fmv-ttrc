@@ -81,18 +81,17 @@ many can overrun the CDC (a sector slip).
 The cap is **auto-derived** from `av_config.cold_cap_for_fps` by display mode,
 fps, and active picture-tile count, and shared by the sim and the pack — no
 manual per-source env. The common limits are 15fps→350 / 24fps→219 /
-30fps→175. H40 has two explicit measured exceptions: 400 at 15fps only for
-Machi OP's 720 active tiles after the low-rate ADPCM CDC-pump fix, and 200 at
-exactly 24fps after Lunar measured S=2 at 219 and S=0 at 200. H40/15 with the
-1,040 active tiles currently uses the separate 400 qualification candidate;
-full 1,120 active tiles and other counts stay at 350. These limits are not
-extrapolated to other modes, rates, or active areas. The sim and pack use
+30fps→175. H40 has explicit measured exceptions: 400 at 15fps for 720 or 1,040
+active tiles after the low-rate ADPCM CDC-pump fix, and 200 at exactly 24fps
+after Lunar measured S=2 at 219 and S=0 at 200. Full 1,120-active-tile H40/15
+and other counts stay at 350. These limits are not extrapolated to other modes,
+rates, or active areas. The sim and pack use
 ONE tile allocator (`tools/tile_alloc.py`), so the pack's **realized cold == the cap
 exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40 exceptions: 400 at 15fps/720 active tiles, 400 candidate at 15fps/1,040 active tiles, and 200 at 24fps | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit measured H40 tuple exceptions. Applied by the sim; the pack ships exactly this. |
+| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40 exceptions: 400 at 15fps/720 or 1,040 active tiles, and 200 at 24fps | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit measured H40 tuple exceptions. Applied by the sim; the pack ships exactly this. |
 | `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
 | realized cold | at most the mode/fps/active-tile cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
@@ -105,6 +104,16 @@ two Main-CPU VBlank waits. H40/24 remains at its separately measured value of
 200; this result is not extrapolated to another cadence, display mode, or
 active-tile count.
 
+The H40/15 fps/1,040-active-tile value of 400 is full-length-qualified with the
+3,998-frame Machi ED stream. Its 320x204 picture touches 40x26 tile cells after
+being placed at y=10 in the 320x224 raster. The pack had `under=0`, a one-pattern
+minimum ready payload, and exact reconstruction. Across the 3,997 timed DEBUG
+HUD groups, `S`, `D`, and `R` stayed zero, Main-CPU VBlank waits were at most
+two, cold-run count was at most 221, and the longest pattern-update interval was
+1,648 ticks (50.63 ms). The lossless recording passed packet, frame, audio, and
+extracted-frame checks. Full 1,120-active-tile H40/15 remains unqualified at 400
+and therefore stays at 350.
+
 ## C. Audio sync throttles
 
 RF5C164 playback is a fixed rate, so playback must trail the write pointer by a lead. If the
@@ -115,9 +124,9 @@ Both `pcm13` and `adpcm22` are supported profile choices. `adpcm22` is the
 default for new profiles and for direct sim runs that do not set
 `CBRSIM_AUDIO`. ADPCM22 implementation is complete and H40 Sonic is full-length
 emulator-, automated-check-, and listening-qualified. Machi OP's H40/15 raster
-with 720 active tiles is also full-length emulator- and automated-check-qualified.
-Physical hardware and the
-other cadence/mode combinations remain broader compatibility checks.
+with 720 active tiles and Machi ED's H40/15 raster with 1,040 active tiles are
+also full-length emulator- and automated-check-qualified. Physical hardware and
+the other cadence/mode combinations remain broader compatibility checks.
 
 Low-rate ADPCM chunks need one extra streaming safeguard. An N4 decode is about
 16 ms, longer than the 13.3 ms interval between CD sectors, so the Sub CPU polls
