@@ -129,8 +129,8 @@ the Sub-CPU pipeline.
 
 The shipped cold-tile ceiling is selected from the full-length qualification
 table in `tools/av_config.py`. Selection uses display mode, nominal fps, and
-the narrowest measured active-tile count that still covers the profile. An
-unmeasured tuple is rejected instead of receiving a scaled/default value. The
+an exactly matching measured active-tile count. An unmeasured tuple is rejected
+instead of receiving a scaled/default or larger-area value. The
 pack asserts each streaming frame's realized new-tile loads stay within the
 same selected cap and never re-caps the stream. Capped cells show as Miss in
 the analysis overlay's category map.

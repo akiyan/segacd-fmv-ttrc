@@ -164,8 +164,8 @@ make disc DEBUG=1
 > (`COLD_CAP_REALIZED`). The command above no longer runs as-is; it is kept as
 > the record of the fix as shipped at the time. The temporary encoder override
 > and separate realized ceiling were subsequently removed too; current builds
-> select one measured mode/fps/active-tile qualification in `av_config.py` for
-> profile validation, sim, and pack.
+> require one exactly matching measured mode/fps/active-tile qualification in
+> `av_config.py` for profile validation, sim, and pack.
 
 ---
 
@@ -331,8 +331,8 @@ make disc DEBUG=1
 > `tools/av_config.py`（`COLD_CAP_REALIZED`）を単一の真実源として pack 時に
 > 検証される。上のコマンドはそのままでは動かないが、当時の修正の記録として残す。
 > この一時的なエンコーダ上書きと別建ての実現値上限も後に撤去され、現在は
-> `av_config.py` のモード/fps/activeタイル数別の計測済みtupleをprofile検証・sim・packで
-> 共通選択する。
+> `av_config.py` のモード/fps/activeタイル数が完全一致する計測済みtupleを
+> profile検証・sim・packで必須とする。
 
 ---
 

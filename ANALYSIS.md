@@ -182,8 +182,8 @@ yellow vertical **budget line** marking the per-frame update budget. Labels:
 `Cold:NNN` = this frame's **new tile loads** (`Raw + Buf`, i.e. every 32-byte
 pattern that had to be consumed from the payload RING). The bar stacks a
 Raw-coloured and a Buf-coloured segment; full-scale = `cold_cap_for_fps`
-(`av_config.py`, selected from the narrowest measured mode/fps/active-tile
-tuple that covers the profile; an unmeasured tuple is rejected before encoding).
+(`av_config.py`, selected only when mode/fps/active tiles exactly match a
+measured tuple; an unmeasured tuple is rejected before encoding).
 This visualises the value the hardware slip investigations were fought over.
 
 ### Band meter (effective CD usage) - KiB/sec

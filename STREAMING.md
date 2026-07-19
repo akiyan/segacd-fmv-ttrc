@@ -292,7 +292,8 @@ DEBUG HUD groups, `S`, `D`, and `R` stayed zero; Main-CPU VBlank waits were at
 most two, cold-run count was at most 221, and the longest pattern-update
 interval was 1,648 ticks (50.63 ms). Audio and extracted-frame gates passed.
 The unmeasured 1,120-active-tile H40/15 case is rejected until it receives its
-own full-length qualification; it no longer falls back to 350.
+own full-length qualification; cold-cap selection requires an exact active-tile
+match and no longer falls back to 350 or another measured area.
 
 This explains why a static instruction count can look comfortable even when a
 real stream is near its limit: the expensive uncertainty lives in BIOS calls,

@@ -70,8 +70,9 @@ behavior was once added to the sim), not a finer occupancy metric.
 
 > Historical note (e9): `CBRSIM_PACK_MAXCOLD` was later removed. The temporary
 > encoder override and separate realized ceiling were subsequently removed as
-> well; current sim and pack select the same full-length-qualified tuple from
-> `tools/av_config.py`. The ring capacity is also derived there.
+> well; current sim and pack require the same exactly matching,
+> full-length-qualified mode/fps/active-tile tuple from `tools/av_config.py`.
+> The ring capacity is also derived there.
 
 ## Scripts
 

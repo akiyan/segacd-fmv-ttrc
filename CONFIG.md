@@ -80,10 +80,9 @@ many can overrun the CDC (a sector slip).
 
 The cap is selected from `av_config.COLD_CAP_QUALIFICATIONS` by display mode,
 nominal fps, and active picture-tile count, and shared by profile validation,
-sim, pack, and analysis. A measurement may cover a smaller active picture at
-the same mode and fps: the selector uses the smallest measured tile count that
-is still at least the requested count. It never applies a result to more tiles
-or another cadence. If no measurement covers the request, profile loading
+sim, pack, and analysis. All three conditions must exactly match a measured
+tuple. A result measured for a larger or smaller active picture is not reused,
+even at the same mode and fps. If no exact measurement exists, profile loading
 stops with `cold-cap measurement required`; there is no scaled/default fallback
 and no per-source environment override.
 
@@ -96,15 +95,15 @@ and no per-source environment override.
 | H40 | 24 | 1,120 | 200 |
 | H40 | 30 | 1,120 | 178 |
 
-For example, H40/15 at 900 active tiles selects the 1,040-tile measurement and
-uses 400. H40/15 at 1,120 tiles has no covering measurement and is rejected
-until that tuple is measured. The sim and pack use ONE tile allocator
+For example, H40/15 at 720 or 1,040 active tiles uses its respective measured
+cap of 400. H40/15 at 900 or 1,120 tiles has no exact measurement and is
+rejected until that tuple is measured. The sim and pack use ONE tile allocator
 (`tools/tile_alloc.py`), so the pack's **realized cold == the selected cap
 exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| cap `cold_cap_for_fps` | selected from the measured table above | cfg (auto) | **Per-frame cold cap** selected by mode, fps, and the narrowest measured active-tile coverage. Missing coverage is an error. |
+| cap `cold_cap_for_fps` | selected from the measured table above | cfg (auto) | **Per-frame cold cap** selected only by an exact mode/fps/active-tile match. A missing tuple is an error. |
 | realized cold | at most the mode/fps/active-tile cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
 The H40/15 fps/720-active-tile value of 400 is full-length-qualified with the
@@ -112,8 +111,8 @@ The H40/15 fps/720-active-tile value of 400 is full-length-qualified with the
 being placed at y=47 in the 320x224 raster; the remaining rows are confirmed
 black across every master frame. The packed stream had no ring underrun and
 decoded exactly; the DEBUG recording kept `S=0`, `D=0`, and `R=0`, with at most
-two Main-CPU VBlank waits. The 720-tile result covers requests up to 720 tiles;
-the 1,040-tile measurement below covers requests from 721 through 1,040.
+two Main-CPU VBlank waits. This result applies only to exactly 720 active tiles;
+the separate 1,040-tile measurement below applies only to exactly 1,040.
 
 The H40/30 fps/1,120-active-tile value of 178 is full-length-qualified with the
 2,714-frame Sonic Jam OP stream. The pack had `under=0`, exact reconstruction,
@@ -130,7 +129,7 @@ minimum ready payload, and exact reconstruction. Across the 3,997 timed DEBUG
 HUD groups, `S`, `D`, and `R` stayed zero, Main-CPU VBlank waits were at most
 two, cold-run count was at most 221, and the longest pattern-update interval was
 1,648 ticks (50.63 ms). The lossless recording passed packet, frame, audio, and
-extracted-frame checks. Full 1,120-active-tile H40/15 has no covering
+extracted-frame checks. Full 1,120-active-tile H40/15 has no exact
 qualification and is rejected until it is measured.
 
 ## C. Audio sync throttles
@@ -330,7 +329,7 @@ limits such as ring size, virtual VBV capacity, and the measured cold-cap table
 stay in `tools/av_config.py`; they are deliberately not per-source TOML fields.
 `video.active_tiles` supplies source geometry to that shared selector, not a
 per-source cap override. Profile loading fails before encoding when no measured
-tuple covers the requested mode, fps, and active-tile count.
+tuple exactly matches the requested mode, fps, and active-tile count.
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 
