@@ -86,7 +86,11 @@ Low-resolution grids therefore appear at their true on-screen size.
   swatch+count legend above it (totals only, no unique counts). Static for the
   whole clip.
 - **Audio waveform** (bottom, `WAVE_FRAME`): scrolling envelope of the sim's
-  output audio (the wav muxed into the video). Window is +/-2 seconds with
+  playback-model audio (the WAV muxed into the video). For ADPCM22 this is not
+  the clean extracted source: it is the exact continuous checkpointed IMA
+  encode/decode result after conversion to the RF5C164's 8-bit sign-magnitude
+  samples. The original signed-16 WAV remains separate as the packer input.
+  Window is +/-2 seconds with
   **now = centre** (white line), scrolling left; the past (left half) is drawn
   bright green, the future (right half) dim green, around a zero-amplitude
   centre line. Heading (outside the frame): `Audio` + the audio spec.

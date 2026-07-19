@@ -39,6 +39,14 @@ The encoder and independent reference decoder are in `tools/ima_adpcm.py`.
 the startup prefix plus shifted controls reproduce the source chunk order for
 the complete movie.
 
+The sim analysis and straight sim video use that same shared encode/decode
+path. Their audio waveform and mux therefore contain the reconstructed IMA
+signal after RF5C164 8-bit output conversion, rather than the clean signed-16
+source WAV. The preview WAV is timed at one decoded chunk per source-video
+frame; the physical player still uses the header's RF5C164 frequency delta and
+the actual NTSC playback cadence. This distinction makes codec texture audible
+without pretending that emulator clock behavior is part of the offline model.
+
 ## Full lookup tables in both 1M Word-RAM banks
 
 The decoder uses one 8,800-byte full table image:

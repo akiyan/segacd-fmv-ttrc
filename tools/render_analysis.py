@@ -7,7 +7,7 @@ sim 側(sim.py)や旧 compose(make_base/render_statusline/compose_*.sh)は使わ
 
 入力(env):
   CBRSIM_OUT       sim出力ディレクトリ(preview/raw/catmap/stats.npz/miss_masks.npy/
-                   buffer_remaining.npz/palettes.bin/audio_13k3_u8_mono.wav/report.txt)
+                   buffer_remaining.npz/palettes.bin/audio WAV/report.txt)
   CBRSIM_SRCLABEL  右Sourceパネル見出し(既定 "Source")
   CBRSIM_MODE      画面モード H32/H40 (既定 H32。DMA理論値に使う)
   ANALYSIS_OUT     出力mp4パス (既定 videos/<stem>_analysis.mp4)
@@ -92,6 +92,16 @@ FPS = float(z["fps"]); C = int(z["cells"]); BUDGET = int(z["budget_tiles"])
 NF = len(S)
 if "audio_label" in z:
     AUDIO_STR = str(z["audio_label"])        # sim側の音声形式(13.3kHz PCM / 22.05kHz ADPCM 等)
+if "audio_playback_file" in z:
+    AUDIO_PATH = Path(SIM) / str(z["audio_playback_file"])
+    if not AUDIO_PATH.is_file():
+        raise FileNotFoundError(
+            f"stats.npz playback audio is missing: {AUDIO_PATH}")
+else:
+    # Legacy sim outputs contained one extracted source WAV only.
+    _legacy_audio = sorted(glob.glob(f"{SIM}/audio_*.wav"))
+    AUDIO_PATH = Path(_legacy_audio[0]) if len(_legacy_audio) == 1 else Path(
+        SIM) / "audio_13k3_u8_mono.wav"
 _pv = sorted(glob.glob(f"{SIM}/preview/*.png"))
 _raw = sorted(glob.glob(f"{SIM}/raw/*.png"))
 W, H = Image.open(_pv[0]).size                # タイルグリッド画素(=WxH)
@@ -228,11 +238,7 @@ import wave as _wave  # noqa: E402
 WAVE_WIN_S = 2.0                                          # 前後2s
 WAVE_BW = L.WAVE_FRAME[2] - L.WAVE_FRAME[0] - 2
 try:
-    _audio_wavs = sorted(glob.glob(f"{SIM}/audio_*.wav"))
-    if len(_audio_wavs) != 1:
-        raise FileNotFoundError(
-            f"expected one extracted audio WAV, found {len(_audio_wavs)}")
-    _wf = _wave.open(_audio_wavs[0], "rb")
+    _wf = _wave.open(str(AUDIO_PATH), "rb")
     AUDIO_RATE = _wf.getframerate()
     _audio_width = _wf.getsampwidth()
     _audio_raw = _wf.readframes(_wf.getnframes())
@@ -565,8 +571,7 @@ def render(i):
 
 
 def mux():
-    _a = sorted(glob.glob(f"{SIM}/audio_*.wav"))     # 音声形式によりファイル名が変わる(PCM/ADPCM)
-    audio = _a[0] if _a else f"{SIM}/audio_13k3_u8_mono.wav"
+    audio = str(AUDIO_PATH)
     vcodec = ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr",
               "-cq", CQ, "-b:v", "0"]
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",

@@ -182,7 +182,14 @@ After completion:
   - `catmap/`
   - `misscarry/`
   - `stats.npz`
-  - `audio_13k3_u8_mono.wav` or `audio_22k05_s16_mono.wav`
+  - `audio_13k3_u8_mono.wav`, or for ADPCM22 both the packer input
+    `audio_22k05_s16_mono.wav` and the analysis/straight-video playback model
+    `audio_playback_adpcm22_rf5c.wav`
+
+For ADPCM22, `stats.npz:audio_playback_file` is authoritative for waveform and
+mux selection. It contains the shared packer-reference continuous IMA decode
+after RF5C164 sign-magnitude conversion. Never select the first `audio_*.wav`
+by filename order; that would silently restore the clean source audio.
 
 ### 4. Render the Analysis Video
 

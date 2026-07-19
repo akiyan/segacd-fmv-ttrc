@@ -103,6 +103,7 @@ audible click). See the `R`/`L` HUD readouts below.
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | `audio.kind` | `pcm13` or `adpcm22` | TOML -> sim / pack / player | `pcm13` stores RF5C164 bytes directly. `adpcm22` extracts 22.05 kHz signed 16-bit mono, then stores checkpointed continuous IMA codes in live controls. |
+| sim playback WAV | `stats.npz:audio_playback_file` | sim / analysis | ADPCM22's waveform and mux use the shared packer-reference encode/decode result after RF5C164 8-bit conversion. The separate signed-16 source WAV remains the packer input. |
 | decoded `AUDIO_BYTES` | PCM13: 888 / 555 / 444 at 15 / 24 / 30 fps; ADPCM22: normally 1472 / 920 / 736 samples | sp / pack | Fixed decoded RF5C164 samples per frame, rounded to the effective playback cadence; ADPCM counts are even. The packer evenly retimes the source WAV to this fixed total. |
 | control audio bytes | PCM13: `AUDIO_BYTES`; ADPCM22: `4 + AUDIO_BYTES/2` | pack / sp | ADPCM's four bytes are a signed predictor, step index, and reserved zero. H40/N2 is 372 control bytes for 736 decoded samples. |
 | `audio_fd` | header offset 58 | pack / sp | RF5C164 frequency delta derived from decoded samples per frame times the actual playback cadence. H40/N2 ADPCM uses `0x056C`; deriving it avoids wave-RAM lead drift and repeated re-syncs. |

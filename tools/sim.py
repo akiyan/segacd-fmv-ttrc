@@ -44,6 +44,7 @@ from encode_config import consume_config_arg, profile_identity  # noqa: E402
 # but TOML values always win over an inherited shell environment.
 CONFIG_PROFILE = consume_config_arg(sys.argv)
 import av_config  # noqa: E402
+import ima_adpcm  # noqa: E402
 import stream_schedule  # noqa: E402
 import ttrc_routing  # noqa: E402
 
@@ -99,9 +100,11 @@ AUDIO_KIND = os.environ.get("CBRSIM_AUDIO", "pcm13")
 if AUDIO_KIND == "pcm13":
     AUDIO_FFCODEC = "pcm_u8"
     AUDIO_LABEL = "13.3kHz mono 8bit PCM"; AUDIO_FILE = "audio_13k3_u8_mono.wav"
+    AUDIO_PLAYBACK_FILE = AUDIO_FILE
 elif AUDIO_KIND == "adpcm22":
     AUDIO_FFCODEC = "pcm_s16le"
     AUDIO_LABEL = "22.05kHz mono IMA ADPCM"; AUDIO_FILE = "audio_22k05_s16_mono.wav"
+    AUDIO_PLAYBACK_FILE = "audio_playback_adpcm22_rf5c.wav"
 else:
     raise SystemExit(f"unsupported CBRSIM_AUDIO={AUDIO_KIND!r}; use pcm13 or adpcm22")
 # Integer-VBlank rates use their exact NTSC cadence (N4=14.985, N2=29.97).
@@ -111,6 +114,8 @@ VSYNC_N = av_config.vsync_n_for_fps(FPS)
 PLAYBACK_FPS = av_config.playback_fps_for_content(FPS)
 AUDIO_RATE, AUDIO_PCM_BYTES, AUDIO_CONTROL_BYTES = av_config.audio_frame_layout(
     AUDIO_KIND, FPS)
+AUDIO_PLAYBACK_RATE = (
+    int(round(AUDIO_PCM_BYTES * FPS)) if AUDIO_KIND == "adpcm22" else AUDIO_RATE)
 PATTERN_BYTES = 32              # 4bpp 8x8 パターン
 NAME_BYTES = 2                  # ネームテーブル1エントリ(tile index + palette + priority)
 VRAM_TILES = int(os.environ.get("CBRSIM_VRAM_TILES", "1400"))   # VRAM常駐パターン数(LRU)。
@@ -987,6 +992,39 @@ def main():
     n = len(frames)
     print(f"  {n} frames @ {W}x{H} ({TCOLS}x{TROWS}={C_CELLS} cells)")
 
+    # The source WAV remains the packer's input.  Analysis must instead audition
+    # the exact stream reconstructed by the Sub CPU and quantized for RF5C164.
+    # Give the preview WAV one chunk per source-video frame so its samples remain
+    # aligned with the 30/24/15 fps analysis timeline.
+    if AUDIO_KIND == "adpcm22":
+        import wave
+        source_path = OUT / AUDIO_FILE
+        with wave.open(str(source_path), "rb") as wav:
+            if wav.getnchannels() != 1 or wav.getsampwidth() != 2:
+                raise SystemExit(
+                    f"ADPCM source WAV must be mono s16: {source_path}")
+            if wav.getframerate() != AUDIO_RATE:
+                raise SystemExit(
+                    f"ADPCM source WAV rate is {wav.getframerate()}, "
+                    f"expected {AUDIO_RATE}")
+            raw = wav.readframes(wav.getnframes())
+        source_pcm = np.frombuffer(raw, "<i2").copy()
+        target_samples = n * AUDIO_PCM_BYTES
+        retimed = ima_adpcm.retime_pcm_s16(source_pcm, target_samples)
+        _controls, rf5_chunks = ima_adpcm.encode_decode_chunks(
+            retimed, AUDIO_PCM_BYTES)
+        playback_pcm = ima_adpcm.sign_magnitude_to_pcm16(b"".join(rf5_chunks))
+        playback_path = OUT / AUDIO_PLAYBACK_FILE
+        with wave.open(str(playback_path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(AUDIO_PLAYBACK_RATE)
+            wav.writeframes(playback_pcm.astype("<i2", copy=False).tobytes())
+        print(
+            f"  ADPCM playback model: {len(source_pcm)} -> {len(retimed)} samples, "
+            f"IMA decode + RF5C164 8-bit -> {playback_path.name} "
+            f"@ {AUDIO_PLAYBACK_RATE}Hz")
+
     # PRG先読みパッチ: {frame_idx: set(pattern_key)}。カット到達時にそのセル群を
     # バッファから適用する。パターンもcell->tile対応も事前ロード済みなのでCDバイト0。
     prg_patch = {}
@@ -1719,6 +1757,9 @@ def main():
              target=TARGET_RATE, cd1x=CD_RATE, frame_bytes=FRAME_BYTES, cat_uniq=cat_uniq,
              audio_label=AUDIO_LABEL, audio_frame_bytes=AUDIO_CONTROL_BYTES,
              audio_pcm_bytes=AUDIO_PCM_BYTES,
+             audio_source_file=AUDIO_FILE,
+             audio_playback_file=AUDIO_PLAYBACK_FILE,
+             audio_playback_rate=AUDIO_PLAYBACK_RATE,
              budget_tiles=budget_tiles,
              wait_hist=np.array(wait_hist_rows), nbins=NBINS)
     np.save(OUT / "miss_masks.npy", np.array(stale_rows, np.uint8))   # (n,72) packbits
@@ -1776,6 +1817,8 @@ def main():
                     int(av_config.IMA_CHECKPOINT_BYTES)
                     if AUDIO_KIND == "adpcm22" else 0),
                 "file": AUDIO_FILE,
+                "playback_file": AUDIO_PLAYBACK_FILE,
+                "playback_rate": int(AUDIO_PLAYBACK_RATE),
             },
             "stream": {
                 "target_rate": int(TARGET_RATE), "frame_bytes": int(FRAME_BYTES),

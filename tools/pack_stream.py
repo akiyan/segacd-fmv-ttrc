@@ -410,21 +410,6 @@ def _read_audio_samples(audio_path):
     return np.frombuffer(raw, "<i2").copy()
 
 
-def retime_pcm_s16(samples, target_len):
-    """Stretch mono s16 PCM evenly to the fixed-chunk playback length."""
-    src = np.asarray(samples, dtype=np.int16)
-    if target_len <= 0:
-        return np.empty(0, dtype=np.int16)
-    if not len(src):
-        return np.zeros(target_len, dtype=np.int16)
-    if len(src) == target_len:
-        return src.copy()
-    src_x = np.arange(len(src), dtype=np.float64)
-    dst_x = np.linspace(0.0, float(len(src) - 1), target_len)
-    return np.rint(np.interp(dst_x, src_x, src.astype(np.float64))).clip(
-        -32768, 32767).astype(np.int16)
-
-
 def build_audio_chunks(audio_path, frame_count):
     """Return fixed on-disc chunks and their reconstructed RF5C164 PCM."""
     raw = _read_audio_samples(audio_path)
@@ -448,21 +433,12 @@ def build_audio_chunks(audio_path, frame_count):
         return list(pcm_chunks), pcm_chunks
 
     source_len = len(raw)
-    pcm16 = retime_pcm_s16(raw, target_samples)
+    pcm16 = ima_adpcm.retime_pcm_s16(raw, target_samples)
     if len(pcm16) != source_len:
         print(f"  PCM retime: {source_len} -> {len(pcm16)} samples "
               f"({AUDIO_PCM} samples/frame x {frame_count} frames)")
-    control_chunks = []
-    pcm_chunks = []
-    state = ima_adpcm.State()
-    for frame in range(frame_count):
-        samples = pcm16[frame * AUDIO_PCM:(frame + 1) * AUDIO_PCM]
-        chunk, state = ima_adpcm.encode_chunk(samples, state)
-        decoded, decoded_state = ima_adpcm.decode_chunk(chunk, AUDIO_PCM)
-        if decoded_state != state:
-            raise AssertionError(f"IMA state mismatch after frame {frame}")
-        control_chunks.append(chunk)
-        pcm_chunks.append(ima_adpcm.pcm16_to_sign_magnitude(decoded))
+    control_chunks, pcm_chunks = ima_adpcm.encode_decode_chunks(
+        pcm16, AUDIO_PCM)
     if any(len(chunk) != AUDIO_CONTROL for chunk in control_chunks):
         raise AssertionError("IMA control chunk size drift")
     if any(len(chunk) != AUDIO_PCM for chunk in pcm_chunks):

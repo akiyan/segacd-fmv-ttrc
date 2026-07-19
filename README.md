@@ -47,7 +47,9 @@ Everything else is shaped by Sega CD hardware, not by video theory:
   size is chosen to fit that budget.
 - **RF5C164 audio, interleaved.** PCM13 bytes or checkpointed ADPCM22 controls
   share the same CD stream. The Sub CPU reconstructs ADPCM into the same
-  wave-RAM writer, with a persistent startup lead keeping audio aligned.
+  wave-RAM writer, with a persistent startup lead keeping audio aligned. The
+  analysis and straight sim videos audition the same reconstructed IMA and
+  RF5C164-quantized samples, not the clean extraction used as packer input.
 - **PRG-RAM discipline.** Buffers, queues, and the payload RING live in PRG-RAM regions
   that stay safe during continuous CD reads (see [AGENTS.md](AGENTS.md) hardware notes).
 

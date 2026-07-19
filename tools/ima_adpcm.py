@@ -161,6 +161,54 @@ def decode_chunk(chunk: bytes, sample_count: int) -> tuple[np.ndarray, State]:
         chunk[CHECKPOINT_BYTES:], sample_count, State(predictor, index))
 
 
+def retime_pcm_s16(pcm16, target_len: int) -> np.ndarray:
+    """Stretch mono s16 PCM evenly to an exact fixed-chunk sample count."""
+    samples = np.asarray(pcm16, dtype=np.int16)
+    count = int(target_len)
+    if count <= 0:
+        return np.empty(0, dtype=np.int16)
+    if not len(samples):
+        return np.zeros(count, dtype=np.int16)
+    if len(samples) == count:
+        return samples.copy()
+    src_x = np.arange(len(samples), dtype=np.float64)
+    dst_x = np.linspace(0.0, float(len(samples) - 1), count)
+    return np.rint(np.interp(
+        dst_x, src_x, samples.astype(np.float64))).clip(
+            -32768, 32767).astype(np.int16)
+
+
+def encode_decode_chunks(
+        pcm16, samples_per_chunk: int) -> tuple[list[bytes], list[bytes]]:
+    """Encode continuous IMA chunks and return their exact RF5C164 output.
+
+    The returned pair is ``(checkpointed_control_chunks, signmag_pcm_chunks)``.
+    This is the shared reference path for both disc packing and sim playback
+    audio, so the analysis movie cannot accidentally audition the clean source.
+    """
+    samples = np.asarray(pcm16, dtype=np.int16)
+    chunk_samples = int(samples_per_chunk)
+    if chunk_samples <= 0 or chunk_samples & 1:
+        raise ValueError(
+            f"IMA chunk sample count must be positive and even: {chunk_samples}")
+    if len(samples) % chunk_samples:
+        raise ValueError(
+            f"PCM sample count {len(samples)} is not a multiple of "
+            f"chunk size {chunk_samples}")
+
+    controls: list[bytes] = []
+    reconstructed: list[bytes] = []
+    state = State()
+    for frame, start in enumerate(range(0, len(samples), chunk_samples)):
+        chunk, state = encode_chunk(samples[start:start + chunk_samples], state)
+        decoded, decoded_state = decode_chunk(chunk, chunk_samples)
+        if decoded_state != state:
+            raise AssertionError(f"IMA state mismatch after chunk {frame}")
+        controls.append(chunk)
+        reconstructed.append(pcm16_to_sign_magnitude(decoded))
+    return controls, reconstructed
+
+
 def pcm16_to_sign_magnitude(pcm16) -> bytes:
     """Convert reconstructed s16 PCM to RF5C164 sign-magnitude u8 samples."""
     samples = np.asarray(pcm16, dtype=np.int16).astype(np.int32, copy=False)
@@ -171,6 +219,14 @@ def pcm16_to_sign_magnitude(pcm16) -> bytes:
     negative = np.minimum(-high[~positive], 0x7E)
     out[~positive] = (0x80 | negative).astype(np.uint8)
     return out.tobytes()
+
+
+def sign_magnitude_to_pcm16(data: bytes) -> np.ndarray:
+    """Convert RF5C164 sign-magnitude bytes to linear s16 for WAV playback."""
+    encoded = np.frombuffer(data, dtype=np.uint8).astype(np.int16)
+    magnitude = encoded & 0x7F
+    signed = np.where(encoded & 0x80, -magnitude, magnitude)
+    return (signed << 8).astype(np.int16)
 
 
 def output_lut() -> bytes:
