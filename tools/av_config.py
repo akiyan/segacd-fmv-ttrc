@@ -206,6 +206,9 @@ def audio_frame_layout(kind, fps):
 # At exactly 24fps, Lunar repeated S=2 at 219 and stayed at S=0 at 200. Unlike
 # 30fps's steady two VBLANKs per frame, 24fps alternates between two and three
 # VBLANKs, so keep both H40 limits explicit instead of extrapolating them.
+# H40/30fps full-raster qualification is measured separately because it has
+# only two VBLANKs per frame. Keep the candidate tied to all 1,120 active tiles
+# while the upper boundary is being established with full-length playback.
 # Uncapped is no longer allowed — an uncapped sim shows impossible bursts (Sonic H32
 # 30fps wanted 600-738 cold on the opening frames, far above what the hardware draws)
 # that would collapse live.
@@ -218,6 +221,9 @@ H40_15FPS_COLD_CAP_BY_ACTIVE_TILES = {
     1040: 400,
 }
 H40_24FPS_COLD_CAP = 200
+H40_30FPS_COLD_CAP_BY_ACTIVE_TILES = {
+    1120: 200,
+}
 _CAP_REF_FPS = 15
 _COLD_CAP_MODES = {"H32", "H40", "MODE4"}
 
@@ -239,6 +245,11 @@ def cold_cap_for_fps(fps, mode, active_tiles):
             active_tiles_value, COLD_CAP_15FPS)
     if mode_key == "H40" and fps_value == 24.0:
         return H40_24FPS_COLD_CAP
+    if mode_key == "H40" and fps_value == 30.0:
+        return H40_30FPS_COLD_CAP_BY_ACTIVE_TILES.get(
+            active_tiles_value,
+            int(round(COLD_CAP_15FPS * _CAP_REF_FPS / fps_value)),
+        )
     return int(round(COLD_CAP_15FPS * _CAP_REF_FPS / fps_value))
 
 
