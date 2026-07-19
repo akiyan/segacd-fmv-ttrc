@@ -213,9 +213,10 @@ def audio_frame_layout(kind, fps):
 # Keep the measured exception explicit instead of deriving unmeasured H40 rates
 # from it. MODE4 retains the common reference until it has its own measurement.
 COLD_CAP_15FPS = 350
-H40_15FPS_COLD_CAP = 400
-H40_15FPS_720_ACTIVE_TILES = 720
-H40_15FPS_1040_ACTIVE_COLD_CAP = 400
+H40_15FPS_COLD_CAP_BY_ACTIVE_TILES = {
+    720: 400,
+    1040: 400,
+}
 H40_24FPS_COLD_CAP = 200
 _CAP_REF_FPS = 15
 _COLD_CAP_MODES = {"H32", "H40", "MODE4"}
@@ -233,11 +234,9 @@ def cold_cap_for_fps(fps, mode, active_tiles):
     active_tiles_value = int(active_tiles)
     if active_tiles_value <= 0:
         raise ValueError(f"active tile count must be positive: {active_tiles!r}")
-    if (mode_key == "H40" and fps_value == 15.0
-            and active_tiles_value == H40_15FPS_720_ACTIVE_TILES):
-        return H40_15FPS_COLD_CAP
-    if mode_key == "H40" and fps_value == 15.0 and active_tiles_value == 1040:
-        return H40_15FPS_1040_ACTIVE_COLD_CAP
+    if mode_key == "H40" and fps_value == 15.0:
+        return H40_15FPS_COLD_CAP_BY_ACTIVE_TILES.get(
+            active_tiles_value, COLD_CAP_15FPS)
     if mode_key == "H40" and fps_value == 24.0:
         return H40_24FPS_COLD_CAP
     return int(round(COLD_CAP_15FPS * _CAP_REF_FPS / fps_value))
