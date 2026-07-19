@@ -84,7 +84,7 @@ manual per-source env. The common limits are 15fps→350 / 24fps→219 /
 30fps→175. H40 has two explicit measured exceptions: 400 at 15fps only for
 Machi OP's 720 active tiles after the low-rate ADPCM CDC-pump fix, and 200 at
 exactly 24fps after Lunar measured S=2 at 219 and S=0 at 200. H40/15 with the
-1,040 active tiles currently uses the separate 375 qualification candidate;
+1,040 active tiles currently uses the separate 400 qualification candidate;
 full 1,120 active tiles and other counts stay at 350. These limits are not
 extrapolated to other modes, rates, or active areas. The sim and pack use
 ONE tile allocator (`tools/tile_alloc.py`), so the pack's **realized cold == the cap
@@ -92,7 +92,7 @@ exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40 exceptions: 400 at 15fps/720 active tiles, 375 candidate at 15fps/1,040 active tiles, and 200 at 24fps | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit measured H40 tuple exceptions. Applied by the sim; the pack ships exactly this. |
+| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40 exceptions: 400 at 15fps/720 active tiles, 400 candidate at 15fps/1,040 active tiles, and 200 at 24fps | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit measured H40 tuple exceptions. Applied by the sim; the pack ships exactly this. |
 | `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
 | realized cold | at most the mode/fps/active-tile cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 

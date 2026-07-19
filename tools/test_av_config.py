@@ -82,7 +82,7 @@ class ColdCapTests(unittest.TestCase):
 
     def test_h40_15fps_caps_are_limited_by_active_tiles(self) -> None:
         self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 720), 400)
-        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 1040), 375)
+        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 1040), 400)
         self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 719), 350)
         self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 721), 350)
         self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 1120), 350)
@@ -95,7 +95,7 @@ class ColdCapTests(unittest.TestCase):
         self.assertEqual(
             av_config.cold_realized_ceiling_for_fps(15, "H40", 720), 400)
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(15, "H40", 1040), 375)
+            av_config.cold_realized_ceiling_for_fps(15, "H40", 1040), 400)
         self.assertEqual(
             av_config.cold_realized_ceiling_for_fps(15, "H40", 1120), 350)
         self.assertEqual(
