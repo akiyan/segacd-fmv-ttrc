@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e56 : Raise the H40/15fps cold cap from 350 to 375 after the low-rate
+#        ADPCM decoder gained periodic CDC service. Keep H32, mode4, H40/24,
+#        and H40/30 limits unchanged until they have their own measurements.
 #   p56 : Service the CDC during low-rate ADPCM decode. An N4 decode can run
 #        for about 16 ms, longer than one 13.3 ms CD-sector interval, so the
 #        Sub CPU now polls at most every 512 packed bytes. Specialized 24/30
@@ -404,5 +407,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
-e=55
+e=56
 p=56

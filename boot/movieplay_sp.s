@@ -123,7 +123,7 @@
 .equ ROUTING_TMP, 0x00077000        /* boot中のみ。HEADERから読んだ16KBを未使用APPLYに一時保持 */
 
 /* --- Word-RAM スクラッチ(SPバンク内, 毎フレーム再利用=スワップ影響なし) --- */
-.equ CTRL_SCR,    0x000D0000        /* control block 線形化(<=2246B) */
+.equ CTRL_SCR,    0x000D0000        /* control block linearization (<=4800B) */
 .equ PAD_SCR,     0x000D2000        /* pad セクタ捨て場 */
 .equ ADPCM_TABLE, 0x000D2800        /* owned 1M bank +0x12800: full IMA table, both banks */
 .equ ADPCM_INDICES, ADPCM_TABLE     /* 89*16 u16 new-index*32 = 2848B */

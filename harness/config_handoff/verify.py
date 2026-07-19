@@ -70,7 +70,7 @@ def check_profiles() -> None:
 def check_cold_caps() -> None:
     expected = {
         "H32": {15: 350, 24: 219, 30: 175},
-        "H40": {15: 350, 24: 200, 30: 175},
+        "H40": {15: 375, 24: 200, 30: 175},
         "MODE4": {15: 350, 24: 219, 30: 175},
     }
     for mode, values in expected.items():

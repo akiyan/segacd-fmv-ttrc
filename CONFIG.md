@@ -80,17 +80,16 @@ many can overrun the CDC (a sector slip).
 
 The cap is **auto-derived** from `av_config.cold_cap_for_fps` by display mode and
 fps, and shared by the sim and the pack — no manual per-source env. The common
-limits are 15fps→350 / 24fps→219 / 30fps→175. Full-raster H40 at exactly 24fps
-is the measured exception at 200: Lunar measured S=2 at 219 and S=0 at 200.
-That exception is not extrapolated to 15fps or 30fps because 24fps alternates
-between two and three VBLANKs per frame, while 30fps gets a steady two. The sim
-and pack use
+limits are 15fps→350 / 24fps→219 / 30fps→175. Full-raster H40 has explicit
+cadence-specific limits: 375 at 15fps after the low-rate ADPCM CDC-pump fix,
+and 200 at exactly 24fps after Lunar measured S=2 at 219 and S=0 at 200. These
+limits are not extrapolated to other modes or rates. The sim and pack use
 ONE tile allocator (`tools/tile_alloc.py`), so the pack's **realized cold == the cap
 exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40 24fps only: 200 | cfg (auto) | **Per-frame cold cap** = the 15fps reference scaled by `15/fps`, plus the measured H40/24fps exception. Applied by the sim; the pack ships exactly this. |
+| cap `cold_cap_for_fps` | 350/219/175 at 15/24/30fps; H40: 375 at 15fps and 200 at 24fps | cfg (auto) | **Per-frame cold cap** = the common 15fps reference scaled by `15/fps`, with explicit H40 cadence exceptions. Applied by the sim; the pack ships exactly this. |
 | `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
 | realized cold | at most the mode/fps cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 

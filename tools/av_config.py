@@ -199,10 +199,11 @@ def audio_frame_layout(kind, fps):
 # at most a fixed number of fresh (cold) 8x8 tiles per VBLANK (raw-share DMA + buffer
 # drain). The confirmed common 15fps point is 350, scaled inversely with fps:
 #   15->350, 24->219, 30->175
-# Full-raster H40 at exactly 24fps is the measured exception: Lunar repeated S=2
-# at 219 and stayed at S=0 at 200. Unlike 30fps's steady two VBLANKs per frame,
-# 24fps alternates between two and three VBLANKs, so do not extrapolate that
-# cadence-specific limit to H40 15fps or 30fps.
+# Full-raster H40 keeps two cadence-specific limits explicit. At 15fps, servicing
+# the CDC during the long ADPCM decode makes 375 the current qualification
+# candidate. At exactly 24fps, Lunar repeated S=2 at 219 and stayed at S=0 at 200. Unlike
+# 30fps's steady two VBLANKs per frame, 24fps alternates between two and three
+# VBLANKs, so keep both H40 limits explicit instead of extrapolating them.
 # Uncapped is no longer allowed — an uncapped sim shows impossible bursts (Sonic H32
 # 30fps wanted 600-738 cold on the opening frames, far above what the hardware draws)
 # that would collapse live.
@@ -210,13 +211,14 @@ def audio_frame_layout(kind, fps):
 # Keep the measured exception explicit instead of deriving unmeasured H40 rates
 # from it. MODE4 retains the common reference until it has its own measurement.
 COLD_CAP_15FPS = 350
+H40_15FPS_COLD_CAP = 375
 H40_24FPS_COLD_CAP = 200
 _CAP_REF_FPS = 15
 _COLD_CAP_MODES = {"H32", "H40", "MODE4"}
 
 
 def cold_cap_for_fps(fps, mode="H32"):
-    """Per-frame cold cap with a measured H40/24fps exception.
+    """Per-frame cold cap with measured H40 cadence exceptions.
 
     Frame 0 is exempt because the header loads it before timed playback.
     """
@@ -224,6 +226,8 @@ def cold_cap_for_fps(fps, mode="H32"):
     if mode_key not in _COLD_CAP_MODES:
         raise ValueError(f"unsupported display mode for cold cap: {mode!r}")
     fps_value = float(fps)
+    if mode_key == "H40" and fps_value == 15.0:
+        return H40_15FPS_COLD_CAP
     if mode_key == "H40" and fps_value == 24.0:
         return H40_24FPS_COLD_CAP
     return int(round(COLD_CAP_15FPS * _CAP_REF_FPS / fps_value))

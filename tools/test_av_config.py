@@ -77,12 +77,14 @@ class ColdCapTests(unittest.TestCase):
                 self.assertEqual(av_config.cold_cap_for_fps(24, mode), 219)
                 self.assertEqual(av_config.cold_cap_for_fps(30, mode), 175)
 
-    def test_h40_exception_is_limited_to_exactly_24fps(self) -> None:
-        self.assertEqual(av_config.cold_cap_for_fps(15, "H40"), 350)
+    def test_h40_cadence_exceptions_are_explicit(self) -> None:
+        self.assertEqual(av_config.cold_cap_for_fps(15, "H40"), 375)
         self.assertEqual(av_config.cold_cap_for_fps(24, "H40"), 200)
         self.assertEqual(av_config.cold_cap_for_fps(30, "H40"), 175)
 
-    def test_pack_ceiling_uses_the_same_h40_exception(self) -> None:
+    def test_pack_ceiling_uses_the_same_h40_exceptions(self) -> None:
+        self.assertEqual(
+            av_config.cold_realized_ceiling_for_fps(15, "H40"), 375)
         self.assertEqual(
             av_config.cold_realized_ceiling_for_fps(24, "H40"), 200)
         self.assertEqual(
