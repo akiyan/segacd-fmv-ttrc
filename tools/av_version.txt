@@ -11,9 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
-#   e57 : Raise the H40/15fps cold-cap qualification candidate from 375 to
-#        400. This remains below the two-VBLANK 425-pattern word-budget edge;
-#        all other mode/rate limits stay unchanged.
+#   e57 : Raise the H40/15fps cold cap from 375 to the full-length-qualified
+#        limit of 400. Machi OP kept S/D/R=0, Main VBlank waits <=2, pack
+#        under=0, and exact decoded frames. This remains below the two-VBLANK
+#        425-pattern word-budget edge; all other mode/rate limits stay unchanged.
 #   e56 : Raise the H40/15fps cold cap from 350 to 375 after the low-rate
 #        ADPCM decoder gained periodic CDC service. Keep H32, mode4, H40/24,
 #        and H40/30 limits unchanged until they have their own measurements.

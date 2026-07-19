@@ -271,6 +271,15 @@ while the pre-fix recording ended at `S=3` and held `F0107`, `F0166`, and
 `F0391` during recovery. This qualifies that low-rate path without turning its
 variable BIOS time into spendable Sub-CPU margin.
 
+The same stream then qualified the H40/15 cold cap at 400. The pack reported
+`under=0`, a 43-pattern minimum ready payload, and exact reconstruction of all
+2,293 frames. Across the 2,292 timed DEBUG HUD groups, `S`, `D`, and `R` stayed
+zero; Main-CPU VBlank waits were at most two, cold-run count was at most 131,
+and the longest pattern-update interval was 1,636 ticks (50.26 ms), within the
+66.7 ms 15 fps frame period. The lossless recording also passed packet, frame,
+audio, and extracted-frame checks. This evidence applies to H40/15 only; it
+does not raise H40/24, H40/30, H32, or mode4 limits.
+
 This explains why a static instruction count can look comfortable even when a
 real stream is near its limit: the expensive uncertainty lives in BIOS calls,
 CDC readiness, shared-memory access, and recovery. A successful full recording

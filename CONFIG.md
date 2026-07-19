@@ -93,6 +93,12 @@ exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
 | `CBRSIM_MAX_COLD` | (unset = auto) | sim (env) | Optional override of the auto cap for special cases only; normally leave unset. |
 | realized cold | at most the mode/fps cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
+The H40/15 fps value of 400 is full-length-qualified with the 2,293-frame
+Machi OP stream. The packed stream had no ring underrun and decoded exactly;
+the DEBUG recording kept `S=0`, `D=0`, and `R=0`, with at most two Main-CPU
+VBlank waits. H40/24 remains at its separately measured value of 200; this
+15 fps result is not extrapolated to another cadence or display mode.
+
 ## C. Audio sync throttles
 
 RF5C164 playback is a fixed rate, so playback must trail the write pointer by a lead. If the
