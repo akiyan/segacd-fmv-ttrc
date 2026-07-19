@@ -54,8 +54,9 @@ sets the bit only for rates classified by `uses_fixed_n2_cadence`; 24fps and
 ADPCM. Header offset 54 remains the decoded RF5C164 sample count, while live
 controls store a four-byte checkpoint plus one nibble per sample. Offset 58 is
 repurposed from the obsolete duplicate-skip count to the RF5C164 frequency
-delta. An optional full decoder-table region follows PALTAB and is copied into
-both physical 1M Word-RAM banks at boot.
+delta. A feature-selected full decoder-table region follows PALTAB and is copied
+into both physical 1M Word-RAM banks at boot. ADPCM22 is a supported v9 feature;
+the table region is required whenever its feature bit is set.
 
 ## File layout
 

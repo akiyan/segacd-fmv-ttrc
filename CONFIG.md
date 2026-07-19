@@ -100,6 +100,11 @@ RF5C164 playback is a fixed rate, so playback must trail the write pointer by a 
 lead drifts out of `[SYNC_MIN, SYNC_MAX]`, the writer jumps (a re-sync = an
 audible click). See the `R`/`L` HUD readouts below.
 
+Both `pcm13` and `adpcm22` are supported profile choices. ADPCM22 implementation
+is complete and H40 Sonic is full-length emulator-, automated-check-, and
+listening-qualified; physical hardware and the other cadence/mode combinations
+remain broader compatibility checks.
+
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | `audio.kind` | `pcm13` or `adpcm22` | TOML -> sim / pack / player | `pcm13` stores RF5C164 bytes directly. `adpcm22` extracts 22.05 kHz signed 16-bit mono, then stores checkpointed continuous IMA codes in live controls. |

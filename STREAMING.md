@@ -267,8 +267,9 @@ This explains why a static instruction count can look comfortable even when a
 real stream is near its limit: the expensive uncertainty lives in BIOS calls,
 CDC readiness, shared-memory access, and recovery. A successful full recording
 proves only that the margin was non-negative for that disc and machine run; it
-does not measure the unused Sub cycles. The ADPCM result qualifies one profile;
-it does not turn either arithmetic remainder into spendable time.
+does not measure the unused Sub cycles. The H40 Sonic result is the acceptance
+profile for the completed ADPCM implementation, but it qualifies only that one
+profile and does not turn either arithmetic remainder into spendable time.
 
 ## Allocation guidance for the next feature
 

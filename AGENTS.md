@@ -162,11 +162,13 @@ within Sega CD limits, not fixed presets:
 - Frame rate = the source's native rate.
 - Audio = per-profile `pcm13` or `adpcm22`. **PCM13** (RF5C164, 13.3 kHz mono
   8-bit) is the conservative physical-hardware-qualified path. **ADPCM22** is
-  checkpointed 22.05 kHz mono IMA decoded directly by the Sub CPU through full
-  lookup tables duplicated in both physical 1M Word-RAM banks. H40 Sonic is
-  full-length emulator-qualified; physical hardware and the remaining modes
-  are still pending (see [ADPCM.md](ADPCM.md)). Z80 offload remains shelved
-  because BUSREQ-based feeding contends with Main CPU video work.
+  the completed checkpointed 22.05 kHz mono IMA path, decoded directly by the
+  Sub CPU through full lookup tables duplicated in both physical 1M Word-RAM
+  banks. H40 Sonic is full-length emulator-, automated-check-, and
+  listening-qualified. Physical hardware and the remaining modes are broader
+  compatibility checks rather than implementation blockers (see
+  [ADPCM.md](ADPCM.md)). Z80 offload remains shelved because BUSREQ-based
+  feeding contends with Main CPU video work.
 
 The old `OP.STR` / RLE and `PROBE.BIN` bring-up paths have been removed.
 `make disc CONFIG=configs/PROFILE.toml` builds the `HEADER.DAT` + `BODY.DAT`
@@ -198,8 +200,8 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
 - `<resolution>`: the Sega CD output resolution in pixels, `WxH` (e.g. `256x144`).
-- `<audio-format>`: `pcm` for `pcm13`, or `adpcm22` for the experimental
-  Sub-CPU IMA path (see [ADPCM.md](ADPCM.md)).
+- `<audio-format>`: `pcm` for `pcm13`, or `adpcm22` for the completed Sub-CPU
+  IMA path (see [ADPCM.md](ADPCM.md)).
 
 ## Hardware Facts
 

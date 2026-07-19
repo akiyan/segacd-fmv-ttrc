@@ -1,12 +1,15 @@
 # 22.05 kHz IMA ADPCM playback
 
-**Status: experimental, full-length emulator-qualified.** The current v9 path
-decodes 22.05 kHz mono IMA ADPCM directly on the Sub CPU and writes the
-reconstructed 8-bit samples to the RF5C164. H40 Sonic Jam completed all 2,714
-frames in the lossless Genesis Plus GX recording with no CD slip, stream
-desync, audio re-sync, or blocking CD pump. PCM 13.3 kHz remains the conservative
-physical-hardware-qualified choice until this path is checked on a real console
-and across the other supported rates and display modes.
+**Status: implementation complete; H40 Sonic is full-length emulator- and
+listening-qualified.** The current v9 path decodes 22.05 kHz mono IMA ADPCM
+directly on the Sub CPU and writes the reconstructed 8-bit samples to the
+RF5C164. H40 Sonic Jam completed all 2,714 frames in the lossless Genesis Plus
+GX recording with no CD slip, stream desync, audio re-sync, or blocking CD
+pump. The corrected sim audio uses the same reconstructed IMA/RF5C164 sample
+path, and listening comparison with captured playback was accepted. PCM 13.3
+kHz remains the conservative physical-console-qualified choice until ADPCM22
+is also cross-checked on a real console and across the other supported rates
+and display modes.
 
 The earlier 68000 and Z80 experiments remain useful negative results. The old
 68000 player did not have enough end-to-end streaming margin, and the Z80 path
@@ -102,6 +105,8 @@ cadence, 2,714 frames.
 | Wave-RAM lead | 14,336 through 15,360 bytes |
 | Offline IMA SNR on this source | 25.2 dB |
 | Capture jump gate | 0 candidates at a 12,000 threshold; no clipped samples |
+| Sim model | shared packer-reference IMA decode plus RF5C164 8-bit conversion |
+| Listening | corrected sim reconstruction and captured playback accepted |
 
 The same H40 Sonic PCM and ADPCM captures show no meaningful increase in the
 Main CPU's short-wait HUD distribution: after excluding the V-counter wrap
@@ -110,9 +115,11 @@ for both. This is expected because the CPUs are pipelined: most Sub work runs
 while Main displays the preceding frame. The result proves this clip and build,
 not a universal deadline bound.
 
-The capture was checked programmatically and visually, but it has not been
-human-listened in this environment. Physical Mega-CD playback is also still
-unqualified.
+The capture was checked programmatically and visually. After the sim stopped
+muxing clean source PCM and began reproducing the IMA decode plus RF5C164 8-bit
+conversion, the reconstructed sim audio and captured playback were also checked
+by listening and accepted. This closes the ADPCM22 implementation. Physical
+Mega-CD playback remains a separate portability qualification.
 
 ## Why the retry fits when the old one did not
 
@@ -139,10 +146,9 @@ Sub-direct is simpler and now passes the first full qualification, so Main
 offload remains a fallback only if later physical-hardware or low-rate tests
 show that the Sub path cannot hold its deadline.
 
-## Remaining qualification
+## Broader qualification (not implementation blockers)
 
-- listen to the complete lossless capture for codec texture and boundary clicks;
 - run on physical Mega-CD hardware;
 - record full H32/30, H40/24, and H40/15 profiles;
 - confirm the RF5C164 frequency delta and stable wave-RAM lead for each cadence;
-- keep PCM13 available as the fallback until those checks pass.
+- keep PCM13 available when a physical-console-qualified fallback is required.

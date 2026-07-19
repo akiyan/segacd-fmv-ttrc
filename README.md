@@ -61,12 +61,15 @@ source within what the hardware allows — not fixed project constants:
 - **Display mode / resolution / aspect:** H32, H40, or mode4, with the tile grid
   sized to the per-frame DMA budget and the source's display aspect.
 - **Frame rate:** the source's native rate is kept (15 / 24 / 30 fps, etc.).
-- **Audio format:** **PCM13** (RF5C164), 13.3 kHz mono 8-bit, is the conservative
-  physical-hardware-qualified path. **ADPCM22** is the experimental 22.05 kHz
-  mono IMA path decoded directly by the Sub CPU; the full H40 Sonic recording
-  is clean, while physical hardware and the other cadence profiles remain to
-  be qualified. See [ADPCM.md](ADPCM.md). The separate Z80-offload experiment
-  remains shelved because BUSREQ feeding contends with Main CPU video work.
+- **Audio format:** **PCM13** (RF5C164), 13.3 kHz mono 8-bit, and **ADPCM22**,
+  checkpointed 22.05 kHz mono IMA decoded directly by the Sub CPU, are both
+  supported. ADPCM22 implementation is complete and the full H40 Sonic path is
+  emulator-, automated-check-, and listening-qualified. PCM13 remains the
+  conservative choice when physical-console qualification is required; real
+  hardware and the other ADPCM cadence profiles are broader compatibility
+  checks, not implementation blockers. See [ADPCM.md](ADPCM.md). The separate
+  Z80-offload experiment remains shelved because BUSREQ feeding contends with
+  Main CPU video work.
 
 ## Pipeline
 
@@ -87,16 +90,17 @@ Sega CD-specific compression is the "Encode" step.
    reuse exact / near / coarse / fallback residents where possible, load fresh
    patterns only where needed, spend the CBR budget by priority, and bank/spend
    the virtual VBV budget.
-6. **Pack** video control, tile payload, palettes, and PCM audio into the
-   two-file CD stream: an armed startup `HEADER.DAT` and a continuously read
-   `BODY.DAT`.
+6. **Pack** video control, tile payload, palettes, and the selected PCM13 or
+   ADPCM22 audio into the two-file CD stream: an armed startup `HEADER.DAT` and
+   a continuously read `BODY.DAT`.
 
 ## Analysis
 
 Every encode can be rendered as a 1920x1080 analysis overlay (left = decoded
-Sega CD output, right = source / per-tile category map / metric graphs, bottom =
-bandwidth, tank, and DMA meters). [`ANALYSIS.md`](ANALYSIS.md) is the exact reference for every
-meter and tile category.
+Sega CD output, right = source / per-tile category map / Miss and MissCarry
+state, bottom = bandwidth, tank, DMA, waveform, and stacked timelines).
+[`ANALYSIS.md`](ANALYSIS.md) is the exact reference for every meter and tile
+category.
 
 ## Documentation
 
@@ -111,7 +115,8 @@ meter and tile category.
 - [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
   playback pipeline budgets used when choosing encoder targets.
 - [ADPCM.md](ADPCM.md): the checkpointed 22.05 kHz Sub-CPU ADPCM design,
-  full-table Word-RAM allocation, qualification results, and remaining checks.
+  full-table Word-RAM allocation, acceptance results, and broader qualification
+  scope.
 - [AGENTS.md](AGENTS.md): agent and maintenance guidance, including hardware
   facts, recording rules, output paths, and documentation policy.
 - [CLAUDE.md](CLAUDE.md): compatibility entry point for Claude-based agents; it
