@@ -236,7 +236,8 @@ to resident reuse, while changes beyond Coa reserve tank against future Flbk
 and Miss bursts. The risk trace is independent from optional quality spending.
 Both curves end at zero by definition, so the useful tail naturally drains the
 virtual tank without a separate end-of-movie rule. The physical payload RING
-sector schedule remains a separate exact proof in `stream_schedule.py`.
+sector schedule remains a separate exact proof in `stream_schedule.py`. See
+[`BUEFFERING.md`](BUEFFERING.md) for the complete planning flow and validation.
 
 ## H. Per-source TOML profiles
 

@@ -115,6 +115,8 @@ category.
   targets, and repository layout.
 - [ANALYSIS.md](ANALYSIS.md): the analysis-overlay reference, covering every
   panel, meter, timeline, and tile category drawn by `tools/render_analysis.py`.
+- [BUEFFERING.md](BUEFFERING.md): the virtual-tank whole-movie reserve planner,
+  its separation from the physical payload RING, diagnostics, and validation.
 - [MOVIE.md](MOVIE.md): the exact `HEADER.DAT` / `BODY.DAT` on-disc stream
   format written by `tools/pack_stream.py` and read by the Sega CD player.
 - [STREAMING.md](STREAMING.md): the live player memory maps and conservative
