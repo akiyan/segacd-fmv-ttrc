@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e57 : Raise the H40/15fps cold-cap qualification candidate from 375 to
+#        400. This remains below the two-VBLANK 425-pattern word-budget edge;
+#        all other mode/rate limits stay unchanged.
 #   e56 : Raise the H40/15fps cold cap from 350 to 375 after the low-rate
 #        ADPCM decoder gained periodic CDC service. Keep H32, mode4, H40/24,
 #        and H40/30 limits unchanged until they have their own measurements.
@@ -407,5 +410,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260719
-e=56
+e=57
 p=56

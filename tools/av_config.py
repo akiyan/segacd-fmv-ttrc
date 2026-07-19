@@ -200,7 +200,7 @@ def audio_frame_layout(kind, fps):
 # drain). The confirmed common 15fps point is 350, scaled inversely with fps:
 #   15->350, 24->219, 30->175
 # Full-raster H40 keeps two cadence-specific limits explicit. At 15fps, servicing
-# the CDC during the long ADPCM decode makes 375 the current qualification
+# the CDC during the long ADPCM decode makes 400 the current qualification
 # candidate. At exactly 24fps, Lunar repeated S=2 at 219 and stayed at S=0 at 200. Unlike
 # 30fps's steady two VBLANKs per frame, 24fps alternates between two and three
 # VBLANKs, so keep both H40 limits explicit instead of extrapolating them.
@@ -211,7 +211,7 @@ def audio_frame_layout(kind, fps):
 # Keep the measured exception explicit instead of deriving unmeasured H40 rates
 # from it. MODE4 retains the common reference until it has its own measurement.
 COLD_CAP_15FPS = 350
-H40_15FPS_COLD_CAP = 375
+H40_15FPS_COLD_CAP = 400
 H40_24FPS_COLD_CAP = 200
 _CAP_REF_FPS = 15
 _COLD_CAP_MODES = {"H32", "H40", "MODE4"}

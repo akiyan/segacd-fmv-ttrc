@@ -49,7 +49,7 @@ The live throughput reference is the largest current fixed-cadence raster:
 | Build | specialized DEBUG player, Main code generation and short-run fast path enabled |
 
 Memory that must work for every supported rate uses the larger H40/15 fps
-limits where necessary: 375 cold patterns, 888 PCM bytes, and a 4,800-byte
+limits where necessary: 400 cold patterns, 888 PCM bytes, and a 4,900-byte
 control block. Frame 0 is outside timed streaming and may contain all 1,120
 patterns. Its initial ascending slot allocation makes one 35,844-byte load run.
 
@@ -103,7 +103,7 @@ The table applies identically to both physical banks:
 | `+0x0AF00..+0x0AFFF` | `0xCAF00..0xCAFFF` | 256 B | DEBUG counters and copied header | 156 B in three fixed holes |
 | `+0x0B000..+0x0CFFF` | `0xCB000..0xCCFFF` | 8.00 KiB | maximum 64-entry PALTAB staging | 0 |
 | `+0x0D000..+0x0FFFF` | `0xCD000..0xCFFFF` | **12.00 KiB** | unused after maximum PALTAB | **12.00 KiB** |
-| `+0x10000..+0x11FFF` | `0xD0000..0xD1FFF` | 8.00 KiB | linear control scratch | 3.31 KiB after the all-rate 4,800-byte maximum; 4.53 KiB for H40/N2 |
+| `+0x10000..+0x11FFF` | `0xD0000..0xD1FFF` | 8.00 KiB | linear control scratch | 3.21 KiB after the all-rate 4,900-byte maximum; 4.53 KiB for H40/N2 |
 | `+0x12000..+0x127FF` | `0xD2000..0xD27FF` | 2.00 KiB | one CD-sector stage / pad discard | 0 |
 | `+0x12800..+0x14A5F` | `0xD2800..0xD4A5F` | 8,800 B | full ADPCM next-index, signed-delta, and output tables | 0 |
 | `+0x14A60..+0x14BFF` | `0xD4A60..0xD4BFF` | **416 B** | alignment gap | **416 B** |
@@ -117,10 +117,10 @@ The fixed all-playback total in one bank is:
 2.867 KiB  load tail that survives frame 0
 0.152 KiB  fixed status/header holes
 12.000 KiB post-PALTAB hole
-3.312 KiB  control-scratch tail at the all-rate maximum
+3.215 KiB  control-scratch tail at the all-rate maximum
 27.906 KiB ADPCM-area tail and alignment gap
 -----------
-46.238 KiB safe fixed space per physical bank
+46.140 KiB safe fixed space per physical bank
 ```
 
 The H40/N2 steady-stream total substitutes a 6,300-byte worst load block
@@ -151,14 +151,14 @@ a separate proof that its maximum output ends at `0xFF6580`.
 | `0xFF1D66..0xFF1FFF` | **666 B** | link gap before generated code | **666 B** of static code/BSS growth |
 | `0xFF2000..0xFF657F` | 17.375 KiB | maximum generated bitmap handlers and two H40 blitters | 0 |
 | `0xFF6580..0xFF7FFF` | **6.625 KiB** | proved code-generation tail | **6.625 KiB** |
-| `0xFF8000..0xFF8BB7` | 2.930 KiB | 375 worst-case run records at 8 B each | 0 |
-| `0xFF8BB8..0xFFAFFF` | **9.070 KiB** | all-rate RUN_TABLE tail | **9.070 KiB**; H40/N2 has 10.633 KiB |
+| `0xFF8000..0xFF8C7F` | 3.125 KiB | 400 worst-case run records at 8 B each | 0 |
+| `0xFF8C80..0xFFAFFF` | **8.875 KiB** | all-rate RUN_TABLE tail | **8.875 KiB**; H40/N2 has 10.633 KiB |
 | `0xFFB000..0xFFCFFF` | 8.00 KiB | 64-entry resident PALTAB | 0 |
 | `0xFFD000..0xFFFAFF` | **10.750 KiB** | unused below the stack guard | **10.750 KiB** |
 | `0xFFFB00..0xFFFCFF` | 512 B | conservative stack and interrupt reserve | 0 |
 | `0xFFFD00..0xFFFFFF` | 768 B | above configured stack top / BIOS reserve | 0 |
 
-This yields **27.096 KiB** safe across all supported rates. Restricting the run
+This yields **26.900 KiB** safe across all supported rates. Restricting the run
 table to H40/N2's 175-cold cap raises it to **28.658 KiB**. The 512-byte stack
 reserve is deliberately larger than the approximately 80-byte deepest visible
 player call chain; it leaves room for interrupt/BIOS use that the assembly call
