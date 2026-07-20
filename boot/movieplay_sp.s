@@ -611,9 +611,11 @@ stream_armed:
 	bsr	swap_settle
 	move.w	#STAT_READY, (COMSTAT0).l
 2:
-	bsr	pump_poll_core
 	tst.w	(COMCMD0).l
-	bne	2b
+	beq.s	5f
+	bsr	pump_poll_core
+	bra	2b
+5:
 	move.w	#0, (COMSTAT0).l
 .equ ISO_HOLD_F0, 0			/* ISO診断: frame0 表示直後に静止(frame0単体の健全性確認) */
 .if ISO_HOLD_F0
@@ -641,9 +643,11 @@ stream_loop:
 	bhs	movie_end
 	bsr	process_frame
 3:
-	bsr	pump_poll_core			/* MD待ち中もCDを吸い上げ(溢れ防止) */
 	cmp.w	#CMD_SWAP, (COMCMD0).l
-	bne	3b
+	beq.s	5f				/* deadline first: do not pump once Main is waiting */
+	bsr	pump_poll_core			/* MD待ち中だけCDを吸い上げ(溢れ防止) */
+	bra	3b
+5:
 	/* Main has now finished and is displaying frame 0. Start PCM at this exact
 	   handshake, after the frame-0 build latency has been absorbed. */
 	tst.w	pcm_running
@@ -654,9 +658,11 @@ stream_loop:
 	bsr	swap_settle
 	move.w	#STAT_READY, (COMSTAT0).l
 4:
-	bsr	pump_poll_core
 	tst.w	(COMCMD0).l
-	bne	4b
+	beq.s	5f				/* let Main and the next frame proceed immediately */
+	bsr	pump_poll_core
+	bra	4b
+5:
 	move.w	#0, (COMSTAT0).l
 .if ISO_HOLD_N
 	cmp.w	#ISO_HOLD_N+1, frame_idx	/* frame N 処理済み=表示中 */

@@ -49,7 +49,6 @@ ENV_MAP = {
     ("output", "reuse"): "CBRSIM_REUSE",
     ("output", "emit_decisions"): "CBRSIM_EMIT_DEC",
     ("encoder", "gpu"): "CBRSIM_GPU",
-    ("encoder", "rate_kib"): "CBRSIM_RATE_KIB",
     ("encoder", "vram_tiles"): "CBRSIM_VRAM_TILES",
     ("encoder", "dither"): "CBRSIM_DITHER",
     ("encoder", "segment_palettes"): "CBRSIM_SEGPAL",

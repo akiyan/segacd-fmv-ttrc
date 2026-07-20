@@ -5,7 +5,7 @@ description: Project skill for reading and presenting the "which tile updates fi
 
 # /priorities: Update-Tile Priority Weights and Tuning
 
-The CBR budget is limited every frame, so the encoder cannot always update every
+The per-frame quality allowance is limited, so the encoder cannot always update every
 changed tile. It must choose which changed tiles go first. This skill reads the
 real scoring coefficients and layers from code, presents them in a plain table,
 and helps tune them. Avoid dense terminology; explain in everyday language

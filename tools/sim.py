@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OP動画(061.mp4)を対象にした 純CBR差分圧縮 + タイル重複排除のオフライン検証。
+"""SEGA-CD向け差分圧縮 + タイル重複排除のオフライン検証。
 
 方針(2026-07 更新):
 - 前処理でディザ除去: 元動画は低解像度+ディザなので、`video_geometry.py` が
@@ -17,12 +17,12 @@
   だけ置き、複数セル(パレット違いも可)で使い回す。パターン転送32Bを共有でき、
   各セルはネームテーブル2Bのみ。フレーム内・フレーム跨ぎ両方で効く(VRAMを
   LRUキャッシュとしてモデル化, 容量 VRAM_TILES)。
-- 転送は純CBR: 毎フレーム固定 FRAME_BYTES のみ(実機1M/1Mダブルバッファ相当、
-  フレーム間の帯域繰り越しは無し)。予算内に収まらない低優先セルは前の内容を保持
-  (ゴースト)し、翌フレームへ持ち越す。
+- BODYの物理2/3セクタ配送を先に置き、固定controlを差し引いた残りを更新entry、
+  run descriptor、Prg pattern payloadで共有する。軽いフレームの余りは有限の
+  全編画質予算へ残し、重いフレームへ回す。
 - ゴースト対策(キャリーオーバー型エージング): 予算負けで未更新のまま待たされた
   (dirtyが継続する)タイルほど優先度を累積的に底上げ(1+AGING_ALPHA*wait)し、必ず
-  いつか拾われるようにする(予算超過の強制更新はしない=CBR厳守)。内容が変わって
+  いつか拾われるようにする(この判断では物理由来のfresh予算を超えない)。内容が変わって
   不要になったタイルは changed から外れ wait=0 に戻り自然消滅する。
 - 音声: pcm13 または adpcm22 (TOML指定)。Plane B オーバーレイは無し。
 """
@@ -96,10 +96,11 @@ FPS_STR = os.environ.get("CBRSIM_FPS", "15").strip()
 FPS = (float(FPS_STR.split("/")[0]) / float(FPS_STR.split("/")[1])) if "/" in FPS_STR else float(FPS_STR)
 DURATION = os.environ.get("CBRSIM_DURATION", "152.866667")
 
-CD_RATE = 153_600               # CD 1x, B/s (= 150 KiB/s, 絶対上限)
-TARGET_RATE = int(os.environ.get("CBRSIM_RATE_KIB", "144")) * 1024  # CBRレート(既定144 KiB/s)。env で調整可
-FRAME_BYTES = int(TARGET_RATE / FPS)   # 純CBR: 1フレームで転送できる固定バイト
-                                    # 実機1M/1Mダブルバッファ相当。フレーム間の繰り越し無し。
+# Integer-VBlank rates use their exact NTSC cadence (N4=14.985, N2=29.97).
+# Delivery-paced rates such as 24 fps keep their nominal long-term rate.
+VSYNC_N = av_config.vsync_n_for_fps(FPS)
+PLAYBACK_FPS = av_config.playback_fps_for_content(FPS)
+CD_RATE = av_config.CD_BYTES_PER_SECOND
 # 音声: 既定は22.05kHz mono ADPCM。s16 sourceをcheckpoint付き4bit IMAへ
 # packし、Sub CPUが復号する。pcm13は物理実機資格済みの互換フォールバック。
 AUDIO_KIND = os.environ.get("CBRSIM_AUDIO", "adpcm22")
@@ -113,11 +114,7 @@ elif AUDIO_KIND == "adpcm22":
     AUDIO_PLAYBACK_FILE = "audio_playback_adpcm22_rf5c.wav"
 else:
     raise SystemExit(f"unsupported CBRSIM_AUDIO={AUDIO_KIND!r}; use pcm13 or adpcm22")
-# Integer-VBlank rates use their exact NTSC cadence (N4=14.985, N2=29.97).
-# Delivery-paced rates such as 24 fps keep their nominal long-term rate instead
-# of being rounded to N2. The packer shares these helpers through av_config.
-VSYNC_N = av_config.vsync_n_for_fps(FPS)
-PLAYBACK_FPS = av_config.playback_fps_for_content(FPS)
+# The packer shares these timing values through av_config.
 AUDIO_RATE, AUDIO_PCM_BYTES, AUDIO_CONTROL_BYTES = av_config.audio_frame_layout(
     AUDIO_KIND, FPS)
 AUDIO_PLAYBACK_RATE = (
@@ -225,6 +222,8 @@ UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
 COLD_CAP_QUALIFICATION = av_config.cold_cap_qualification(
     FPS, MODE, ACTIVE_TILES)
 MAX_COLD = COLD_CAP_QUALIFICATION.cap
+MAX_RUN_CONTROL_BYTES = stream_schedule.max_run_control_reservation(
+    MAX_COLD, ACTIVE_TILES)
 # The current boot-preload player path is qualified for dense 24/30 fps
 # streams.  Lower-rate ADPCM still uses its separate periodic CDC service path;
 # keep its quality decisions on Prg-only supply until that combination is
@@ -992,6 +991,18 @@ def main():
     _t = _mark("展開(reuse)" if cached else "抽出(ffmpeg)", _t)
     frames = sorted(master_dir.glob("*.png"))
     n = len(frames)
+    pack_config = dict(CONFIG_PROFILE.section("pack") if CONFIG_PROFILE else {})
+    body_fresh = stream_schedule.body_fresh_byte_supply(
+        n,
+        FPS,
+        cells=C_CELLS,
+        audio_frame_bytes=AUDIO_CONTROL_BYTES,
+        debug=bool(pack_config.get("debug", False)),
+    )
+    body_gross_bytes = np.asarray(body_fresh["gross"], np.int64)
+    body_fixed_control_bytes = np.asarray(
+        body_fresh["fixed_control"], np.int64)
+    body_variable_supply_bytes = np.asarray(body_fresh["variable"], np.int64)
     if ACTIVE_TILES < C_CELLS:
         ever_nonblack = np.zeros((TROWS, TCOLS), dtype=bool)
         for frame_path in frames:
@@ -1210,8 +1221,7 @@ def main():
     # backwards pass then retains only the quality-budget bytes that future
     # bursts cannot replenish from their own frame supply. Its final target is
     # zero, so future protection, recovery, and end draining share one policy.
-    upgrade_supply = np.full(
-        n, max(FRAME_BYTES - AUDIO_CONTROL_BYTES - NAME_BYTES, 0), np.int64)
+    upgrade_supply = body_variable_supply_bytes.copy()
     if PAL_WRITE_BYTES:
         for i in range(1, n):
             if int(frame_seg[i]) != int(frame_seg[i - 1]):
@@ -1367,11 +1377,14 @@ def main():
         order = np.lexsort((center_dist, -score)) if CENTERTIE_ON else np.argsort(-score)
         order = [int(c) for c in order if changed[c] and not near[c]]
 
-        audio_due = AUDIO_CONTROL_BYTES
-
-        # 純CBR: 毎フレーム固定バイトのみ。繰り越し無し。強制更新も無し(CBR厳守)。
-        # パレット差替フレームはCRAM書換分だけ予算を引く(暗転中なので影響は小)。
-        budget = max(FRAME_BYTES - audio_due - NAME_BYTES - (PAL_WRITE_BYTES if pal_swap else 0), 0)
+        # Reserve the exact fixed BODY control first.  The remaining bytes come
+        # from the player's integer CD-sector cadence and fund variable control
+        # entries, run descriptors, and Prg pattern payload together.
+        budget = max(
+            int(body_variable_supply_bytes[i])
+            - (PAL_WRITE_BYTES if pal_swap else 0),
+            0,
+        )
         frame_cd = budget                             # このフレーム自身のCDタイル予算
         # frame0はDAT冒頭の専用ヘッダとしてboot中に時間無制限でVRAMへロードする(=ストリーミング
         # PrgBuf/quality budgetを一切消費しない)。よってframe0は予算無制限で全面フルロードし、
@@ -1380,14 +1393,15 @@ def main():
         if i == 0:
             tile_budget = 1 << 30
         elif QUALITY_BUDGET_ON:
-            tile_budget = upgrade_planner.planned_spend_limit(
+            funded_limit = upgrade_planner.planned_spend_limit(
                 budget_before=quality_budget,
                 frame_supply=frame_cd,
                 reserve_after=int(main_reserve[i]),
                 already_spent=0,
             )
+            tile_budget = max(0, funded_limit - MAX_RUN_CONTROL_BYTES)
         else:
-            tile_budget = frame_cd
+            tile_budget = max(0, frame_cd - MAX_RUN_CONTROL_BYTES)
         frame_patch = (frozenset() if QUALITY_BUDGET_ON
                        else prg_patch.get(i, frozenset()))
 
@@ -1610,21 +1624,30 @@ def main():
         # bytes above this frame's whole-movie reserve target.
         upgraded = 0
         if UPGRADE_ON and QUALITY_BUDGET_ON:
-            upgrade_limit = upgrade_planner.planned_spend_limit(
+            upgrade_funded_limit = upgrade_planner.planned_spend_limit(
                 budget_before=quality_budget,
                 frame_supply=frame_cd,
                 reserve_after=int(upgrade_reserve[i]),
                 already_spent=spent_tiles,
+            )
+            upgrade_limit = max(
+                spent_tiles,
+                upgrade_funded_limit - MAX_RUN_CONTROL_BYTES,
             )
             if spent_tiles < upgrade_limit:
                 def raw_upgrade(c, lim):
                     nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, spent_tiles, upgraded, cold_spent, preload_used
                     key = plain_keys[c]
                     in_vram = alloc.is_resident(key) or key in loaded_keys
+                    # A same-frame Near/Coa/Flbk decision already owns one
+                    # packed update entry.  Upgrading it replaces that entry's
+                    # final key; it does not append a second two-byte entry.
+                    # A carried approximation or Near keep has no entry yet.
+                    entry_cost = 0 if updated[c] else NAME_BYTES
                     preload = (
                         not in_vram and preload_used < frame_preload_budget)
-                    cost = NAME_BYTES if in_vram else (
-                        NAME_BYTES + (0 if preload else PATTERN_BYTES))
+                    cost = entry_cost if in_vram else (
+                        entry_cost + (0 if preload else PATTERN_BYTES))
                     if spent_tiles + cost > lim:
                         return
                     if (not in_vram) and frame_max_cold and cold_spent >= frame_max_cold:
@@ -1644,7 +1667,9 @@ def main():
                             tile_recs += 1; raw_mask[c] = True
                         cache_pattern(key, plain_rgb[c], sig2[c], assign[c], cur_seg)
                         coa_bucket[(int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))].append(key)
-                    name_recs += 1; spent_tiles += cost
+                    if not updated[c]:
+                        name_recs += 1
+                    spent_tiles += cost
                     repoint(c, key, int(assign[c]), plain_rgb[c], i)
                     committed_plain[c] = key; updated[c] = True; upgraded += 1
                 carried = (cell_tier < 9) & ~changed            # 変化せず近似のまま持ち越し(安定Near/Coa等)
@@ -1659,16 +1684,6 @@ def main():
                 for c in sorted((int(x) for x in np.where(cand_mask)[0]),
                                 key=lambda c: (int(sev[c]), -int(approx_carry[c]), -score[c])):
                     raw_upgrade(c, upgrade_limit)
-
-        # 画質予算更新: このフレームの余り(frame_cd-使った分)を残す / 超過分を減らす
-        if QUALITY_BUDGET_ON:
-            if i == 0:
-                quality_budget = QUALITY_BUDGET_BYTES
-            else:
-                quality_budget = min(
-                    QUALITY_BUDGET_BYTES,
-                    max(0, quality_budget + frame_cd - spent_tiles))
-            quality_budget_log.append(quality_budget // PATTERN_BYTES)
 
         # 共有割り当て: このフレームの更新セルを cell順で place(=pack の resolve と同一順・同一コード)。
         # ここで residency/追い出しが確定し、次フレームの cold 判定に反映される。維持(near_keep)セルは
@@ -1706,17 +1721,49 @@ def main():
         # MainのHUD Nと同じlogical run数。p45では1-2 tile runはCPU直書き、長runは
         # VBlank境界で複数DMAに割れるため、物理VDP DMA発行回数とは意図的に異なる。
         dma_runs = pattern_supply.count_source_runs(dma_slots, dma_sources)
+        if dma_runs > cold_spent:
+            raise AssertionError(
+                f"frame {i}: source-aware runs={dma_runs} exceed "
+                f"cold tiles={cold_spent}")
         transfer_tiles_log.append(dma_tiles)
         transfer_runs_log.append(dma_runs)
         supply_sources_log.append(np.asarray(frame_sources, np.uint8))
-        prg_loads_log.append(sum(
-            source == pattern_supply.SOURCE_PRG for source in dma_sources))
+        prg_used = sum(
+            source == pattern_supply.SOURCE_PRG for source in dma_sources)
+        prg_loads_log.append(prg_used)
         wr0_loads_log.append(
             wr_used if i % 2 == 0 else 0)
         wr1_loads_log.append(
             wr_used if i % 2 == 1 else 0)
         main_loads_log.append(main_used)
         ensure_capacity(i)
+
+        # Exact variable BODY work is now known: every update contributes its
+        # two-byte entry, every source-aware run contributes four control bytes,
+        # and only Prg-sourced cold patterns consume BODY payload.  Charge this
+        # after allocation so source splits and slot fragmentation are exact.
+        variable_body_spent = (
+            name_recs * NAME_BYTES
+            + dma_runs * stream_schedule.RUN_DESCRIPTOR_BYTES
+            + prg_used * PATTERN_BYTES)
+        if QUALITY_BUDGET_ON and i > 0:
+            decision_spent = name_recs * NAME_BYTES + prg_used * PATTERN_BYTES
+            if spent_tiles != decision_spent:
+                raise AssertionError(
+                    f"frame {i}: encoder decision spend {spent_tiles}B != "
+                    f"BODY update/payload spend {decision_spent}B")
+            available = quality_budget + frame_cd
+            if variable_body_spent > available:
+                raise SystemExit(
+                    f"frame {i}: exact BODY variable work {variable_body_spent}B "
+                    f"exceeds funded bytes {available}B after fixed control")
+            quality_budget = min(
+                QUALITY_BUDGET_BYTES,
+                available - variable_body_spent)
+        elif QUALITY_BUDGET_ON:
+            quality_budget = QUALITY_BUDGET_BYTES
+        if QUALITY_BUDGET_ON:
+            quality_budget_log.append(quality_budget // PATTERN_BYTES)
 
         # CRAMエミュ: このフレームの全更新を反映した最終表示を、現区間パレットで引き直す。
         # プレビュー/カテゴリマップ/miss繰越は全てこの実表示色(=実機と同じ)で描く。
@@ -1729,7 +1776,9 @@ def main():
         if EMIT_DEC:
             dec_frames.append([(int(c), int(cur_pal[c]), cur_key[c]) for c in np.where(updated)[0]])
 
-        bytes_spent = spent_tiles + audio_due + NAME_BYTES
+        bytes_spent = (
+            0 if i == 0 else
+            int(body_fixed_control_bytes[i]) + variable_body_spent)
         frame_bytes_log.append(bytes_spent)
         tile_records_log.append(tile_recs)
         name_records_log.append(name_recs)
@@ -1783,8 +1832,10 @@ def main():
         # MissCarryバー用: stale タイルの繰越年齢(=wait+1)分布
         ages = np.clip(wait[stale] + 1, 1, NBINS)
         wait_hist_rows.append(np.bincount(ages, minlength=NBINS + 1)[1:NBINS + 1])
-        # F = 転送速度から決まる最低保証更新数(全タイル新規=34B想定で予算を割る)
-        f_fixed = budget // (PATTERN_BYTES + NAME_BYTES)
+        # F = fresh supplyから最大run制御量を仮予約した後の最低保証更新数。
+        # 実際のrun数確定後は上のexact chargeで未使用予約を即座にquality budgetへ戻す。
+        f_fixed = max(0, budget - MAX_RUN_CONTROL_BYTES) // (
+            PATTERN_BYTES + NAME_BYTES)
         stat_rows.append((
             i, f_fixed, want, upd, miss, C_CELLS - want, dedup_saved, tile_recs, carry, age_max,
             want / C_CELLS, int(near_eff.sum()), coa_hits, flbk_hits, prg_hits,
@@ -1844,12 +1895,15 @@ def main():
     l3h = np.array(l3_hits_log, np.float64)            # L3(PRG-RAM)ヒット
     prh = np.array(prg_hits_log, np.float64)           # PRG先読みヒット
     stats = np.array(stat_rows, np.float64)
+    prg_loads = np.asarray(prg_loads_log, np.int64)
+    wr0_loads = np.asarray(wr0_loads_log, np.int64)
+    wr1_loads = np.asarray(wr1_loads_log, np.int64)
+    main_loads = np.asarray(main_loads_log, np.int64)
 
     # The encoder's whole-movie budget above is a quality-allocation model, not the
     # physical PRG-RAM PrgBuf. Re-run the packer's exact sector schedule
     # from the frozen update/run counts so the analysis curve shows hardware
     # occupancy, including prebuffering and final-sector padding.
-    pack_config = dict(CONFIG_PROFILE.section("pack") if CONFIG_PROFILE else {})
     control_lengths = stream_schedule.control_block_lengths(
         stats[:, 3].astype(np.int64),
         np.asarray(transfer_runs_log, np.int64),
@@ -1857,6 +1911,19 @@ def main():
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
         debug=bool(pack_config.get("debug", False)),
     )
+    exact_body_work = stream_schedule.body_funded_work_bytes(
+        prg_loads,
+        stats[:, 3].astype(np.int64),
+        np.asarray(transfer_runs_log, np.int64),
+        cells=C_CELLS,
+        audio_frame_bytes=AUDIO_CONTROL_BYTES,
+        debug=bool(pack_config.get("debug", False)),
+    )
+    if not np.array_equal(fb.astype(np.int64), exact_body_work):
+        bad = int(np.flatnonzero(fb.astype(np.int64) != exact_body_work)[0])
+        raise AssertionError(
+            f"frame {bad}: encoder BODY accounting {int(fb[bad])}B != "
+            f"exact useful demand {int(exact_body_work[bad])}B")
     try:
         physical_schedule = stream_schedule.schedule_payload_ring(
             np.asarray(prg_loads_log, np.int64),
@@ -1880,10 +1947,6 @@ def main():
     prg_remaining = np.asarray(
         physical_schedule["ring_occupancy"], np.int64)
     quality_budget_remaining = np.asarray(quality_budget_log, np.int64)
-    prg_loads = np.asarray(prg_loads_log, np.int64)
-    wr0_loads = np.asarray(wr0_loads_log, np.int64)
-    wr1_loads = np.asarray(wr1_loads_log, np.int64)
-    main_loads = np.asarray(main_loads_log, np.int64)
 
     def preload_remaining(loads):
         total = int(loads.sum())
@@ -1906,7 +1969,13 @@ def main():
 
     report = "\n".join([
         f"resolution={W}x{H} cells/frame={C_CELLS} active_tiles={ACTIVE_TILES} fps={FPS}",
-        f"cbr_frame_bytes={FRAME_BYTES} (純CBR, 繰り越し無し)",
+        f"body_gross_bytes_per_frame={body_gross_bytes[1:].mean():.1f} "
+        f"(exact sectors {sorted(set(int(x // stream_schedule.SECTOR_BYTES) for x in body_gross_bytes[1:]))})",
+        f"body_fixed_control_bytes_per_frame={body_fixed_control_bytes[1:].mean():.1f}",
+        f"body_variable_supply_bytes_per_frame={body_variable_supply_bytes[1:].mean():.1f} "
+        f"(updates + runs + Prg payload)",
+        f"temporary_run_control_reservation={MAX_RUN_CONTROL_BYTES}B max; "
+        f"unused bytes refunded after exact {stream_schedule.RUN_DESCRIPTOR_BYTES}B/run charge",
         f"avg_codec_work_bytes_per_frame={fb.mean():.1f}",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
         f"avg_PrgBuf_loads_per_frame={prg_loads.mean():.1f}",
@@ -1953,7 +2022,11 @@ def main():
                          len(guniq["flbk"])], np.int64)
     np.savez(OUT / "stats.npz", stats=stats, cols=cols, fps=FPS, cells=C_CELLS,
              active_tiles=ACTIVE_TILES, max_cold=MAX_COLD,
-             target=TARGET_RATE, cd1x=CD_RATE, frame_bytes=FRAME_BYTES, cat_uniq=cat_uniq,
+             cd1x=CD_RATE,
+             body_gross_bytes=body_gross_bytes,
+             body_fixed_control_bytes=body_fixed_control_bytes,
+             body_variable_supply_bytes=body_variable_supply_bytes,
+             cat_uniq=cat_uniq,
              audio_label=AUDIO_LABEL, audio_frame_bytes=AUDIO_CONTROL_BYTES,
              audio_pcm_bytes=AUDIO_PCM_BYTES,
              audio_source_file=AUDIO_FILE,
@@ -2005,6 +2078,9 @@ def main():
             body_useful_control_bytes=body_control_bytes,
             body_pad_bytes=body_pad_bytes,
             body_physical_bytes=body_physical_bytes,
+            body_gross_bytes=body_gross_bytes,
+            body_fixed_control_bytes=body_fixed_control_bytes,
+            body_variable_supply_bytes=body_variable_supply_bytes,
         )
     print(f"wrote {main_dir}, {catmap_dir}, {misscarry_dir}; stats.npz + miss_masks.npy saved")
 
@@ -2047,7 +2123,10 @@ def main():
                 "playback_rate": int(AUDIO_PLAYBACK_RATE),
             },
             "stream": {
-                "target_rate": int(TARGET_RATE), "frame_bytes": int(FRAME_BYTES),
+                "cd_rate_bps": int(CD_RATE),
+                "body_gross_bytes": body_gross_bytes,
+                "body_fixed_control_bytes": body_fixed_control_bytes,
+                "body_variable_supply_bytes": body_variable_supply_bytes,
             },
             "hardware": {
                 "vram_tiles": int(VRAM_TILES),
@@ -2114,7 +2193,10 @@ def main():
             },
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]
-            "frame_bytes": int(FRAME_BYTES), "audio_rate": int(AUDIO_RATE),
+            "body_gross_bytes": body_gross_bytes,
+            "body_fixed_control_bytes": body_fixed_control_bytes,
+            "body_variable_supply_bytes": body_variable_supply_bytes,
+            "audio_rate": int(AUDIO_RATE),
             "audio_frame_bytes": int(AUDIO_CONTROL_BYTES),
             "audio_pcm_bytes": int(AUDIO_PCM_BYTES), "fps": float(FPS),
             "vram_tiles": int(VRAM_TILES),

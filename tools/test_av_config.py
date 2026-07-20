@@ -20,6 +20,11 @@ class RingGeometryTests(unittest.TestCase):
 
 
 class PlaybackTimingTests(unittest.TestCase):
+    def test_cd_1x_physical_constants(self) -> None:
+        self.assertEqual(av_config.CD_SECTOR_BYTES, 2048)
+        self.assertEqual(av_config.CD_SECTORS_PER_SECOND, 75)
+        self.assertEqual(av_config.CD_BYTES_PER_SECOND, 153_600)
+
     def test_ntsc_integer_vblank_rates_keep_existing_chunks(self) -> None:
         self.assertEqual(av_config.vsync_n_for_fps(15), 4)
         self.assertAlmostEqual(av_config.playback_fps_for_content(15), 15_000 / 1001)

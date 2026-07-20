@@ -188,6 +188,7 @@ continuously.
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | pump_poll frequency | every 64 entries at <=20 fps; one end poll for a non-empty 24-30 fps descriptor frame | sp `expand_frame` | Runtime-selected cadence. A high-fps block with at most 1024 updates consumes packed cold-run descriptors directly and preserves the old end-of-frame poll. Larger H40 blocks and <=20fps streams retain the entry walker. Frame 0 has no active `BODY.DAT` read. |
+| `CMD_SWAP` priority | handshake before opportunistic pump | sp `stream_loop` | While Main is genuinely idle, Sub keeps draining ready sectors. Once Main has requested a bank swap, or has already cleared the completed request, Sub services that handshake before another optional sector pump. This prevents future-data work from consuming the current frame's fixed-N2 deadline. |
 | ring-full skip | occ >= 424 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
 | `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. With `FEATURE_FIXED_N2`, 400 frames receive exactly 1001 sectors: 199 two-sector and 201 three-sector allowances. Feature-clear 24fps and 15fps retain the delivery-paced 75/fps schedule (3.125 and 5 sectors/frame). In v6+ each `BODY.DAT` slot is control / future payload / pad; v7+ packs the control and total counts into one routing byte. |
@@ -207,13 +208,14 @@ continuously.
 | `MAIN_CODEGEN_BASE..LIMIT` | 17.5 KB (`0xFF2000..0xFF65FF`) | ip | Reserved for Main-CPU code generated once after header setup. The H40 maximum currently ends at `0xFF6580`; `MainBuf` begins at `0xFF6600`, leaving a 128-byte guard. |
 | `RUN_TABLE` | 1536 records by address range; current cold cap is much lower | ip | `(dst, len, src)` table of contiguous cold-slot runs. Each record is counted by H40 HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. |
 
-## F. CBR / transfer rate
+## F. Physical CD delivery and encoder allowance
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| `CD_RATE` | 153600 B/s | sim | CD 1x — the absolute delivery ceiling. |
-| `TARGET_RATE` (`encoder.rate_kib`) | 144 KiB/s | TOML -> sim | The CBR target rate. |
-| `FRAME_BYTES` | `TARGET_RATE / FPS` (~10 KB) | sim | Fixed per-frame CBR byte budget. |
+| `CD_BYTES_PER_SECOND` | 153600 B/s | cfg / sim / pack | SEGA-CD 1x physical delivery ceiling. It is a hardware constant, not a profile setting. |
+| BODY gross supply | exact `rate_deltas * 2048` | sim / pack | Physical BODY allowance follows the player's integer sector cadence (for fixed-N2, the repeating 2/3-sector sequence), not an averaged bytes-per-frame setting. Frame 0 has no BODY allowance. |
+| fixed BODY control | control header + bitmap + audio + optional DEBUG block | sim / pack | Reserved before any image decision. The remaining bytes fund update entries, run descriptors, and Prg pattern payload together. |
+| temporary run-control reservation | at most `cold cap * 4` bytes | sim | Run fragmentation is known only after tile/source allocation. The decision pass temporarily protects the worst case of one four-byte descriptor per cold tile, then charges the exact run count and immediately returns every unused byte to the whole-movie quality budget. This is not a permanent bandwidth reduction. |
 | `SECTOR` / `PAT` / `PAT_PER_SEC` | 2048 / 32 / 64 | pack | Sector = 2 KB, one tile pattern = 32 B, so 64 tiles per sector. |
 
 ## G. Encoder quality knobs
@@ -355,7 +357,7 @@ profile-specific screen.
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when it reduces that count, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel and adds bars when the displayed aspects differ. `fit="crop"` is an explicit object-fit-cover conversion: it fills the complete output raster while preserving displayed aspect, so it may discard active pixels at the outer source edges. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
 | `[audio]` | `kind` | Write `adpcm22` for the default 22.05 kHz Sub-CPU IMA path. Use `pcm13` for the physical-console-qualified 13.3 kHz fallback. The strict profile keeps this choice explicit. |
 | `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. Normal hardware work sets `emit_decisions=true`. |
-| `[encoder]` | `gpu`, `rate_kib`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `coa` | Common codec controls. GPU is the default; CPU fallback remains automatic. |
+| `[encoder]` | `gpu`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `coa` | Common codec controls. GPU is the default; CPU fallback remains automatic. BODY supply comes from the exact CD-1x sector cadence after reserving control data and is not configurable per source. |
 | `[palette]` | `algorithm`, sampling/validation keys, MOSAIC-GM seam keys | Palette-selection algorithm and its training controls. |
 | `[pack]` | `debug`, `fill`, `startup_audio_frames` | Disc-generation choices frozen with the encode. `debug=true` is the normal recording build. `fill=true` replaces CD-1x padding with useful future payload where proven safe. Output paths are derived from the TOML filename. |
 

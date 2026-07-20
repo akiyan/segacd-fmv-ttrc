@@ -220,6 +220,14 @@ sequenceDiagram
     Note over M,S: If Sub is not ready, Main busy-waits here and consumes the apparent local remainder
 ```
 
+The Sub wait loops check an arrived or cleared `CMD_SWAP` before doing another
+opportunistic CD pump. Pumping still continues whenever Main has not reached
+the handshake, but future-sector work cannot delay a bank handoff that is
+already on the current frame's fixed-N2 deadline. A control-first Bad Apple
+p61 recording reproduced three one-VBlank misses with the old pump-first
+ordering; p62 kept every one of the 6,575 timed transitions at exactly two
+VBlanks with `S`, `D`, `R`, and `C` all zero.
+
 ### Main cycle basis
 
 The generated bitmap and name-table model in

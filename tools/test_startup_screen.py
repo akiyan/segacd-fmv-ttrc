@@ -27,7 +27,7 @@ def profile() -> EncodeProfile:
                       "master_denoise": False},
             "audio": {"kind": "adpcm22"},
             "output": {"directory": "videos/test/tmp", "emit_decisions": True},
-            "encoder": {"rate_kib": 144, "vram_tiles": 1400, "dither": True,
+            "encoder": {"vram_tiles": 1400, "dither": True,
                         "segment_palettes": True, "near": True, "coa": True},
             "palette": {"algorithm": "mosaic-gm"},
             "pack": {"debug": True},
@@ -53,6 +53,7 @@ class StartupScreenTests(unittest.TestCase):
                             for _, _, _, text in lines))
         self.assertTrue(any(text == "[" + "-" * 30 + "]"
                             for _, _, _, text in lines))
+        self.assertFalse(any("KiB/s" in text for _, _, _, text in lines))
         for row, col, _palette, text in lines:
             self.assertLess(row, 28)
             self.assertLessEqual(col + len(text), 32)

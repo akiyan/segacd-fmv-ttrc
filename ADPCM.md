@@ -185,17 +185,20 @@ recording with stable `S`, `D`, `R`, `L`, `C`, `W`, and `A`.
 The current v10 four-supply path was qualified with 6,576 Bad Apple frames at
 320x224 H40, 1,120 active tiles, 30 fps, cold cap 178, and ADPCM22. The packer
 matched every frozen pattern source and run, the independent replay matched
-every reconstructed VRAM cell, PrgBuf stayed at or above 19 ready patterns,
-and the physical schedule had no under-run.
+every reconstructed VRAM cell, PrgBuf stayed at or above 37 ready patterns,
+and the exact control-first physical schedule had no under-run. Useful
+`BODY.DAT` delivery averaged 137,485 B/s over the actual CD read time.
 
 Across all 6,575 timed DEBUG groups, `S`, `D`, `R`, and `C` stayed zero. Main
-VBlank wait `M` stayed at most one, Main transfer time `U` stayed at most 549
-stopwatch ticks, run count `N` stayed at most 69, and ADPCM decode `A` stayed
-between 62 and 66 units. The same Replay produced identical 14,801 video-frame
-hashes, 10,893,312 decoded stereo PCM sample frames, packet timing, and stream
-metadata in realtime, offline, and repeated-offline recordings. This proves
-deterministic capture equivalence and stream integrity; no new listening claim
-was made.
+VBlank wait `M` stayed at most one, Main transfer time `U` stayed at most 546
+stopwatch ticks, run count `N` stayed at most 68, and ADPCM decode `A` stayed
+between 62 and 66 units. The first p61 control-first recording reproducibly
+made three frame handoffs one VBlank late: an already-pending `CMD_SWAP` was
+checked only after one more opportunistic sector pump. Player p62 checks the
+handshake first while retaining continuous pumping during genuine Main wait
+time. The replacement lossless recording kept all 6,575 first-appearance
+deltas at exactly two VBlanks in both the complete HUD aggregation and the
+independent F-only verifier. No new listening claim was made.
 
 ## Main-CPU fallback
 

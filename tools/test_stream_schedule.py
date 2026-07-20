@@ -25,6 +25,32 @@ class ControlLengthTests(unittest.TestCase):
             [4], [2], cells=576, audio_frame_bytes=444, debug=True)
         self.assertEqual(int(debug[0] - normal[0]), pack.DBG_LEN)
 
+    def test_body_supply_reserves_fixed_control_before_variable_work(self) -> None:
+        supply = schedule.body_fresh_byte_supply(
+            5, 30,
+            cells=1120,
+            audio_frame_bytes=736,
+            debug=True,
+        )
+        self.assertEqual(supply["gross"].tolist(), [0, 4096, 6144, 4096, 6144])
+        self.assertEqual(supply["fixed_control"].tolist(), [0, 908, 908, 908, 908])
+        self.assertEqual(supply["variable"].tolist(), [0, 3188, 5236, 3188, 5236])
+
+    def test_funded_work_includes_all_control_and_prg_patterns(self) -> None:
+        useful = schedule.body_funded_work_bytes(
+            [0, 10], [0, 4], [0, 2],
+            cells=1120,
+            audio_frame_bytes=736,
+            debug=True,
+        )
+        self.assertEqual(useful.tolist(), [0, 1244])
+
+    def test_run_control_reservation_uses_cold_cap_or_active_tiles(self) -> None:
+        self.assertEqual(schedule.max_run_control_reservation(178, 1120), 712)
+        self.assertEqual(schedule.max_run_control_reservation(0, 1120), 4480)
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            schedule.max_run_control_reservation(-1, 1120)
+
 
 class BodyDeliveryRateTests(unittest.TestCase):
     def test_rate_uses_each_slots_physical_cd_time(self) -> None:

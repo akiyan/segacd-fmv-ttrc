@@ -52,7 +52,12 @@ Other fixed defaults:
 - PrgBuf and offline quality-budget ceilings come from `tools/av_config.py`.
   WordBuf0, WordBuf1, and MainBuf capacities come from
   `tools/pattern_supply.py`; none are normal per-source overrides.
-- Rate = 144 KiB/s by default.
+- BODY supply follows SEGA-CD 1x's exact integer sector cadence. Fixed control
+  data is reserved first; update entries, run descriptors, and Prg pattern
+  payload share the remainder. Because run fragmentation is known only after
+  allocation, the decision pass temporarily protects the worst-case run table
+  bytes and refunds the unused part immediately after the exact run count is
+  known. It is not a per-source bitrate setting or a permanent rate reduction.
 - GPU encoding is on by default. CPU is the fallback.
 - Start sim/render with the locked GPU environment. Do not fall back to a
   system Python or an older venv:

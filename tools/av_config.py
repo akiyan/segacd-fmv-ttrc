@@ -69,6 +69,13 @@ assert PALTAB_MAX_SEG <= 160, "PALTAB staging (Word-RAM O_PALTAB) holds 160 segm
 assert PALTAB_MAX_SEG <= 255, "pal byte = seg+1 addresses at most 255 segments"
 
 # --- Content timing shared by sim and pack ---
+# SEGA-CD 1x is the codec's physical delivery source.  The encoder's fresh
+# per-frame quality allowance is derived from these constants; it is not a
+# profile bitrate setting.
+CD_SECTOR_BYTES = 2048
+CD_SECTORS_PER_SECOND = 75
+CD_BYTES_PER_SECOND = CD_SECTOR_BYTES * CD_SECTORS_PER_SECOND
+
 # The player is ultimately synchronized by the CD-1x rate-matched BODY stream.
 # Content close to an integer NTSC VBlank divisor (15/30/60 fps) settles on
 # that exact display cadence. Other rates such as 24 fps remain delivery-paced

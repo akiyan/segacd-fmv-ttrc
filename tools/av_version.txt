@@ -11,6 +11,16 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p62 : Prioritize an already-arrived or already-cleared Main CMD_SWAP before
+#        opportunistic CD pumping on the Sub CPU. This removes a deterministic
+#        extra sector pump from the frame handoff deadline while preserving
+#        continuous pumping during genuine Main wait time.
+#   p61 : Remove the encoder allowance from the boot preload screen. It is not
+#        a stream bitrate or an output specification.
+#   e69 : Derive encoder supply from the exact SEGA-CD 1x BODY sector cadence.
+#        Reserve fixed control before charging update entries, run descriptors,
+#        and Prg pattern payload. Retire the per-profile encoder-rate setting
+#        and its legacy environment override.
 #   p60 : Frame-pace the boot preload monitor instead of polling the gate array
 #        without a bound. Show Sub-CPU acknowledgement, exact BADx startup
 #        failures, and the live PrgBuf count/bar reliably before playback.
@@ -471,5 +481,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260720
-e=68
-p=60
+e=69
+p=62

@@ -105,8 +105,7 @@ def screen_lines(profile: encode_config.EncodeProfile,
         (5, 1, 0, f"Active    {active_tiles}/{width * height // 64} tiles"),
         (6, 1, 0, f"Timing    {source['fps']}fps {_duration(source['duration'])[:5]} "
                     f"{constants.frames}fr"),
-        (7, 1, 0, f"Codec     TTRC e{version.split('.E')[1].split('.P')[0]} "
-                    f"{encoder.get('rate_kib', 0)} KiB/s"),
+        (7, 1, 0, f"Codec     TTRC e{version.split('.E')[1].split('.P')[0]}"),
         (8, 1, 0, f"Audio     {audio_label}"),
         (9, 1, 0, f"Palette   {str(palette['algorithm']).lower()} {constants.nseg} seg"),
         (10, 1, 0, f"Filter    {fit} / {video.get('resize_filter', 'lanczos')} / "

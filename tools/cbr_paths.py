@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared default paths for CBR sim outputs and derived video artifacts."""
+"""Shared default paths for codec sim outputs and derived video artifacts."""
 import os
 import re
 from pathlib import Path

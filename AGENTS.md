@@ -93,7 +93,7 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 - **Description structure** (in both languages, in this order):
   1. Overview — one or two lines on what the video is.
   2. Output and source specs — the SEGA-CD output (mode, grid WxH, tile count,
-     fps, audio, CBR rate, Prg/Wr0/Wr1/Main capacities) and the Source
+     fps, audio, Prg/Wr0/Wr1/Main capacities) and the Source
      (resolution, fps, audio).
   3. How to read the analysis layout — what each panel, meter, and timeline
      shows and how to interpret it (left = SEGA-CD sim output; right = Source /
@@ -231,6 +231,10 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
   it. Prefer safe high PRG areas for routing and queues.
 - Long CDC drain gaps can silently drop sectors. Streaming code must keep
   pumping while Main CPU work is happening.
+- In Sub-CPU wait loops, service an already-arrived or already-cleared
+  `CMD_SWAP` before another opportunistic sector pump. Continue pumping while
+  Main is genuinely idle; once the handshake is pending, future-data work must
+  not consume the current fixed-cadence display deadline.
 - `total_len` fields in apply/control blocks must stay even.
 
 ### VDP DMA rules (measured)

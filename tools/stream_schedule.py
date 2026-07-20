@@ -13,12 +13,13 @@ import numpy as np
 import av_config
 
 
-SECTOR_BYTES = 2048
-CD_SECTORS_PER_SECOND = 75
-CD_BYTES_PER_SECOND = SECTOR_BYTES * CD_SECTORS_PER_SECOND
+SECTOR_BYTES = av_config.CD_SECTOR_BYTES
+CD_SECTORS_PER_SECOND = av_config.CD_SECTORS_PER_SECOND
+CD_BYTES_PER_SECOND = av_config.CD_BYTES_PER_SECOND
 PATTERN_BYTES = 32
 PATTERNS_PER_SECTOR = SECTOR_BYTES // PATTERN_BYTES
 DEBUG_BLOCK_BYTES = 22
+RUN_DESCRIPTOR_BYTES = 4
 STREAM_SCHEDULE_SCHEMA_VERSION = 2
 
 
@@ -82,7 +83,89 @@ def control_block_lengths(
     )
     pre_suffix += pre_suffix & 1
     # total_len word + aligned body + n_runs word + four bytes per run.
-    return (2 + pre_suffix + 2 + n_runs * 4).astype(np.int64)
+    return (2 + pre_suffix + 2 + n_runs * RUN_DESCRIPTOR_BYTES).astype(np.int64)
+
+
+def body_fresh_byte_supply(
+        frame_count, fps, *, cells, audio_frame_bytes, debug=False,
+        debug_bytes=DEBUG_BLOCK_BYTES):
+    """Return BODY bytes left after reserving fixed control data first.
+
+    The gross allowance follows the player's exact integer sector cadence, not
+    an averaged bytes-per-frame rate.  Variable control bytes (two bytes per
+    update and four bytes per run) and pattern payload are charged by the
+    encoder from ``variable``.  Frame 0 lives outside BODY and is all zero.
+    """
+    count = int(frame_count)
+    if count < 0:
+        raise ValueError("frame_count must not be negative")
+    gross = rate_deltas(count, fps) * SECTOR_BYTES
+    zeros = np.zeros(count, np.int64)
+    fixed = control_block_lengths(
+        zeros, zeros,
+        cells=cells,
+        audio_frame_bytes=audio_frame_bytes,
+        debug=debug,
+        debug_bytes=debug_bytes,
+    )
+    if count:
+        fixed[0] = 0
+    variable = gross - fixed
+    if np.any(variable < 0):
+        frame = int(np.flatnonzero(variable < 0)[0])
+        raise ScheduleError(
+            f"BODY fixed control exceeds the CD-1x allowance at frame {frame}: "
+            f"control={int(fixed[frame])}B gross={int(gross[frame])}B")
+    return {
+        "gross": gross,
+        "fixed_control": fixed,
+        "variable": variable,
+    }
+
+
+def max_run_control_reservation(max_cold, active_tiles):
+    """Return the temporary worst-case run-descriptor reservation.
+
+    A source-aware run always contains at least one cold tile, so its count
+    cannot exceed the per-frame cold cap.  A zero cap means uncapped and falls
+    back to the active cell count.  The encoder refunds the difference between
+    this reservation and the exact run count as soon as allocation finishes.
+    """
+    cold = int(max_cold)
+    active = int(active_tiles)
+    if cold < 0 or active < 0:
+        raise ValueError("max_cold and active_tiles must be non-negative")
+    return (cold if cold else active) * RUN_DESCRIPTOR_BYTES
+
+
+def body_funded_work_bytes(
+        pattern_loads, updates, runs, *, cells, audio_frame_bytes,
+        debug=False, debug_bytes=DEBUG_BLOCK_BYTES):
+    """Return exact control plus Prg-pattern work attributed to each frame.
+
+    This is encoder funding demand, not the physical BODY delivery trace: the
+    packer may satisfy an initial prefix of the Prg patterns from the boot
+    prebuffer before the timed BODY read begins.
+    """
+    n_load = np.asarray(pattern_loads, np.int64)
+    n_upd = np.asarray(updates, np.int64)
+    n_runs = np.asarray(runs, np.int64)
+    if (n_load.ndim != 1 or n_upd.shape != n_load.shape
+            or n_runs.shape != n_load.shape):
+        raise ValueError("pattern, update, and run vectors must have equal length")
+    if np.any(n_load < 0):
+        raise ValueError("pattern loads must be non-negative")
+    control = control_block_lengths(
+        n_upd, n_runs,
+        cells=cells,
+        audio_frame_bytes=audio_frame_bytes,
+        debug=debug,
+        debug_bytes=debug_bytes,
+    )
+    useful = control + n_load * PATTERN_BYTES
+    if len(useful):
+        useful[0] = 0
+    return useful
 
 
 def rate_deltas(frame_count, fps):
