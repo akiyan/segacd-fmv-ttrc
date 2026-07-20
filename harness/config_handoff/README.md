@@ -12,7 +12,7 @@ This harness proves the configuration boundary used by the encoder and packer:
 Run it against an existing full decision log:
 
 ```sh
-python3 harness/config_handoff/verify.py \
+tools/python.sh harness/config_handoff/verify.py \
   videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/decisions.pkl
 ```
 

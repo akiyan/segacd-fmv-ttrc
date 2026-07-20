@@ -1,12 +1,13 @@
 # Startup audio re-sync HUD extractor
 
 This harness reads a native DEBUG playback recording sequentially and finds the
-first audio re-sync (`R`) without seeking by eye.  It uses the player's fixed
-top-row HUD:
+first audio re-sync (`R`) without seeking by eye. It uses the player's fixed
+top-row values-only HUD; the internal key order remains
+`F/P/S/D/R/L/C/W/M/A`, followed by `U/N` in H40:
 
 ```text
-H32: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx
-H40: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxxUxxxxNxx
+H32: xxxx xx xx xx xx xx xx xx xx xx
+H40: xxxx xx xx xx xx xx xx xx xx xx xxxx xx
 ```
 
 The startup-specific fields are:
@@ -15,7 +16,8 @@ The startup-specific fields are:
 - `C`: blocking CD sector pumps (current control plus older BODY payload/pad);
 - `W`: Main's wait for Sub completion at `CMD_SWAP`, in approximate scanlines;
 - `M`: Main-side VBlank-start waits while applying pattern DMA;
-- `A`: startup-audio duplicate chunks still skipped after this frame.
+- `A`: Sub ADPCM decode time in four-stopwatch-tick units (about 0.1229 ms
+  per displayed unit); PCM builds show zero.
 - `U` (H40): Main pattern-transfer time in 30.72 us Mega-CD stopwatch ticks;
 - `N` (H40): low byte of the packed cold-run descriptor count before VBlank
   splits; it wraps at 256.
@@ -32,7 +34,7 @@ frame normally appears in about two frames of a 59.94 fps recording.
 Run it against the lossless output from `/record`:
 
 ```sh
-python3 harness/startup_resync/analyze.py \
+tools/python.sh harness/startup_resync/analyze.py \
   videos/SonicJamOp_startup_audio2_ab_debug_lossless.mkv \
   --csv videos/SonicJamOp_startup_audio2_ab_debug_hud.csv
 ```

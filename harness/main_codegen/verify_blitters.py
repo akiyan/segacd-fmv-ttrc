@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 CODEGEN_START = 0x00FF4900
-CODEGEN_LIMIT = 0x00FF8000
+CODEGEN_LIMIT = 0x00FF6600
 SHADOW_ADDRESS = 0x00FF1000
 NT0 = 0x0000C000
 NT1 = 0x0000E000
@@ -29,7 +29,7 @@ OP_MOVE_W_A1_ABS = 0x33D9       # move.w (a1)+,(VDP_DATA).l
 OP_RTS = 0x4E75
 PLAYER_SOURCE = Path("boot/movieplay_ip.s")
 PLAYER_CONSTANTS = {
-    "RUN_TABLE": CODEGEN_LIMIT,
+    "MAIN_BUF": CODEGEN_LIMIT,
     "MAIN_CODEGEN_EXPECTED_END": CODEGEN_START,
     "MAIN_CODEGEN_BLITTER_MAX": 7296,
     "NT0": NT0,
@@ -293,6 +293,8 @@ def main() -> None:
     h40_image, _ = emit_pair(40, 40, 28, 0, 0)
     if len(h40_image) != 7296 or CODEGEN_START + len(h40_image) != 0x00FF6580:
         raise AssertionError("unexpected maximum H40 generated size")
+    if CODEGEN_LIMIT - (CODEGEN_START + len(h40_image)) != 128:
+        raise AssertionError("unexpected MainBuf guard margin after maximum H40 codegen")
     print(f"assembly emitter constants: OK ({PLAYER_SOURCE})")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

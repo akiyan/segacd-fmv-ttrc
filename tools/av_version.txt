@@ -11,6 +11,23 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e67 : Introduce TTRC v10 four-source pattern supply. Predict exact and
+#        Miss-risk cold demand, water-fill distinct WordBuf0/WordBuf1/MainBuf
+#        boot credits, freeze every realized Prg/Wr/Main source, and verify the
+#        source-aware stream against packing and independent replay. Replace
+#        the old Tank/Buf gauges with Prg/Wr0/Wr1/Main meters and a four-source
+#        stacked timeline. Bad Apple H40 now uses the default ADPCM22 profile.
+#   p58 : Preformat the values-only DEBUG HUD in Main RAM, publish it into the
+#        inactive one of two Window name tables, and switch picture reg2 plus
+#        Window reg3 with one precomputed control-port longword. Direct digit
+#        formatting and a final VBlank guard that rejects V-counter FC..FF
+#        close the deadline races. Full Bad Apple H40 kept all 6,575 timed
+#        intervals at exactly two scanouts; unused H40 width remains
+#        transparent.
+#   p57 : Load distinct WordBuf0/WordBuf1 pattern regions and a staged MainBuf
+#        at boot, then build source-aware Main transfer runs with the correct
+#        Word-RAM versus Main-RAM DMA paths. Make the DEBUG HUD values-only and
+#        leave unused H40 Window width transparent.
 #   e66 : Normalize BODY Band by each delivery slot's actual physical CD read
 #        time. Pad is unused bandwidth, every valid slot is capped naturally at
 #        CD 1x (150 KiB/s), and the reported average is physical-time weighted.
@@ -443,5 +460,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260720
-e=66
-p=56
+e=67
+p=58

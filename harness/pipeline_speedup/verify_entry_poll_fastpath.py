@@ -8,7 +8,7 @@ therefore perform the same single poll after consuming its runs. H40 can
 contain up to 1120 cells, so the fallback retains its possible short-prefix
 poll followed by the final poll.
 
-This checker reads the real split TTRC v6-v9 stream, compares the fallback DBRA
+This checker reads the real split TTRC v6-v10 stream, compares the fallback DBRA
 countdown with an equivalent grouped model for every frame, and confirms that
 entry order and cold-slot run grouping are unchanged.  It additionally checks
 every synthetic update count up to the format's H40 maximum.
@@ -28,7 +28,9 @@ MAX_H40_CELLS = 40 * 28
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
+FEATURE_PATTERN_SUPPLY = 0x0008
 ADPCM_TABLE_SECTORS = 5
+PATTERN_SUPPLY_OFFSET = 196
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,17 @@ def decode_routes(
     return routes
 
 
+def pattern_supply_sectors(header: bytes, version: int, features: int) -> int:
+    """Return the validated v10 boot-preload sector total."""
+    if version < 10 or not features & FEATURE_PATTERN_SUPPLY:
+        return 0
+    values = struct.unpack_from(">4s8H", header, PATTERN_SUPPLY_OFFSET)
+    magic, supply_version, reserved = values[:3]
+    if magic != b"PSUP" or supply_version != 1 or reserved:
+        raise AssertionError(f"invalid pattern-supply extension: {values!r}")
+    return sum(values[-3:])
+
+
 def parse_entries(block: bytes, seq: int, cells: int) -> tuple[int, ...]:
     """Return entries from one validated control block."""
     if len(block) < 8:
@@ -138,8 +151,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, _cols, _rows, cells = struct.unpack_from(
         ">4sHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8, 9):
-        raise AssertionError(f"expected split TTRC v6-v9, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10):
+        raise AssertionError(f"expected split TTRC v6-v10, got {magic!r} v{version}")
 
     routing_sec = struct.unpack_from(">L", header, 26)[0]
     prebuf_sec = struct.unpack_from(">L", header, 30)[0]
@@ -149,8 +162,11 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     audio_preload_sec = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
     table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
+    supply_sec = pattern_supply_sectors(header, version, features)
 
-    frame0_offset = (1 + paltab_sec + table_sec + audio_preload_sec) * SECTOR
+    frame0_offset = (
+        1 + paltab_sec + table_sec + supply_sec + audio_preload_sec
+    ) * SECTOR
     frame0_len = struct.unpack_from(">H", header, frame0_offset)[0]
     entries = [
         parse_entries(
@@ -159,7 +175,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     ]
 
     routing_offset = (
-        1 + paltab_sec + table_sec + audio_preload_sec + f0_ctrl_sec + f0_pat_sec
+        1 + paltab_sec + table_sec + supply_sec + audio_preload_sec
+        + f0_ctrl_sec + f0_pat_sec
     ) * SECTOR
     routing_raw = header[
         routing_offset : routing_offset + routing_sec * SECTOR
@@ -233,18 +250,19 @@ def grouped_poll_positions(n_entries: int, chunk: int) -> tuple[int, ...]:
     return tuple(range(prefix, n_entries + 1, chunk))
 
 
-def cold_runs(entries: tuple[int, ...]) -> tuple[tuple[int, int], ...]:
-    """Build the same consecutive cold-slot runs as expand_frame."""
-    result: list[tuple[int, int]] = []
+def cold_runs(entries: tuple[int, ...]) -> tuple[tuple[int, int, int], ...]:
+    """Build consecutive cold-slot runs, splitting at v10 source changes."""
+    result: list[tuple[int, int, int]] = []
     for entry in entries:
         if not entry & 0x8000:
             continue
         slot = (entry & 0x07FF) - 1
-        if result and result[-1][0] + result[-1][1] == slot:
-            start, count = result[-1]
-            result[-1] = start, count + 1
+        source = (entry & 0x1800) >> 11
+        if result and result[-1][0] + result[-1][1] == slot and result[-1][2] == source:
+            start, count, _source = result[-1]
+            result[-1] = start, count + 1, source
         else:
-            result.append((slot, 1))
+            result.append((slot, 1, source))
     return tuple(result)
 
 

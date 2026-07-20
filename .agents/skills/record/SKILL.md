@@ -188,8 +188,10 @@ Check the raw MKV and reports before trusting a capture:
 3. Confirm exit zero plus `Content ran for a total of` and `Unloading core`. Some RetroArch
    builds also print `Average monitor Hz`, but 1.22.2 does not do so consistently. Reject a
    log ending at `SET_GEOMETRY`, a nonzero exit, Replay EOF, or an unreadable trailer.
-4. Confirm the audio JSON exists, has nonzero RMS when required, and reports zero clip/jump
-   candidates at the selected thresholds.
+4. Confirm that `ffprobe` sees a non-empty audio stream with the expected codec,
+   sample rate, channels, and packet count. The recorder deliberately has no
+   sample-jump, clipping, or RMS threshold gate: legitimate source transients
+   and lossy preview encoding made those tests content-dependent.
 5. Inspect frames from the MKV and confirm that the Mega-CD startup appears first, playback
    begins later, the DEBUG Window HUD is visible, and the movie advances. Do not use the HUD
    to seek the movie start. Extract these stills with
@@ -202,13 +204,15 @@ Check the raw MKV and reports before trusting a capture:
    with a same-Replay `--realtime-lossless` comparison and a second offline run through
    `tools/compare_recordings.py`. Also requalify any suspect result.
 
-The JSON report is a mechanical gate, not a substitute for listening. Claim that no audible
-clicks exist only after listening to the final file.
+Structural audio presence is not a substitute for listening. Claim that the
+sound is clean or free of audible clicks only after listening to the final file.
 
 ## Optional HUD diagnostics
 
-The standard capture already builds DEBUG. Parse `F/P/S/D/R/L/C/W/M/A` and the H40-only
-`U/N` fields only when the task asks for those diagnostics; otherwise leave the visible HUD unparsed. Keep OCR work separate from
+The standard capture already builds DEBUG. The HUD omits category glyphs and
+shows values in the fixed internal order `F/P/S/D/R/L/C/W/M/A`, followed by the
+H40-only `U/N` values. Parse them only when the task asks for those diagnostics;
+otherwise leave the visible HUD unparsed. Keep OCR work separate from
 ordinary recording and publication head cueing:
 
 ```sh
@@ -217,24 +221,27 @@ ps -eo pid,etimes,args | grep -v grep \
 make disc CONFIG=configs/PROFILE.toml DEBUG=1
 OUTDIR="$PWD/videos" tools/run_headless.sh out/PROFILE.cue \
   --tag STEM_debug --record --record-preset ffv1-flac \
-  --record-size 256x224 --audio-min-rms 1 \
+  --record-size 256x224 \
   --shots 68 --interval 2 --display :NNN
 ```
 
-Confirm the contiguous Window-plane HUD is visible before a long OCR scan. H32 uses
-`FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx`; H40 appends `UxxxxNxx`. `F/U` contain four
-hexadecimal digits; every other field contains two. Read the requested counters over the
-complete loop. In H40, `U` is the Main pattern-transfer time in 30.72 us Mega-CD
-stopwatch ticks and `N` is the packed cold-run count's low byte (wrapping at
-256). Never reuse this OCR as a publication trim point.
+Confirm the contiguous Window-plane HUD is visible before a long OCR scan. H32
+uses `xxxx xx xx xx xx xx xx xx xx xx`; H40 appends `xxxx xx`. The first value
+(`F`) and the H40 penultimate value (`U`) contain four hexadecimal digits; every
+other value contains two. Read the requested counters over the complete loop.
+In H40, `U` is the Main pattern-transfer time in 30.72 us Mega-CD stopwatch
+ticks and `N` is the packed cold-run count's low byte (wrapping at 256). Never
+reuse this OCR as a publication trim point.
 
 ## Existing recordings and smoke tests
 
-Verify an existing file without recording again:
+Inspect an existing file without recording again:
 
 ```sh
-tools/verify_recording.sh videos/rec_check_preview.mp4 \
-  --out-prefix tmp/PROFILE/verify/rec_check_postcheck
+ffprobe -v error -count_packets \
+  -show_entries stream=index,codec_name,codec_type,width,height,sample_rate,channels,nb_read_packets \
+  -show_entries format=duration \
+  -of json videos/rec_check_preview.mp4
 ```
 
 Run a headless smoke test without video recording:
@@ -246,18 +253,11 @@ tools/run_headless.sh out/PROFILE.cue \
 
 ## Audio and boot triage
 
-Useful audio gates:
-
-```sh
---audio-jump-threshold 12000
---audio-jump-threshold 6000
---audio-min-rms 1
---no-audio-check
-```
-
-Use `--no-audio-check` only while isolating harness failures. If a full startup-inclusive
-capture is quiet at the beginning, verify the complete audio stream and movie section instead
-of silently trimming the startup.
+There is no waveform-threshold audio gate. If a startup-inclusive capture is
+quiet at the beginning, inspect the complete movie section instead of silently
+trimming the startup. Use `tools/compare_recordings.py` for exact same-Replay
+PCM comparison, and listen to the final file before making an audible-quality
+claim.
 
 For boot failures, inspect frames extracted from the MKV rather than live Xvfb screenshots.
 Keep the foreground defaults for boot wait and repeated START presses. If output is missing,
@@ -269,8 +269,9 @@ complete, then remove only artifacts created by this session when space is neede
 
 ## Report
 
-Report the raw MKV path, preview MP4 path, duration, raster/fps, audio presence, audio JSON
-path and key RMS/peak/clip/jump values, whether startup was retained, and whether human
-listening was performed. For offline runs also report the Replay path, requested/max frame
-count, wall time, and speed. When the run requalifies the fast path, additionally report the
-exact-comparison JSON/pass state and repeat-run result.
+Report the raw MKV path, preview MP4 path, duration, raster/fps, audio codec,
+sample rate, channels and packet presence, whether startup was retained, and
+whether human listening was performed. For offline runs also report the Replay
+path, requested/max frame count, wall time, and speed. When the run requalifies
+the fast path, additionally report the exact-comparison JSON/pass state and
+repeat-run result.

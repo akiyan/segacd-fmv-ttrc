@@ -5,9 +5,11 @@ from pathlib import Path
 
 import player_constants
 import ttrc_routing
+import pattern_supply
 
 
-def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x345):
+def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x345,
+                supply_counts=(0, 0, 0)):
     if features is None:
         features = ttrc_routing.FEATURE_COLD_RUNS | ttrc_routing.FEATURE_FIXED_N2
     tcols = 32 if mode == 0 else 40
@@ -24,7 +26,16 @@ def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x3
         mode, 0, 2, 14, 1, 2 if fps >= 24 else 4,
         audio_bytes, fps, audio_fd, 30, features,
     )
-    sector = prefix + bytes(128) + bytes(player_constants.SECTOR - 192)
+    sector = bytearray(prefix + bytes(128) + bytes(player_constants.SECTOR - 192))
+    if features & ttrc_routing.FEATURE_PATTERN_SUPPLY:
+        wr0, wr1, main = supply_counts
+        player_constants.PATTERN_SUPPLY_STRUCT.pack_into(
+            sector, player_constants.PATTERN_SUPPLY_OFFSET,
+            player_constants.PATTERN_SUPPLY_MAGIC,
+            player_constants.PATTERN_SUPPLY_VERSION, 0,
+            wr0, wr1, main,
+            (wr0 + 63) // 64, (wr1 + 63) // 64, (main + 63) // 64,
+        )
     return player_constants.stamp_header_sector(sector)
 
 
@@ -69,6 +80,19 @@ class PlayerConstantsTest(unittest.TestCase):
         self.assertEqual(values.audio_bytes, 736)
         self.assertEqual(values.audio_control_bytes, 372)
         self.assertEqual(values.adpcm_table_sectors, 5)
+
+    def test_pattern_supply_extension(self):
+        values = player_constants.parse_header_sector(make_header(
+            features=(ttrc_routing.FEATURE_COLD_RUNS
+                      | ttrc_routing.FEATURE_FIXED_N2
+                      | ttrc_routing.FEATURE_PATTERN_SUPPLY),
+            supply_counts=(880, 879, 208),
+        ))
+        self.assertEqual(values.wr0_patterns, pattern_supply.WORD_BUF_PATTERNS)
+        self.assertEqual(values.wr1_patterns, 879)
+        self.assertEqual(values.main_patterns, pattern_supply.MAIN_BUF_PATTERNS)
+        self.assertEqual((values.wr0_sectors, values.wr1_sectors, values.main_sectors),
+                         (14, 14, 4))
 
     def test_generation_is_deterministic_and_preserves_mtime(self):
         with tempfile.TemporaryDirectory() as td:

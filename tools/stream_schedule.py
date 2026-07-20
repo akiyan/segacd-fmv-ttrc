@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Pure payload-RING delivery scheduling shared by sim and pack.
+"""Pure PrgBuf delivery scheduling shared by sim and pack.
 
-The encoder has a virtual VBV reservoir for quality decisions.  The player has
-a different, physical object: the PRG-RAM payload RING filled by whole CD
-sectors.  This module models the latter from the frozen per-frame cold-pattern
-counts and control-block lengths so analysis and disc packing cannot drift.
+The encoder has an offline whole-movie quality budget.  The player has a
+different, physical object: the PRG-RAM PrgBuf circular buffer filled by whole
+CD sectors.  This module models the latter from the frozen per-frame Prg loads
+and control-block lengths so analysis and disc packing cannot drift.
 """
 from __future__ import annotations
 
@@ -182,7 +182,7 @@ def schedule_payload_ring(
     """Schedule control JIT and payload prefetch, including physical RING use.
 
     ``ring_occupancy[i]`` is the number of 32-byte pattern slots physically in
-    the payload RING at the end of frame ``i``.  It includes padding in the last
+    PrgBuf at the end of frame ``i``.  It includes padding in the last
     payload sector because the player receives and advances whole sectors.
     Frame 0 is loaded from HEADER.DAT and does not consume this RING.
     """

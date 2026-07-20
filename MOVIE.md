@@ -17,7 +17,7 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 9               (bump for an incompatible stream interpretation)
+VERSION        = 10              (bump for an incompatible stream interpretation)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = decoded header field (PCM: 888 B at N4 / 444 B at N2;
@@ -57,6 +57,12 @@ repurposed from the obsolete duplicate-skip count to the RF5C164 frequency
 delta. A feature-selected full decoder-table region follows PALTAB and is copied
 into both physical 1M Word-RAM banks at boot. ADPCM22 is a supported v9 feature;
 the table region is required whenever its feature bit is set.
+**v10** adds feature bit 3 (`FEATURE_PATTERN_SUPPLY`). Cold update entries use
+bits 11-12 for the physical source, and cold-run counts use bits 14-15 for the
+same source. A `PSUP` extension in the first header sector gives the actual
+Wr0/Wr1/Main preload sizes and sector counts. Separate boot regions carry
+WordBuf0, WordBuf1, and MainBuf patterns; only Prg-sourced patterns remain in
+the timed payload stream.
 
 ## File layout
 
@@ -69,13 +75,19 @@ HEADER.DAT
 +--------------------------------------------------+
 | ADPCM_TABLE (5 sectors when feature bit 2 set)   |  8,800 B full lookup image
 +--------------------------------------------------+
+| WR0_PRELOAD (wr0_sec sectors when bit 3 set)     |  WordBuf0 patterns
++--------------------------------------------------+
+| WR1_PRELOAD (wr1_sec sectors when bit 3 set)     |  WordBuf1 patterns
++--------------------------------------------------+
+| MAIN_PRELOAD (main_sec sectors when bit 3 set)   |  MainBuf boot staging
++--------------------------------------------------+
 | STARTUP_AUDIO (audio_preload_sec sectors)        |  one PCM chunk per sector
 +--------------------------------------------------+
 | FRAME 0 (f0_ctrl_sec + f0_pat_sec sectors)       |  control, then patterns
 +--------------------------------------------------+
 | ROUTING (routing_sec sectors)                    |  v7+: 1 byte per frame, max 16384 frames
 +--------------------------------------------------+
-| PREBUFFER (prebuf_sec sectors)                   |  frame-1 ring prefill (Bpat patterns)
+| PREBUFFER (prebuf_sec sectors)                   |  frame-1 PrgBuf prefill (Bpat patterns)
 +--------------------------------------------------+
                                                      end of HEADER.DAT
 
@@ -93,11 +105,11 @@ frame 0, starts `BODY.DAT` at its own first sector, and fully pre-drains frame 1
 Only then does it release frame 0 to the Main CPU for display. PCM stays stopped
 until the Main CPU confirms that display; timed playback then begins while the
 `BODY.DAT` read remains continuous until the movie ends. Frame 0 therefore has
-no time budget and never competes with frame 1 delivery, while the ring starts
-frame 1 pre-filled to `RING_CAP`.
+no time budget and never competes with frame 1 delivery, while PrgBuf starts
+frame 1 pre-filled to its usable scheduling ceiling.
 
 During boot, frame 0's patterns temporarily occupy the 40 KiB jitter reserve
-between the 388 KiB usable `RING_CAP` and the 428 KiB physical ring; the largest
+between the 388 KiB usable PrgBuf ceiling and the 428 KiB physical ring; the largest
 H40 frame needs 36 KiB after sector rounding. The on-disc routing table is
 staged in the not-yet-active APPLY ring,
 then copied identically into the final 16 KiB of both 1M Word-RAM banks after
@@ -111,6 +123,13 @@ PALTAB and copies it to offset `+0x12800` of both physical banks. The decoded
 PCM buffer is bank-local at `+0x14C00`. Two boot-time copies avoid every
 per-frame table transfer or pointer change after a bank handoff.
 
+When feature bit 3 is set, the Sub next loads three different chronological
+pattern sequences. Wr0 is written at offset `+0x15200` in the physical frame-0
+bank, Wr1 at the same offset in the other bank, and Main is staged at `+0xD000`
+in the frame-0 bank. The Main CPU copies Main once to `0xFF6600..0xFF8000`
+after the first handoff. Wr0 and Wr1 remain in their own physical banks; they
+are not duplicate copies.
+
 ## Header (1 sector = 2048 bytes)
 
 First 22 bytes: `struct ">4sHHHHHHHHH"`.
@@ -118,7 +137,7 @@ First 22 bytes: `struct ">4sHHHHHHHHH"`.
 | Off | Size | Field          | Meaning |
 |-----|------|----------------|---------|
 | 0   | 4    | magic          | `"TTRC"` |
-| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body; 7 = packed routing entries; 8 = feature-controlled fixed-N2 cadence; 9 = checkpointed ADPCM and RF5C164 frequency field) |
+| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body; 7 = packed routing entries; 8 = feature-controlled fixed-N2 cadence; 9 = checkpointed ADPCM; 10 = four-source pattern supply) |
 | 6   | 2    | frames         | total frame count (`nfr`) |
 | 8   | 2    | tcols          | tile grid columns |
 | 10  | 2    | trows          | tile grid rows |
@@ -132,10 +151,10 @@ Next 16 bytes: `struct ">LLLL"`.
 
 | Off | Size | Field        | Meaning |
 |-----|------|--------------|---------|
-| 22  | 4    | prebuf_pat   | `Bpat`: number of cold patterns pre-buffered before frame 1 |
+| 22  | 4    | prebuf_pat   | `Bpat`: number of Prg patterns pre-buffered before frame 1 |
 | 26  | 4    | routing_sec  | sectors occupied by the routing table |
 | 30  | 4    | prebuf_sec   | sectors occupied by the prebuffer |
-| 34  | 4    | ring_peak    | peak PRG-RAM ring usage (patterns), for buffer sizing |
+| 34  | 4    | ring_peak    | peak physical PrgBuf usage (patterns), for buffer sizing |
 
 The player reserves the final 16 KiB of each 1M Word-RAM bank for an identical
 ROUTING copy. A v7+ stream uses one byte per frame and may therefore contain at
@@ -183,7 +202,10 @@ Then:
   the 1001/400 sector accumulator. The packer derives it with
   `uses_fixed_n2_cadence`; 24fps leaves it clear even though its nearest
   `vsync_n` hint is also 2. Bit 2 (`FEATURE_ADPCM22`, v9) means live control
-  audio is a checkpointed IMA chunk and the boot table region is present.
+  audio is a checkpointed IMA chunk and the boot table region is present. Bit
+  3 (`FEATURE_PATTERN_SUPPLY`, v10) means update/run source bits are active,
+  the `PSUP` extension is present, and the three boot-preload regions follow
+  the optional ADPCM table.
   Unknown bits must not move any legacy field;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
@@ -192,7 +214,26 @@ Then:
   into both player objects. The Sub CPU compares it before accepting the stream,
   so combining a player with another profile's `HEADER.DAT` stops with a
   diagnostic instead of silently using the wrong immediate values;
+- offset 196: 20-byte `PSUP` extension when feature bit 3 is set (see below);
 - remainder up to 2048 is zero.
+
+The v10 `PSUP` extension is `struct ">4s8H"`:
+
+| Off | Size | Field | Meaning |
+|---:|---:|---|---|
+| 196 | 4 | magic | `"PSUP"`. |
+| 200 | 2 | version | Pattern-supply extension version, currently 1. |
+| 202 | 2 | reserved | Must be zero. |
+| 204 | 2 | wr0_patterns | Actual WordBuf0 preload count, at most 880. |
+| 206 | 2 | wr1_patterns | Actual WordBuf1 preload count, at most 880. |
+| 208 | 2 | main_patterns | Actual MainBuf preload count, at most 208. |
+| 210 | 2 | wr0_sectors | Sector-rounded WR0_PRELOAD size. |
+| 212 | 2 | wr1_sectors | Sector-rounded WR1_PRELOAD size. |
+| 214 | 2 | main_sectors | Sector-rounded MAIN_PRELOAD size. |
+
+For each preload, the sector count must equal the ceiling of
+`patterns * 32 / 2048`. The generated player constants freeze all six values;
+the build and Sub-CPU signature checks reject a mismatched header/player pair.
 
 The player reads byte 38 while preparing frame 0, before entering `play_loop`.
 It sets VDP H32/H40, the screen-column origin, and the matching VBlank DMA
@@ -245,6 +286,24 @@ At boot the Sub CPU stages this image in PRG-RAM and copies exactly 2,200 longs
 to Word-RAM offset `+0x12800` in each physical 1M bank. The table is absent when
 feature bit 2 is clear.
 
+## Pattern preload regions (v10, feature bit 3)
+
+The three `PSUP` regions follow the optional ADPCM table in this fixed order:
+WR0_PRELOAD, WR1_PRELOAD, MAIN_PRELOAD. Each is a chronological stream of
+32-byte packed tile patterns, zero-padded to its declared sector boundary.
+Actual pattern and sector counts come from the `PSUP` extension.
+
+WordBuf0 and WordBuf1 each have a fixed capacity of 880 patterns at physical
+bank offset `+0x15200`. They hold different sequences. The one source code
+`Wr` in control data selects the bank by timed-frame parity: even frames consume
+Wr0, odd frames consume Wr1. MainBuf has a fixed capacity of 208 patterns. Its
+region is first staged at Word-RAM `+0xD000`, then copied once to Main RAM.
+
+All three streams are consumed monotonically and are never refilled. A stream
+may contain fewer patterns than its capacity. Source order is frozen by the
+sim decision log and verified against the control entries and source-aware run
+suffix before packing.
+
 ## STARTUP_AUDIO (v5)
 
 Each STARTUP_AUDIO sector in `HEADER.DAT` begins with one decoded `audio_bytes`
@@ -262,7 +321,7 @@ movie frame rather than starting during the Mega-CD boot screen.
 
 ## Routing table
 
-In v7 through v9, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
+In v7 through v10, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
 byte has this layout:
 
 | Bits | Field | Meaning |
@@ -286,7 +345,7 @@ frames. v6 already stored and read the `n_ctrl_sec` control sectors first in
 each `BODY.DAT` frame slot despite the historical payload-first byte order.
 
 In v7+, the first `n_ctrl_sec` sectors contain control data. The following
-`n_pay_sec` sectors refill the PRG-RAM payload ring, and any sectors through the
+`n_pay_sec` sectors refill PrgBuf, and any sectors through the
 frame's rate-matched `fsec` are padding.
 
 The control and payload data are each continuous byte streams split at sector
@@ -299,7 +358,8 @@ guarantees both of these before writing v6+:
   `i` is present in the apply ring; `n_ctrl_sec = 0` is valid when an earlier
   sector already carried that block;
 - before frame `i`'s control prefix is read, PREBUFFER plus payload sectors from
-  earlier frame slots already contain every cold pattern frame `i` consumes.
+  earlier frame slots already contain every Prg-sourced cold pattern frame `i`
+  consumes. Wr0/Wr1/Main patterns are already resident from boot.
 
 The table covers all `nfr` frames. In the historical v6 layout, frame 0's entry
 was the two-byte pair `(0, 0)`; in v7+ it is the single zero byte described
@@ -325,33 +385,33 @@ including the old 2.5-sector average at 30fps.
 `lead` starts at zero and increases by
 `fsec - ratedelta`. A data-heavy frame can therefore run long, while following
 light frames omit padding until that temporary lead is repaid. The complete
-stream converges to the CD 1x display-rate total without overflowing the ring.
+stream converges to the CD 1x display-rate total without overflowing PrgBuf.
 Historical v2/v3 players defaulted `fps_int = 0` to 15, yielding the constant 5
-and reproducing the old fixed-slot behaviour. The current player accepts only v9 and
+and reproducing the old fixed-slot behaviour. The current player accepts only v10 and
 rejects a zero nominal fps before entering this schedule.
 
 The v6-and-later packer first spends that frame's allowance on control, then replaces
-otherwise-unused rate padding with future payload while ring space is
+otherwise-unused rate padding with future payload while PrgBuf space is
 available. It exceeds the allowance only when a backwards deadline proof says
 a later cold-pattern burst cannot otherwise be armed within the five-sector
 routing cap. The normal `lead` repayment then removes padding from following
-light frames. In particular, a full startup ring is not refilled with all five
+light frames. In particular, a full startup PrgBuf is not refilled with all five
 sectors merely to keep it full; with `FEATURE_FIXED_N2`, an ordinary light
 region remains on the 1001/400 two-or-three-sector sequence.
 
 ## Prebuffer
 
-The final `prebuf_sec` sectors of `HEADER.DAT` hold the first `Bpat` cold
-patterns (32 bytes each) of frames 1 onward. Frame 0's patterns are in the
-earlier FRAME 0 region. The prebuffer is loaded into the ring before playback
-and is sized to fill the usable ring (`RING_CAP`), so frame 1 starts fully
-armed.
+The final `prebuf_sec` sectors of `HEADER.DAT` hold the first `Bpat`
+Prg-sourced patterns (32 bytes each) of frames 1 onward. Frame 0's patterns are
+in the earlier FRAME 0 region. The prebuffer is loaded into PrgBuf before
+playback and is capped by the 388 KiB usable Prg scheduling ceiling, so frame 1
+starts armed.
 
 ## Frame (`fsec` sectors, rate-matched; frames 1..nfr-1)
 
 ```
 [ n_ctrl_sec sectors : control ]  next bytes of the continuous control stream
-[ n_pay_sec sectors : payload  ]  next bytes of the future cold-pattern stream
+[ n_pay_sec sectors : payload  ]  next bytes of the future Prg-pattern stream
 [ pad to fsec sectors ]
 ```
 
@@ -366,10 +426,12 @@ its complete control prefix has arrived, without waiting for the future payload
 refill in the same slot. Readiness is based on all `n_ctrl_sec` sectors, not
 merely the first control sector.
 
-**Payload** is a run of 32-byte tile patterns (the *cold* = newly loaded tiles),
-consumed in order and DMA'd into ring slots. These sectors replenish later
-frames; patterns for the current frame were armed by PREBUFFER or earlier body
-slots. A pattern is `pack_key`-encoded: 8 rows x 4 bytes, each byte = two 4bpp
+**Payload** is the chronological stream of 32-byte patterns assigned to Prg.
+The Sub consumes it from PrgBuf and copies the selected patterns into the
+current frame's Word-RAM output. These sectors replenish later frames; Prg
+patterns for the current frame were armed by PREBUFFER or earlier BODY slots.
+Wr0/Wr1/Main cold loads have no BODY payload because their bytes were loaded at
+boot. A pattern is `pack_key`-encoded: 8 rows x 4 bytes, each byte = two 4bpp
 pixels `(hi<<4)|lo`.
 
 **Control block** (a variable-length block, byte layout):
@@ -387,15 +449,16 @@ pixels `(hi<<4)|lo`.
 | PCM: audio_bytes; ADPCM22: 4 + audio_bytes/2 | audio | PCM stores RF5C164 sign-magnitude bytes directly. ADPCM22 stores `s16 predictor, u8 step_index, u8 reserved_zero`, then low-nibble-first IMA codes. Current prefetched streams carry this logical source chunk `audio_preload_sec` frames ahead. |
 | 0/1  | audio pad   | zero byte when needed to align the optional suffix to a word boundary and keep the legacy block end even |
 | 2    | n_runs      | present when header feature bit 0 is set; number of cold-slot runs |
-| n_runs x 4 | cold runs | present when feature bit 0 is set; repeated `u16 slot_start, u16 count` pairs in payload-consumption order |
+| n_runs x 4 | cold runs | present when feature bit 0 is set; repeated `u16 slot_start, u16 source_count` pairs in pattern-consumption order |
 
-The suffix repeats information already encoded by the cold entry flag and tile
-index. For a 30 fps frame with at most 1024 updates, the current player can copy
-each consecutive cold run directly without walking all update entries a second
-time. The sum of all run counts is the number of cold entries. Each run stays
-within the header's `pool` slots. Legacy players still advance by `total_len`
-and ignore these trailing bytes; new players use the entry scan when bit 0 is
-clear or when their proven fast path does not cover the frame.
+The suffix repeats information already encoded by the cold entry flag, source,
+and tile index. `source_count` stores source in bits 14-15 and count in bits
+0-13. Source values are 0=Prg, 1=Wr (frame parity selects Wr0 or Wr1), 2=Main,
+and 3=reserved/invalid. A source change starts a new run even when VRAM slots
+remain consecutive. The sum of all masked counts is the number of cold entries,
+and each run stays within the header's `pool` slots. The Main CPU can therefore
+build its source-aware transfer table without walking all update entries a
+second time.
 
 **Debug block** (a fixed 22 bytes, present only when `dbg==1`). It sits at a
 **fixed position right after the 8-byte mini-header**, so a player reads it at a
@@ -405,12 +468,12 @@ by 22) if it does not use it.
 
 | Off | Size | Field     | Meaning |
 |-----|------|-----------|---------|
-| 0   | 2    | raw       | Raw cells this frame (fresh 32-byte pattern from CD) |
+| 0   | 2    | raw       | Raw cells this frame (exact cold load funded by current-frame allowance) |
 | 2   | 2    | same      | Same cells (unchanged or exact resident reuse, 0 B) |
 | 4   | 2    | near      | Near cells (near-perfect resident reuse) |
 | 6   | 2    | coa       | Coa cells (coarse resident reuse) |
 | 8   | 2    | flbk      | Flbk cells (wide fallback resident reuse) |
-| 10  | 2    | buf       | Buf cells (filled from the PRG-RAM prebuffer/tank, 0 CD) |
+| 10  | 2    | buf       | Buf cells (exact cold load funded by saved quality allowance or a boot-preload credit) |
 | 12  | 2    | miss      | Miss cells (changed but not updated this frame) |
 | 14  | 8    | reserved  | 4 x u16 reserved for future 16-bit debug values (zero) |
 
@@ -422,16 +485,19 @@ emitted is an encoder setting (`tools/pack_stream.py`: off by default, on with
 **Update entry** (2 bytes each), one per set bit in the bitmap, in ascending
 cell order:
 
-- bit 15 (`0x8000`) = **cold**: this cell loads a fresh pattern from the
-  already-prefetched payload stream into a ring slot. If clear, the cell only
-  re-points its name-table entry to a pattern already resident.
+- bit 15 (`0x8000`) = **cold**: this cell writes a new pattern into its VRAM
+  slot from the encoded physical source. If clear, the cell only re-points its
+  name-table entry to a pattern already resident and source must be zero.
 - bits 13..14 = the palette line (0..3).
-- bits 0..10 = the VDP tile index = `base + slot` (the player recovers the ring
-  slot as `(entry & 0x07FF) - base`). Bits 11..12 are zero.
+- bits 11..12 = source: 0=Prg, 1=Wr (Wr0 on even timed frames, Wr1 on odd),
+  2=Main, 3=reserved/invalid.
+- bits 0..10 = the VDP tile index = `base + slot` (the player recovers the VRAM
+  slot as `(entry & 0x07FF) - base`).
 
-The entry's low 15 bits are written to the VDP name table as-is (priority and
-flip bits are unused). This is the core *tile texture reuse*: most cells cost
-just this 2-byte entry.
+The player writes `entry & 0x67FF` to the VDP name table, removing the cold and
+source metadata while preserving palette and tile index. Priority and flip bits
+are unused. This is the core *tile texture reuse*: most cells cost just this
+2-byte entry.
 
 **Audio**: PCM streams carry `audio_bytes` per frame of RF5C164 sign-magnitude 8-bit PCM (positive
 = `0..0x7F`, negative = `0x80 | magnitude`, magnitude clamped to `0x7E` so the

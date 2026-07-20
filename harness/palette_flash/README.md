@@ -26,7 +26,7 @@ and rate-matched frame sizes; `decode.py` rejects them explicitly instead of
 silently producing a false comparison.
 
 ```sh
-python3 harness/palette_flash/detect.py tmp/<rec>.mkv out/movieplay/MOVIE.DAT \
+tools/python.sh harness/palette_flash/detect.py tmp/<rec>.mkv out/movieplay/MOVIE.DAT \
     --dump harness/palette_flash/out
 ```
 
@@ -66,7 +66,7 @@ quantized under the new palette. Options under consideration:
    frame unless the tiles are **pre-resident in VRAM**.
 2. Pre-load the next segment's tiles into spare VRAM slots during the quiet
    frames before the boundary, so the boundary itself is only a name-table
-   repoint + CRAM swap (cheap, instant, clean). This is the tank/prebuffer idea
+   repoint + CRAM swap (cheap, instant, clean). This is the pattern-preload idea
    extended to whole-segment keyframes.
 
 Also: the **sim preview should render through palette indices** (not stored RGB)

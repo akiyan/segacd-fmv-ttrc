@@ -13,7 +13,7 @@ first `nframes * audio_bytes` queued samples must match the source byte for byte
 Run from the repository root:
 
 ```sh
-python3 harness/audio_prefetch/verify.py \
+tools/python.sh harness/audio_prefetch/verify.py \
   out/movieplay/HEADER.DAT out/movieplay/BODY.DAT \
   videos/BadApple_H32_256x224_pcm13/audio_13k3_u8_mono.wav
 ```

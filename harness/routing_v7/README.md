@@ -10,5 +10,5 @@ identical. It also checks the v7 frame limit, frame-0 zero entry, reserved bits,
 and zero sector padding.
 
 ```sh
-python3 harness/routing_v7/verify.py out/PROFILE/HEADER.DAT out/PROFILE/BODY.DAT
+tools/python.sh harness/routing_v7/verify.py out/PROFILE/HEADER.DAT out/PROFILE/BODY.DAT
 ```

@@ -54,7 +54,8 @@ long segment needs more palettes,"* not *"a hard cut needs a switch."*
   colour pop hidden) — that constraint is unchanged.
 - So the intelligent switch = **subdivide an under-served segment by inserting
   palette switches at the hard cuts inside it where the staleness gain clears a
-  threshold, gated by the Tank having room for the cold reload.**
+  threshold, gated by the physical pattern-supply plan having room for the
+  cold reload.**
 - Segment 12 has ~10 usable hard cuts (2251, 2435, 2533, 3027, 3088, 3178, 3474,
   3531, 3610, 3681); splitting it there would bring each piece down toward the
   ~9.6 s size of the other segments and realise much of the 20–55 % gain across
@@ -94,4 +95,4 @@ So the two mechanisms are complementary:
    broadening of today's code; demonstrably helps op. Do this first.
 2. **Hard-cut detector inside under-served long segments** — for ed-like content
    whose long segments have no uniform moment; higher risk (pop at a detailed
-   cut, cold burst), needs the Tank gate.
+   cut, cold burst), needs a pattern-supply feasibility gate.

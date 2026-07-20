@@ -5,9 +5,9 @@ render_analysis.py が同じ描画関数と定数を実データに使う。
 
 新レイアウト(この版):
   左  = SEGA-CD sim output(4:3枠) + 下に status帯
-  右  = Source / Category(Miss赤枠を内包) / [カテゴリ枠の下]凡例(2行) / 流れる線グラフ
-        ※ Miss&MissCarryパネルは廃止。凡例の元位置(枠の上)は margin として残す。
-  下右 = パレット状態パネル
+  右  = Source / Category(Miss赤塗り) / 全編カテゴリ合計 / Audio波形
+  下  = Req/Cold/Band/Prg/Wr0/Wr1/Main/DMA/Run、パレット、3段タイムライン
+        ※ Miss&MissCarryパネルと per-metric flow は廃止。
 出力: tmp/layout_preview.png
 
 usage: python3 tools/layout_preview.py
@@ -30,7 +30,7 @@ CAT_NEAR  = (95, 115, 215)    # Near  近似で更新省略        ※旧Sameの
 CAT_FLBK  = (240, 150, 50)    # Flbk  Missのフォールバック(荒くても常駐で穴埋め)(オレンジ・太枠)
 CAT_DEDUP = (0, 190, 175)     # Dedup(旧・表示では Same に畳む。互換用に定義だけ残す)
 CAT_COA   = (45, 240, 70)     # Coa   粗い近似dedup            ※判別しやすい鮮やかな緑
-CAT_BUF   = (175, 120, 235)   # Buf   PRG先読み(貯水池)
+CAT_BUF   = (175, 120, 235)   # Buf   saved-budget / boot-preload funding class
 CAT_MISS  = (220, 70, 70)     # Miss  取りこぼし(赤・塗りつぶし)
 
 # カテゴリマップ/凡例での描き方: fill=枠なし内容塗り, thick=太枠(px), 他=細枠(1px)
@@ -52,6 +52,17 @@ COL_DIM = (150, 150, 155)
 COL_OVH = (95, 110, 122)         # BODY useful controlセグメント(くすんだ青灰)
 COL_DMA = (70, 190, 90)          # DMAパターンタイル数(green)
 COL_RUN = (215, 165, 65)         # cold pattern run分断度(amber)
+COL_PRG = (165, 105, 225)        # streamed PrgBuf
+COL_WR0 = (80, 145, 235)         # boot-preloaded WordBuf0
+COL_WR1 = (65, 205, 195)         # boot-preloaded WordBuf1
+COL_MAIN = (235, 175, 70)        # boot-preloaded MainBuf
+SUPPLY_COLORS = {
+    "Prg": COL_PRG,
+    "Wr0": COL_WR0,
+    "Wr1": COL_WR1,
+    "Main": COL_MAIN,
+}
+SUPPLY_ORDER = ("Prg", "Wr0", "Wr1", "Main")
 
 # ---- レイアウト定数(枠 = [x0,y0,x1,y1]) ----
 PAD = 11
@@ -146,8 +157,8 @@ def dummy_data():
         base = counts[k]
         series[k] = [max(0, base + int(30 * math.sin(i / 7.0 + hash(k) % 7)) + random.randint(-12, 12))
                      for i in range(n)]
-    buf_cap = 15360
-    # 全編タイムライン用の時系列(ダミー): Miss多発帯とBuf枯渇帯を作り込む
+    supply_capacities = {"Prg": 12416, "Wr0": 880, "Wr1": 880, "Main": 208}
+    # 全編タイムライン用の時系列(ダミー): Miss多発帯とPrgBuf枯渇帯を作り込む
     tln = 360
     tl = {}
     for k in ["Raw", "Coa", "Flbk", "Buf", "Miss"]:
@@ -157,16 +168,17 @@ def dummy_data():
     for i in range(tln):
         if miss_zones(i):
             tl["Miss"][i] += random.randint(25, 70); tl["Buf"][i] += random.randint(15, 35)
-    rem = []; r = buf_cap
+    prg_rem = []; r = supply_capacities["Prg"]
     for i in range(tln):
         r += (-350 if miss_zones(i) else 260) * -1   # miss帯=枯渇へ / それ以外=補充
-        r = max(0, min(buf_cap, r + random.randint(-40, 40)))
-        rem.append(r)
-    dma_tl = [(tl["Raw"][i] + tl["Buf"][i]) * 32 + C * 2 for i in range(tln)]   # 毎コマVRAM転送量
-    frame_cd = int(147456 / fps)                 # CBR予算/コマ(この範囲=新規CD, 超過はタンク供給)
-    _upd = counts["Raw"] + counts["Buf"] + counts["Coa"] + counts["Flbk"] + counts["Near"]
-    _fb = counts["Raw"] * 32 + counts["Buf"] * 32 + _upd * 2
-    max_raw = frame_cd // 34                      # 1コマのRaw予算(指針器フルスケール C-max_raw の基準)
+        r = max(0, min(supply_capacities["Prg"], r + random.randint(-40, 40)))
+        prg_rem.append(r)
+    supply_series = {
+        "Prg": prg_rem,
+        "Wr0": [max(0, 820 - i * 2) for i in range(tln)],
+        "Wr1": [max(0, 760 - i * 2) for i in range(tln)],
+        "Main": [max(0, 190 - i // 2) for i in range(tln)],
+    }
     # BODY物理配送slotのダミー。padを含む物理bytesが各slotのCD実時間を決める。
     body_payload_tl = [
         5600 if i % 47 == 0 else max(0, 3200 + int(900 * math.sin(i / 13.0)))
@@ -182,7 +194,6 @@ def dummy_data():
         [body_payload_bytes + body_control_bytes], [body_physical_bytes])[0] // 1024)
     avg_kbps = int(round(stream_schedule.average_body_delivery_rate_bps(
         body_useful_tl, body_physical_tl) / 1024))
-    tank_delta = body_payload_bytes // 32 - counts["Raw"] - counts["Buf"]
     pl_info = {"Prev": dict(pl=11, frame=980), "Current": dict(pl=12, frame=1122),
                "Next": dict(pl=13, frame=1544)}   # 各パレットの番号と切替開始フレーム
     pl_cur, pl_total = 12, 13                       # 現在パレット番号 / 総数(最大番号)
@@ -196,7 +207,7 @@ def dummy_data():
     cat_uniq = {k: max(1, int(cat_totals[k] * (0.06 + 0.05 * (hash(k) % 7) / 7))) for k, _ in CATS}
     dma_tiles = counts["Raw"] + counts["Buf"]
     return dict(C=C, counts=counts, counts_uniq=counts_uniq, series=series, fps=fps, win=win,
-                palettes=palettes, cat_totals=cat_totals, cat_uniq=cat_uniq, tank_delta=tank_delta, max_raw=max_raw,
+                palettes=palettes, cat_totals=cat_totals, cat_uniq=cat_uniq,
                 body_payload_bytes=body_payload_bytes, body_control_bytes=body_control_bytes,
                 body_physical_bytes=body_physical_bytes,
                 band_kbps=band_kbps, body_payload_tl=body_payload_tl,
@@ -207,11 +218,12 @@ def dummy_data():
                 req=sum(counts[k] for k, _ in CATS),
                 budget=273,
                 comp=counts["Same"] + counts["Near"] + counts["Coa"] + counts["Flbk"],
-                buf_cap=buf_cap, buf_rem=13900,
+                supply_capacities=supply_capacities,
+                supply_remaining={name: values[126] for name, values in supply_series.items()},
                 cold=counts["Raw"] + counts["Buf"], cold_raw=counts["Raw"], cold_buf=counts["Buf"],
                 cold_cap=av_config.cold_cap_for_fps(fps, "H32", 896),
                 dma_tiles=dma_tiles, dma_runs=23,
-                tl=tl, buf_rem_series=rem, dma_tl=dma_tl, tln=tln,
+                tl=tl, supply_series=supply_series, tln=tln,
                 time_s=42.0, frame=1260, total_frames=2712)
 
 
@@ -245,30 +257,17 @@ def draw_field(d, x, y, label, value, width, font, col, maxval=None, maxwidth=No
 
 
 def meter_widths(cells):
-    """Each bar follows its label width. Returns Band, Tank, Buff, DMA, Run."""
+    """Each bar follows its label width.
+
+    Returns Band, Prg, Wr0, Wr1, Main, DMA, and Run widths.
+    """
     return (_w(f_leg, "Band:000KiB/sec") + 3,
-            _w(f_leg, "Tank:00000") + 3,
-            _w(f_leg, "Buff:-000") + 3,
+            _w(f_leg, "Prg:00000") + 3,
+            _w(f_leg, "Wr0:000") + 3,
+            _w(f_leg, "Wr1:000") + 3,
+            _w(f_leg, "Main:000") + 3,
             _w(f_leg, dma_label_template(cells)) + 3,
             _w(f_leg, run_label_template()) + 3)
-
-
-def draw_tank_delta(d, x, by, BH, ly, bw, delta, scale):
-    """Tank増減の指針器メーター: 中央に薄線、減(<0)=左へ赤 / 増(>0)=右へ青。フルスケール=scale。
-    ラベルは Buff:-xxx / +xxx / ±000(バー幅=ラベル幅)。"""
-    half = bw // 2
-    cxm = x + half
-    fillw = int(half * min(abs(delta), scale) / max(scale, 1))
-    if delta < 0:
-        d.rectangle([cxm - fillw, by, cxm, by + BH], fill=(220, 70, 70))     # 減=左へ赤
-    elif delta > 0:
-        d.rectangle([cxm, by, cxm + fillw, by + BH], fill=(80, 130, 230))    # 増=右へ青
-    d.rectangle([x, by, x + bw, by + BH], outline=COL_FRAME_IN)
-    d.line([cxm, by + 2, cxm, by + BH - 2], fill=(110, 110, 120))            # 中央の薄線
-    sign = "-" if delta < 0 else ("+" if delta > 0 else "±")
-    d.text((x, ly), "Buff:", fill=COL_TXT, font=f_leg); lx = x + _w(f_leg, "Buff:")
-    d.text((lx, ly), sign, fill=COL_TXT, font=f_leg); lx += _w(f_leg, sign)
-    draw_padnum(d, lx, ly, abs(delta), 3, f_leg, COL_TXT)
 
 
 def dummy_image(w, h, seed):
@@ -376,8 +375,8 @@ def draw_graph(w, h, data):
 
 
 def draw_status(w, h, data):
-    """status帯: Req / Cold / Band / Tank / Buff / DMA / Run + 3段Timeline。
-    数値は同じ文字色のゼロ埋めで桁固定。MissCarryは廃止。"""
+    """status帯: Req / Cold / Band / Prg / Wr0 / Wr1 / Main / DMA / Run + timeline。
+    数値は同じ文字色のゼロ埋めで桁固定。Tank/BufメーターとMissCarryは廃止。"""
     im = Image.new("RGB", (w, h), (16, 16, 16))
     d = ImageDraw.Draw(im)
     by, BH = 8, 16                   # 上マージンを半分(16→8)。タイムラインもこのbyから始まり下端は据置=縦に伸びる
@@ -387,7 +386,7 @@ def draw_status(w, h, data):
     dmax = dma_tile_capacity(data["mode"], data["fps"], C)
     dval = data["dma_tiles"]
     # メーター幅の統一を廃止=各バーは自分のラベル幅
-    BAND_W, TANK_W, BUFF_W, DMA_W, RUN_W = meter_widths(C)
+    BAND_W, PRG_W, WR0_W, WR1_W, MAIN_W, DMA_W, RUN_W = meter_widths(C)
     COLD_W = _w(f_leg, "Cold:000") + 3          # 新: Coldバー幅=ラベル幅(Req↔Bandの間に挿入)
     ly = by + BH + 3
     x = 4
@@ -422,14 +421,21 @@ def draw_status(w, h, data):
     xb = draw_field(d, x, ly, "Band:", data["band_kbps"], 3, f_leg, COL_TXT)
     d.text((xb, ly), "KiB/sec", fill=COL_DIM, font=f_leg)
     x += BAND_W + GAP
-    # 3) Tank = 貯水池の現在残量(violet)。ラベルは現在数のみ、バー幅=ラベル幅
-    stacked([(data["buf_rem"], CAT_BUF)], data["buf_cap"], TANK_W)
-    draw_field(d, x, ly, "Tank:", data["buf_rem"], 5, f_leg, COL_TXT)
-    x += TANK_W + GAP
-    # 4) Tank増減の指針器(中央薄線・減=左赤/増=右青)。フルスケール=描画範囲タイル数-最大Raw数
-    draw_tank_delta(d, x, by, BH, ly, BUFF_W, data["tank_delta"], max(1, C - data["max_raw"]))
-    x += BUFF_W + GAP
-    # 5) DMA = 今フレームの32Bパターンタイル数。フル=モード/fpsの理論DMAから全NT分を引いた枚数。
+    # 3) Four independent physical pattern-supply meters.  Wr0/Wr1/Main are
+    # boot preloads; Prg is the streamed circular supply.
+    supply_widths = {
+        "Prg": (PRG_W, 5), "Wr0": (WR0_W, 3),
+        "Wr1": (WR1_W, 3), "Main": (MAIN_W, 3),
+    }
+    for name in SUPPLY_ORDER:
+        width, digits = supply_widths[name]
+        remaining = data["supply_remaining"][name]
+        capacity = data["supply_capacities"][name]
+        stacked([(remaining, SUPPLY_COLORS[name])], capacity, width)
+        draw_field(d, x, ly, name + ":", remaining, digits, f_leg, COL_TXT)
+        x += width + GAP
+
+    # 4) DMA = 今フレームの32Bパターンタイル数。フル=モード/fpsの理論DMAから全NT分を引いた枚数。
     fillw = int(DMA_W * min(dval, dmax) / max(dmax, 1)); over = dval > dmax
     d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else COL_DMA)
     if over:
@@ -438,7 +444,7 @@ def draw_status(w, h, data):
     draw_field(d, x, ly, "DMA:", dval, dma_value_digits(C), f_leg, COL_TXT)
     x += DMA_W + GAP
 
-    # 6) Run = playerのcold-run record数。CPU/DMA転送方式にかかわらず1tile/runが理論最悪。
+    # 5) Run = playerのcold-run record数。CPU/DMA転送方式にかかわらず1tile/runが理論最悪。
     run_val = int(data["dma_runs"]); run_max = dma_run_worst_case(dval)
     run_fill = (max(1, int(RUN_W * min(run_val, run_max) / run_max))
                 if run_val > 0 and run_max > 0 else 0)
@@ -453,24 +459,25 @@ def draw_status(w, h, data):
     py0 = ly + 16
     draw_palettes_strip(d, 4, py0, meters_right - 4, (h - 2) - py0, data["palettes"], data.get("pl_info"))
 
-    # 7) 3段Timeline(右端まで): 上=Reqヒートマップ / 中=Buf残量マップ / 下=有効転送量。比=2:1:1
+    # 6) Three-row timeline: request heatmap / four-source remaining stack /
+    # useful BODY delivery.  Height ratio is 2:1:1.
     x_tl = x
     tlw = w - 4 - x_tl
     if tlw > 20:
-        tl = data["tl"]; rem = data["buf_rem_series"]; tln = data["tln"]
+        tl = data["tl"]; supply = data["supply_series"]; tln = data["tln"]
         payload_tl = data["body_payload_tl"]
         control_tl = data["body_control_tl"]
         physical_tl = data["body_physical_tl"]
         tlh = (h - 2) - by
         # 正確に 2:1:1(区切り無し・隙間無し)
         H_req = tlh // 2                          # Req = 2
-        H_buf = tlh // 4                          # Buf = 1
-        H_dma = tlh - H_req - H_buf               # DMA = 1
+        H_supply = tlh // 4                       # supply = 1
+        H_dma = tlh - H_req - H_supply            # BODY = 1
         y_req = by
-        y_buf = y_req + H_req
-        y_dma = y_buf + H_buf
+        y_supply = y_req + H_req
+        y_dma = y_supply + H_supply
         # 各段の背景を極暗色で塗る(下段の空きが純黒=marginに見えないように)
-        d.rectangle([x_tl, y_buf, x_tl + tlw, y_buf + H_buf], fill=(26, 20, 34))   # Buf段 暗violet
+        d.rectangle([x_tl, y_supply, x_tl + tlw, y_supply + H_supply], fill=(21, 22, 28))
         d.rectangle([x_tl, y_dma, x_tl + tlw, y_dma + H_dma], fill=(18, 26, 20))   # 有効転送段 暗green
         stack_order = [("Raw", CAT_RAW), ("Coa", CAT_COA), ("Flbk", CAT_FLBK),
                        ("Buf", CAT_BUF), ("Miss", CAT_MISS)]
@@ -482,8 +489,13 @@ def draw_status(w, h, data):
                 seg = int(H_req * tl[k][fi] / C)
                 if seg > 0:
                     d.line([(X, yb - seg), (X, yb)], fill=col); yb -= seg
-            hb = int(H_buf * rem[fi] / max(data["buf_cap"], 1))   # 中段: Buf残量(violet下から)
-            d.line([(X, y_buf + H_buf - hb), (X, y_buf + H_buf)], fill=CAT_BUF)
+            ys = y_supply + H_supply
+            total_capacity = max(sum(data["supply_capacities"].values()), 1)
+            for name in SUPPLY_ORDER:
+                hs = int(H_supply * supply[name][fi] / total_capacity)
+                if hs > 0:
+                    d.line([(X, ys - hs), (X, ys)], fill=SUPPLY_COLORS[name])
+                    ys -= hs
             physical = max(physical_tl[fi], 1)
             hp = int(H_dma * payload_tl[fi] / physical)
             if hp > 0:

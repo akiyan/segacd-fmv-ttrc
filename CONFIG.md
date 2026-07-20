@@ -23,30 +23,39 @@ Where a value lives: **sp** = `boot/movieplay_sp.s` (Sub CPU), **ip** =
 
 ---
 
-## A. Streaming buffer (payload RING / virtual VBV budget)
+## A. Pattern supplies and offline quality budget
 
-The payload RING is the physical PRG-RAM area that holds prefetched tile
-sectors. The encoder also has a virtual VBV budget with the same capacity, but
-the two occupancies are different: VBV guides quality choices, while the shared
-sim/packer sector scheduler determines actual RING occupancy.
+The player exposes four physical pattern supplies: streamed `PrgBuf`,
+boot-preloaded `WordBuf0`, `WordBuf1`, and `MainBuf`. The short analysis labels
+are Prg, Wr0, Wr1, and Main. The old Tank name is retired.
+
+The encoder also keeps an offline whole-movie quality budget. It decides when
+the encode may spend bytes, but it is not another player buffer and is not
+shown as a supply meter. Its ceiling matches usable `PrgBuf` capacity so the
+quality plan cannot assume more time-shifting freedom than the physical stream
+can schedule.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| `RING_SIZE` / `RING_SIZE_KB` | 428 KB (0x6B000) | sp / cfg | Physical PRG ring. It fills the complete safe range from 0x0C000 up to `APPLY_BASE` after routing moved to Word RAM. |
-| `RING_JITTER_MARGIN_KB` | 40 KB | cfg | Headroom for real CD-delivery jitter, subtracted from the physical ring. |
-| `RING_CAP_KB` | 388 KB (derived) | cfg -> pack | Pack schedule / prefetch cap = `RING_SIZE_KB - RING_JITTER_MARGIN_KB`. |
-| `TANK_KB` | 388 KB (derived) | cfg -> sim | Capacity of the encoder's virtual VBV budget. It matches the usable RING capacity but is not the physical RING occupancy. |
-| `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the ring. `RING_CAP` must stay below it. |
-| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v9 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
+| `RING_SIZE` / `RING_SIZE_KB` | 428 KB (0x6B000) | sp / cfg | Internal circular allocation backing `PrgBuf`, from 0x0C000 up to `APPLY_BASE`. The `RING_*` spelling describes the implementation, not a fifth public object. |
+| `RING_JITTER_MARGIN_KB` | 40 KB | cfg | Headroom for real CD-delivery jitter, subtracted from the physical PRG ring. |
+| `PRG_BUF_CAP_KB` | 388 KB (derived) | cfg -> sim / pack | Public usable `PrgBuf` schedule/prefetch ceiling = `RING_SIZE_KB - RING_JITTER_MARGIN_KB`. `RING_CAP_KB` remains an internal compatibility alias. |
+| `QUALITY_BUDGET_KB` | 388 KB (derived) | cfg -> sim | Capacity of offline quality accounting. It matches the usable Prg ceiling but has an independent trace and no physical meter. Configured runs overwrite inherited `CBRSIM_QUALITY_BUDGET_KB`. |
+| `WordBuf0` / `WordBuf1` | 880 patterns each (27.5 KB each) | sp / ip / sim / pack | Different boot-preloaded sequences in the two physical Word-RAM banks at offset `+0x15200..+0x1C000`. Wr0 serves even timed frames and Wr1 odd timed frames; they are not duplicated copies. |
+| `MainBuf` | 208 patterns (6.5 KB) | ip / sim / pack | Boot-staged at Word-RAM `+0xD000`, then copied once to Main RAM `0xFF6600..0xFF8000`. Either frame parity may consume it. |
+| `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. The Prg schedule ceiling must stay below it. |
+| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v10 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
-| prebuffer | up to `RING_CAP` | sim / pack | Final region of `HEADER.DAT`; a boot-time payload burst before frame 1. It is capped by both `RING_CAP` and the clip's total future cold payload. |
-| frame-0 boot staging | 36 KB max in the 40 KB jitter tail | sp | Frame 0 is temporarily stored at `RING_CAP` and expanded before BODY streaming reuses those PRG-RAM bytes. |
+| Prg prebuffer | up to `PRG_BUF_CAP_KB` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both usable Prg capacity and the clip's future Prg load total. |
+| frame-0 boot staging | 36 KB max in the 40 KB jitter tail | sp | Frame 0 is temporarily stored at the usable-Prg end and expanded before BODY streaming reuses those PRG-RAM bytes. |
 
-DEBUG uses the Window name table for one opaque HUD row. It still updates every
-video row behind that Window, so diagnostic playback has the same video-name-table
-work as a release build. The encoder only reorders existing CRAM colours to keep
-palette 0 index 1 globally darkest (HUD background) and index 15 globally
-brightest (HUD text); it does not alter either colour value.
+DEBUG uses the Window name table for one HUD row. Only its 22 H32 or 28 H40
+value cells are opaque; unused width uses transparent tile 0 so the movie stays
+visible at the right. The player still updates every video row behind the
+Window, so diagnostic playback has the same video-name-table work as a release
+build. The encoder only reorders existing CRAM colours to keep palette 0 index
+1 globally darkest (HUD background) and index 15 globally brightest (HUD text);
+it does not alter either colour value.
 
 ## A2. CRAM pre-load (PALTAB) — palette table, off the stream
 
@@ -74,9 +83,10 @@ four rows. Frames are then quantised against this final palette grouping.
 
 ## B. Cold cap (quality vs. sector slip) — the main quality lever
 
-"Cold" = fresh 32-byte tile patterns loaded from CD this frame (vs. reuse of a
-resident tile). More cold = sharper picture, but a heavy frame that loads too
-many can overrun the CDC (a sector slip).
+"Cold" = 32-byte tile patterns newly written to VRAM this frame, whether their
+physical source is Prg, Wr0, Wr1, or Main (as opposed to reusing a resident
+tile). More cold gives the encoder more exact updates, but the player still has
+a measured per-frame processing ceiling.
 
 The cap is selected from `av_config.COLD_CAP_QUALIFICATIONS` by display mode,
 nominal fps, and active picture-tile count, and shared by profile validation,
@@ -141,10 +151,11 @@ audible click). See the `R`/`L` HUD readouts below.
 Both `pcm13` and `adpcm22` are supported profile choices. `adpcm22` is the
 default for new profiles and for direct sim runs that do not set
 `CBRSIM_AUDIO`. ADPCM22 implementation is complete and H40 Sonic is full-length
-emulator-, automated-check-, and listening-qualified. Machi OP's H40/15 raster
-with 720 active tiles and Machi ED's H40/15 raster with 1,040 active tiles are
-also full-length emulator- and automated-check-qualified. Physical hardware and
-the other cadence/mode combinations remain broader compatibility checks.
+emulator- and listening-qualified. Machi OP's H40/15 raster with 720 active
+tiles, Machi ED's H40/15 raster with 1,040 active tiles, and the v10 four-supply
+Bad Apple H40/30 raster with 1,120 active tiles completed full recording, HUD,
+stream, and replay-equivalence checks. Physical hardware and the other
+cadence/mode combinations remain broader compatibility checks.
 
 Low-rate ADPCM chunks need one extra streaming safeguard. An N4 decode is about
 16 ms, longer than the 13.3 ms interval between CD sectors, so the Sub CPU polls
@@ -180,7 +191,7 @@ continuously.
 | ring-full skip | occ >= 424 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
 | `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. With `FEATURE_FIXED_N2`, 400 frames receive exactly 1001 sectors: 199 two-sector and 201 three-sector allowances. Feature-clear 24fps and 15fps retain the delivery-paced 75/fps schedule (3.125 and 5 sectors/frame). In v6+ each `BODY.DAT` slot is control / future payload / pad; v7+ packs the control and total counts into one routing byte. |
-| `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, optional ADPCM tables, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
+| `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, optional ADPCM tables, the v10 WordBuf0 / WordBuf1 / MainBuf boot-pattern regions, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
 | `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. At 24fps or above, the Sub copies eligible blocks by these runs instead of scanning every update entry again. Old streams use the entry fallback; old players ignore the suffix via `total_len`. |
 | `FEATURE_FIXED_N2` | header bit 1 at offset 62 (v8) | pack / sp / ip | Authoritative fixed-cadence contract. Main forces one flip every two VBlanks and Sub selects the matching 1001/400 sector accumulator. The packer sets it only when `uses_fixed_n2_cadence(fps)` is true; 24fps leaves it clear despite its N=2 hint. |
 | `FEATURE_ADPCM22` | header bit 2 at offset 62 (v9) | pack / sp | Live controls use checkpointed IMA ADPCM, the full-table boot region is present, and `audio_bytes` means decoded samples. |
@@ -193,7 +204,7 @@ continuously.
 | `VB_WORDS_H40` | 3400 words/VBlank | ip | H40 per-VBlank DMA word budget (conservative vs. ~3895 theoretical). |
 | `VB_WORDS_H32` | 2800 words/VBlank | ip | H32 per-VBlank DMA word budget. |
 | fixed N2 cadence | `FEATURE_FIXED_N2` (v8) | pack / sp / ip | Main flips every exactly two VBlanks. The paired Sub schedule is 1001/400 sectors/frame, so CD delivery does not run ahead of the fixed display clock. This feature bit is authoritative; `vsync_n` alone never enables the path. Current 24fps and 15fps streams leave it clear and remain delivery-paced. |
-| `MAIN_CODEGEN_BASE..LIMIT` | 24 KB (`0xFF2000..0xFF7FFF`) | ip | Reserved for Main-CPU code generated once after header setup. The former tile staging use is obsolete because pattern DMA reads Word RAM directly. |
+| `MAIN_CODEGEN_BASE..LIMIT` | 17.5 KB (`0xFF2000..0xFF65FF`) | ip | Reserved for Main-CPU code generated once after header setup. The H40 maximum currently ends at `0xFF6580`; `MainBuf` begins at `0xFF6600`, leaving a 128-byte guard. |
 | `RUN_TABLE` | 1536 records by address range; current cold cap is much lower | ip | `(dst, len, src)` table of contiguous cold-slot runs. Each record is counted by H40 HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. |
 
 ## F. CBR / transfer rate
@@ -207,9 +218,11 @@ continuously.
 
 ## G. Encoder quality knobs
 
-Per-cell the sim picks: Raw (accurate load charged to the current virtual CBR
-budget), Same, Near/Coa/Flbk (reuse a resident tile), Buf (accurate load charged
-to banked virtual VBV budget), or Miss. These thresholds steer that choice.
+Per-cell the sim picks: Raw (accurate load charged to the current-frame
+allowance), Same, Near/Coa/Flbk (reuse a resident tile), Buf (accurate load
+funded by saved whole-movie allowance or a boot-preload credit), or Miss. Raw
+and Buf are quality-funding classes; Prg/Wr0/Wr1/Main independently records the
+physical source. These thresholds steer the choice.
 Frequently changed profile values use their TOML names below. The remaining
 `CBRSIM_*` variables are advanced shared experiments; do not put per-movie
 values in this document.
@@ -233,19 +246,26 @@ values in this document.
 | `palette.segment_gain_relative` / `palette.segment_gain_per_pixel` | 0.005 / 0.002 | Improvement required before a local segment palette replaces the selected global palette. Adjacent identical choices are merged. |
 
 After quantization, the encoder dry-runs the exact target through the shared
-VRAM allocator and predicts each frame's name-table and cold-pattern demand. A
-backwards pass derives the minimum virtual-tank reserve needed after every
-frame. This whole-movie plan is the only virtual-budget allocation path.
+VRAM allocator and predicts each frame's name-table and cold-pattern demand.
+It first water-fills the finite WordBuf0/WordBuf1/MainBuf boot credits across
+predicted bursts, then a backwards pass derives the minimum offline quality
+reserve needed after every frame. This is the only quality-budget allocation
+path.
 
 Optional Raw/Buf upgrades protect against the complete exact-demand trace.
 Normal exact updates use a narrower Miss-risk trace: source changes that fit
 the existing Coa visual bound are excluded because they can degrade gracefully
-to resident reuse, while changes beyond Coa reserve tank against future Flbk
+to resident reuse, while changes beyond Coa reserve quality allowance against future Flbk
 and Miss bursts. The risk trace is independent from optional quality spending.
-Both curves end at zero by definition, so the useful tail naturally drains the
-virtual tank without a separate end-of-movie rule. The physical payload RING
+Both curves end at zero by definition, so the useful tail naturally releases
+the quality budget without a separate end-of-movie rule. The physical PrgBuf
 sector schedule remains a separate exact proof in `stream_schedule.py`. See
 [`BUEFFERING.md`](BUEFFERING.md) for the complete planning flow and validation.
+
+Schema-4 `buffer_remaining.npz` records `prg_remaining`, `wr0_remaining`,
+`wr1_remaining`, and `main_remaining` plus the matching capacities and
+per-frame loads. `quality_budget_remaining` is diagnostic only and is not one
+of the four analysis meters.
 
 `buffer_remaining.npz` also stores the physical BODY delivery-slot trace:
 `body_useful_payload_bytes`, `body_useful_control_bytes`, `body_pad_bytes`, and
@@ -334,7 +354,7 @@ The profile loader is strict: misspelled sections/keys, unsupported display
 modes, non-tile-aligned dimensions, and unsafe TOML filename characters fail
 immediately. Profile values replace
 inherited per-source environment values unconditionally. Shared hardware
-limits such as ring size, virtual VBV capacity, and the measured cold-cap table
+limits such as PrgBuf size, quality-budget capacity, preload capacities, and the measured cold-cap table
 stay in `tools/av_config.py`; they are deliberately not per-source TOML fields.
 `video.active_tiles` supplies source geometry to that shared selector, not a
 per-source cap override. Profile loading fails before encoding when no measured
@@ -343,16 +363,17 @@ tuple exactly matches the requested mode, fps, and active-tile count.
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 
 Not settings, but the live readouts of the throttles above — a single top row
-on the VDP Window plane (`render_dbg` in ip, read back by
+on the VDP Window plane (`prepare_dbg` / `publish_dbg` in ip, read back by
 `tools/read_frameno.py: read_hud`). Keeping the HUD on Window separates it from
 the two alternating video name tables, so a video-plane flip cannot make the
 text disappear for one frame.
 
-H32 uses the contiguous 32-cell layout
-`FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx`. H40 keeps that exact prefix and uses its
-eight additional visible cells for `UxxxxNxx`. `F` and `U` are four
-hexadecimal digits; `L` shows the high byte of the lead, and the other compact
-fields show their low byte. Two-digit fields wrap naturally from `FF` to `00`.
+The player draws values only, with no category letters or separators. H32 uses
+22 cells: `xxxx xx xx xx xx xx xx xx xx xx`. H40 keeps that prefix and appends
+`xxxx xx`, for 28 cells total. The fixed interpretation order is
+`F/P/S/D/R/L/C/W/M/A`, followed by H40-only `U/N`. `F` and `U` are four
+hexadecimal digits; `L` shows the high byte of the lead, and the other fields
+show their low byte. Two-digit fields wrap naturally from `FF` to `00`.
 
 The shared font asset uses source index 0 for its background and source index 1
 for set pixels. The movie player expands them once to P0/index1 and P0/index15
@@ -360,26 +381,34 @@ while uploading the font to VRAM. The result is an opaque darkest-colour HUD
 background with brightest-colour text in every palette segment, with no
 per-frame font scan, recolour, DMA, or additional VBlank wait.
 
-The top Window row covers the video visually, but a DEBUG build still updates
-the hidden video name-table row and all other rows exactly as a release build.
-All Window cells are initialized with the opaque darkest-colour blank glyph;
-32 H32 or 40 H40 live HUD cells are then overwritten once per frame. This adds
-no DMA and does not branch on whether the video starts at row 0. In DEBUG
-builds, the old slip-triggered CRAM0 red border is disabled; slips remain
+The occupied value cells cover the video visually, but a DEBUG build still
+updates the hidden video name-table row and all other rows exactly as a release
+build. The complete Window row is initialized to transparent tile 0; only the
+22 H32 or 28 H40 value cells are overwritten with opaque font tiles each
+frame. Thus H40's unused right-hand 12 cells show the movie instead of black.
+The values are formatted into a Main-RAM row before the display deadline, then
+published with 11 H32 or 14 H40 longword writes to the inactive one of two
+Window name tables at VRAM `0xD000` and `0xF000`. The final control-port
+longword switches the picture name table and Window name table together. A
+terminal-VBlank guard rejects V-counter lines `0xFC..0xFF` and waits for a fresh
+blank before that paired write, closing the end-of-blank race without adding a
+third scanout. This adds no DMA and does not branch on whether the video starts
+at row 0. In DEBUG builds,
+the old slip-triggered CRAM0 red border is disabled; slips remain
 visible in `Sxx`, while the HUD colours stay stable. Release builds retain the
 red indicator because they do not have the HUD.
 
-| Marker | Display | Meaning |
+| Position key | Digits | Meaning |
 |---|---|---|
-| `F` | `Fxxxx` | 16-bit frame number. |
-| `P` | `Pxx` | Low byte of the palette segment. |
-| `S` | `Sxx` | Low byte of the CD sector-slip count (re-seek recoveries). 0 = clean video. |
-| `D` | `Dxx` | Low byte of the stream-desync count. 0 = clean. |
-| `R` | `Rxx` | Low byte of the audio re-sync count (lead left `[SYNC_MIN, SYNC_MAX]`). 0 is ideal; each increment is a write-pointer jump. |
-| `L` | `Lxx` | High byte of the current audio lead (write - play), in 256-byte units. Approaching `00` means the startup reserve is draining. |
-| `C` | `Cxx` | Blocking CD pumps needed before the current control could run, including an older BODY slot. Zero means delivery was already armed. |
-| `W` | `Wxx` | Approximate Main-CPU wait for Sub completion at `CMD_SWAP`, in V-counter scanlines. It wraps at 256, so use it as a short-wait diagnostic rather than an absolute stopwatch. |
-| `M` | `Mxx` | VBlank starts waited by the Main pattern path this frame. Values of 2 or more prove an extra VBlank spill. |
-| `A` | `Axx` | Sub ADPCM decode phase time. One displayed unit is four 30.72 us stopwatch ticks (about 0.1229 ms); PCM builds display zero. H40 Sonic ADPCM measured `3E..42`, about 7.62..8.11 ms. At low frame rates this phase includes any opportunistic CDC pump performed inside the longer decode. |
-| `U` | `Uxxxx` (H40) | Main pattern-transfer time in Mega-CD stopwatch ticks, measured from the first run through the final DMA repair or CPU-direct write. One tick is 30.72 us; the 12-bit counter wraps after 4096 ticks (about 125.83 ms). |
-| `N` | `Nxx` (H40) | Low byte of the packed cold-run descriptor count for this frame. This is the fragmentation count before a long run is split by the VBlank word budget and wraps at 256. |
+| `F` | 4 | 16-bit frame number. |
+| `P` | 2 | Low byte of the palette segment. |
+| `S` | 2 | Low byte of the CD sector-slip count (re-seek recoveries). 0 = clean video. |
+| `D` | 2 | Low byte of the stream-desync count. 0 = clean. |
+| `R` | 2 | Low byte of the audio re-sync count (lead left `[SYNC_MIN, SYNC_MAX]`). 0 is ideal; each increment is a write-pointer jump. |
+| `L` | 2 | High byte of the current audio lead (write - play), in 256-byte units. Approaching `00` means the startup reserve is draining. |
+| `C` | 2 | Blocking CD pumps needed before the current control could run, including an older BODY slot. Zero means delivery was already armed. |
+| `W` | 2 | Approximate Main-CPU wait for Sub completion at `CMD_SWAP`, in V-counter scanlines. It wraps at 256, so use it as a short-wait diagnostic rather than an absolute stopwatch. |
+| `M` | 2 | VBlank starts waited by the Main pattern path this frame. Values of 2 or more prove an extra VBlank spill. |
+| `A` | 2 | Sub ADPCM decode phase time. One displayed unit is four 30.72 us stopwatch ticks (about 0.1229 ms); PCM builds display zero. H40 Sonic ADPCM measured `3E..42`, about 7.62..8.11 ms. At low frame rates this phase includes any opportunistic CDC pump performed inside the longer decode. |
+| `U` | 4 (H40) | Main pattern-transfer time in Mega-CD stopwatch ticks, measured from the first run through the final DMA repair or CPU-direct write. One tick is 30.72 us; the 12-bit counter wraps after 4096 ticks (about 125.83 ms). |
+| `N` | 2 (H40) | Low byte of the source-aware packed cold-run descriptor count for this frame. This is the fragmentation count before a long run is split by the VBlank word budget and wraps at 256. |

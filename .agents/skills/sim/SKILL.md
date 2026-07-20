@@ -45,11 +45,13 @@ Argument: source MP4 path, optionally plus display name or upload instruction.
 
 Other fixed defaults:
 
-- All features on: `DITHER`, `SEGPAL`, `NEAR`, `VBV`, `COA`.
+- All features on: `DITHER`, `SEGPAL`, `NEAR`, whole-movie quality planning,
+  `COA`, and the qualified four-source pattern supply.
 - Audio = `adpcm22`. Use `pcm13` only when explicitly requested or when a
   physical-console-qualified fallback is required.
-- Tank size comes from `tools/av_config.py`, matching the
-  packer's usable ring cap. Do not set `CBRSIM_TANK_KB` in normal runs.
+- PrgBuf and offline quality-budget ceilings come from `tools/av_config.py`.
+  WordBuf0, WordBuf1, and MainBuf capacities come from
+  `tools/pattern_supply.py`; none are normal per-source overrides.
 - Rate = 144 KiB/s by default.
 - GPU encoding is on by default. CPU is the fallback.
 - Start sim/render with the locked GPU environment. Do not fall back to a
@@ -230,15 +232,15 @@ Important rendering notes:
   `buffer_remaining.npz`, preview, and raw images.
 - Only the source label is passed with `CBRSIM_SRCLABEL`.
 - Layout details are implemented in `layout_preview.py`:
-  - right column: Source / Category / Miss+MissCarry
-  - Miss in Category is an empty red outline rather than filled content
+  - right column: Source / Category / whole-clip category totals / Audio
+  - Miss in Category is a filled red hole
   - legend: 2 rows, 7 categories
   - zero padding and dark leading zeros
-  - scrolling line graph with +/-4 seconds and now centered
-  - status uses Req / Cold / Band / Tank / Buff / DMA / Run
+  - scrolling audio waveform with +/-2 seconds and now centered
+  - status uses Req / Cold / Band / Prg / Wr0 / Wr1 / Main / DMA / Run
   - Band is physical-slot useful BODY payload + control, excluding all pad and
     HEADER, divided by that slot's actual CD read time (0 to 150 KiB/s)
-  - three-row timeline: Req2 : Tank1 : BODY-Band1
+  - three-row timeline: Req2 : four-source remaining stack1 : BODY-Band1
   - DMA is compared against theoretical `(60/fps)` VBlank budget
   - heading metadata plus small top-right Time / Frame, baseline-aligned
   - palette used-color blocks have no outline
@@ -249,7 +251,7 @@ Important rendering notes:
 - Extract and inspect a few frames:
   - Does it match `tmp/layout_preview.png` visually?
   - Is a 16:9 source not distorted?
-  - Are Miss red-outline holes correct?
+  - Are Miss cells rendered as filled red holes?
   - Is the content correct?
   - Use `ffprobe` to verify resolution, duration, and audio.
 

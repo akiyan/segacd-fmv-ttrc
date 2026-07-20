@@ -11,31 +11,34 @@ The reserved Main RAM layout is:
 0xFF2000  256-entry table of signed word offsets (512 bytes)
 0xFF2200  generated bitmap handlers
 0xFF4900  expected Phase 1 end
-0xFF8000  hard limit and existing RUN_TABLE
+0xFF6580  maximum H40 NT blitter end
+0xFF6600  hard code-generation limit and MainBuf start
+0xFF8000  MainBuf end and existing RUN_TABLE
 ```
 
-Each set bit emits exactly one entry read, register-mask cold-flag strip, and shadow write.
+Each set bit emits exactly one entry read, register-mask cold/source-bit strip, and shadow write.
 Every handler then advances the shadow cursor by 16 bytes and branches to the
 assembly loop continuation. No handler modifies its generated instructions
 during playback.
 
 The dispatch keeps the existing `00` skip and uses four masked longword writes
 for `FF`; only partial masks enter the generated jump table. The shared
-`0x7FFF7FFF` register mask also makes each generated cold-flag strip shorter.
+`0x67FF67FF` register mask strips the cold bit and the two Prg/Wr/Main
+source bits while keeping the palette and tile index intact.
 
 Run the full proof:
 
 ```sh
-python3 harness/main_codegen/verify_handlers.py
+tools/python.sh harness/main_codegen/verify_handlers.py
 ```
 
 The proof covers all 256 masks with deterministic entry/shadow data, parses
 every emitted opcode, verifies every table offset and branch target, checks the
-24 KiB boundary, and asks the project 68000 objdump to decode representative
+MainBuf boundary, and asks the project 68000 objdump to decode representative
 handlers. To retain the complete generated image for manual disassembly:
 
 ```sh
-python3 harness/main_codegen/verify_handlers.py \
+tools/python.sh harness/main_codegen/verify_handlers.py \
   --output tmp/main_codegen/bitmap_handlers.bin
 
 ~/toolchains/mars/m68k-elf/bin/m68k-elf-objdump \
@@ -54,17 +57,17 @@ tile width ends the row with one `MOVE.W`. Verify the H32/H40 maximum layouts,
 offset layouts, odd widths, generated size, semantics, and disassembly with:
 
 ```sh
-python3 harness/main_codegen/verify_blitters.py
+tools/python.sh harness/main_codegen/verify_blitters.py
 ```
 
-The maximum H40 pair occupies 7,296 bytes (`0xFF4900..0xFF657F`), leaving
-6,784 bytes before `RUN_TABLE` at `0xFF8000`. Invalid or oversized geometry is
+The maximum H40 pair occupies 7,296 bytes (`0xFF4900..0xFF657F`), leaving a
+128-byte guard before `MainBuf` at `0xFF6600`. Invalid or oversized geometry is
 rejected so the player can retain the existing generic blitter as fallback.
 
 Measure the per-frame instruction cost against a real packed stream with:
 
 ```sh
-python3 harness/main_codegen/measure_cycles.py \
+tools/python.sh harness/main_codegen/measure_cycles.py \
   --header out/lunar-sss-op-h32/HEADER.DAT \
   --body out/lunar-sss-op-h32/BODY.DAT
 ```

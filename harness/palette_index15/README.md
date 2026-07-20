@@ -16,7 +16,7 @@ tables, and palette switches need no font scan, rewrite, DMA, or VBlank wait.
 ## Run the focused proof
 
 ```sh
-python3 harness/palette_index15/verify.py
+tools/python.sh harness/palette_index15/verify.py
 ```
 
 The synthetic proof deliberately puts the global maximum in non-P0 rows and
@@ -27,7 +27,7 @@ one-time `dbgfont.bin` index1-to-index15 expansion.
 To check a newly encoded decision log and its physical PALTAB too:
 
 ```sh
-python3 harness/palette_index15/verify.py \
+tools/python.sh harness/palette_index15/verify.py \
   --dec-log videos/your_stem/decisions.pkl \
   --header out/movieplay/HEADER.DAT
 ```

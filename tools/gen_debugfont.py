@@ -3,9 +3,9 @@
 
 Output: boot/dbgfont.bin = len(ORDER) tiles * 32 bytes.
 Set pixels use colour index 1, background 0 (transparent). The player uploads
-these to a reserved VRAM tile region (the top of the pool, freed by lowering
-VRAM_TILES) and writes name-table entries in the bottom letterbox to print
-per-frame decode metrics: F(rame) RAW CMP BUF PAL MIS.
+these to a reserved VRAM tile region above the pool and writes values-only
+hexadecimal name-table entries in the top Window row. Category glyphs are no
+longer emitted; field meaning comes from the fixed documented order.
 
 Glyph i lives at font tile i. ORDER (index -> char) MUST match the player's
 lookup table:

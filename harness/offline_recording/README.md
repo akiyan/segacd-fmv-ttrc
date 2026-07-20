@@ -28,8 +28,9 @@ remains an explicit, backward-compatible spelling of the same mode:
 6. Exit RetroArch naturally, require normal runtime/core unload, reject Replay
    EOF, and require both recorded packet count and decoded-frame count to equal
    `--max-frames`.
-7. Produce the same bounded lossless MKV, audio reports, and verification
-   preview as the normal high-level recorder.
+7. Produce the same bounded lossless MKV and verification preview as the normal
+   high-level recorder. `ffprobe` must find a non-empty audio stream; waveform
+   thresholds are not a recording gate.
 
 The fixed Replay matters. Recording the Replay-generation run itself is not an
 equivalent baseline: in testing, RetroArch's Replay initial state shifted that
@@ -45,7 +46,7 @@ OUTDIR="$PWD/videos" tools/record_movie.sh \
   --config configs/ps2-sakura-op-h32.toml \
   --seconds 140 \
   --tag offline_record --record-size 256x224 --display :299 \
-  --out videos/offline_record_preview.mp4 --audio-min-rms 1
+  --out videos/offline_record_preview.mp4
 ```
 
 The command prints `REPLAY=...`. Reuse that exact file for the realtime
@@ -59,15 +60,15 @@ OUTDIR="$PWD/videos" tools/record_movie.sh \
   --seconds 140 --realtime-lossless --preset ffv1-flac \
   --input-replay "$REPLAY" \
   --tag realtime_baseline --record-size 256x224 --display :300 \
-  --out videos/realtime_baseline_preview.mp4 --audio-min-rms 1
+  --out videos/realtime_baseline_preview.mp4
 
 OUTDIR="$PWD/videos" tools/record_movie.sh \
   --disc out/ps2-sakura-op-h32.cue --no-build \
   --seconds 140 --input-replay "$REPLAY" \
   --tag offline_ab --record-size 256x224 --display :301 \
-  --out videos/offline_ab_preview.mp4 --audio-min-rms 1
+  --out videos/offline_ab_preview.mp4
 
-python3 tools/compare_recordings.py \
+tools/python.sh tools/compare_recordings.py \
   videos/realtime_baseline_lossless.mkv \
   videos/offline_ab_lossless.mkv \
   --json videos/realtime_vs_offline.json
@@ -75,7 +76,7 @@ python3 tools/compare_recordings.py \
 
 When requalifying, repeat the offline command with a new tag, then compare the
 two offline bounded MKVs with the same comparator. Routine captures use their
-built-in frame/packet, audio, log, and visual gates without rerunning
+built-in frame/packet, audio-stream, log, and visual gates without rerunning
 the three-capture qualification.
 
 ## Exact gates
@@ -89,8 +90,10 @@ seek, or automatic alignment:
 - every original Matroska packet PTS, DTS, and present duration;
 - strict monotonic packet timestamps and equal total durations.
 
-The regular audio reports additionally require zero clip candidates and zero
-sample-jump candidates. Those are mechanical checks, not a listening test.
+Routine recording deliberately has no RMS, clipping, or adjacent-sample jump
+threshold. Those checks were content-dependent and could reject legitimate
+source transients or artifacts introduced only by the lossy preview. Exact
+same-Replay qualification still compares every decoded PCM sample.
 
 ## Measured environment
 
@@ -134,15 +137,16 @@ Realtime versus offline and offline versus repeat both passed all exact gates:
 - PCM SHA-256:
   `2c0f18a7fe2b099ebc9617a3f7888e00c6f33056bb1378958ff3d464979b6887`;
 - all video/audio packet timelines and compared stream metadata equal;
-- RMS 869.948, peak 12,724, maximum adjacent-sample jump 4109;
-- clip candidates 0 and jump candidates 0.
+- archived diagnostic values from this qualification were RMS 869.948, peak
+  12,724, and maximum adjacent-sample jump 4109. These are measurements, not
+  current pass/fail gates.
 
 A visual contact sheet confirmed the Mega-CD logo, CD player, licence screen,
 DEBUG HUD movie playback through the full source, and post-movie tail.
 
 The explicit realtime-lossless fallback also passed a wall-clock smoke run:
 8.05 seconds of bounded 256x224 FFV1/FLAC, normal runtime/core unload, readable
-trailer, and successful audio plus preview verification.
+trailer, a non-empty audio stream, and a successful preview transcode.
 
 ## Limits and decisions
 
@@ -168,5 +172,5 @@ trailer, and successful audio plus preview verification.
 - Matroska container bytes may differ because of muxer metadata even when every
   decoded frame, PCM sample, and packet timestamp is equal. Use the comparator,
   not a whole-file checksum, as the content gate.
-- No human listening pass was performed. The report establishes zero mechanical
-  clip/jump candidates and exact equality with realtime PCM only.
+- No human listening pass was performed. The qualification establishes exact
+  equality with realtime PCM, not an audible-quality claim.

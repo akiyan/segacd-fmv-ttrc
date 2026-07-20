@@ -33,21 +33,22 @@ def _draw_cell(dst, x, y, rows):
 def make_hud(width, values, origin=(5, 4), complete=True, black_backing=False):
     height = 32
     yy, xx = np.mgrid[:height, :width]
-    # Deliberately bright/noisy movie pixels make transparent text difficult to
-    # read. The hardware DEBUG path keeps the full-width top Window row clear,
-    # modelled by black_backing below.
+    # Deliberately bright/noisy movie pixels surround the opaque value cells.
+    # Hardware keeps only those cells backed by the font tile; unused H40
+    # Window width is transparent and continues to show the movie.
     image = (150 + (7 * xx + 11 * yy) % 91).astype(np.uint8)
     x, y = origin
     layout = read_frameno.hud_layout_for_width(width)
     fields = layout if complete else layout[:1]
     if black_backing:
-        image[y:y + read_frameno.CELL, :] = 0
+        cells = max(col + digits for _name, col, digits in layout)
+        image[y:y + read_frameno.CELL,
+              x:x + cells * read_frameno.CELL] = 0
     for name, col, digits in fields:
         gx = x + col * read_frameno.CELL
-        _draw_cell(image, gx, y, GLYPHS[name])
         text = f"{values[name] & ((1 << (digits * 4)) - 1):0{digits}X}"
         for j, char in enumerate(text):
-            _draw_cell(image, gx + (j + 1) * read_frameno.CELL, y, GLYPHS[char])
+            _draw_cell(image, gx + j * read_frameno.CELL, y, GLYPHS[char])
     return Image.fromarray(image, "L")
 
 
@@ -70,11 +71,11 @@ def check_case(width, values, origin):
 
 
 def main():
-    if read_frameno.HUD_CELLS != 32:
-        raise SystemExit(f"H32 HUD is {read_frameno.HUD_CELLS} cells, expected 32")
-    if read_frameno.HUD_H40_CELLS != 40:
+    if read_frameno.HUD_CELLS != 22:
+        raise SystemExit(f"H32 HUD is {read_frameno.HUD_CELLS} cells, expected 22")
+    if read_frameno.HUD_H40_CELLS != 28:
         raise SystemExit(
-            f"H40 HUD is {read_frameno.HUD_H40_CELLS} cells, expected 40")
+            f"H40 HUD is {read_frameno.HUD_H40_CELLS} cells, expected 28")
     check_case(256, {"F": 0x1234, "P": 0xAB, "S": 0xFF,
                      "D": 0x00, "R": 0x7E, "L": 0x68,
                      "C": 0x02, "W": 0x03, "M": 0x04, "A": 0x1E}, (0, 5))
@@ -82,6 +83,14 @@ def main():
                      "D": 0xFF, "R": 0x00, "L": 0x7F,
                      "C": 0x00, "W": 0xFF, "M": 0x02, "A": 0x00,
                      "U": 0x1234, "N": 0x2F}, (0, 3))
+
+    h40 = np.asarray(make_hud(
+        320, {"F": 0x0000, "P": 0x00, "S": 0x00, "D": 0x00,
+              "R": 0x00, "L": 0x00, "C": 0x00, "W": 0x00,
+              "M": 0x00, "A": 0x00, "U": 0x0000, "N": 0x00},
+        origin=(0, 3), black_backing=True))
+    if np.all(h40[3:11, read_frameno.HUD_H40_CELLS * 8:] == 0):
+        raise SystemExit("H40 HUD unused width must remain transparent/movie-visible")
 
     # The longstanding single-purpose API must not depend on later HUD fields.
     only_f = make_hud(
@@ -92,7 +101,8 @@ def main():
         raise SystemExit(
             f"standalone F API: got {frame:04X}/{confidence:.3f}, expected CAFE")
 
-    print("HUD OCR proof: OK (H32 32 cells, H40 40 cells, standalone F compatible)")
+    print("HUD OCR proof: OK (values only, H32 22 cells, H40 28 cells, "
+          "unused H40 width transparent, standalone F compatible)")
 
 
 if __name__ == "__main__":

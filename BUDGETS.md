@@ -10,8 +10,11 @@ choosing encoder targets. Numbers are estimates for NTSC 60 Hz playback.
 - Raw tile update from CD: 34 bytes per tile, counted as 32 bytes pattern plus
   2 bytes name-table entry.
 - CD rate: 150 KiB/s = 153,600 bytes/s.
-- Audio: 13.3 kHz mono 8-bit PCM = 13,305 bytes/s (887 B/frame at 15 fps).
-- Raw video CD budget after audio: 140,295 bytes/s.
+- This first-order CD table deliberately uses the conservative PCM13 fallback:
+  13.3 kHz mono 8-bit PCM = 13,305 bytes/s (887 B/frame at 15 fps). ADPCM22 is
+  the project default and has profile-specific control cost documented in
+  `CONFIG.md` and `ADPCM.md`.
+- Raw video CD budget after that PCM13 baseline: 140,295 bytes/s.
 - The theory table uses `tools/layout_preview.py` timing constants converted to
   pattern tiles.
 - Tile counts below use pattern bytes only. Name-table DMA still needs to be
@@ -56,8 +59,9 @@ alternate shorter and longer gaps.
 
 ## CD Raw Read Budget Per Video Frame
 
-The raw-read budget is independent of screen mode. This is the CD budget left
-after 13.3 kHz mono 8-bit PCM audio, expressed as raw tile updates.
+The raw-read budget is independent of screen mode. This table is the CD budget
+left after the PCM13 baseline above, expressed as raw tile updates; it is not a
+replacement for the exact per-profile scheduler.
 
 | Frame rate | Raw tiles/frame |
 |---|---:|

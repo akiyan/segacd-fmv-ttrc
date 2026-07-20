@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import av_config
 from encode_config import apply_profile_env, load_profile
 
 
@@ -64,6 +65,13 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "area")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
         self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "1120")
+        self.assertEqual(env["CBRSIM_AUDIO"], "adpcm22")
+        self.assertTrue(
+            env["CBRSIM_OUT"].endswith(
+                "videos/BadApple_H40_320x224_adpcm22/tmp"))
+        self.assertEqual(
+            env["CBRSIM_QUALITY_BUDGET_KB"],
+            str(av_config.QUALITY_BUDGET_KB))
 
     def test_machi_op_declares_its_confirmed_active_tile_area(self) -> None:
         root = Path(__file__).resolve().parents[1]

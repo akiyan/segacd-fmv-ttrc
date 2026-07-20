@@ -12,7 +12,7 @@ source frames and reports the complete quantised-source colour set.
 Run from the repository root:
 
 ```sh
-python3 harness/palette_audit/audit.py \
+tools/python.sh harness/palette_audit/audit.py \
   videos/BadApple_H32_256x224_pcm13/decisions.pkl \
   --master-dir videos/BadApple_H32_256x224_pcm13/master \
   --output-dir videos/BadApple_H32_256x224_pcm13/tmp/palette_audit \
@@ -32,7 +32,7 @@ display state and counts 8x8 tiles made only from RGB333 `666` and `777`,
 grouped by the number of `666` pixels:
 
 ```sh
-python3 harness/palette_audit/near_white.py \
+tools/python.sh harness/palette_audit/near_white.py \
   videos/BadApple_H32_256x224_pcm13/decisions.pkl \
   videos/BadApple_H32_256x224_pcm13/master
 ```

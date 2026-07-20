@@ -45,6 +45,7 @@ from encode_config import consume_config_arg, profile_identity  # noqa: E402
 CONFIG_PROFILE = consume_config_arg(sys.argv)
 import av_config  # noqa: E402
 import ima_adpcm  # noqa: E402
+import pattern_supply  # noqa: E402
 import stream_schedule  # noqa: E402
 import ttrc_routing  # noqa: E402
 import upgrade_planner  # noqa: E402
@@ -142,7 +143,7 @@ COL_SAME = (0, 190, 175)      # teal
 CAT_RAW = (205, 205, 205)     # Raw = 新規CD転送 (やや暗い白, 枠なし内容)
 CAT_SAME = (150, 150, 158)    # Same = 不変 (gray, 枠なし内容)  ※色巡回
 CAT_DEDUP = (0, 190, 175)     # Dedup = VRAM流用 (teal, 互換用)
-CAT_BUF = (175, 120, 235)     # Buf = PRG先読み (violet)
+CAT_BUF = (175, 120, 235)     # Buf = saved-budget / boot-preload funding class (violet)
 CAT_MISS = (220, 70, 70)      # Miss = 取りこぼし (red, 塗りつぶし)
 CAT_CARRY = (235, 160, 70)    # MissCarry = 繰越Miss (amber)
 CAT_NEAR = (95, 115, 215)     # Near = ほぼ同一の常駐を流用 (blue)  ※色巡回
@@ -205,17 +206,15 @@ NO_PANELS = bool(os.environ.get("CBRSIM_NOPANELS"))   # 計測専用: 解析パ�
 # PRG-RAM先読みバッファ: 再生前にPRGへ載せた静的タイル集合(pickle set of pattern keys)。
 # ここにあるパターンは再生中いつでもCD 0バイト(RAM→VRAM DMAのみ)で出せる=Fill扱い。
 PRG_PRELOAD_PATH = os.environ.get("CBRSIM_PRG_PRELOAD", "")
-# VBVモード: PRG-RAMを「帯域の貯水池(漏れバケツ)」として使う。全編先読み割当をやめ、毎フレーム
-# CD=一定量(frame_cd)を注ぎ、イージーフレームの余りをタンクに貯め、ハードフレームはタンクから引いて
-# Miss を埋める。空になった時だけ Miss。開始時は満タン(B0=CAP)。タンク容量 CAP=TANK_KB。
-# 実機はVBV必須なので sim は VBV専用(env CBRSIM_VBV は無視して常にON)。非VBVパスは未使用。
-VBV_ON = True
-# タンク容量は tools/av_config.py の単一真実源(=実機の使えるリング RING_CAP)から取る。
-# 旧既定414や実行時440はリング物理容量を超えており、simが実機より広いバッファを仮定して
-# 実機で枯渇していた。envで上書き可(実験用)だが、既定はconfigから導出=pack/playerと一致。
-TANK_KB = int(os.environ.get("CBRSIM_TANK_KB", str(av_config.TANK_KB)))
-TANK_CAP_BYTES = TANK_KB * 1024
-# 格上げパス(既定ON): 余ったCD + タンクの余剰で、近似(Near/Coa/Flbk)や持ち越しをRaw/Bufに格上げ。
+# Whole-movie quality budget: easy frames retain virtual bytes and demanding
+# frames spend them.  This is encoder accounting, not a fifth physical buffer.
+# Its ceiling matches usable PrgBuf capacity so the encoder cannot assume more
+# temporal freedom than the player can schedule.
+QUALITY_BUDGET_ON = True
+QUALITY_BUDGET_KB = int(os.environ.get(
+    "CBRSIM_QUALITY_BUDGET_KB", str(av_config.QUALITY_BUDGET_KB)))
+QUALITY_BUDGET_BYTES = QUALITY_BUDGET_KB * 1024
+# 格上げパス(既定ON): 当該フレームの余り + 画質予算で、近似(Near/Coa/Flbk)や持ち越しをRaw/Bufに格上げ。
 # 0で無効(=従来の帯域余し挙動に戻せる, 比較用)。
 UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
 # cold(=新規パターン転送: Raw+Buf)の1コマ上限。実機MDの実時間デコード天井対策
@@ -226,6 +225,11 @@ UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
 COLD_CAP_QUALIFICATION = av_config.cold_cap_qualification(
     FPS, MODE, ACTIVE_TILES)
 MAX_COLD = COLD_CAP_QUALIFICATION.cap
+# The current boot-preload player path is qualified for dense 24/30 fps
+# streams.  Lower-rate ADPCM still uses its separate periodic CDC service path;
+# keep its quality decisions on Prg-only supply until that combination is
+# measured end to end.
+PATTERN_SUPPLY_ON = FPS >= 24.0
 # 近似流用(Near/Coa/Flbk)が「この秒数」以上そのまま居座ったら、格上げ優先度を Miss級(sev=0)へ
 # 昇格させる。一過性の近似は目に見えないが、居座った近似は静的なゴースト=視線が固定される。時間で切る
 # のは知覚(何秒出続けたか)がfps非依存だから(重み付けaging=予算コンテストのフレーム数とは別軸)。0で無効。
@@ -789,7 +793,7 @@ def cells_to_image(cell_rgb):
 
 
 # --- フレーム独立の量子化(読込→333化→タイル化→パレット割当→索引→レンダ)を並列化 ---
-# 差分/VBV本体は逐次(前フレーム状態に依存)だが、ここは各フレーム独立=実行時間の大半。
+# 差分/画質予算の本体は逐次(前フレーム状態に依存)だが、ここは各フレーム独立=実行時間の大半。
 # ワーカー数は PC の CPU コア数-2(動的)。env CBRSIM_WORKERS で上書き可、1で逐次。
 _WG = {}
 
@@ -1079,7 +1083,7 @@ def main():
     cur_key = [None] * C_CELLS          # 表示中パターン(idx bytes)
     cur_pal = np.full(C_CELLS, -1, np.int16)
     committed_plain = [None] * C_CELLS  # 直近commitした plain パターン(内容変化検出用)
-    from tile_alloc import TileAllocator, count_slot_runs
+    from tile_alloc import TileAllocator
     # 共有割り当て(連続, pack と同一コード)。これが residency の真の源=pack の realized と一致=cap=realized。
     # 判定は前フレーム末の状態を参照し、割り当て(スロット付与+追い出し)は各フレーム末に cell順で実行
     # (=pack の resolve と同一順)。VRAM_TILES=pack POOL。
@@ -1163,8 +1167,13 @@ def main():
     dec_cats = []              # per-frame カテゴリ数[raw,same,near,coa,flbk,buf,miss](デバッグ欄用)
     transfer_tiles_log = []    # pack/player照合用: cold pattern tile数
     transfer_runs_log = []     # pack/player照合用: packed cold-run record数
-    tank = TANK_CAP_BYTES if VBV_ON else 0        # 貯水池残量(bytes)。開始時=満タン
-    tank_tiles_log = []                           # 毎フレームのタンク残量(タイル換算)
+    supply_sources_log = []    # per-frame update-aligned Prg/Wr/Main source codes
+    prg_loads_log = []         # physical PrgBuf pattern consumption
+    wr0_loads_log = []         # physical boot-preload consumption by source
+    wr1_loads_log = []
+    main_loads_log = []
+    quality_budget = QUALITY_BUDGET_BYTES if QUALITY_BUDGET_ON else 0
+    quality_budget_log = []
 
     # DEBUG色はCRAMに既にある色だけを並べ替えて固定する。異なるパレット行との
     # 入替があり得るので、全フレームを最終的な行構成に対して量子化する前に行う。
@@ -1198,7 +1207,7 @@ def main():
 
     # Optional quality upgrades use a whole-movie reserve plan. The dry run
     # follows the exact quantized target with the shared VRAM allocator. A
-    # backwards pass then retains only the virtual-tank bytes that future
+    # backwards pass then retains only the quality-budget bytes that future
     # bursts cannot replenish from their own frame supply. Its final target is
     # zero, so future protection, recovery, and end draining share one policy.
     upgrade_supply = np.full(
@@ -1210,7 +1219,7 @@ def main():
                     0, int(upgrade_supply[i]) - PAL_WRITE_BYTES)
     # Normal exact updates need a narrower risk reserve. Changes that fit Coa
     # can degrade gracefully to a resident approximation; only changes beyond
-    # Coa are likely to become Flbk or Miss and justify moving tank capacity
+    # Coa are likely to become Flbk or Miss and justify moving budget capacity
     # away from an earlier frame.
     main_protected = np.zeros((n, C_CELLS), bool)
     previous_target_rgb = None
@@ -1238,7 +1247,7 @@ def main():
                 previous_display_rgb, target_rgb, target_changed, coa_bounds)
             main_protected[i] = target_changed & ~graceful
         previous_target_rgb = target_rgb
-    upgrade_demand, main_demand = upgrade_planner.predict_update_demands(
+    demand_prediction = upgrade_planner.predict_update_demand_details(
         Q_pidx,
         Q_assign,
         vram_tiles=VRAM_TILES,
@@ -1247,12 +1256,25 @@ def main():
         max_cold=MAX_COLD,
         protected_frames=main_protected,
     )
+    supply_budget = pattern_supply.plan_frame_budgets(
+        demand_prediction, enabled=PATTERN_SUPPLY_ON)
+    preload_credit_bytes = supply_budget.total * PATTERN_BYTES
+    protected_credit_bytes = (
+        np.minimum(supply_budget.total, demand_prediction.protected_cold)
+        * PATTERN_BYTES)
+    # A boot-preloaded cold pattern still needs its two-byte name entry but no
+    # BODY payload.  Remove only that 32-byte payload from the future reserve
+    # traces; the live encoder below applies the same charge to actual work.
+    upgrade_demand = np.maximum(
+        demand_prediction.exact_bytes - preload_credit_bytes, 0)
+    main_demand = np.maximum(
+        demand_prediction.protected_bytes - protected_credit_bytes, 0)
     upgrade_reserve = upgrade_planner.build_reserve_curve(
-        upgrade_demand, upgrade_supply, TANK_CAP_BYTES)
+        upgrade_demand, upgrade_supply, QUALITY_BUDGET_BYTES)
     main_reserve = upgrade_planner.build_reserve_curve(
-        main_demand, upgrade_supply, TANK_CAP_BYTES)
+        main_demand, upgrade_supply, QUALITY_BUDGET_BYTES)
     print(
-        "tank plan: upgrade exact reserve "
+        "quality plan: upgrade exact reserve "
         f"start={upgrade_reserve[0] // 1024 if n else 0}KB "
         f"peak={upgrade_reserve.max() // 1024 if n else 0}KB "
         f"end={upgrade_reserve[-1] // 1024 if n else 0}KB; "
@@ -1260,6 +1282,15 @@ def main():
         f"start={main_reserve[0] // 1024 if n else 0}KB "
         f"peak={main_reserve.max() // 1024 if n else 0}KB "
         f"end={main_reserve[-1] // 1024 if n else 0}KB",
+        flush=True,
+    )
+    print(
+        "pattern supply plan: "
+        f"enabled={int(PATTERN_SUPPLY_ON)} "
+        f"Wr0={supply_budget.wr0_patterns}/{pattern_supply.WORD_BUF_PATTERNS} "
+        f"Wr1={supply_budget.wr1_patterns}/{pattern_supply.WORD_BUF_PATTERNS} "
+        f"Main={supply_budget.main_patterns}/{pattern_supply.MAIN_BUF_PATTERNS} "
+        f"frames={int(np.count_nonzero(supply_budget.total))}",
         flush=True,
     )
     _t = _mark("格上げ残量計画", _t)
@@ -1343,21 +1374,22 @@ def main():
         budget = max(FRAME_BYTES - audio_due - NAME_BYTES - (PAL_WRITE_BYTES if pal_swap else 0), 0)
         frame_cd = budget                             # このフレーム自身のCDタイル予算
         # frame0はDAT冒頭の専用ヘッダとしてboot中に時間無制限でVRAMへロードする(=ストリーミング
-        # リング/Tankを一切消費しない)。よってframe0は予算無制限で全面フルロードし、Tankは
-        # 満タンのままframe1へ渡す(下のtank更新もスキップ)。実機の崩壊はframe0の大バーストが
+        # PrgBuf/quality budgetを一切消費しない)。よってframe0は予算無制限で全面フルロードし、
+        # quality budgetは満量のままframe1へ渡す。実機の崩壊はframe0の大バーストが
         # リングを削っていたのが原因で、ヘッダ化で根絶する。
         if i == 0:
             tile_budget = 1 << 30
-        elif VBV_ON:
+        elif QUALITY_BUDGET_ON:
             tile_budget = upgrade_planner.planned_spend_limit(
-                tank_before=tank,
+                budget_before=quality_budget,
                 frame_supply=frame_cd,
                 reserve_after=int(main_reserve[i]),
                 already_spent=0,
             )
         else:
             tile_budget = frame_cd
-        frame_patch = frozenset() if VBV_ON else prg_patch.get(i, frozenset())   # VBVは全編先読み割当を使わない
+        frame_patch = (frozenset() if QUALITY_BUDGET_ON
+                       else prg_patch.get(i, frozenset()))
 
         updated = np.zeros(C_CELLS, bool)
         dedup_mask = np.zeros(C_CELLS, bool)   # 更新したが同一パターン流用(VRAM常駐)だったタイル
@@ -1376,6 +1408,9 @@ def main():
         coa_hits = 0
         spent_tiles = 0
         cold_spent = 0             # このコマのcold数(Raw+Buf=実機のパターンDMA数)
+        frame_preload_budget = int(supply_budget.total[i])
+        preload_used = 0
+        preloaded_keys = set()
         # frame0はDAT冒頭ヘッダで別ロード(リング非消費)なので常にcold上限を免除=全面フルロード。
         frame_max_cold = MAX_COLD if i > 0 else 0
 
@@ -1404,14 +1439,18 @@ def main():
         def commit_plain(c):
             # メインパス: まず安く全部埋める。cold平坦タイルは Coa(NAMEのみ) を優先=飢餓を出さない。
             # (タンク満杯時の余りCDでの Raw 格上げは後段の格上げパスで行う)
-            nonlocal tile_recs, name_recs, dedup_saved, l3_hits, prg_hits, coa_hits, spent_tiles, cold_spent
+            nonlocal tile_recs, name_recs, dedup_saved, l3_hits, prg_hits, coa_hits, spent_tiles, cold_spent, preload_used
             key = plain_keys[c]
             in_vram = alloc.is_resident(key) or key in loaded_keys      # L1/L2: VRAM常駐(転送ゼロ)
             approx_key = find_approx(c) if (COA_ON and not in_vram) else None
             in_prg = (not in_vram) and (approx_key is None) and key in frame_patch
             in_l3 = (not in_vram) and (approx_key is None) and (not in_prg) and L3_TILES > 0 and key in l3
             free = in_vram or in_l3 or (approx_key is not None)   # パターン転送不要(ネームのみ)
-            cost = 0 if in_prg else (NAME_BYTES + (0 if free else PATTERN_BYTES))
+            preload = (
+                not in_prg and not free
+                and preload_used < frame_preload_budget)
+            cost = 0 if in_prg else (
+                NAME_BYTES + (0 if free or preload else PATTERN_BYTES))
             if spent_tiles + cost > tile_budget:
                 return False
             rep_key = key; rep_pal = int(assign[c]); rep_rgb = plain_rgb[c]
@@ -1428,12 +1467,15 @@ def main():
                 prg_hits += 1; prg_mask[c] = True; loaded_keys.add(key)
             elif in_l3:
                 l3_hits += 1; loaded_keys.add(key); l3.pop(key, None)
-            else:                                                # cold: パターンをVRAMへ(自CD=Raw or 貯水池=Buf)
+            else:                                                # cold: exact pattern load (Raw or saved/preload-funded Buf)
                 if frame_max_cold and cold_spent >= frame_max_cold:
                     return False                                  # cold上限: 今コマは見送り(Miss繰越)
                 cold_spent += 1
                 loaded_keys.add(key)
-                if VBV_ON and spent_tiles >= frame_cd:
+                if preload:
+                    preload_used += 1; preloaded_keys.add(key)
+                    prg_hits += 1; prg_mask[c] = True
+                elif QUALITY_BUDGET_ON and spent_tiles >= frame_cd:
                     prg_hits += 1; prg_mask[c] = True
                 else:
                     tile_recs += 1; raw_mask[c] = True
@@ -1494,7 +1536,7 @@ def main():
                 return -1
 
             def commit_unified(c):
-                nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, flbk_hits, spent_tiles, cold_spent
+                nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, flbk_hits, spent_tiles, cold_spent, preload_used
                 key = plain_keys[c]
                 # 1. 現在表示がほぼ同一 → Near維持(0B, 更新なし・Missでもない)=帯域優先
                 if near_keep[c]:
@@ -1519,13 +1561,17 @@ def main():
                     loaded_keys.add(rk); name_recs += 1; spent_tiles += NAME_BYTES
                     repoint(c, rk, rp, rr, i); committed_plain[c] = key; updated[c] = True
                     return
-                # 3. 中途半端(flbk/none) → まず正確ロード(自CD=Raw / 貯水池=Buf)。
+                # 3. 中途半端(flbk/none) → まず正確ロード(Raw / saved-or-preload-funded Buf)。
                 #    cold上限到達時はロードせず 4.のFlbk近似へ(Missより良い穴埋め)
-                cost = NAME_BYTES + PATTERN_BYTES
+                preload = preload_used < frame_preload_budget
+                cost = NAME_BYTES + (0 if preload else PATTERN_BYTES)
                 if spent_tiles + cost <= tile_budget and not (frame_max_cold and cold_spent >= frame_max_cold):
                     cold_spent += 1
                     loaded_keys.add(key)
-                    if VBV_ON and spent_tiles >= frame_cd:
+                    if preload:
+                        preload_used += 1; preloaded_keys.add(key)
+                        prg_hits += 1; prg_mask[c] = True
+                    elif QUALITY_BUDGET_ON and spent_tiles >= frame_cd:
                         prg_hits += 1; prg_mask[c] = True
                     else:
                         tile_recs += 1; raw_mask[c] = True
@@ -1534,7 +1580,7 @@ def main():
                     name_recs += 1; spent_tiles += cost
                     repoint(c, key, int(assign[c]), plain_rgb[c], i); committed_plain[c] = key; updated[c] = True
                     return
-                # 4. ロード不可(予算/貯水池尽き) → Flbk 近似流用(2B)で穴埋め(Missのフォールバック)。
+                # 4. ロード不可(画質予算尽き) → Flbk 近似流用(2B)で穴埋め(Missのフォールバック)。
                 #    改善モード(既定): 絶対しきいに縛らず、現在表示より少しでも target に近づく候補なら採る。
                 #    絶対モード(CBRSIM_FLBK_IMPROVE_ONLY=0): flbk tier(絶対しきい)内の候補のみ。
                 if bk is not None and not exact and spent_tiles + NAME_BYTES <= tile_budget:
@@ -1563,19 +1609,22 @@ def main():
         # Upgrade approximate or carried cells to exact Raw/Buf using only
         # bytes above this frame's whole-movie reserve target.
         upgraded = 0
-        if UPGRADE_ON and VBV_ON:
+        if UPGRADE_ON and QUALITY_BUDGET_ON:
             upgrade_limit = upgrade_planner.planned_spend_limit(
-                tank_before=tank,
+                budget_before=quality_budget,
                 frame_supply=frame_cd,
                 reserve_after=int(upgrade_reserve[i]),
                 already_spent=spent_tiles,
             )
             if spent_tiles < upgrade_limit:
                 def raw_upgrade(c, lim):
-                    nonlocal tile_recs, name_recs, dedup_saved, coa_hits, spent_tiles, upgraded, cold_spent
+                    nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, spent_tiles, upgraded, cold_spent, preload_used
                     key = plain_keys[c]
                     in_vram = alloc.is_resident(key) or key in loaded_keys
-                    cost = NAME_BYTES if in_vram else NAME_BYTES + PATTERN_BYTES
+                    preload = (
+                        not in_vram and preload_used < frame_preload_budget)
+                    cost = NAME_BYTES if in_vram else (
+                        NAME_BYTES + (0 if preload else PATTERN_BYTES))
                     if spent_tiles + cost > lim:
                         return
                     if (not in_vram) and frame_max_cold and cold_spent >= frame_max_cold:
@@ -1587,7 +1636,12 @@ def main():
                         dedup_saved += 1; dedup_mask[c] = True
                     else:
                         cold_spent += 1
-                        loaded_keys.add(key); tile_recs += 1; raw_mask[c] = True
+                        loaded_keys.add(key)
+                        if preload:
+                            preload_used += 1; preloaded_keys.add(key)
+                            prg_hits += 1; prg_mask[c] = True
+                        else:
+                            tile_recs += 1; raw_mask[c] = True
                         cache_pattern(key, plain_rgb[c], sig2[c], assign[c], cur_seg)
                         coa_bucket[(int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2]))].append(key)
                     name_recs += 1; spent_tiles += cost
@@ -1606,13 +1660,15 @@ def main():
                                 key=lambda c: (int(sev[c]), -int(approx_carry[c]), -score[c])):
                     raw_upgrade(c, upgrade_limit)
 
-        # 貯水池更新(漏れバケツ): このフレームのCD余り(frame_cd-使った分)を貯める / 引いた分を減らす
-        if VBV_ON:
+        # 画質予算更新: このフレームの余り(frame_cd-使った分)を残す / 超過分を減らす
+        if QUALITY_BUDGET_ON:
             if i == 0:
-                tank = TANK_CAP_BYTES        # header: frame0はリング/Tankを消費せず満タン維持
+                quality_budget = QUALITY_BUDGET_BYTES
             else:
-                tank = min(TANK_CAP_BYTES, max(0, tank + frame_cd - spent_tiles))
-            tank_tiles_log.append(tank // PATTERN_BYTES)
+                quality_budget = min(
+                    QUALITY_BUDGET_BYTES,
+                    max(0, quality_budget + frame_cd - spent_tiles))
+            quality_budget_log.append(quality_budget // PATTERN_BYTES)
 
         # 共有割り当て: このフレームの更新セルを cell順で place(=pack の resolve と同一順・同一コード)。
         # ここで residency/追い出しが確定し、次フレームの cold 判定に反映される。維持(near_keep)セルは
@@ -1620,13 +1676,46 @@ def main():
         upd_ck = [(int(c), cur_key[int(c)]) for c in np.where(updated)[0]
                   if cur_key[int(c)] is not None]
         placements = alloc.place_frame(upd_ck, i)
+        frame_sources = [pattern_supply.SOURCE_PRG] * len(upd_ck)
+        preload_updates = [
+            update_index
+            for update_index, ((_, key), (_, cold))
+            in enumerate(zip(upd_ck, placements))
+            if cold and key in preloaded_keys
+        ]
+        if len(preload_updates) != preload_used:
+            raise AssertionError(
+                f"frame {i}: preload decisions={preload_used} but allocator "
+                f"realized {len(preload_updates)} cold preload patterns")
+        wr_used = min(int(supply_budget.wr[i]), preload_used)
+        main_used = preload_used - wr_used
+        if main_used > int(supply_budget.main[i]):
+            raise AssertionError(f"frame {i}: preload source budget underflow")
+        for ordinal, update_index in enumerate(preload_updates):
+            frame_sources[update_index] = (
+                pattern_supply.SOURCE_WR if ordinal < wr_used
+                else pattern_supply.SOURCE_MAIN)
+
         dma_slots = [slot for slot, cold in placements if cold]
+        dma_sources = [
+            source for source, (_, cold) in zip(frame_sources, placements) if cold]
         dma_tiles = len(dma_slots)                 # 実際にVRAMへ送る32Bパターンタイル数
+        if not L3_TILES and dma_tiles != cold_spent:
+            raise AssertionError(
+                f"frame {i}: encoder cold={cold_spent} allocator cold={dma_tiles}")
         # MainのHUD Nと同じlogical run数。p45では1-2 tile runはCPU直書き、長runは
         # VBlank境界で複数DMAに割れるため、物理VDP DMA発行回数とは意図的に異なる。
-        dma_runs = count_slot_runs(dma_slots)
+        dma_runs = pattern_supply.count_source_runs(dma_slots, dma_sources)
         transfer_tiles_log.append(dma_tiles)
         transfer_runs_log.append(dma_runs)
+        supply_sources_log.append(np.asarray(frame_sources, np.uint8))
+        prg_loads_log.append(sum(
+            source == pattern_supply.SOURCE_PRG for source in dma_sources))
+        wr0_loads_log.append(
+            wr_used if i % 2 == 0 else 0)
+        wr1_loads_log.append(
+            wr_used if i % 2 == 1 else 0)
+        main_loads_log.append(main_used)
         ensure_capacity(i)
 
         # CRAMエミュ: このフレームの全更新を反映した最終表示を、現区間パレットで引き直す。
@@ -1750,14 +1839,14 @@ def main():
     _t = time.perf_counter()
 
     fb = np.array(frame_bytes_log, np.float64)
-    tr = np.array(tile_records_log, np.float64)       # cold miss = 実際にCDから読んだパターン数
+    tr = np.array(tile_records_log, np.float64)       # encoder Raw funding class
     ded = np.array(dedup_saved_log, np.float64)        # L1/L2 VRAM常駐ヒット
     l3h = np.array(l3_hits_log, np.float64)            # L3(PRG-RAM)ヒット
     prh = np.array(prg_hits_log, np.float64)           # PRG先読みヒット
     stats = np.array(stat_rows, np.float64)
 
-    # The encoder's VBV reservoir above is a quality-allocation model, not the
-    # physical PRG-RAM payload RING. Re-run the packer's exact sector schedule
+    # The encoder's whole-movie budget above is a quality-allocation model, not the
+    # physical PRG-RAM PrgBuf. Re-run the packer's exact sector schedule
     # from the frozen update/run counts so the analysis curve shows hardware
     # occupancy, including prebuffering and final-sector padding.
     pack_config = dict(CONFIG_PROFILE.section("pack") if CONFIG_PROFILE else {})
@@ -1770,26 +1859,39 @@ def main():
     )
     try:
         physical_schedule = stream_schedule.schedule_payload_ring(
-            np.asarray(transfer_tiles_log, np.int64),
+            np.asarray(prg_loads_log, np.int64),
             control_lengths,
             fps=FPS,
-            ring_capacity_patterns=TANK_CAP_BYTES // PATTERN_BYTES,
+            ring_capacity_patterns=(
+                av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
             frame_sectors=ttrc_routing.FRAME_SECTORS,
             fill=bool(pack_config.get("fill", True)),
         )
     except (ValueError, stream_schedule.ScheduleError) as exc:
         raise SystemExit(
-            f"sim: physical payload RING schedule failed: {exc}") from exc
+            f"sim: physical PrgBuf schedule failed: {exc}") from exc
     if not physical_schedule["feasible"]:
         raise SystemExit(
-            "sim: physical payload RING schedule is infeasible "
+            "sim: physical PrgBuf schedule is infeasible "
             f"(over={physical_schedule['over']} under={physical_schedule['under']} "
             f"ready_min={physical_schedule['ready_min']} "
             f"ctrl_min={physical_schedule['ctrl_min']} "
             f"rate_lead_end={physical_schedule['rate_lead_end']})")
-    ring_remaining = np.asarray(
+    prg_remaining = np.asarray(
         physical_schedule["ring_occupancy"], np.int64)
-    vbv_remaining = np.asarray(tank_tiles_log, np.int64)
+    quality_budget_remaining = np.asarray(quality_budget_log, np.int64)
+    prg_loads = np.asarray(prg_loads_log, np.int64)
+    wr0_loads = np.asarray(wr0_loads_log, np.int64)
+    wr1_loads = np.asarray(wr1_loads_log, np.int64)
+    main_loads = np.asarray(main_loads_log, np.int64)
+
+    def preload_remaining(loads):
+        total = int(loads.sum())
+        return total - np.cumsum(loads, dtype=np.int64)
+
+    wr0_remaining = preload_remaining(wr0_loads)
+    wr1_remaining = preload_remaining(wr1_loads)
+    main_remaining = preload_remaining(main_loads)
     body_payload_bytes = np.asarray(
         physical_schedule["body_useful_payload_bytes"], np.int64)
     body_control_bytes = np.asarray(
@@ -1807,20 +1909,24 @@ def main():
         f"cbr_frame_bytes={FRAME_BYTES} (純CBR, 繰り越し無し)",
         f"avg_codec_work_bytes_per_frame={fb.mean():.1f}",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
-        f"avg_cold_miss_per_frame={tr.mean():.1f} (CDから32B/枚を実際に読んだ数)",
+        f"avg_PrgBuf_loads_per_frame={prg_loads.mean():.1f}",
+        f"boot_preload_patterns=Wr0:{int(wr0_loads.sum())} "
+        f"Wr1:{int(wr1_loads.sum())} Main:{int(main_loads.sum())}",
         f"avg_L2_dedup_hit_per_frame={ded.mean():.1f} (VRAM常駐で0転送)",
         f"avg_Coa_hit_per_frame={np.array(coa_hits_log).mean():.1f} (粗い近似dedupで0転送流用, COA={COA_ON})",
         f"avg_L3_hit_per_frame={l3h.mean():.1f} (再登場をRAMから0CDで供給)",
-        f"PRG_preload_cuts={0 if VBV_ON else len(prg_patch)}  avg_PRG(Buf)_hit_per_frame={prh.mean():.1f} "
-        + ("(貯水池=タンクから0追加CDで充当)" if VBV_ON else "(先読みで0CD Fill)"),
-        f"total_CD_pattern_bytes={(tr.sum()+prh.sum())*PATTERN_BYTES:.0f}",
+        f"avg_noncurrent_budget_exact_loads={prh.mean():.1f}",
+        f"total_PrgBuf_pattern_bytes={prg_loads.sum()*PATTERN_BYTES:.0f}",
         f"L3_saved_CD_bytes={l3h.sum()*PATTERN_BYTES:.0f} (L3が無ければCD再読みしていた分)",
         f"dedup_saved_ratio={ded.sum()/(tr.sum()+prh.sum()+ded.sum()+l3h.sum()+1e-9):.3f}",
-        f"VBV={VBV_ON} budget_cap={TANK_CAP_BYTES//PATTERN_BYTES}tiles"
-        + (f" budget: start={vbv_remaining[0]} end={vbv_remaining[-1]} "
-           f"min={vbv_remaining.min()}" if VBV_ON else ""),
-        f"payload_RING: start={ring_remaining[0]} end={ring_remaining[-1]} "
-        f"min={ring_remaining.min()} peak={ring_remaining.max()}tiles",
+        f"quality_budget={QUALITY_BUDGET_ON} "
+        f"cap={QUALITY_BUDGET_BYTES//PATTERN_BYTES}patterns"
+        + (f" budget: start={quality_budget_remaining[0]} "
+           f"end={quality_budget_remaining[-1]} "
+           f"min={quality_budget_remaining.min()}"
+           if QUALITY_BUDGET_ON else ""),
+        f"PrgBuf: start={prg_remaining[0]} end={prg_remaining[-1]} "
+        f"min={prg_remaining.min()} peak={prg_remaining.max()}patterns",
         f"starved_frames={starved_frames} ({starved_frames/n*100:.1f}%)",
         f"codec_work_bps={fb.mean()*FPS:.0f} (quality-allocation diagnostic)",
         f"body_useful_bps={body_useful_bps:.0f} "
@@ -1856,17 +1962,36 @@ def main():
              budget_tiles=budget_tiles,
              wait_hist=np.array(wait_hist_rows), nbins=NBINS)
     np.save(OUT / "miss_masks.npy", np.array(stale_rows, np.uint8))   # (n,72) packbits
-    if VBV_ON:
-        # ``remaining`` is the physical payload RING used by the Tank meter.
-        # Keep the virtual encoder budget under its explicit name for offline
-        # diagnostics; it must never silently drive the hardware meter again.
+    if QUALITY_BUDGET_ON:
+        # Schema 4 exposes every physical pattern source independently.  The
+        # encoder's quality budget remains an offline diagnostic and must not
+        # silently drive any of the four hardware meters.
         np.savez(
             OUT / "buffer_remaining.npz",
-            schema_version=np.int64(3),
-            remaining_kind=np.array("payload_ring_patterns"),
-            remaining=ring_remaining,
-            total=TANK_CAP_BYTES // PATTERN_BYTES,
-            vbv_remaining=vbv_remaining,
+            schema_version=np.int64(4),
+            remaining_kind=np.array("four_source_pattern_supply"),
+            # Compatibility aliases for offline readers predating schema 4.
+            remaining=prg_remaining,
+            total=av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES,
+            prg_remaining=prg_remaining,
+            wr0_remaining=wr0_remaining,
+            wr1_remaining=wr1_remaining,
+            main_remaining=main_remaining,
+            prg_capacity=av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES,
+            wr0_capacity=pattern_supply.WORD_BUF_PATTERNS,
+            wr1_capacity=pattern_supply.WORD_BUF_PATTERNS,
+            main_capacity=pattern_supply.MAIN_BUF_PATTERNS,
+            prg_loads=prg_loads,
+            wr0_loads=wr0_loads,
+            wr1_loads=wr1_loads,
+            main_loads=main_loads,
+            wr0_preloaded=np.int64(wr0_loads.sum()),
+            wr1_preloaded=np.int64(wr1_loads.sum()),
+            main_preloaded=np.int64(main_loads.sum()),
+            quality_budget_remaining=quality_budget_remaining,
+            exact_demand_bytes=demand_prediction.exact_bytes,
+            protected_demand_bytes=demand_prediction.protected_bytes,
+            preload_credit_bytes=preload_credit_bytes,
             upgrade_demand_bytes=upgrade_demand,
             upgrade_reserve_bytes=upgrade_reserve,
             main_risk_demand_bytes=main_demand,
@@ -1883,7 +2008,7 @@ def main():
         )
     print(f"wrote {main_dir}, {catmap_dir}, {misscarry_dir}; stats.npz + miss_masks.npy saved")
 
-    # 実機TTRCエンコード用の決定ログ(既定off)。品質決定(区間パレット/ディザ/Near/Coa/VBV/fill)は
+    # 実機TTRCエンコード用の決定ログ(既定off)。品質決定(区間パレット/ディザ/Near/Coa/画質予算/fill)は
     # すべてこのログに畳み込まれる=pack_streamは再生するだけでmp4と同じ画を出せる(唯一の真実源)。
     if EMIT_DEC:
         import pickle
@@ -1925,7 +2050,9 @@ def main():
                 "target_rate": int(TARGET_RATE), "frame_bytes": int(FRAME_BYTES),
             },
             "hardware": {
-                "vram_tiles": int(VRAM_TILES), "tank_kb": int(TANK_KB),
+                "vram_tiles": int(VRAM_TILES),
+                "prg_buf_kb": int(av_config.PRG_BUF_CAP_KB),
+                "quality_budget_kb": int(QUALITY_BUDGET_KB),
                 "max_cold": int(MAX_COLD),
             },
             "palette": {
@@ -1944,18 +2071,38 @@ def main():
             "seg_pals": [np.asarray(p, np.uint8) for p in seg_pals],  # list of (4,15,3)
             "frame_seg": np.asarray(frame_seg, np.int32),
             "frames": dec_frames,                                     # [[(cell,pal,key),...], ...]
+            "pattern_supply": {
+                "schema_version": 1,
+                "enabled": bool(PATTERN_SUPPLY_ON),
+                "sources": supply_sources_log,
+                "planned_wr": np.asarray(supply_budget.wr, np.uint16),
+                "planned_main": np.asarray(supply_budget.main, np.uint16),
+                "prg_loads": prg_loads.astype(np.uint16),
+                "wr0_loads": wr0_loads.astype(np.uint16),
+                "wr1_loads": wr1_loads.astype(np.uint16),
+                "main_loads": main_loads.astype(np.uint16),
+                "capacities": {
+                    "wr0": pattern_supply.WORD_BUF_PATTERNS,
+                    "wr1": pattern_supply.WORD_BUF_PATTERNS,
+                    "main": pattern_supply.MAIN_BUF_PATTERNS,
+                },
+            },
             # simが決めた値をpackで全frame再計算し、descriptor/HUD Nとのズレを即時検出する。
             "pattern_transfers": {
-                "schema_version": 1,
+                "schema_version": 2,
                 "tiles": np.asarray(transfer_tiles_log, np.uint16),
                 "runs": np.asarray(transfer_runs_log, np.uint16),
+                "prg": prg_loads.astype(np.uint16),
+                "wr0": wr0_loads.astype(np.uint16),
+                "wr1": wr1_loads.astype(np.uint16),
+                "main": main_loads.astype(np.uint16),
             },
-            # Analysis and pack must show the same physical PRG payload RING.
+            # Analysis and pack must show the same physical PrgBuf trace.
             # The packer compares this frozen trace with its built control data.
             "stream_schedule": {
                 "schema_version": stream_schedule.STREAM_SCHEDULE_SCHEMA_VERSION,
                 "block_lengths": control_lengths,
-                "ring_occupancy": ring_remaining,
+                "ring_occupancy": prg_remaining,
                 "payload_sectors": np.asarray(
                     physical_schedule["n_pay_sec"], np.int64),
                 "control_sectors": np.asarray(
@@ -1972,7 +2119,9 @@ def main():
             "audio_pcm_bytes": int(AUDIO_PCM_BYTES), "fps": float(FPS),
             "vram_tiles": int(VRAM_TILES),
             # エンコード時の実効パラメータを焼き込む(pack/解析が同一値を使い二重管理を防ぐ)。
-            "max_cold": int(MAX_COLD), "tank_kb": int(TANK_KB),
+            "max_cold": int(MAX_COLD),
+            "prg_buf_kb": int(av_config.PRG_BUF_CAP_KB),
+            "quality_budget_kb": int(QUALITY_BUDGET_KB),
         }, open(EMIT_DEC, "wb"), protocol=4)
         print(f"  実機決定ログ: {EMIT_DEC} ({len(dec_frames)} frames)")
 

@@ -11,8 +11,9 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v9): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
-              n_seg×128B, boot時Main-RAM表へ) + startup audio prefetch(1 sector/frame)
+TTRCレイアウト(v10): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
+              n_seg×128B, boot時Main-RAM表へ) + [WR0/WR1/Main pattern preloads]
+              + startup audio prefetch(1 sector/frame)
               + frame0(control+patterns) + routing(1B/frame: total<<3 | n_ctrl_sec)
               + prebuffer(payload先頭Bpat)
               BODY.DAT = frame1以降の [control][payload][rate pad]
@@ -39,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import av_config
 import ima_adpcm
 import player_constants
+import pattern_supply
 import stream_schedule
 import ttrc_routing
 from encode_config import load_profile
@@ -77,7 +79,7 @@ PCM_WAVE_RING_END = 0x8000
 PCM_STARTUP_MARGIN = 0x0200
 # リング諸元は tools/av_config.py の単一真実源から取る(sim/pack/playerで二重管理しない)。
 # RING_SIZE はプレイヤの実 .equ RING_SIZE と一致(ビルド時 check_player_ring.py が検証)。
-# RING_CAP(スケジュール上限)と sim の TANK は RING_SIZE から導出され必ず一致する。
+# PrgBuf のスケジュール上限と sim の画質予算上限は RING_SIZE から導出する。
 RING_SIZE_KB = av_config.RING_SIZE_KB
 RING_CAP_KB = av_config.RING_CAP_KB
 RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
@@ -90,6 +92,7 @@ assert DBG_LEN == stream_schedule.DEBUG_BLOCK_BYTES
 FEATURE_COLD_RUNS = ttrc_routing.FEATURE_COLD_RUNS
 FEATURE_FIXED_N2 = ttrc_routing.FEATURE_FIXED_N2
 FEATURE_ADPCM22 = ttrc_routing.FEATURE_ADPCM22
+FEATURE_PATTERN_SUPPLY = ttrc_routing.FEATURE_PATTERN_SUPPLY
 ADPCM_TABLE_SECTORS = math.ceil(ima_adpcm.FULL_TABLE_BYTES / SECTOR)
 ROUTING_MAX_FRAMES = ttrc_routing.MAX_FRAMES
 
@@ -186,10 +189,13 @@ def configure_from_log(log, *, debug=None, fill=None, startup_audio_frames=None)
             f"decision log checkpoint_bytes={checkpoint_bytes} != "
             f"{expected_checkpoint} for {AUDIO_KIND}")
 
-    sim_tank = int(hardware.get("tank_kb", log.get("tank_kb", RING_CAP_KB)))
-    if sim_tank != RING_CAP_KB:
+    sim_prg_buf = int(hardware.get(
+        "prg_buf_kb",
+        log.get("prg_buf_kb", log.get("tank_kb", RING_CAP_KB))))
+    if sim_prg_buf != RING_CAP_KB:
         raise SystemExit(
-            f"decision log tank_kb={sim_tank} != hardware RING_CAP_KB={RING_CAP_KB}; "
+            f"decision log prg_buf_kb={sim_prg_buf} != "
+            f"hardware PrgBuf cap={RING_CAP_KB}; "
             "re-run sim with the current tools/av_config.py")
     PACK_DEBUG = bool(pack.get("debug", False)) if debug is None else bool(debug)
     PACK_FILL = bool(pack.get("fill", True)) if fill is None else bool(fill)
@@ -203,21 +209,21 @@ def require_canonical_p0_debug_colours(log):
     """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
     if not seg_pals:
-        raise SystemExit("pack v9: decision log has no segment palettes; re-run sim")
+        raise SystemExit("pack v10: decision log has no segment palettes; re-run sim")
     for seg, pals in enumerate(seg_pals):
         a = np.asarray(pals, np.uint8)
         if a.shape != (4, 15, 3):
             raise SystemExit(
-                f"pack v9: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
+                f"pack v10: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
                 "re-run sim")
         brightness = a.astype(np.int16).sum(axis=2)
         if int(brightness[0, 0]) != int(brightness.min()):
             raise SystemExit(
-                f"pack v9: decision log segment {seg} P0 index1 is not tied for globally "
+                f"pack v10: decision log segment {seg} P0 index1 is not tied for globally "
                 "darkest usable CRAM colour (RGB sum); re-run sim with the current encoder")
         if int(brightness[0, 14]) != int(brightness.max()):
             raise SystemExit(
-                f"pack v9: decision log segment {seg} P0 index15 is not tied for globally "
+                f"pack v10: decision log segment {seg} P0 index15 is not tied for globally "
                 "brightest usable CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
@@ -269,14 +275,50 @@ def resolve(log, POOL, mode="lru"):
     return per, n_load, n_upd, pal_w, Plist, alloc.tearing
 
 
-def run_stats(per):
+def sourced_cold_runs(entries, colds, sources):
+    """Return ``(slot, count, source)`` runs split on slot or source changes."""
+    runs = []
+    start = previous = source = None
+    count = 0
+    for entry, cold, item_source in zip(entries, colds, sources):
+        if not cold:
+            continue
+        slot = (int(entry) & 0x07FF) - BASE
+        item_source = int(item_source)
+        if count and (slot != previous + 1 or item_source != source):
+            runs.append((start, count, source))
+            count = 0
+        if not count:
+            start = slot
+            source = item_source
+        previous = slot
+        count += 1
+    if count:
+        runs.append((start, count, source))
+    return runs
+
+
+def run_stats(per, sources=None):
     """フレーム内cold tile数とplayer cold-run record数を返して表示する。"""
     runs_per_frame = np.zeros(len(per), np.int64)
     colds_per_frame = np.zeros(len(per), np.int64)
-    for i, (cells, entries, colds) in enumerate(per):
-        runs = cold_runs(entries, colds)
+    if sources is None:
+        sources = tuple(tuple(pattern_supply.SOURCE_PRG for _ in entries)
+                        for _cells, entries, _colds in per)
+    prg_per_frame = np.zeros(len(per), np.int64)
+    wr_per_frame = np.zeros(len(per), np.int64)
+    main_per_frame = np.zeros(len(per), np.int64)
+    for i, ((cells, entries, colds), frame_sources) in enumerate(zip(per, sources)):
+        runs = sourced_cold_runs(entries, colds, frame_sources)
         runs_per_frame[i] = len(runs)
-        colds_per_frame[i] = sum(count for _slot, count in runs)
+        colds_per_frame[i] = sum(count for _slot, count, _source in runs)
+        for _slot, count, source in runs:
+            if source == pattern_supply.SOURCE_PRG:
+                prg_per_frame[i] += count
+            elif source == pattern_supply.SOURCE_WR:
+                wr_per_frame[i] += count
+            elif source == pattern_supply.SOURCE_MAIN:
+                main_per_frame[i] += count
     tot_c = int(colds_per_frame.sum())
     tot_r = int(runs_per_frame.sum())
     heavy = colds_per_frame >= 300
@@ -287,9 +329,12 @@ def run_stats(per):
                 f"平均run数{runs_per_frame[heavy].mean():.1f} "
                 f"平均ラン長{(colds_per_frame[heavy].sum() / max(1, runs_per_frame[heavy].sum())):.1f}")
     print(msg)
-    # SPのラン形式ロード領域(Word-RAM 0x84..0x7000=28540B)に収まるか:
-    # 1ラン = slot(2)+count(2)+count*32B
-    loads_bytes = colds_per_frame * PAT + runs_per_frame * 4
+    print(f"  source patterns: Prg={int(prg_per_frame.sum())} "
+          f"Wr0={int(wr_per_frame[::2].sum())} Wr1={int(wr_per_frame[1::2].sum())} "
+          f"Main={int(main_per_frame.sum())}")
+    # O_LOADS stores four bytes per run and only Prg patterns inline.  Wr/Main
+    # runs point at their persistent preload instead of copying pattern bytes.
+    loads_bytes = prg_per_frame * PAT + runs_per_frame * 4
     O_LOADS_CAP = 0x9800 - 0x84
     if int(loads_bytes.max()) > O_LOADS_CAP:
         print(f"  !! loads領域あふれ: 最大{int(loads_bytes.max())}B > {O_LOADS_CAP}B "
@@ -308,7 +353,8 @@ def cold_runs(entries, colds):
     )
 
 
-def verify_sim_pattern_transfers(log, packed_tiles, packed_runs):
+def verify_sim_pattern_transfers(
+        log, packed_tiles, packed_runs, supply_plan=None):
     """Require frozen sim transfer counts to match pack/player counts exactly.
 
     Old decision logs predate these fields and remain packable.  Every newly
@@ -319,7 +365,8 @@ def verify_sim_pattern_transfers(log, packed_tiles, packed_runs):
     if frozen is None:
         print("  pattern transfer照合: 旧decision logのため省略 (再simで有効化)")
         return False
-    if int(frozen.get("schema_version", 0)) != 1:
+    schema = int(frozen.get("schema_version", 0))
+    if schema not in (1, 2):
         raise SystemExit(
             "pack: unsupported pattern_transfers schema "
             f"{frozen.get('schema_version')!r}")
@@ -328,6 +375,17 @@ def verify_sim_pattern_transfers(log, packed_tiles, packed_runs):
         "tiles": np.asarray(packed_tiles, np.int64),
         "runs": np.asarray(packed_runs, np.int64),
     }
+    if schema >= 2:
+        if supply_plan is None:
+            raise SystemExit(
+                "pack: schema-2 pattern transfer verification requires "
+                "the materialized supply plan")
+        expected.update({
+            "prg": np.asarray(supply_plan.prg_loads, np.int64),
+            "wr0": np.asarray(supply_plan.wr0_loads, np.int64),
+            "wr1": np.asarray(supply_plan.wr1_loads, np.int64),
+            "main": np.asarray(supply_plan.main_loads, np.int64),
+        })
     for name, actual in expected.items():
         simulated = np.asarray(frozen.get(name, ()), np.int64)
         if simulated.shape != actual.shape:
@@ -341,7 +399,8 @@ def verify_sim_pattern_transfers(log, packed_tiles, packed_runs):
                 f"pack: sim/pack pattern {name} mismatch at frame {frame}: "
                 f"sim={int(simulated[frame])} pack={int(actual[frame])}. "
                 "TileAllocator/run grouping changed after simulation; re-run sim.")
-    print(f"  pattern transfer照合: {len(packed_runs)} frames tiles/runs exact")
+    detail = "tiles/runs/sources" if schema >= 2 else "tiles/runs"
+    print(f"  pattern transfer照合: {len(packed_runs)} frames {detail} exact")
     return True
 
 
@@ -511,7 +570,7 @@ def build_audio_chunks(audio_path, frame_count):
     return control_chunks, pcm_chunks
 
 
-def build_control(log, per, n_upd, pal_w, audio_path):
+def build_control(log, per, n_upd, pal_w, audio_path, sources=None):
     """Build control blocks and return their reconstructed source PCM chunks."""
     seg_cram = [pals_to_bytes_128(p) for p in log["seg_pals"]]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
@@ -529,9 +588,13 @@ def build_control(log, per, n_upd, pal_w, audio_path):
         raise SystemExit(
             f"palette segments {n_seg} > PALTAB capacity {cap_seg} "
             f"(av_config.PALTAB_MAX_SEG — raise it and the player equ together)")
+    if sources is None:
+        sources = tuple(tuple(pattern_supply.SOURCE_PRG for _ in entries)
+                        for _cells, entries, _colds in per)
     blocks = []
     for i in range(len(per)):
         cells, entries, colds = per[i]
+        frame_sources = sources[i]
         body = bytearray()
         # 同期マーカー: frame_seq(下位16bit)。実機は control 読み出し時に期待フレーム番号と
         # 照合し、ズレたら desync 検知(CDCセクタ落ち等)して復帰できる。total_len に含む。
@@ -542,17 +605,19 @@ def build_control(log, per, n_upd, pal_w, audio_path):
         if dbg_on:
             body += debug_block(cats_list[i])       # 固定長DEBUGブロック(Miss含む7カテゴリ+予約)
         body += build_bitmap(cells)
-        for e, cold in zip(entries, colds):
-            body += struct.pack(">H", (0x8000 if cold else 0) | e)
+        for e, cold, source in zip(entries, colds, frame_sources):
+            sourced_entry = pattern_supply.encode_entry_source(
+                e, source if cold else pattern_supply.SOURCE_PRG)
+            body += struct.pack(">H", (0x8000 if cold else 0) | sourced_entry)
         body += audio_chunks[i]
         # Keep the legacy audio offset unchanged.  The suffix is aligned so the
         # 68000 can read its words directly; old players simply ignore it.
         if len(body) & 1:
             body += b"\0"
-        runs = cold_runs(entries, colds)
+        runs = sourced_cold_runs(entries, colds, frame_sources)
         body += struct.pack(">H", len(runs))
-        for slot, count in runs:
-            body += struct.pack(">HH", slot, count)
+        for slot, count, source in runs:
+            body += struct.pack(">HH", slot, pattern_supply.encode_run_count(count, source))
         # total_len は「先頭2Bを含むブロック全長」。実機は apply_cur を total_len で進めるので
         # パディング込みの偶数にする(奇数だと1B/フレームずつ desync する)。
         total = len(body) + 2
@@ -653,7 +718,7 @@ def schedule(per, n_load, blocks):
         raise SystemExit(f"pack: {exc}") from exc
 
 
-def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None):
+def decode_verify(log, per, blocks, supply_plan, sc, compare_dir=None, sample_dir=None):
     """Simulate the current control-first player and compare it with sim output.
 
     A frame consumes its already-armed cold patterns before that frame's BODY
@@ -675,14 +740,17 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
     # (これを分けないと frame0 のパターンをリングから食い、末尾で nl0 個ぶん枯渇して見える。)
     f0h = bool(sc.get("f0_header", False))
     nl0 = int(sc.get("f0_cold", 0)) if f0h else 0
-    f0_ring = deque(Plist[:nl0])
-    ring = deque(Plist[nl0:nl0 + B]); pc = nl0 + B; cc = 0
+    prg_patterns = supply_plan.prg_patterns
+    f0_ring = deque(prg_patterns[:nl0])
+    ring = deque(prg_patterns[nl0:nl0 + B]); pc = nl0 + B; cc = 0
+    word = [deque(supply_plan.wr0_patterns), deque(supply_plan.wr1_patterns)]
+    main = deque(supply_plan.main_patterns)
     tile = [None] * (POOL + BASE + 2)
     nt_slot = np.zeros(C_CELLS, np.int64); nt_pal = np.zeros(C_CELLS, np.int64)
     diffs = []; ring_peak = len(ring); bad = 0
     for i in range(len(per)):
         add = int(n_pay_sec[i]) * PAT_PER_SEC
-        src = f0_ring if (f0h and i == 0) else ring   # frame0はヘッダのf0patから, 以降はリング
+        prg_src = f0_ring if (f0h and i == 0) else ring
         blk = ctrl[cc:cc + int(blk_len[i])]; cc += int(blk_len[i])
         p = 2                                         # skip total_len
         p += 2                                        # skip frame_seq(同期マーカー)
@@ -699,18 +767,28 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
         cells = [c for c in range(C_CELLS) if bm[c >> 3] & (1 << (c & 7))]
         for c in cells:
             e = struct.unpack(">H", blk[p:p + 2])[0]; p += 2
-            cold = e >> 15; ent = e & 0x7FFF
+            cold = e >> 15
+            source = pattern_supply.decode_entry_source(e)
+            ent = e & pattern_supply.NAME_ENTRY_MASK
             nt_pal[c] = (ent >> 13) & 3
             nt_slot[c] = (ent & 0x07FF) - BASE
             if cold:
+                if source == pattern_supply.SOURCE_PRG:
+                    src = prg_src
+                elif source == pattern_supply.SOURCE_WR:
+                    src = word[i & 1]
+                elif source == pattern_supply.SOURCE_MAIN:
+                    src = main
+                else:
+                    src = ()
                 if not src:
                     bad += 1
                 else:
                     tile[int(nt_slot[c]) + BASE] = src.popleft()
         # BODY payload follows control and arms later frames.  Append it only
         # after the current block has consumed every cold entry.
-        for k in range(pc, min(pc + add, len(Plist))):
-            ring.append(Plist[k])
+        for k in range(pc, min(pc + add, len(prg_patterns))):
+            ring.append(prg_patterns[k])
         pc += add
         ring_peak = max(ring_peak, len(ring))
         need_img = (cmp is not None) or (sample_dir is not None and i in samples)
@@ -737,7 +815,11 @@ def decode_verify(log, per, blocks, Plist, sc, compare_dir=None, sample_dir=None
                 diffs.append((i, int(np.abs(fr.astype(np.int32) - ref.astype(np.int32)).max())))
         if (i + 1) % 400 == 0:
             print(f"  decode {i+1}/{len(per)}", flush=True)
-    print(f"decode: ring_peak {ring_peak*PAT/1024:.0f}KB 未配信pop(表示破壊) {bad}")
+    cache_left = len(word[0]) + len(word[1]) + len(main)
+    if cache_left:
+        bad += cache_left
+    print(f"decode: ring_peak {ring_peak*PAT/1024:.0f}KB "
+          f"preload_left {cache_left} 未配信pop(表示破壊) {bad}")
     if diffs:
         da = np.array([x[1] for x in diffs])
         nd = int((da > 0).sum())
@@ -753,11 +835,12 @@ def _decode_control_chunk(chunk):
     return ima_adpcm.pcm16_to_sign_magnitude(decoded)
 
 
-def write_stream(path, log, per, blocks, source_pcm_chunks, Plist, sc, POOL):
-    """Write the v9 split stream and a combined tooling container.
+def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL):
+    """Write the v10 split stream and a combined tooling container.
 
     HEADER.DAT:
-      Header(1sec) | PALTAB | [ADPCM_TABLE] | STARTUP_AUDIO
+      Header(1sec) | PALTAB | [ADPCM_TABLE] | [WR0] | [WR1] | [MAIN]
+                   | STARTUP_AUDIO
                    | FRAME0(control+patterns)
                    | ROUTING(0..N-1,[0]=0,0) | PREBUF1(frame1用RING_CAP)
     BODY.DAT:
@@ -780,7 +863,13 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, Plist, sc, POOL):
     f0_header = bool(sc.get("f0_header", False))
     nl0 = int(sc.get("f0_cold", 0))
     f0_ctrl_len = int(sc.get("f0_ctrl_len", 0))
-    payload = b"".join(Plist)
+    payload = b"".join(supply_plan.prg_patterns)
+    wr0_blob = b"".join(supply_plan.wr0_patterns)
+    wr1_blob = b"".join(supply_plan.wr1_patterns)
+    main_blob = b"".join(supply_plan.main_patterns)
+    wr0_sec = -(-len(wr0_blob) // SECTOR)
+    wr1_sec = -(-len(wr1_blob) // SECTOR)
+    main_sec = -(-len(main_blob) // SECTOR)
 
     # Queue the first N reconstructed PCM chunks from HEADER, then make each
     # live control carry the next future PCM or checkpointed ADPCM chunk.
@@ -884,12 +973,14 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, Plist, sc, POOL):
     fps_int = int(round(FPS))                         # 名目fps。FEATURE_FIXED_N2時はplayerが1001/400を選ぶ
     audio_fd = av_config.rf5c164_fd(AUDIO_PCM, PLAYBACK_FPS)
     if not f0_header:
-        raise SystemExit("pack v9 requires frame0 in HEADER.DAT")
+        raise SystemExit("pack v10 requires frame0 in HEADER.DAT")
     features = FEATURE_COLD_RUNS
     if av_config.uses_fixed_n2_cadence(FPS):
         features |= FEATURE_FIXED_N2
     if AUDIO_KIND == "adpcm22":
         features |= FEATURE_ADPCM22
+    if supply_plan.enabled:
+        features |= FEATURE_PATTERN_SUPPLY
     header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
@@ -906,6 +997,17 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, Plist, sc, POOL):
     header += struct.pack(">H", features)          # offset 62: optional stream features
     header += b"\0" * (64 - len(header)) + seg0
     header += b"\0" * (SECTOR - len(header))
+    header = bytearray(header)
+    if supply_plan.enabled:
+        player_constants.PATTERN_SUPPLY_STRUCT.pack_into(
+            header, player_constants.PATTERN_SUPPLY_OFFSET,
+            player_constants.PATTERN_SUPPLY_MAGIC,
+            player_constants.PATTERN_SUPPLY_VERSION, 0,
+            len(supply_plan.wr0_patterns),
+            len(supply_plan.wr1_patterns),
+            len(supply_plan.main_patterns),
+            wr0_sec, wr1_sec, main_sec,
+        )
     header = player_constants.stamp_header_sector(header)
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
                   + f0_pat.ljust(f0_pat_sec * SECTOR, b"\0"))
@@ -915,6 +1017,9 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, Plist, sc, POOL):
     header_blob = (header
                    + paltab.ljust(paltab_sec * SECTOR, b"\0")
                    + adpcm_table_blob
+                   + wr0_blob.ljust(wr0_sec * SECTOR, b"\0")
+                   + wr1_blob.ljust(wr1_sec * SECTOR, b"\0")
+                   + main_blob.ljust(main_sec * SECTOR, b"\0")
                    + audio_preload
                    + frame0_blk
                    + routing_blob
@@ -1001,9 +1106,11 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, Plist, sc, POOL):
     print(f"wrote {header_path} {header_sec}sec + {body_path} {frames_stream_sec}sec; "
           f"combined {out_path} {total}sec (mode {mode_name} paltab {paltab_sec} "
           f"startup_audio prefetch {audio_prefetch_frames}f "
+          f"preload Wr0/Wr1/Main={len(supply_plan.wr0_patterns)}/"
+          f"{len(supply_plan.wr1_patterns)}/{len(supply_plan.main_patterns)} "
           f"frame0 {f0_ctrl_sec}+{f0_pat_sec} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v9 N={vsync_n}"
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v10 N={vsync_n}"
           f"(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO_KIND} "
           f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B FD=0x{audio_fd:04X}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
@@ -1030,6 +1137,8 @@ def main():
                     help="override the frozen pack.fill value")
     ap.add_argument("--startup-audio-frames", type=int, default=None,
                     help="override the frozen startup prefetch depth")
+    ap.add_argument("--pattern-supply", action=argparse.BooleanOptionalAction, default=True,
+                    help="move selected existing cold runs to Wr0/Wr1/Main boot preloads")
     ap.add_argument("--no-write", action="store_true")
     args = ap.parse_args()
 
@@ -1055,12 +1164,14 @@ def main():
         log, debug=args.debug, fill=args.fill,
         startup_audio_frames=args.startup_audio_frames)
     require_canonical_p0_debug_colours(log)
-    # 単一真実源チェック: sim が焼いた tank と、この pack の RING_CAP は同じ実機リングを
-    # モデルするので一致すべき。ズレていたら二重管理の兆候なので警告。
-    sim_tank = log.get("tank_kb")
+    # The frozen PrgBuf capacity and the packer's physical schedule cap must be
+    # identical. A mismatch means the stream was simulated against another
+    # memory map.
+    sim_prg_buf = log.get("prg_buf_kb", log.get("tank_kb"))
     sim_cold = log.get("max_cold")
-    print(f"  encode params from sim: max_cold={sim_cold} tank_kb={sim_tank}  "
-          f"pack RING_CAP_KB={RING_CAP_KB} (RING_SIZE {RING_SIZE_KB})  "
+    print(f"  encode params from sim: max_cold={sim_cold} "
+          f"PrgBuf={sim_prg_buf}KB  "
+          f"pack cap={RING_CAP_KB}KB (physical ring {RING_SIZE_KB}KB)  "
           f"{TCOLS*8}x{TROWS*8} {FPS:g}fps AUDIO={AUDIO_KIND} "
           f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B DEBUG={int(PACK_DEBUG)}")
     # A configured build is always namespaced by the TOML filename.  The old
@@ -1084,6 +1195,16 @@ def main():
     POOL = args.pool_slots or int(log["vram_tiles"])
     per, n_load, n_upd, pal_w, Plist, tearing = resolve(log, POOL, mode=args.alloc)
     print(f"resolve[{args.alloc}]: tearing={tearing} M(payload)={len(Plist)} frames={len(per)}")
+    supply_enabled = bool(args.pattern_supply and FPS >= 24.0)
+    if args.pattern_supply and not supply_enabled:
+        print("  pattern supply: disabled below 24fps until the dense-poll player path is qualified")
+    supply_plan = pattern_supply.plan_supply(
+        log, per, Plist, enabled=supply_enabled)
+    print(f"  pattern supply: enabled={int(supply_plan.enabled)} "
+          f"Prg={len(supply_plan.prg_patterns)} "
+          f"Wr0={len(supply_plan.wr0_patterns)}/{pattern_supply.WORD_BUF_PATTERNS} "
+          f"Wr1={len(supply_plan.wr1_patterns)}/{pattern_supply.WORD_BUF_PATTERNS} "
+          f"Main={len(supply_plan.main_patterns)}/{pattern_supply.MAIN_BUF_PATTERNS}")
     # 不変条件(単一真実源 av_config): 実配信(pack)の1コマ cold が drop-safe 上限を超えたら失敗。
     # sim のモデル cap が pack の連続スロット割当に対して高すぎる兆候(=解析は合うが実機で滑る)。
     # frame0(完全ロードのヘッダ)は除外。
@@ -1105,16 +1226,29 @@ def main():
     print(f"  realized cold: max={realized_max} <= {stream_mode}/{stream_active_tiles} "
           f"active tiles cap {cold_ceiling} (measured at "
           f"{cold_qualification.active_tiles} tiles, 共有割り当て)")
-    packed_tiles, packed_runs = run_stats(per)
+    packed_tiles, packed_runs = run_stats(per, supply_plan.sources)
     if not np.array_equal(packed_tiles, n_load):
         frame = int(np.flatnonzero(packed_tiles != n_load)[0])
         raise SystemExit(
             f"pack: internal cold tile mismatch at frame {frame}: "
             f"runs={int(packed_tiles[frame])} resolve={int(n_load[frame])}")
-    verify_sim_pattern_transfers(log, packed_tiles, packed_runs)
-    blocks, source_pcm_chunks = build_control(log, per, n_upd, pal_w, audio_path)
-    sc = schedule(per, n_load, blocks)
-    verify_sim_stream_schedule(log, sc)
+    verify_sim_pattern_transfers(log, packed_tiles, packed_runs, supply_plan)
+    blocks, source_pcm_chunks = build_control(
+        log, per, n_upd, pal_w, audio_path, supply_plan.sources)
+    sc = schedule(per, supply_plan.prg_loads, blocks)
+    if supply_plan.enabled and log.get("pattern_supply") is None:
+        frozen_lengths = np.asarray(
+            (log.get("stream_schedule") or {}).get("block_lengths", ()), np.int64)
+        actual_lengths = np.asarray(sc["blk_len"], np.int64)
+        if frozen_lengths.shape != actual_lengths.shape or not np.array_equal(
+                frozen_lengths, actual_lengths):
+            raise SystemExit(
+                "pack: pattern supply changed control block lengths; source assignment "
+                "must preserve complete cold runs")
+        print("  BODY配送/RING照合: preloadでPrg需要を変更したためbaseline traceとの一致対象外; "
+              "control lengths exact")
+    else:
+        verify_sim_stream_schedule(log, sc)
     st = ("OK" if sc["feasible"] else
           f"INFEASIBLE(over {sc['over']} under {sc.get('under',0)} "
           f"rate_lead_end {sc.get('rate_lead_end', 0)})")
@@ -1133,7 +1267,7 @@ def main():
               f"(CD-1x allowance {startup_rate}, avoidable excess {startup_fsec - startup_rate})")
     if sc["prebuf_pat"] > RING_CAP_PAT or sc["ring_peak"] > RING_CAP_PAT:
         raise SystemExit(
-            f"pack: payload ring exceeds cap {RING_CAP_KB}KB "
+            f"pack: PrgBuf exceeds cap {RING_CAP_KB}KB "
             f"(prebuf={sc['prebuf_pat']*PAT/1024:.0f}KB, "
             f"peak={sc['ring_peak']*PAT/1024:.0f}KB)")
     if not sc["feasible"]:
@@ -1143,11 +1277,11 @@ def main():
             f"ready_min={sc['ready_min']} ctrl_min={sc['ctrl_min']} "
             f"rate_lead_end={sc.get('rate_lead_end', 0)})")
     if args.verify:
-        decode_verify(log, per, blocks, Plist, sc, compare_dir=compare or None,
+        decode_verify(log, per, blocks, supply_plan, sc, compare_dir=compare or None,
                       sample_dir=Path(output).parent / "decoded")
     if not args.no_write:
         write_stream(
-            output, log, per, blocks, source_pcm_chunks, Plist, sc, POOL)
+            output, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL)
 
 
 if __name__ == "__main__":

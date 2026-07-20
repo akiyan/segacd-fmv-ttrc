@@ -37,14 +37,13 @@ Everything else is shaped by Sega CD hardware, not by video theory:
   *close* resident is accepted under graded thresholds: `Near` (near-perfect),
   `Coa` (coarse), and `Flbk` (a wide fallback that fills what would otherwise be
   a hole). Accuracy is traded for zero pattern transfer.
-- **Whole-movie quality budget + scheduled payload RING.** The encoder first
+- **Whole-movie quality budget + four pattern supplies.** The encoder first
   dry-runs the quantized movie through the same VRAM allocator used for the
-  final encode. A backwards pass reserves only the virtual VBV bytes needed by
-  future update bursts, while allowing Coa-safe changes to yield before likely
-  Flbk/Miss bursts. The packer separately schedules the chosen pattern payload
-  into the physical PRG-RAM RING in whole CD sectors. Both share one safe
-  capacity, but the virtual reserve and physical occupancy are deliberately
-  separate.
+  final encode. It assigns the boot-only WordBuf0, WordBuf1, and MainBuf space
+  to predicted bursts, then a backwards pass reserves only the offline quality
+  allowance needed by future updates. Remaining patterns arrive through the
+  streamed PRG-RAM PrgBuf. Quality funding and physical source are frozen
+  independently for every update.
 - **DMA-limited refresh.** How many tiles can be written to VRAM per frame is
   bounded by the VBLANK DMA window for the screen mode and fps, so the tile grid
   size is chosen to fit that budget.
@@ -53,7 +52,7 @@ Everything else is shaped by Sega CD hardware, not by video theory:
   wave-RAM writer, with a persistent startup lead keeping audio aligned. The
   analysis and straight sim videos audition the same reconstructed IMA and
   RF5C164-quantized samples, not the clean extraction used as packer input.
-- **PRG-RAM discipline.** Buffers, queues, and the payload RING live in PRG-RAM regions
+- **PRG-RAM discipline.** Buffers, queues, and PrgBuf live in PRG-RAM regions
   that stay safe during continuous CD reads (see [AGENTS.md](AGENTS.md) hardware notes).
 
 ## Configurable within Sega CD limits
@@ -67,15 +66,17 @@ source within what the hardware allows — not fixed project constants:
 - **Audio format:** **ADPCM22** is the default: checkpointed 22.05 kHz mono IMA
   decoded directly by the Sub CPU. **PCM13** (RF5C164), 13.3 kHz mono 8-bit,
   remains supported as the physical-console-qualified fallback. ADPCM22
-  implementation is complete: the full H40 Sonic path is emulator-,
-  automated-check-, and listening-qualified, and Machi OP's H40/15 raster with
-  720 active tiles plus Machi ED's H40/15 raster with 1,040 active tiles are
-  full-length emulator- and automated-check-qualified. PCM13 remains the
-  conservative choice when physical-console qualification is required; real
-  hardware and the remaining ADPCM cadence profiles are broader compatibility
-  checks, not implementation blockers. See [ADPCM.md](ADPCM.md). The separate
-  Z80-offload experiment remains shelved because BUSREQ feeding contends with
-  Main CPU video work.
+  implementation is complete in the current v10 player. H40 Sonic is
+  full-length emulator- and listening-qualified; H40/15 Machi OP (720 active
+  tiles) and Machi ED (1,040 active tiles), plus the v10 four-supply H40/30 Bad
+  Apple profile (1,120 active tiles), completed their full recording, HUD,
+  stream, and replay-equivalence checks. Routine recording verifies audio
+  stream structure but does not apply content-dependent waveform thresholds.
+  PCM13 remains the conservative choice when physical-console qualification is
+  required; real hardware and the remaining ADPCM cadence profiles are broader
+  compatibility checks, not implementation blockers. See [ADPCM.md](ADPCM.md).
+  The separate Z80-offload experiment remains shelved because BUSREQ feeding
+  contends with Main CPU video work.
 
 ## Pipeline
 
@@ -96,7 +97,8 @@ Sega CD-specific compression is the "Encode" step.
    name-table and cold-pattern demand, build backwards reserve curves that end
    at zero, then maintain the resident VRAM tile pool; per frame, reuse exact /
    near / coarse / fallback residents where possible and spend only the
-   virtual VBV bytes not reserved for a harder future burst.
+   whole-movie quality allowance not reserved for a harder future burst. Exact
+   cold loads are then assigned to Prg, Wr0, Wr1, or Main.
 6. **Pack** video control, tile payload, palettes, and the selected PCM13 or
    ADPCM22 audio into the two-file CD stream: an armed startup `HEADER.DAT` and
    a continuously read `BODY.DAT`.
@@ -105,7 +107,8 @@ Sega CD-specific compression is the "Encode" step.
 
 Every encode can be rendered as a 1920x1080 analysis overlay (left = decoded
 Sega CD output, right = source / per-tile category map / Miss and MissCarry
-state, bottom = bandwidth, tank, DMA, waveform, and stacked timelines).
+state, bottom = bandwidth, four physical pattern supplies, DMA, waveform, and
+stacked timelines).
 [`ANALYSIS.md`](ANALYSIS.md) is the exact reference for every meter and tile
 category.
 
@@ -115,17 +118,17 @@ category.
   targets, and repository layout.
 - [ANALYSIS.md](ANALYSIS.md): the analysis-overlay reference, covering every
   panel, meter, timeline, and tile category drawn by `tools/render_analysis.py`.
-- [BUEFFERING.md](BUEFFERING.md): the virtual-tank whole-movie reserve planner,
-  its separation from the physical payload RING, diagnostics, and validation.
+- [BUEFFERING.md](BUEFFERING.md): the four physical pattern supplies, the
+  separate whole-movie quality planner, diagnostics, and validation.
 - [MOVIE.md](MOVIE.md): the exact `HEADER.DAT` / `BODY.DAT` on-disc stream
   format written by `tools/pack_stream.py` and read by the Sega CD player.
 - [STREAMING.md](STREAMING.md): the live player memory maps and conservative
   Main/Sub CPU headroom for planning additional streaming features.
 - [BUDGETS.md](BUDGETS.md): working notes for tile, DMA, CD bandwidth, and
   playback pipeline budgets used when choosing encoder targets.
-- [ADPCM.md](ADPCM.md): the checkpointed 22.05 kHz Sub-CPU ADPCM design,
-  full-table Word-RAM allocation, acceptance results, and broader qualification
-  scope.
+- [ADPCM.md](ADPCM.md): the current v10 checkpointed 22.05 kHz Sub-CPU ADPCM
+  design, full-table Word-RAM allocation, completed profile evidence, and the
+  remaining physical-hardware compatibility scope.
 - [AGENTS.md](AGENTS.md): agent and maintenance guidance, including hardware
   facts, recording rules, output paths, and documentation policy.
 - [CLAUDE.md](CLAUDE.md): compatibility entry point for Claude-based agents; it
@@ -141,10 +144,12 @@ category.
   `MOVIE.DAT` compatibility file for analysis and regression tools.
 - `tools/render_analysis.py` + `tools/layout_preview.py`: the analysis overlay.
 - `boot/`: the Sub/Main CPU playback runtime for real hardware. DEBUG builds
-  keep the contiguous `FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx` HUD on the top-row
-  VDP Window plane; H40 appends `UxxxxNxx` for Main pattern-transfer stopwatch
-  ticks and the packed cold-run count's low byte. The fixed P0/index15 font is uploaded once, so video-plane
-  flips and palette switches do not recolour or blink the text.
+  keep a values-only hexadecimal HUD on the top-row VDP Window plane. The
+  internal order is `F/P/S/D/R/L/C/W/M/A`; H40 appends `U/N` for Main
+  pattern-transfer stopwatch ticks and the source-aware cold-run count's low
+  byte. Only the occupied 22/28 cells are opaque, so unused H40 width remains
+  transparent. The fixed P0/index15 font is uploaded once, so video-plane flips
+  and palette switches do not recolour or blink the text.
 
 ## Build Targets
 

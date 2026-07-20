@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prove the Main-CPU bitmap and name-table fast paths are lossless.
 
-The bitmap proof replays every packed Sonic control block and compares the
+The bitmap proof replays every packed control block and compares the
 current per-bit indexed shadow update with a pointer walk that has dedicated
 0x00 (skip eight cells) and 0xFF (write eight entries) paths.  It also checks
 that the packed bitmap/palette order still matches the encoder decisions.
@@ -27,7 +27,10 @@ SECTOR = 2048
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
+FEATURE_PATTERN_SUPPLY = 0x0008
 ADPCM_TABLE_SECTORS = 5
+PATTERN_SUPPLY_OFFSET = 196
+NAME_ENTRY_MASK = 0x67FF
 DEFAULT_DECISIONS = Path(
     "videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl"
 )
@@ -116,6 +119,17 @@ def decode_routes(
     return routes
 
 
+def pattern_supply_sectors(header: bytes, version: int, features: int) -> int:
+    """Return the validated v10 boot-preload sector total."""
+    if version < 10 or not features & FEATURE_PATTERN_SUPPLY:
+        return 0
+    values = struct.unpack_from(">4s8H", header, PATTERN_SUPPLY_OFFSET)
+    magic, supply_version, reserved = values[:3]
+    if magic != b"PSUP" or supply_version != 1 or reserved:
+        raise AssertionError(f"invalid pattern-supply extension: {values!r}")
+    return sum(values[-3:])
+
+
 def parse_control(raw: bytes, seq: int, cells: int) -> ControlBlock:
     if len(raw) < 8:
         raise AssertionError(f"frame {seq}: control block is shorter than 8 bytes")
@@ -150,8 +164,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, _pool = struct.unpack_from(
         ">4sHHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8, 9):
-        raise AssertionError(f"expected split TTRC v6-v9, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10):
+        raise AssertionError(f"expected split TTRC v6-v10, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -163,8 +177,11 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     audio_preload_sec = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
     table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
+    supply_sec = pattern_supply_sectors(header, version, features)
 
-    frame0_offset = (1 + paltab_sec + table_sec + audio_preload_sec) * SECTOR
+    frame0_offset = (
+        1 + paltab_sec + table_sec + supply_sec + audio_preload_sec
+    ) * SECTOR
     frame0_len = struct.unpack_from(">H", header, frame0_offset)[0]
     controls = [
         parse_control(
@@ -173,7 +190,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     ]
 
     routing_offset = (
-        1 + paltab_sec + table_sec + audio_preload_sec + f0_ctrl_sec + f0_pat_sec
+        1 + paltab_sec + table_sec + supply_sec + audio_preload_sec
+        + f0_ctrl_sec + f0_pat_sec
     ) * SECTOR
     routing_raw = header[
         routing_offset : routing_offset + routing_sec * SECTOR
@@ -233,7 +251,7 @@ def update_reference(shadow: list[int], block: ControlBlock, cells: int) -> None
     entry_pos = 0
     for cell in range(cells):
         if block.bitmap[cell >> 3] & (1 << (cell & 7)):
-            shadow[cell] = block.entries[entry_pos] & 0x7FFF
+            shadow[cell] = block.entries[entry_pos] & NAME_ENTRY_MASK
             entry_pos += 1
     if entry_pos != len(block.entries):
         raise AssertionError(f"frame {block.seq}: reference did not consume all entries")
@@ -257,7 +275,8 @@ def update_fast(shadow: list[int], block: ControlBlock, cells: int) -> tuple[int
             values = block.entries[entry_pos : entry_pos + 8]
             if len(values) != 8:
                 raise AssertionError(f"frame {block.seq}: full path runs out of entries")
-            shadow[shadow_pos : shadow_pos + 8] = [value & 0x7FFF for value in values]
+            shadow[shadow_pos : shadow_pos + 8] = [
+                value & NAME_ENTRY_MASK for value in values]
             shadow_pos += 8
             entry_pos += 8
             continue
@@ -268,7 +287,7 @@ def update_fast(shadow: list[int], block: ControlBlock, cells: int) -> tuple[int
             if bits & 1:
                 if entry_pos >= len(block.entries):
                     raise AssertionError(f"frame {block.seq}: mixed path runs out of entries")
-                shadow[shadow_pos] = block.entries[entry_pos] & 0x7FFF
+                shadow[shadow_pos] = block.entries[entry_pos] & NAME_ENTRY_MASK
                 entry_pos += 1
             bits >>= 1
             shadow_pos += 1

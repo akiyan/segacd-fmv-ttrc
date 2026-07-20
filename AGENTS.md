@@ -24,7 +24,7 @@ before beginning broad investigation, benchmarking, or implementation.
   possible meaning.
 - First restate the intended **object, operation, and memory domain** in one
   short question. For example: "Do you mean keeping the routing table, rather
-  than the pattern payload ring, resident in Word RAM?"
+  than PrgBuf pattern payload, resident in Word RAM?"
 - This confirmation is required whenever the ambiguity would change the file
   format, memory map, bank ownership, buffering model, cycle analysis, or work
   branch. Ask even when one interpretation seems likely.
@@ -35,12 +35,22 @@ Keep these distinctions explicit:
 
 - **routing table**: per-delivery-slot sector counts used to sort BODY sectors;
   it is not pattern data.
-- **payload RING**: the PRG-RAM FIFO holding prefetched 32-byte cold patterns.
+- **PrgBuf** (`Prg` in analysis): the streamed PRG-RAM circular buffer holding
+  prefetched 32-byte cold patterns. Internal `RING_*` constants describe its
+  ring-buffer implementation.
+- **WordBuf0 / WordBuf1** (`Wr0` / `Wr1`): distinct boot-preloaded pattern
+  sequences in the two physical 1M Word-RAM banks, selected by frame parity;
+  they are not duplicate caches.
+- **MainBuf** (`Main`): boot-preloaded patterns copied once to Main RAM and
+  transferred directly from there.
 - **APPLY ring**: the PRG-RAM circular queue holding continuous control blocks.
 - **resident pattern**: currently a pattern retained in the VRAM tile pool. A
-  proposed Word-RAM pattern cache is a separate, second-level cache.
-- **tank**: the simulator/packer model of usable payload buffering, not another
-  physical player buffer.
+  boot-preloaded WordBuf pattern is a physical source, not another VRAM-resident
+  cache level.
+- **whole-movie quality budget**: encoder-only spending accounting. It is not a
+  physical buffer and has no analysis meter. The old name “Tank” is retired.
+- **Buf category**: an encoder funding class for an exact cold load using saved
+  quality allowance or a boot-preload credit. It is not a physical `Buf` meter.
 - **Word RAM output bank**: the 1M/1M frame handoff area exchanged between Sub
   and Main CPUs; it is not automatically shared by both CPUs at once.
 
@@ -83,11 +93,12 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 - **Description structure** (in both languages, in this order):
   1. Overview — one or two lines on what the video is.
   2. Output and source specs — the SEGA-CD output (mode, grid WxH, tile count,
-     fps, audio, CBR rate, tank) and the Source (resolution, fps, audio).
+     fps, audio, CBR rate, Prg/Wr0/Wr1/Main capacities) and the Source
+     (resolution, fps, audio).
   3. How to read the analysis layout — what each panel, meter, and timeline
      shows and how to interpret it (left = SEGA-CD sim output; right = Source /
-     category map / per-metric flow graph; bottom status = Req / Band / Tank /
-     Tank-delta / DMA plus the stacked timelines). Define Band as useful
+     category map / audio waveform; bottom status = Req / Cold / Band /
+     Prg / Wr0 / Wr1 / Main / DMA / Run plus the stacked timelines). Define Band as useful
      `BODY.DAT` payload + control bytes in the physical delivery slot, excluding
      all pad, `HEADER.DAT`, and frame 0, divided by that slot's actual physical
      CD read time. Its range is 0 to CD 1x (150 KiB/s); pad is unused bandwidth.
@@ -134,8 +145,9 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
     Updated via the `/analysis` skill together with the layout code.
   - [`MOVIE.md`](MOVIE.md) - the `HEADER.DAT` + `BODY.DAT` (TTRC) on-disc stream format. Keep in sync with
     `tools/pack_stream.py` and the `boot/movieplay_*.s` player.
-  - [`CONFIG.md`](CONFIG.md) - the tunable settings, throttles and buffers (ring/tank,
-    cold cap, audio sync, CD pump, DMA budget, encoder knobs, per-source env). Keep in
+  - [`CONFIG.md`](CONFIG.md) - the tunable settings, throttles and buffers
+    (PrgBuf, boot preloads, quality budget, cold cap, audio sync, CD pump, DMA
+    budget, encoder knobs, per-source env). Keep in
     sync with `tools/av_config.py`, `tools/sim.py`, `tools/pack_stream.py` and the
     `boot/movieplay_*.s` player.
 - Claude skill files under `.claude/skills/**/SKILL.md` are allowed and should
@@ -168,10 +180,10 @@ within Sega CD limits, not fixed presets:
   physical-hardware-qualified fallback. **ADPCM22** is
   the completed checkpointed 22.05 kHz mono IMA path, decoded directly by the
   Sub CPU through full lookup tables duplicated in both physical 1M Word-RAM
-  banks. H40 Sonic is full-length emulator-, automated-check-, and
-  listening-qualified; H40/15 Machi OP with 720 active tiles and Machi ED with
-  1,040 active tiles are full-length emulator- and automated-check-qualified.
-  Physical hardware and the remaining modes are
+  banks. H40 Sonic is full-length emulator- and listening-qualified; H40/15
+  Machi OP with 720 active tiles, Machi ED with 1,040 active tiles, and v10
+  H40/30 Bad Apple with 1,120 active tiles completed full recording, HUD,
+  stream, and replay-equivalence checks. Physical hardware and the remaining modes are
   broader compatibility checks rather than implementation blockers (see
   [ADPCM.md](ADPCM.md)). Z80 offload remains shelved because BUSREQ-based
   feeding contends with Main CPU video work.
@@ -352,12 +364,13 @@ ffmpeg -i videos/<stem>_emu_lossless.mkv \
   player exceeded the 68000 streaming margin, while the later optimized Sub
   path had to be re-qualified rather than inheriting that conclusion; Z80
   offload introduced Main-bus contention (see `ADPCM.md`); and the streaming
-  ring: the sim's VBV tank was set equal to the player's ring
-  (`RING_SIZE`=420 KB, TANK=440→400), i.e. it assumed the *entire* ring is usable
-  for banking. Real CD-delivery jitter makes the usable ring smaller, so a
+  Prg ring: the old sim quality reservoir was set at 440 then 400 KB while the
+  physical ring was about 420 KB, i.e. it assumed effectively the *entire* ring
+  was usable for time shifting. Real CD-delivery jitter makes the usable ring smaller, so a
   schedule the pack calls feasible (`under`=0, `ring_min`≈1–2 KB) still underruns
-  live. The fix is a sim-side correction — TANK a jitter margin *below* the ring
-  (e.g. 350 KB) so the sim only decides loads the hardware can actually deliver —
+  live. The fix was a sim-side correction — keep the quality and schedule
+  ceilings a jitter margin below the physical ring so the sim only decides
+  loads the hardware can actually deliver —
   not a per-frame cold cap papering over it. Keep `pack_stream.py`'s
   `RING_CAP_KB` tied to the player's real `RING_SIZE` minus that margin. Shape
   useful payload to the CD-1x allowance (replace rate padding while space is
@@ -405,8 +418,9 @@ tools/record_movie.sh --config configs/PROFILE.toml \
   exact decoded-frame hashes, PCM SHA-256/sample count, packet PTS/DTS/durations
   and stream metadata. Repeat the offline run and compare it too. The
   Replay-generation run is not the realtime baseline. Routine recordings use
-  their built-in count/audio/log/visual gates without rerunning all
-  three qualification captures.
+  frame/packet counts, audio-stream presence, logs, and visual samples without
+  rerunning all three qualification captures; waveform thresholds are not a
+  recording gate.
 - The default keeps the Mega-CD startup. Use trimming only when the user
   explicitly asks for a movie-only clip.
 - Run one RetroArch/Xvfb recording at a time.

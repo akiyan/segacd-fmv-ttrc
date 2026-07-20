@@ -12,10 +12,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import av_config
 import ima_adpcm
+import pattern_supply
 import ttrc_routing
 
 SP = Path(__file__).resolve().parent.parent / "boot" / "movieplay_sp.s"
 text = SP.read_text()
+IP = Path(__file__).resolve().parent.parent / "boot" / "movieplay_ip.s"
+ip_text = IP.read_text()
 
 
 def _equ(source, name, path):
@@ -30,7 +33,7 @@ def _require_asm(pattern, description):
         sys.exit(f"check_player_ring: ASM does not use {description}")
 
 
-# --- TTRC v9 contract, retaining the v7+ packed-routing layout ---
+# --- TTRC v10 contract, retaining the v7+ packed-routing layout ---
 # The Python codec is the format source of truth. The Sub-CPU player keeps
 # literal `.equ` values because the assembler cannot import Python; compare all
 # of them before every player build and also require the copy loops to use the
@@ -46,6 +49,8 @@ routing_equ_contract = {
     "FEATURE_COLD_RUNS_BIT": ttrc_routing.FEATURE_COLD_RUNS.bit_length() - 1,
     "FEATURE_FIXED_N2_BIT": ttrc_routing.FEATURE_FIXED_N2.bit_length() - 1,
     "FEATURE_ADPCM22_BIT": ttrc_routing.FEATURE_ADPCM22.bit_length() - 1,
+    "FEATURE_PATTERN_SUPPLY_BIT": (
+        ttrc_routing.FEATURE_PATTERN_SUPPLY.bit_length() - 1),
 }
 for equ_name, expected in routing_equ_contract.items():
     actual = _equ(text, equ_name, SP)
@@ -80,7 +85,7 @@ print(
     f"{ttrc_routing.MAX_FRAMES} frames, {route_copy_longs} MOVE.L x "
     f"{route_bank_copies} banks")
 
-# --- v9 ADPCM full table duplicated into both physical Word-RAM banks ---
+# --- v9+ ADPCM full table duplicated into both physical Word-RAM banks ---
 adpcm_table = _equ(text, "ADPCM_TABLE", SP)
 adpcm_table_bytes = _equ(text, "ADPCM_TABLE_BYTES", SP)
 adpcm_table_sectors = _equ(text, "ADPCM_TABLE_SECTORS", SP)
@@ -132,7 +137,8 @@ if ring_bytes != want_bytes:
         f"({want_bytes} / 0x{want_bytes:X}). Update one so they agree "
         f"(single source of truth = tools/av_config.py).")
 print(f"check_player_ring: OK  RING_SIZE={ring_bytes//1024}KB "
-      f"== av_config.RING_SIZE_KB (cap {av_config.RING_CAP_KB}KB, tank {av_config.TANK_KB}KB)")
+      f"== av_config.RING_SIZE_KB (PrgBuf cap {av_config.PRG_BUF_CAP_KB}KB, "
+      f"quality budget {av_config.QUALITY_BUDGET_KB}KB)")
 
 # --- Boot-time PRG staging and resident Word-RAM routing map ---
 # Frame 0 is allowed to load the whole H40 raster, unlike timed frames. Keep its
@@ -161,7 +167,7 @@ if ring_cap_end != expected_cap_end or f0pat_tmp != ring_cap_end:
 ring_end = ring_base + ring_bytes
 if ring_base % sector or ring_bytes % sector or ring_bytes % 32:
     sys.exit(
-        "check_player_ring: payload ring must be sector- and pattern-aligned: "
+        "check_player_ring: physical PrgBuf ring must be sector- and pattern-aligned: "
         f"base={ring_base:#x}, size={ring_bytes:#x}")
 if ring_end > apply_base:
     sys.exit(
@@ -195,14 +201,72 @@ print(
     f"{routing_tmp:#x}..{routing_tmp + route_bytes:#x}, Word routing "
     f"{routing:#x}..{routing + route_bytes:#x}, PRG ring end {ring_end:#x}")
 
+# --- v10 boot-only pattern supply map ---
+word_buf = _equ(text, "WORD_BUF", SP)
+word_buf_patterns = _equ(text, "WORD_BUF_PATTERNS", SP)
+ip_word_buf_off = _equ(ip_text, "WORD_BUF_OFF", IP)
+ip_word_buf_end = _equ(ip_text, "WORD_BUF_END", IP)
+ip_word_buf_patterns = _equ(ip_text, "WORD_BUF_PATTERNS", IP)
+main_stage_off = _equ(ip_text, "MAIN_STAGE_OFF", IP)
+main_stage_patterns = _equ(text, "MAIN_STAGE_PATTERNS", SP)
+main_buf = _equ(ip_text, "MAIN_BUF", IP)
+main_buf_patterns = _equ(ip_text, "MAIN_BUF_PATTERNS", IP)
+run_table = _equ(ip_text, "RUN_TABLE", IP)
+
+if word_buf != sub_bank + pattern_supply.WORD_BUF_OFFSET:
+    sys.exit(
+        f"check_player_ring: SP WORD_BUF={word_buf:#x} != owned bank + "
+        f"Python offset {pattern_supply.WORD_BUF_OFFSET:#x}")
+if (ip_word_buf_off, ip_word_buf_end, ip_word_buf_patterns) != (
+        pattern_supply.WORD_BUF_OFFSET,
+        pattern_supply.WORD_BUF_END,
+        pattern_supply.WORD_BUF_PATTERNS):
+    sys.exit(
+        "check_player_ring: Main WordBuf layout does not match pattern_supply.py: "
+        f"{ip_word_buf_off:#x}..{ip_word_buf_end:#x}, {ip_word_buf_patterns} patterns")
+if word_buf_patterns != pattern_supply.WORD_BUF_PATTERNS:
+    sys.exit(
+        f"check_player_ring: Sub WORD_BUF_PATTERNS={word_buf_patterns} != "
+        f"Python {pattern_supply.WORD_BUF_PATTERNS}")
+if pcm_dec_buf + 1536 != word_buf or word_buf + word_buf_patterns * 32 != routing:
+    sys.exit(
+        "check_player_ring: WordBuf must exactly fill the stable gap between "
+        f"PCM_DEC_BUF and ROUTING: pcm_end={pcm_dec_buf + 1536:#x}, "
+        f"WordBuf={word_buf:#x}..{word_buf + word_buf_patterns * 32:#x}, "
+        f"routing={routing:#x}")
+if main_stage_off != pattern_supply.MAIN_STAGE_OFFSET:
+    sys.exit(
+        f"check_player_ring: MAIN_STAGE_OFF={main_stage_off:#x} != "
+        f"Python {pattern_supply.MAIN_STAGE_OFFSET:#x}")
+if main_stage_patterns != pattern_supply.MAIN_BUF_PATTERNS:
+    sys.exit(
+        f"check_player_ring: MAIN_STAGE_PATTERNS={main_stage_patterns} != "
+        f"Python MainBuf capacity {pattern_supply.MAIN_BUF_PATTERNS}")
+if not re.search(
+        r"^\.equ\s+MAIN_STAGE,\s*SUB_BANK_1M\+0xD000\b", text, re.M):
+    sys.exit("check_player_ring: SP MAIN_STAGE must use the shared +0xD000 offset")
+if main_stage_off + main_stage_patterns * 32 > 0x10000:
+    sys.exit("check_player_ring: MainBuf Word-RAM staging overlaps CTRL at +0x10000")
+if (main_buf, run_table, main_buf_patterns) != (
+        pattern_supply.MAIN_BUF_BASE,
+        pattern_supply.MAIN_BUF_END,
+        pattern_supply.MAIN_BUF_PATTERNS):
+    sys.exit(
+        "check_player_ring: MainBuf layout does not match pattern_supply.py: "
+        f"{main_buf:#x}..{run_table:#x}, {main_buf_patterns} patterns")
+if not re.search(
+        r"^\.equ\s+MAIN_CODEGEN_LIMIT,\s*MAIN_BUF\s*$", ip_text, re.M):
+    sys.exit("check_player_ring: Main code generation must stop at MAIN_BUF")
+print(
+    "check_player_ring: OK  pattern supply "
+    f"Wr0/Wr1 each {word_buf_patterns} patterns at bank+{ip_word_buf_off:#x}, "
+    f"Main {main_buf_patterns} patterns at {main_buf:#x}..{run_table:#x}")
+
 # --- CRAM pre-load (PALTAB) consistency ---
 # The pack sizes the PALTAB to av_config.PALTAB_MAX_SEG; the Main player copies it
 # into a fixed Main-RAM table sized by its own `.equ PALTAB_MAX_SEG`. And both CPUs
 # must agree on the Word-RAM staging offset (`.equ PALTAB_OFF`). Drift = wrong
 # palettes on segment switches, so fail the build instead.
-IP = Path(__file__).resolve().parent.parent / "boot" / "movieplay_ip.s"
-ip_text = IP.read_text()
-
 ip_max_seg = _equ(ip_text, "PALTAB_MAX_SEG", IP)
 if ip_max_seg != av_config.PALTAB_MAX_SEG:
     sys.exit(

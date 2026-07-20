@@ -101,10 +101,11 @@ frame counter:
 | opt5 MOVEP | `F0282` -> `F098B` / 60s | ~30.02 | `S=1 D=0 R=3` |
 | opt5 + armed startup | `F0024` -> `F0981` / 80s | **29.9625** | **`S=0 D=0 R=2`** |
 
-The slight 30.02 reading is capture timestamp granularity; the wider final window
-matches the 29.97 display limit. Audio automation reports `clip_count=0` and
-`jump_candidate_count=0` for both baseline and final captures. This is an automated
-gate, not a claim of a completed listening test.
+The slight 30.02 reading is capture timestamp granularity; the wider final
+window matches the 29.97 display limit. Historical waveform diagnostics found
+no clip or jump candidates in either capture, but those content-dependent
+thresholds are no longer recorder gates and do not constitute a listening
+test.
 
 ### Startup arming removes the last `S=1`
 
@@ -127,7 +128,7 @@ real zero, not a counter reset.
 Run:
 
 ```sh
-python3 harness/pipeline_speedup/verify_wave_chunk.py
+tools/python.sh harness/pipeline_speedup/verify_wave_chunk.py
 ```
 
 The model compares the old byte loop with the chunked writer across pump positions,
@@ -231,7 +232,8 @@ The same pass removes fixed work from the 75 Hz CDC path:
 Run the format proof against the real packed stream:
 
 ```sh
-python3 harness/pipeline_speedup/verify_entry_walk.py
+tools/python.sh harness/pipeline_speedup/verify_entry_walk.py \
+  out/PROFILE/HEADER.DAT out/PROFILE/BODY.DAT
 ```
 
 That p35 Sonic disc passed all 2714 frames: 1,870,030 entries and 262,363 cold
@@ -261,7 +263,9 @@ eight-word group, followed by a scalar 0--7-word tail for arbitrary per-source
 widths. Run the equivalence proof against the real DEBUG control stream:
 
 ```sh
-python3 harness/pipeline_speedup/verify_main_fastpaths.py
+tools/python.sh harness/pipeline_speedup/verify_main_fastpaths.py \
+  --header out/PROFILE/HEADER.DAT --body out/PROFILE/BODY.DAT \
+  --decisions videos/STEM/tmp/decisions.pkl
 ```
 
 The checker replays all packed Sonic frames and requires the optimized shadow to
@@ -275,22 +279,27 @@ widths 1--40 with the scalar word copy.
 
 e26 feature bit 0 appends the already-known cold slot runs to each control block
 after its audio and absolute-address alignment pad. The suffix is one big-endian
-`n_runs` word followed by `slot_start,count` word pairs. At 30 fps with at most
-1024 updates, p39 consumes only these cold runs instead of scanning every update
-entry and rebuilding the same runs. Run the independent proof against the real
-split stream and its decision log:
+`n_runs` word followed by `slot_start,count` word pairs. TTRC v10 retains this
+layout but uses the count word's high two bits for Prg/Wr/Main and splits a run
+when its physical source changes. The optimized player consumes these runs
+instead of scanning every update entry and rebuilding them. Run the independent
+proof against the real split stream and its decision log:
 
 ```sh
-python3 harness/pipeline_speedup/verify_run_descriptors.py
+tools/python.sh harness/pipeline_speedup/verify_run_descriptors.py \
+  --header out/PROFILE/HEADER.DAT --body out/PROFILE/BODY.DAT \
+  --decisions videos/STEM/tmp/decisions.pkl
 ```
 
 The checker reconstructs controls and payload sectors without importing the packer.
 When header feature bit 0 is set, it parses the actual aligned descriptor suffix from
 every control; feature-zero legacy streams remain supported by constructing the same
-suffix hypothetically. For all 2714 frames it compares the current entry scan with
-the descriptor path, including slot order, run grouping and 32-byte payload
-consumption. It also matches bitmap cells, entry palettes and every physical cold
-pattern to `decisions.pkl`. The report gives the exact added control bytes/sectors,
+suffix hypothetically. Across the complete supplied profile it compares the
+entry scan with the descriptor path, including slot order, run grouping and 32-byte payload
+consumption. For v10 it independently walks frame-0, Prg, Wr0, Wr1, and Main
+payloads and proves every physical source is consumed exactly. It also matches
+bitmap cells, entry palettes and every physical cold pattern to `decisions.pkl`.
+The report gives the exact added control bytes/sectors,
 startup frames 1--42 statistics, and decimal frame 2019 statistics.
 
 The Main CPU counts these descriptors into `n_runs`; H40 DEBUG HUD `N` displays
@@ -300,7 +309,7 @@ and can be split at a VBlank boundary. To compare the HUD OCR from a real emulat
 recording with the exact descriptors in the recorded disc, run:
 
 ```sh
-python3 harness/pipeline_speedup/verify_run_hud.py \
+tools/python.sh harness/pipeline_speedup/verify_run_hud.py \
   --header out/PROFILE/HEADER.DAT --body out/PROFILE/BODY.DAT \
   --csv videos/RECORDING.csv
 ```
@@ -318,12 +327,13 @@ polls exactly once after its final entry. The descriptor path preserves that end
 poll. Run:
 
 ```sh
-python3 harness/pipeline_speedup/verify_entry_poll_fastpath.py
+tools/python.sh harness/pipeline_speedup/verify_entry_poll_fastpath.py \
+  --header out/PROFILE/HEADER.DAT --body out/PROFILE/BODY.DAT
 ```
 
 The checker compares the fallback masked initial `DBRA` counter with an
 equivalent grouped model. It requires identical poll positions, entry order and
-cold-run grouping for every packed frame, then
+cold-run grouping, including v10 physical-source boundaries, for every packed frame, then
 repeats the cadence comparison for every synthetic update count from 0 through
 the 1120-cell H40 limit. H40 retains the fallback entry walk and its possible
 prefix poll when a frame exceeds 1024 updates.

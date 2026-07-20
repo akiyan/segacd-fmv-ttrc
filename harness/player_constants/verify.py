@@ -18,6 +18,7 @@ TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import av_config  # noqa: E402
+import pattern_supply  # noqa: E402
 import player_constants  # noqa: E402
 import ttrc_routing  # noqa: E402
 
@@ -28,6 +29,7 @@ class Case:
     mode: int
     fps: int
     adpcm22: bool = False
+    pattern_supply: bool = False
 
 
 CASES = (
@@ -39,6 +41,8 @@ CASES = (
     Case("h40-30", 1, 30),
     Case("h40-15-adpcm", 1, 15, True),
     Case("h40-30-adpcm", 1, 30, True),
+    Case("h32-30-supply", 0, 30, False, True),
+    Case("h40-30-adpcm-supply", 1, 30, True, True),
 )
 
 
@@ -66,6 +70,8 @@ def make_header(case: Case) -> bytes:
         features |= ttrc_routing.FEATURE_ADPCM22
     else:
         audio = av_config.pcm_frame_bytes(case.fps, 13_300)
+    if case.pattern_supply:
+        features |= ttrc_routing.FEATURE_PATTERN_SUPPLY
     audio_fd = av_config.rf5c164_fd(
         audio, av_config.playback_fps_for_content(case.fps))
     prefix = struct.pack(
@@ -77,7 +83,20 @@ def make_header(case: Case) -> bytes:
         av_config.vsync_n_for_fps(case.fps), audio, case.fps,
         audio_fd, 30, features,
     )
-    sector = prefix + bytes(128) + bytes(player_constants.SECTOR - 192)
+    sector = bytearray(
+        prefix + bytes(128) + bytes(player_constants.SECTOR - 192))
+    if case.pattern_supply:
+        player_constants.PATTERN_SUPPLY_STRUCT.pack_into(
+            sector, player_constants.PATTERN_SUPPLY_OFFSET,
+            player_constants.PATTERN_SUPPLY_MAGIC,
+            player_constants.PATTERN_SUPPLY_VERSION, 0,
+            pattern_supply.WORD_BUF_PATTERNS,
+            pattern_supply.WORD_BUF_PATTERNS,
+            pattern_supply.MAIN_BUF_PATTERNS,
+            (pattern_supply.WORD_BUF_PATTERNS + 63) // 64,
+            (pattern_supply.WORD_BUF_PATTERNS + 63) // 64,
+            (pattern_supply.MAIN_BUF_PATTERNS + 63) // 64,
+        )
     return player_constants.stamp_header_sector(sector)
 
 
@@ -104,8 +123,8 @@ def text_size(size: Path, obj: Path) -> int:
     raise AssertionError(f"no .text size in {obj}")
 
 
-def verify_doflip_branches(objdump: Path, obj: Path) -> None:
-    """Keep local branches inside bf_doflip's control-flow region."""
+def verify_flip_control_flow(objdump: Path, obj: Path) -> None:
+    """Keep flip branches local and prove the final VBlank guard ordering."""
     disassembly = run([str(objdump), "-d", str(obj)])
     start_match = re.search(r"^([0-9a-f]+) <bf_doflip>:$", disassembly, re.MULTILINE)
     end_match = re.search(r"^([0-9a-f]+) <bf_after_flip>:$", disassembly, re.MULTILINE)
@@ -120,8 +139,6 @@ def verify_doflip_branches(objdump: Path, obj: Path) -> None:
         block,
         re.MULTILINE,
     )
-    if not branches:
-        raise AssertionError(f"{obj}: no bf_doflip local branches found")
     escaped = [
         (mnemonic, int(target, 16))
         for mnemonic, target in branches
@@ -130,6 +147,49 @@ def verify_doflip_branches(objdump: Path, obj: Path) -> None:
     if escaped:
         details = ", ".join(f"{op}->0x{target:X}" for op, target in escaped)
         raise AssertionError(f"{obj}: bf_doflip branch escaped its region: {details}")
+
+    guard_match = re.search(
+        r"^([0-9a-f]+) <do_flip>:$", disassembly, re.MULTILINE)
+    guard_end_match = re.search(
+        r"^([0-9a-f]+) <dma_chunk_wr>:$", disassembly, re.MULTILINE)
+    if not guard_match or not guard_end_match:
+        raise AssertionError(f"{obj}: missing do_flip guard symbols")
+    guard_start = int(guard_match.group(1), 16)
+    guard_end = int(guard_end_match.group(1), 16)
+    guard = disassembly[guard_match.end():guard_end_match.start()]
+    status_reads = list(re.finditer(
+        r"\bmovew\s+(?:00)?c00004 <VDP_CTRL>,%d0", guard))
+    hv_read = re.search(r"\bmovew\s+(?:00)?c00008 <VDP_HV>,%d0", guard)
+    tail_check = re.search(r"\bcmpiw\s+#-1024,%d0", guard)
+    fresh_wait = re.search(r"\bbsr\w*\s+[^\n]*<wait_vb_start>", guard)
+    paired_write = re.search(
+        r"\bmovel\s+%d5,(?:00)?c00004 <VDP_CTRL>", guard)
+    if (len(status_reads) != 2 or hv_read is None or tail_check is None or
+            fresh_wait is None or paired_write is None):
+        raise AssertionError(f"{obj}: incomplete final VBlank guard")
+    positions = (
+        status_reads[0].start(), hv_read.start(), tail_check.start(),
+        status_reads[1].start(), fresh_wait.start(), paired_write.start(),
+    )
+    if positions != tuple(sorted(positions)):
+        raise AssertionError(f"{obj}: final VBlank guard is out of order")
+
+    guard_branches = re.findall(
+        r"^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+"
+        r"(?!bsr)(b[a-z]+)\s+([0-9a-f]+)\s+<",
+        guard,
+        re.MULTILINE,
+    )
+    if len(guard_branches) < 3:
+        raise AssertionError(f"{obj}: final VBlank guard branches are missing")
+    escaped = [
+        (mnemonic, int(target, 16))
+        for mnemonic, target in guard_branches
+        if not guard_start <= int(target, 16) < guard_end
+    ]
+    if escaped:
+        details = ", ".join(f"{op}->0x{target:X}" for op, target in escaped)
+        raise AssertionError(f"{obj}: do_flip branch escaped its region: {details}")
 
 
 def verify_adpcm_decode_pump(
@@ -174,7 +234,7 @@ def build_case(
         "-T", str(ROOT / "cfg/ip.ld"), "-o", str(ip_bin), str(ip_obj),
     ])
     if specialized:
-        verify_doflip_branches(objdump, ip_obj)
+        verify_flip_control_flow(objdump, ip_obj)
 
     sp_obj = case_dir / f"sp-{tag}.o"
     sp_bin = case_dir / f"sp-{tag}.bin"

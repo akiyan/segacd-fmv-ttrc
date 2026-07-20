@@ -26,9 +26,9 @@ automates: update layout -> update this file -> notify).
 +----------------------------------------------+   | CATEGORY TOTALS (whole clip)|
 +----------------------------------------------+   | +-------------------------+ |
 | STATUS BAR                                   |   | | AUDIO WAVEFORM          | |
-|  [Req] [Cold] [Band] [Tank] [Buff] [DMA] [Run]|  | | (+/-2s, now = centre)   | |
+|  [Req] [Cold] [Band] [Prg][Wr0][Wr1][Main] ...|  | | (+/-2s, now = centre)   | |
 |  Prev/Current/Next palette strip             |   | +-------------------------+ |
-|  3 stacked timelines (Req / Tank / BODY Band)|  +-----------------------------+
+|  3 timelines (Req / four supplies / BODY Band)|  +-----------------------------+
 +----------------------------------------------+
 ```
 
@@ -133,12 +133,12 @@ find *some* resident rather than leave a hole.
 
 | Class | Colour | Bytes | Meaning |
 |-------|--------|-------|---------|
-| **Raw**  | light grey | 34 (32 pattern + 2 name) | An accurate full-cost load charged to this frame's virtual CBR budget. Physical payload delivery may have happened earlier through the RING. |
+| **Raw**  | light grey | 34 from Prg; 2 when boot-preloaded | An accurate cold load funded by this frame's fresh quality allowance. Its physical source is tracked separately as Prg, Wr0/Wr1, or Main. |
 | **Same** | checker grey | 2 (name only) | The target tile's exact pattern is **already resident** in VRAM; the cell just points to it (lossless dedup). No pattern transfer. |
 | **Near** | blue | 2 (name) | No exact match, but a resident pattern passes the **Near** thresholds; the cell points to it. Near-perfect reuse. Also covers "keep the current display" when the currently shown tile is already accurate and still within Near of the new target. |
 | **Coa**  | green | 2 (name) | Best resident passes **Coa** (a bit rougher than Near). Used for flat/low-detail tiles where a close-enough resident exists. |
-| **Flbk** | orange (thick border) | 2 (name) | **Fallback** (merged Mid+Far). Only used when no Raw/Buf load is possible (budget/tank exhausted or the per-frame cold cap reached). Default is **improve mode**: the best resident is taken if it gets closer to the target than the current display (`CBRSIM_FLBK_IMPROVE_ONLY=0` reverts to the absolute wide **Flbk** threshold). Visibly approximate, but "better than a Miss". This is the last resort before Miss. |
-| **Buf**  | violet (thick border) | 34 (32 pattern + 2 name) | An accurate full-cost load charged to banked virtual VBV budget. Same accuracy and physical payload path as Raw; only the encoder's funding class differs. |
+| **Flbk** | orange (thick border) | 2 (name) | **Fallback** (merged Mid+Far). Only used when no Raw/Buf load is possible (quality budget exhausted or the per-frame cold cap reached). Default is **improve mode**: the best resident is taken if it gets closer to the target than the current display (`CBRSIM_FLBK_IMPROVE_ONLY=0` reverts to the absolute wide **Flbk** threshold). Visibly approximate, but "better than a Miss". This is the last resort before Miss. |
+| **Buf**  | violet (thick border) | 34 from Prg; 2 when boot-preloaded | An accurate cold load funded by saved whole-movie quality budget or by a boot-preload credit. `Buf` is a funding category, not a physical buffer; Prg/Wr0/Wr1/Main records the actual byte source. |
 | **Miss** | red (filled) | 0 | The tile was **not updated**; it still shows whatever was there before. A red-filled hole in the category map. |
 
 ### Selection order (per changed tile, `commit_unified`)
@@ -150,24 +150,28 @@ find *some* resident rather than leave a hole.
    the budget allows the 2 B name -> `Near` / `Coa`.
 4. Else load the exact pattern (34 B), unless the per-frame **cold cap**
    (`cold_cap_for_fps`, `av_config.py`) is already reached: charge the current
-   virtual CBR budget -> `Raw`, or banked virtual VBV budget -> `Buf`.
-5. Else (budget/VBV/cold-cap exhausted) if the best resident improves on the
+   current-frame allowance -> `Raw`, or saved whole-movie allowance / a
+   boot-preload credit -> `Buf`.
+5. Else (quality budget/cold-cap exhausted) if the best resident improves on the
    current display (default improve mode; see Flbk above) -> `Flbk`
    (2 B fallback).
 6. Else -> `Miss`.
 
 Notes: `Same/Near/Coa/Flbk` cost only a 2-byte name-table entry (they reuse
-a resident 32-byte pattern). `Raw/Buf` cost a full 34 bytes in the encoder
-model. `Raw` spends current virtual CBR budget; `Buf` spends banked virtual VBV
-budget. Both are later delivered through the same physical payload RING. A persistent
+a resident 32-byte pattern). A Prg-sourced `Raw/Buf` load costs 34 bytes in the
+encoder model. A Wr0/Wr1/Main boot-preloaded load already owns its 32 pattern
+bytes and therefore costs only the 2-byte name entry during playback. `Raw`
+and `Buf` describe funding; the independent source assignment describes where
+the pattern bytes reside. A persistent
 approximation (a tile stuck in Near/Coa/Flbk for >= 0.3s) is escalated to
 Miss-priority so it gets an accurate reload when budget allows.
 
 ## Status bar (bottom-left)
 
-Left to right: one wide **Req** meter, then **Cold**, **Band**, **Tank**,
-**Buff**, **DMA**, **Run** meters (each bar is as wide as its own label). Below the
-meters is the palette strip; to the right are three stacked timelines.
+Left to right: one wide **Req** meter, then **Cold**, **Band**, **Prg**,
+**Wr0**, **Wr1**, **Main**, **DMA**, and **Run** meters (each bar is as wide as
+its own label). Below the meters is the palette strip; to the right are three
+stacked timelines. The old Tank and Buf meters are removed.
 
 ### Req meter
 All categories stacked into one bar (full width = total tile count `C`), with a
@@ -177,7 +181,7 @@ yellow vertical **budget line** marking the per-frame update budget. Labels:
 
 ### Cold meter
 `Cold:NNN` = this frame's **new tile loads** (`Raw + Buf`, i.e. every 32-byte
-pattern that had to be consumed from the payload RING). The bar stacks a
+pattern newly written to VRAM from any of the four supplies). The bar stacks a
 Raw-coloured and a Buf-coloured segment; full-scale = `cold_cap_for_fps`
 (`av_config.py`, selected only when mode/fps/active tiles exactly match a
 measured tuple; an unmeasured tuple is rejected before encoding).
@@ -214,32 +218,34 @@ edge marks CD 1x.
 
 Before making these per-frame choices, the encoder dry-runs the complete
 quantized movie through the shared VRAM allocator. A backwards pass builds two
-virtual reserve curves: complete exact-update demand limits optional Raw/Buf
+offline reserve curves: complete exact-update demand limits optional Raw/Buf
 upgrades, while changes beyond the Coa bound form the narrower reserve that
 protects normal updates from future Flbk/Miss bursts. Both curves finish at
 zero. They are saved as `upgrade_reserve_bytes` and
-`main_risk_reserve_bytes` in `buffer_remaining.npz`; neither is the physical
-Tank meter below. [`BUEFFERING.md`](BUEFFERING.md) describes how both curves
+`main_risk_reserve_bytes` in `buffer_remaining.npz`; neither is a physical
+supply meter. [`BUEFFERING.md`](BUEFFERING.md) describes how both curves
 are constructed and applied.
 
-### Tank meter
-`Tank:NNNNN` = actual end-of-frame PRG-RAM **payload RING occupancy**, in
-32-byte pattern slots. The sim runs the same sector scheduler as the packer,
-using the exact per-frame cold counts and control-block lengths. This includes
-the HEADER prebuffer, whole-sector padding, per-frame payload delivery, and
-pattern consumption. The packer recomputes the trace from its built control
-blocks and rejects any mismatch.
+### Four pattern-supply meters
 
-This is intentionally separate from the encoder's virtual VBV budget. Near the
-end of a movie, Tank can only retain already delivered payload (usually no more
-than final-sector padding); it cannot rise just because unused virtual budget
-remains.
+Each meter is an independent remaining count in 32-byte patterns:
 
-### Buff meter (payload-RING change indicator)
-A centre-anchored gauge for this frame's physical payload-RING change. A faint
-centre line; fill grows **left in red** when the RING drained, **right in blue** when it
-filled. Label `Buff:-NNN / +NNN / +/-000`. Full-scale = `C - per-frame Raw
-budget` (the largest plausible one-frame swing).
+| Meter | Physical object | Behaviour |
+|---|---|---|
+| `Prg:NNNNN` | usable PRG-RAM `PrgBuf` | End-of-frame occupancy from the exact sector scheduler. It can rise through BODY prefetch and fall through Prg consumption. |
+| `Wr0:NNN` | `WordBuf0` in physical Word-RAM bank 0 | Actual boot-loaded total minus patterns consumed by eligible even frames. It only falls. |
+| `Wr1:NNN` | `WordBuf1` in physical Word-RAM bank 1 | Actual boot-loaded total minus patterns consumed by eligible odd frames. It only falls. |
+| `Main:NNN` | Main-RAM `MainBuf` | Actual boot-loaded total minus patterns consumed by either parity. It only falls. |
+
+The Prg trace includes the `HEADER.DAT` prebuffer, whole-sector payload tails,
+per-slot prefetch, and realized Prg consumption. The packer recomputes it from
+the built controls and rejects any mismatch. The three preload traces use the
+actual loaded totals, so unused fixed capacity is not presented as available
+content.
+
+These meters deliberately do not show the offline whole-movie quality budget.
+That diagnostic can remain high when physical supplies are low, and it cannot
+provide a pattern byte to the player.
 
 ### DMA meter
 `DMA:NNN` or `DMA:NNNN` = the number of **32-byte pattern tiles** transferred
@@ -282,7 +288,9 @@ Ratio 2:1:1 top to bottom, sharing the whole clip on the x-axis with a white
 playhead:
 1. **Req heatmap** - `Raw / Coa / Flbk / Buf / Miss` stacked per frame (same
    colours; `Same` and `Near` are omitted so the interesting load shows).
-2. **Tank level** - actual physical payload-RING occupancy (violet).
+2. **Pattern supply** - `Prg / Wr0 / Wr1 / Main` remaining counts stacked per
+   frame. All four use one scale: the sum of their fixed capacities. Prg is
+   violet, Wr0 blue, Wr1 cyan, and Main amber.
 3. **BODY Band** - useful payload (Raw colour) plus useful control (dim
    blue-grey) as a fraction of the physical bytes in each delivery slot. Pad
    remains blank and a horizontal line at the top marks CD 1x (150 KiB/sec).
@@ -293,3 +301,5 @@ Raw `(205,205,205)`, Same `(150,150,158)` grey, Near `(95,115,215)` blue,
 Coa `(45,240,70)` green, Flbk `(240,150,50)` orange,
 Buf `(175,120,235)` violet, Miss `(220,70,70)` red, DMA `(70,190,90)` green,
 DMA-run `(215,165,65)` amber, Band-control `(95,110,122)` blue-grey.
+Physical supply colours: Prg `(165,105,225)`, Wr0 `(80,145,235)`,
+Wr1 `(65,205,195)`, Main `(235,175,70)`.

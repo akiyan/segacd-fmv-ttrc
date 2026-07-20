@@ -16,6 +16,8 @@ DBG_LEN = 22
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
+FEATURE_PATTERN_SUPPLY = 0x0008
+PATTERN_SUPPLY_OFFSET = 196
 
 
 def sign_magnitude_audio(path: Path, target_len: int) -> bytes:
@@ -150,6 +152,17 @@ def body_control_bytes(
     return b"".join(chunks)
 
 
+def pattern_supply_sectors(header: bytes, version: int, features: int) -> int:
+    """Return the validated v10 boot-preload sector total."""
+    if version < 10 or not features & FEATURE_PATTERN_SUPPLY:
+        return 0
+    values = struct.unpack_from(">4s8H", header, PATTERN_SUPPLY_OFFSET)
+    magic, supply_version, reserved = values[:3]
+    if magic != b"PSUP" or supply_version != 1 or reserved:
+        raise SystemExit(f"invalid pattern-supply extension: {values!r}")
+    return sum(values[-3:])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("header", type=Path)
@@ -165,8 +178,8 @@ def main() -> int:
         raise SystemExit("HEADER.DAT and BODY.DAT must be sector aligned")
 
     version = struct.unpack_from(">H", header, 4)[0]
-    if version not in (6, 7, 8, 9):
-        raise SystemExit(f"expected split TTRC v6-v9, got v{version}")
+    if version not in (6, 7, 8, 9, 10):
+        raise SystemExit(f"expected split TTRC v6-v10, got v{version}")
     nframes = struct.unpack_from(">H", header, 6)[0]
     cells = struct.unpack_from(">H", header, 12)[0]
     routing_sec = struct.unpack_from(">L", header, 26)[0]
@@ -189,7 +202,8 @@ def main() -> int:
     if not nframes or not cells or not audio_bytes or not fps:
         raise SystemExit("invalid zero header field")
 
-    cursor = SECTOR + paltab_sec * SECTOR
+    supply_sec = pattern_supply_sectors(header, version, features)
+    cursor = SECTOR + (paltab_sec + supply_sec) * SECTOR
     audio_prefix = header[cursor:cursor + audio_pre_sec * SECTOR]
     if len(audio_prefix) != audio_pre_sec * SECTOR:
         raise SystemExit("truncated STARTUP_AUDIO")

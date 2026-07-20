@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -44,6 +45,28 @@ class PatternTransferTests(unittest.TestCase):
             pack.verify_sim_pattern_transfers(
                 log, np.array([0, 3, 4]), np.array([0, 1, 3])
             )
+
+    def test_schema2_checks_each_physical_source(self) -> None:
+        values = np.array([0, 1, 2], np.uint16)
+        log = {
+            "pattern_transfers": {
+                "schema_version": 2,
+                "tiles": np.array([0, 3, 4], np.uint16),
+                "runs": np.array([0, 2, 3], np.uint16),
+                "prg": values,
+                "wr0": np.array([0, 1, 0], np.uint16),
+                "wr1": np.array([0, 0, 1], np.uint16),
+                "main": np.array([0, 1, 1], np.uint16),
+            }
+        }
+        supply = SimpleNamespace(
+            prg_loads=values,
+            wr0_loads=np.array([0, 1, 0]),
+            wr1_loads=np.array([0, 0, 1]),
+            main_loads=np.array([0, 1, 1]),
+        )
+        self.assertTrue(pack.verify_sim_pattern_transfers(
+            log, np.array([0, 3, 4]), np.array([0, 2, 3]), supply))
 
 
 if __name__ == "__main__":

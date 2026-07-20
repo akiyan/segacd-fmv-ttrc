@@ -2,18 +2,18 @@
 
 This document answers one planning question: **what memory and CPU time can a
 new live-playback feature use without consuming an existing safety margin?** It
-describes the current TTRC v9 player in `boot/movieplay_sp.s` and
-`boot/movieplay_ip.s`, audited on 2026-07-19 with the checkpointed ADPCM22
-path enabled for the H40 Sonic reference.
+describes the current TTRC v10 player in `boot/movieplay_sp.s` and
+`boot/movieplay_ip.s`, audited on 2026-07-20 with checkpointed ADPCM22 and the
+four-source pattern-supply path enabled.
 
 The short answer is:
 
 | Domain | Safe fixed space, all supported playback | H40 fixed-N2 steady-stream space | Conditional space |
 |---|---:|---:|---:|
 | Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 16 bytes of SP boot-slot growth, not data RAM |
-| Word RAM bank A | 46.34 KiB | 76.20 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Word RAM bank B | 46.34 KiB | 76.20 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Main RAM | 27.29 KiB | 28.63 KiB | None counted from palette or stack reservations |
+| Word RAM bank 0 | 12.14 KiB | 48.70 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
+| Word RAM bank 1 | 12.14 KiB | 48.70 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
+| Main RAM | 20.08 KiB | 21.82 KiB | None counted from palette or stack reservations |
 | Main CPU | no hard positive guarantee | about 39,930 local cycles (5.21 ms) | qualified H40 reference only; Sub must already be ready |
 | Sub CPU | no hard positive guarantee | ADPCM decoder measured 7.62-8.11 ms in H40/N2 | full Sonic capture passes; BIOS/CD/Word-RAM waits remain outside that stopwatch |
 
@@ -74,13 +74,13 @@ allocation and a build-time overlap check before use.
 | `0x07000..0x07FFF` | 4.00 KiB | boot ISO scratch and BIOS-unsafe streaming range | No |
 | `0x08000..0x097FF` | **6.00 KiB** | unused, previously marker-verified safe | **Yes, fixed PRG feature area** |
 | `0x09800..0x0BFFF` | 10.00 KiB | touched by BIOS during continuous reads | No |
-| `0x0C000..0x6CFFF` | 388.00 KiB | scheduled payload RING / virtual VBV capacity ceiling | No free headroom |
+| `0x0C000..0x6CFFF` | 388.00 KiB | usable streamed `PrgBuf` / quality-budget capacity ceiling | No free headroom |
 | `0x6D000..0x76FFF` | 40.00 KiB | delivery-jitter reserve; frame-0 pattern staging during boot | No; this is timing safety, not free RAM |
 | `0x77000..0x7F7FF` | 34.00 KiB | APPLY circular queue | No; its 4 KiB back-pressure gap is queue safety |
 | `0x7F800..0x7FEFF` | 1.75 KiB | Sub stack reserve, growing downward from `0x7FF00` | No |
 | `0x7FF00..0x7FFFF` | 256 B | above the configured stack top / reserved | No |
 
-Do not count the difference between the 428 KiB physical payload RING and its
+Do not count the difference between the 428 KiB physical PrgBuf ring and its
 388 KiB scheduling cap. That 40 KiB is what keeps normal CD-delivery variation
 away from the 424 KiB pump back-pressure threshold. Likewise, APPLY's 34 KiB
 allocation is intentionally kept below about 30 KiB occupancy.
@@ -93,7 +93,11 @@ bank, it sees offsets `+0x00000..+0x1FFFF` at
 `0x200000 + offset`. A bank swap exchanges those roles; it does not make one
 copy visible to both CPUs.
 
-The table applies identically to both physical banks:
+The address map applies to both physical banks. The `+0x15200` contents differ:
+WordBuf0 and WordBuf1 are independent chronological preload streams, not
+duplicated caches. The frame-0 bank also carries the temporary MainBuf stage at
+boot, so fixed-headroom accounting conservatively reserves that range in either
+physical bank.
 
 | Bank offset | Sub address | Size | Current owner / worst use | Fixed headroom |
 |---|---|---:|---|---:|
@@ -103,13 +107,14 @@ The table applies identically to both physical banks:
 | `+0x09802..+0x0AEFF` | `0xC9802..0xCAEFF` | 5.75 KiB | obsolete normal-path `O_UPDS`; still used by dump diagnostics | Conditional 5.75 KiB |
 | `+0x0AF00..+0x0AFFF` | `0xCAF00..0xCAFFF` | 256 B | DEBUG counters and copied header | 156 B in three fixed holes |
 | `+0x0B000..+0x0CFFF` | `0xCB000..0xCCFFF` | 8.00 KiB | maximum 64-entry PALTAB staging | 0 |
-| `+0x0D000..+0x0FFFF` | `0xCD000..0xCFFFF` | **12.00 KiB** | unused after maximum PALTAB | **12.00 KiB** |
+| `+0x0D000..+0x0E9FF` | `0xCD000..0xCE9FF` | 6.50 KiB | MainBuf boot staging in the physical frame-0 bank | 0 for fixed all-playback allocation |
+| `+0x0EA00..+0x0FFFF` | `0xCEA00..0xCFFFF` | **5.50 KiB** | tail after maximum MainBuf stage | **5.50 KiB** |
 | `+0x10000..+0x11FFF` | `0xD0000..0xD1FFF` | 8.00 KiB | linear control scratch | 3.21 KiB after the all-rate 4,900-byte maximum; 4.53 KiB for H40/N2 |
 | `+0x12000..+0x127FF` | `0xD2000..0xD27FF` | 2.00 KiB | one CD-sector stage / pad discard | 0 |
 | `+0x12800..+0x14A5F` | `0xD2800..0xD4A5F` | 8,800 B | full ADPCM next-index, signed-delta, and output tables | 0 |
 | `+0x14A60..+0x14BFF` | `0xD4A60..0xD4BFF` | **416 B** | alignment gap | **416 B** |
 | `+0x14C00..+0x151FF` | `0xD4C00..0xD51FF` | 1.50 KiB | ADPCM reconstructed-PCM buffer, sized for the supported maximum chunk | 0 |
-| `+0x15200..+0x1BFFF` | `0xD5200..0xDBFFF` | **27.50 KiB** | unused after ADPCM state | **27.50 KiB** |
+| `+0x15200..+0x1BFFF` | `0xD5200..0xDBFFF` | 27.50 KiB | immutable WordBuf0 or WordBuf1, 880 patterns | 0 |
 | `+0x1C000..+0x1FFFF` | `0xDC000..0xDFFFF` | 16.00 KiB | resident routing table | 0 |
 
 The fixed all-playback total in one bank is:
@@ -117,16 +122,17 @@ The fixed all-playback total in one bank is:
 ```text
 2.867 KiB  load tail that survives frame 0
 0.152 KiB  fixed status/header holes
-12.000 KiB post-PALTAB hole
+5.500 KiB  tail after MainBuf boot staging
 3.215 KiB  control-scratch tail at the all-rate maximum
-27.906 KiB ADPCM-area tail and alignment gap
+0.406 KiB  ADPCM alignment gap
 -----------
-46.140 KiB safe fixed space per physical bank
+12.140 KiB safe fixed space per physical bank
 ```
 
 The H40/N2 steady-stream total substitutes a 6,408-byte worst load block
 (`178 * 32 + 178 * 4`) and a 3,556-byte worst control block, producing
-**76.200 KiB per bank**. It is not replay-safe because frame 0 overwrites most
+**48.700 KiB per bank** after subtracting the persistent 27.5 KiB WordBuf. It
+is not replay-safe because frame 0 overwrites most
 of the load-tail gain.
 
 `O_UPDS` is not read or written by normal playback anymore; Main re-walks the
@@ -135,9 +141,10 @@ bitmap and entries in the linear control block. The old area remains used by
 must be an explicit decision to retire or relocate those diagnostics.
 
 Routing costs 16 KiB **in each bank**, not one 32 KiB contiguous allocation.
-The ADPCM full table likewise costs 8,800 bytes in each bank. New persistent
-state that must follow the frame handoff usually also needs two copies.
-Ping-pong frame-local state can instead use different contents in the two banks.
+The ADPCM full table likewise costs 8,800 bytes in each bank. WordBuf is the
+opposite: each bank intentionally holds different data selected for its frame
+parity. New persistent state that must follow the frame handoff usually needs
+two copies; ping-pong or parity-local state may use different contents.
 
 ## Main RAM map
 
@@ -147,11 +154,12 @@ a separate proof that its maximum output ends at `0xFF6580`.
 
 | Address | Size | Current owner / worst use | Safe headroom |
 |---|---:|---|---:|
-| `0xFF0000..0xFF147F` | 5.125 KiB | loaded Main player image | 0 |
-| `0xFF1480..0xFF1D65` | 2,278 B | BSS, including the 2,240-byte name-table shadow | 0 |
-| `0xFF1D66..0xFF1FFF` | **666 B** | link gap before generated code | **666 B** of static code/BSS growth |
+| `0xFF0000..0xFF157F` | 5.375 KiB | loaded Main player image | 0 |
+| `0xFF1580..0xFF1EA9` | 2,346 B | BSS, including the 2,240-byte name-table shadow and 56-byte prebuilt DEBUG HUD row | 0 |
+| `0xFF1EAA..0xFF1FFF` | **342 B** | link gap before generated code | **342 B** of static code/BSS growth |
 | `0xFF2000..0xFF657F` | 17.375 KiB | maximum generated bitmap handlers and two H40 blitters | 0 |
-| `0xFF6580..0xFF7FFF` | **6.625 KiB** | proved code-generation tail | **6.625 KiB** |
+| `0xFF6580..0xFF65FF` | **128 B** | asserted guard after maximum generated code | **128 B** |
+| `0xFF6600..0xFF7FFF` | 6.50 KiB | immutable MainBuf, 208 patterns | 0 |
 | `0xFF8000..0xFF8C7F` | 3.125 KiB | 400 worst-case run records at 8 B each | 0 |
 | `0xFF8C80..0xFFAFFF` | **8.875 KiB** | all-rate RUN_TABLE tail | **8.875 KiB**; H40/N2 has 10.609 KiB |
 | `0xFFB000..0xFFCFFF` | 8.00 KiB | 64-entry resident PALTAB | 0 |
@@ -159,8 +167,8 @@ a separate proof that its maximum output ends at `0xFF6580`.
 | `0xFFFB00..0xFFFCFF` | 512 B | conservative stack and interrupt reserve | 0 |
 | `0xFFFD00..0xFFFFFF` | 768 B | above configured stack top / BIOS reserve | 0 |
 
-This yields **26.900 KiB** safe across all supported rates. Restricting the run
-table to H40/N2's 178-cold cap raises it to **28.635 KiB**. The 512-byte stack
+This yields **20.084 KiB** safe across all supported rates. Restricting the run
+table to H40/N2's 178-cold cap raises it to **21.818 KiB**. The 512-byte stack
 reserve is deliberately larger than the approximately 80-byte deepest visible
 player call chain; it leaves room for interrupt/BIOS use that the assembly call
 graph alone cannot prove.
@@ -187,7 +195,7 @@ sequenceDiagram
 
     par Sub prepares frame N+1
         CD-->>S: BODY sectors become ready
-        S->>W: Drain to 2 KiB stage, then APPLY / payload RING
+        S->>W: Drain to 2 KiB stage, then APPLY / PrgBuf
         Note right of S: S1 55k-cycle planning envelope for routing and five stage copies<br/>BIOS wait/retry cycles excluded; remaining before waits about 362k
         S->>S: Fetch control, decode ADPCM, write 736 reconstructed samples
         Note right of S: S2 PCM13 baseline 30k cycles plus 95k-101k measured decode<br/>the extra 292 RF5C164 writes are not modeled; remaining before waits is less than 231k
@@ -307,12 +315,12 @@ profile and does not turn either arithmetic remainder into spendable time.
 
 Use the low-risk spaces in this order:
 
-1. Put bank-local or ping-pong state in the remaining Word-RAM tail
-   `+0x15200..+0x1BFFF` (27.5 KiB per bank). It is the largest clean hole and
-   does not borrow a delivery buffer or the duplicated ADPCM table.
-2. Use Main RAM `0xFFD000..0xFFFAFF` (10.75 KiB) for Main-only state, retaining
+1. Use Main RAM `0xFFD000..0xFFFAFF` (10.75 KiB) for Main-only state, retaining
    the 512-byte stack guard.
-3. Use the proved Main code-generation tail and RUN_TABLE tail only with
+2. Put small bank-local state in the 5.5 KiB tail after MainBuf staging or the
+   416-byte ADPCM alignment gap, with explicit overlap assertions. Do not use
+   the WordBuf region; its two banks intentionally hold different preloads.
+3. Use the 128-byte Main code-generation guard and RUN_TABLE tail only with
    explicit end symbols and assertions; their safe starts depend on generated
    code and the supported cold cap.
 4. Use PRG `0x08000..0x097FF` only after adding it to

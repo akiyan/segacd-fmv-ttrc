@@ -28,6 +28,9 @@
 .if (PC_FEATURES & 0x0004)
 .equ INCLUDE_ADPCM_DECODER, 1
 .endif
+.if (PC_FEATURES & 0x0008)
+.equ INCLUDE_PATTERN_SUPPLY, 1
+.endif
 .else
 .equ INCLUDE_ADPCM_DECODER, 1
 .endif
@@ -89,8 +92,8 @@
 
 .equ SUB_BANK_1M, 0x000C0000
 
-/* --- TTRC v9 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
-.equ ROUTING_VERSION,       9
+/* --- TTRC v10 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
+.equ ROUTING_VERSION,       10
 .equ ROUTING_BYTES,         16384
 .equ ROUTING_MAX_FRAMES,    16384
 .equ ROUTING_SECTOR_BYTES,  2048
@@ -102,6 +105,7 @@
 .equ FEATURE_COLD_RUNS_BIT, 0
 .equ FEATURE_FIXED_N2_BIT,  1
 .equ FEATURE_ADPCM22_BIT,   2
+.equ FEATURE_PATTERN_SUPPLY_BIT, 3
 .equ ROUTING_COPY_LONGS,    4096
 .equ ROUTING_BANK_COPIES,   2
 
@@ -134,6 +138,8 @@
 .equ ADPCM_TABLE_SECTORS, 5
 .equ ADPCM_BANK_COPIES, 2
 .equ PCM_DEC_BUF, 0x000D4C00        /* +0x14C00: decoded PCM, max N4=1472B */
+.equ WORD_BUF,    0x000D5200        /* owned physical bank +0x15200..+0x1C000: 880 patterns */
+.equ WORD_BUF_PATTERNS, 880
 .equ ROUTING,     0x000DC000        /* 所有中の1M Word-RAM bank末尾16KB。bootで両bankに同じ
                                        v7+ 1-byte tableを複製し、drain/display parityの不一致を吸収。 */
 
@@ -161,6 +167,8 @@
                                        0xB000..0x10000(CTRL_SCR手前)=20KB=160区間が物理上限。
                                        ip.s の PALTAB_OFF と一致必須(check_player_ring.pyが検証) */
 .equ O_PALTAB, SUB_BANK_1M+PALTAB_OFF
+.equ MAIN_STAGE, SUB_BANK_1M+0xD000 /* frame0 bank: MainBuf boot handoff, max 208 patterns */
+.equ MAIN_STAGE_PATTERNS, 208
 
 /* --- RF5C164 PCM output (PCM13 direct or ADPCM22 reconstructed) --- */
 .equ AUDIO_BYTES, 887
@@ -191,7 +199,7 @@
 
 .equ HEADER_SECTORS,  1
 /* frames/tcols/trows/cells/pool/base/prebuf/routing/mode は HEADER.DAT の
-   v9ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
+   v10ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
@@ -362,7 +370,9 @@ pm_set:
 	tst.w	d1
 	beq	bad_header
 	move.w	d1, h_audio_fd
-	move.w	62(a0), h_features		/* bit0 runs, bit1 fixed N2, bit2 checkpointed ADPCM */
+	move.w	62(a0), h_features		/* bit0 runs, bit1 fixed N2, bit2 ADPCM, bit3 pattern supply */
+	btst	#FEATURE_PATTERN_SUPPLY_BIT, 63(a0)
+	bne	bad_header			/* v10 supply needs generated preload counts/addresses */
 	move.w	d0, d1
 	btst	#FEATURE_ADPCM22_BIT, 63(a0)
 	beq	1f
@@ -431,6 +441,25 @@ adpcm_table_copy:
 	bsr	swap_settle
 	dbra	d1, adpcm_table_bank
 adpcm_table_done:
+.endif
+	/* v10 pattern supply follows the optional ADPCM table.  Wr0 is the
+	   physical frame-0 bank, Wr1 is the other bank, and MainBuf is staged in
+	   Wr0 for the Main CPU to copy once after the first handoff.  The two
+	   toggles restore the original frame-0 bank phase. */
+.ifdef INCLUDE_PATTERN_SUPPLY
+	move.w	#PC_WR0_SECTORS, d0
+	lea	WORD_BUF, a0
+	bsr	drain_lin_staged
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	move.w	#PC_WR1_SECTORS, d0
+	lea	WORD_BUF, a0
+	bsr	drain_lin_staged
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	move.w	#PC_MAIN_SECTORS, d0
+	lea	MAIN_STAGE, a0
+	bsr	drain_lin_staged
 .endif
 	/* v5 STARTUP_AUDIO follows PALTAB. Each sector starts with exactly one
 	   h_audio_bytes chunk, so no cross-sector staging is needed. Current packs
@@ -1115,7 +1144,7 @@ pp_done:
 	rts
 
 /* 1フレーム: BODY先頭側の control sector が揃うまでポンプ → control取り出し
-   → expand → 音声。payload/pad はpattern tankを先行充填しながら後続処理と並走する。 */
+   → expand → 音声。payload/pad はPrgBufを先行充填しながら後続処理と並走する。 */
 process_frame:
 .ifdef DEBUG
 	clr.w	pf_ctrl_wait
@@ -1367,6 +1396,15 @@ ef_count_ready:
 	   padded audio chunk.  At 24fps or above and n_upd<=1024 the entry walker has
 	   exactly one CDC poll at the end, so the descriptor path preserves that
 	   cadence while removing the duplicate entry scan and run reconstruction. */
+.ifdef INCLUDE_PATTERN_SUPPLY
+	/* v10 supply streams require the run suffix.  H40 frames above 1024
+	   updates receive the legacy path's extra CDC service before copying runs;
+	   the normal end poll below remains unchanged. */
+	cmpi.w	#1024, d5
+	bls	ef_runs_setup
+	bsr	pump_poll
+	bra	ef_runs_setup
+.else
 	PC_MOVE_W h_features, PC_FEATURES, d0
 	btst	#FEATURE_COLD_RUNS_BIT, d0
 	beq	ef_entries
@@ -1380,6 +1418,8 @@ ef_count_ready:
 .endif
 	cmpi.w	#1024, d5
 	bhi	ef_entries			/* H40 >1024 needs the legacy intermediate poll */
+.endif
+ef_runs_setup:
 	movea.l	a5, a0				/* audio start */
 	PC_MOVE_W h_audio_control_bytes, PC_AUDIO_CONTROL_BYTES, d0
 	adda.w	d0, a0				/* first byte after audio */
@@ -1398,7 +1438,10 @@ ef_count_ready:
 	subq.w	#1, d7
 ef_run:
 	move.w	(a0)+, d2			/* zero-based slot_start */
-	move.w	(a0)+, d3			/* pattern count */
+	move.w	(a0)+, d3			/* source in bits15..14, pattern count in bits13..0 */
+	move.w	d3, d0
+	andi.w	#0xC000, d0			/* preserve source for O_LOADS and the copy decision */
+	andi.w	#0x3FFF, d3
 	move.w	d5, d1
 	sub.w	d4, d1				/* remaining cold count cannot exceed n_upd */
 	cmp.w	d1, d3
@@ -1415,8 +1458,12 @@ ef_run:
 	tst.w	d3
 	beq	ef_run_next
 	move.w	d2, (a1)+
-	move.w	d3, (a1)+
+	move.w	d0, d1
+	or.w	d3, d1
+	move.w	d1, (a1)+			/* source-coded count; cached runs carry no inline bytes */
 	add.w	d3, d4
+	tst.w	d0
+	bne	ef_run_next			/* Wr/Main: Main DMA reads the persistent preload directly */
 	subq.w	#1, d3
 ef_run_pattern:
 	/* Do not include postincrement base a4 in the MOVEM register list.  On
@@ -1439,6 +1486,7 @@ ef_runs_polled:
 	beq	ef_store
 	bsr	pump_poll
 	bra	ef_store
+.ifndef INCLUDE_PATTERN_SUPPLY
 ef_entries:
 	moveq	#0, d3				/* open run count (register-resident hot state) */
 	movea.w	#-2, a6				/* a6=直前slot。先頭の+1が-1になる無効値で開始 */
@@ -1504,6 +1552,7 @@ ef_finalize:
 	beq	1f
 	move.w	d3, (a5)
 1:
+.endif
 ef_store:
 	move.w	d4, (O_NLOAD).l
 	move.w	d5, (O_NUPD).l

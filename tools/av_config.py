@@ -1,14 +1,14 @@
 """Single source of truth for the streaming geometry shared by the whole pipeline.
 
 The encoder (``tools/sim.py``), the packer (``tools/pack_stream.py``) and the
-on-disc player (``boot/movieplay_sp.s``) share one safe payload-buffer capacity.
-Their objects are not identical: sim has a virtual VBV budget, while pack and
-player schedule and hold physical payload-RING sectors. Historically each side
+on-disc player (``boot/movieplay_sp.s``) share one safe PrgBuf capacity.
+Their objects are not identical: sim has a virtual quality budget, while pack
+and player schedule and hold physical PrgBuf sectors. Historically each side
 had its own capacity knob:
 
 * player  ``.equ RING_SIZE``       = 428 KB   (the physical buffer)
-* pack    ``CBRSIM_RING_CAP_KB``    = 388 KB   (schedule / prebuffer cap)
-* sim     ``CBRSIM_TANK_KB``        = 440 KB   (VBV tank — *larger than the ring!*)
+* pack    ``CBRSIM_RING_CAP_KB``    = 388 KB   (legacy internal scheduler name)
+* sim     quality budget             = 440 KB   (*larger than PrgBuf!*)
 
 Three independent capacity values are a double-management trap: the sim can
 borrow more virtual budget than the hardware can schedule, causing live
@@ -27,20 +27,21 @@ from dataclasses import dataclass
 
 # Physical PRG-RAM ring in the player. MUST equal boot/movieplay_sp.s
 # `.equ RING_SIZE` (0x6B000 = 428 KB). Build-time assertion enforces it.
-# Routing now lives in both Word-RAM banks, so the payload ring can occupy the
+# Routing now lives in both Word-RAM banks, so the physical PrgBuf ring can occupy the
 # complete safe PRG range from 0x0C000 up to APPLY_BASE at 0x77000.
 RING_SIZE_KB = 428
 
 # The player throttles its CD pump at RING_SIZE-4KB (back-pressure); real
 # CD-delivery jitter shrinks the usable ring further. The pack schedules within
-# this cap, and the sim may borrow no more virtual VBV budget than the same cap.
+# this cap, and the sim may borrow no more quality budget than the same cap.
 # Their occupancies remain separate. 40 KB keeps the scheduled peak
 # comfortably below the 424 KB back-pressure threshold.
 RING_JITTER_MARGIN_KB = 40
 
 # Derived — do not set these independently anywhere else.
-RING_CAP_KB = RING_SIZE_KB - RING_JITTER_MARGIN_KB   # 388: pack schedule cap
-TANK_KB = RING_CAP_KB                                # virtual VBV capacity ceiling
+RING_CAP_KB = RING_SIZE_KB - RING_JITTER_MARGIN_KB   # internal ring scheduler name
+PRG_BUF_CAP_KB = RING_CAP_KB                         # public physical-buffer name
+QUALITY_BUDGET_KB = PRG_BUF_CAP_KB                   # virtual quality ceiling
 
 # The player's pump_poll back-pressure threshold (RING_SIZE - 4KB). RING_CAP must
 # stay below this or the pump stalls (back-pressure ratchet -> CDC drops).

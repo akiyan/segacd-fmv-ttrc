@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the TTRC v7+ routing byte retained by v9."""
+"""Regression tests for the TTRC v7+ routing byte retained by v10."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ import ttrc_routing as routing
 
 
 class RoutingEntryTests(unittest.TestCase):
-    def test_v9_feature_bits_are_stable(self) -> None:
+    def test_v10_feature_bits_are_stable(self) -> None:
         self.assertEqual(routing.FEATURE_COLD_RUNS, 0x0001)
         self.assertEqual(routing.FEATURE_FIXED_N2, 0x0002)
         self.assertEqual(routing.FEATURE_ADPCM22, 0x0004)
+        self.assertEqual(routing.FEATURE_PATTERN_SUPPLY, 0x0008)
 
     def test_all_valid_pairs_round_trip(self) -> None:
         seen = set()

@@ -6,7 +6,7 @@ needs cold entries in stream order to pop patterns and build DMA runs.  This
 checker walks every real control block in the packed TTRC files both ways and
 verifies that the entry stream, cold-slot order and run grouping are identical.
 
-For v6-v9 it prefers the on-disc HEADER.DAT + BODY.DAT pair, verifies that each
+For v6-v10 it prefers the on-disc HEADER.DAT + BODY.DAT pair, verifies that each
 frame's control block and cold patterns are ready before that frame can run,
 and also accepts the off-disc MOVIE.DAT compatibility concatenation.  v4/v5
 combined MOVIE.DAT files remain readable for regression checks.
@@ -23,7 +23,9 @@ SECTOR = 2048
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
+FEATURE_PATTERN_SUPPLY = 0x0008
 ADPCM_TABLE_SECTORS = 5
+PATTERN_SUPPLY_OFFSET = 196
 
 
 def frame_sectors(
@@ -94,22 +96,36 @@ def decode_routes(
     return routes
 
 
-def runs(entries: list[int]) -> list[tuple[int, int]]:
-    """Model the Sub CPU's consecutive cold-slot run builder."""
-    out: list[tuple[int, int]] = []
+def runs(entries: list[int]) -> list[tuple[int, int, int]]:
+    """Model consecutive cold-slot runs, including v10 source boundaries."""
+    out: list[tuple[int, int, int]] = []
     for entry in entries:
         if not entry & 0x8000:
             continue
         slot = (entry & 0x07FF) - 1
-        if out and out[-1][0] + out[-1][1] == slot:
-            start, count = out[-1]
-            out[-1] = start, count + 1
+        source = (entry & 0x1800) >> 11
+        if out and out[-1][0] + out[-1][1] == slot and out[-1][2] == source:
+            start, count, _source = out[-1]
+            out[-1] = start, count + 1, source
         else:
-            out.append((slot, 1))
+            out.append((slot, 1, source))
     return out
 
 
-def verify_block(block: bytes, seq: int, cells: int, pool: int) -> tuple[int, int]:
+def pattern_supply_sectors(header: bytes, version: int, features: int) -> int:
+    """Return the validated v10 boot-preload sector total."""
+    if version < 10 or not features & FEATURE_PATTERN_SUPPLY:
+        return 0
+    values = struct.unpack_from(">4s8H", header, PATTERN_SUPPLY_OFFSET)
+    magic, supply_version, reserved = values[:3]
+    if magic != b"PSUP" or supply_version != 1 or reserved:
+        raise AssertionError(f"invalid pattern-supply extension: {values!r}")
+    return sum(values[-3:])
+
+
+def verify_block(
+    block: bytes, seq: int, cells: int, pool: int,
+) -> tuple[int, int, int]:
     if len(block) < 8:
         raise AssertionError(f"frame {seq}: short control block")
     total_len, frame_seq, n_upd = struct.unpack_from(">HHH", block)
@@ -155,7 +171,10 @@ def verify_block(block: bytes, seq: int, cells: int, pool: int) -> tuple[int, in
                 raise AssertionError(
                     f"frame {seq}: cold slot+1 {slot_plus_one} outside pool {pool}"
                 )
-    return n_upd, sum(bool(entry & 0x8000) for entry in direct)
+    cold = sum(bool(entry & 0x8000) for entry in direct)
+    prg_cold = sum(
+        bool(entry & 0x8000) and not entry & 0x1800 for entry in direct)
+    return n_upd, cold, prg_cold
 
 
 def main() -> None:
@@ -189,8 +208,8 @@ def main() -> None:
     magic, version, nfr, _cols, _rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", data, 0
     )
-    if magic != b"TTRC" or version not in (4, 5, 6, 7, 8, 9):
-        raise SystemExit(f"expected TTRC v4-v9, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (4, 5, 6, 7, 8, 9, 10):
+        raise SystemExit(f"expected TTRC v4-v10, got {magic!r} v{version}")
     prebuf_pat = struct.unpack_from(">L", data, 22)[0]
     routing_sec = struct.unpack_from(">L", data, 26)[0]
     prebuf_sec = struct.unpack_from(">L", data, 30)[0]
@@ -200,13 +219,16 @@ def main() -> None:
     audio_preload_sec = struct.unpack_from(">H", data, 60)[0]
     features = struct.unpack_from(">H", data, 62)[0]
     table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
+    supply_sec = pattern_supply_sectors(data, version, features)
 
-    f0_off = (1 + paltab_sec + table_sec + audio_preload_sec) * SECTOR
+    f0_off = (
+        1 + paltab_sec + table_sec + supply_sec + audio_preload_sec
+    ) * SECTOR
     f0_len = struct.unpack_from(">H", data, f0_off)[0]
     controls = [data[f0_off : f0_off + f0_len]]
 
     routing_off = (
-        1 + paltab_sec + table_sec + audio_preload_sec
+        1 + paltab_sec + table_sec + supply_sec + audio_preload_sec
         + f0_ctrl_sec + f0_pat_sec
     ) * SECTOR
     routing_raw = data[routing_off : routing_off + routing_sec * SECTOR]
@@ -272,12 +294,13 @@ def main() -> None:
 
     updates = 0
     cold = 0
-    cold_by_frame = []
+    prg_by_frame = []
     for seq, block in enumerate(controls):
-        frame_updates, frame_cold = verify_block(block, seq, cells, pool)
+        frame_updates, frame_cold, frame_prg = verify_block(
+            block, seq, cells, pool)
         updates += frame_updates
         cold += frame_cold
-        cold_by_frame.append(frame_cold)
+        prg_by_frame.append(frame_prg)
 
     if version >= 6:
         control_delivered = 0
@@ -294,7 +317,9 @@ def main() -> None:
                     f"({control_delivered} delivered, {control_needed} needed)"
                 )
 
-            payload_needed += cold_by_frame[seq]
+            # v10 boot-preloaded Wr/Main patterns are already armed. Only Prg
+            # patterns consume the timed prebuffer/BODY payload delivery.
+            payload_needed += prg_by_frame[seq]
             if payload_delivered < payload_needed:
                 raise AssertionError(
                     f"frame {seq}: cold payload is not armed before control "

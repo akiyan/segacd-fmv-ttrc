@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """実機/エミュ録画のデバッグHUD(左上端・1行)から各値を読む。
 
-HUD は boot/movieplay_ip.s の render_dbg が描く1行:
-    H32: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx
-    H40: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxxUxxxxNxx
-F は16進4桁。L は音声リードの上位byte（256B単位）、
-P/S/D/R/C/W/M/A/N はlow byteの16進2桁、U は16進4桁。
-H40は共通32セルの後ろに8セルの U/N を追加する。
-U はMain pattern転送時間（Mega-CD stopwatchの30.72 us tick）、N はcold-run数の下位byte。
-先頭 F の直後4桁が現在の movie フレーム番号(16進, boot/dbgfont.bin の 8x8 フォント)。
+HUD はカテゴリ文字を描かず、boot/movieplay_ip.s の固定順で値だけを描く:
+    H32: xxxx xx xx xx xx xx xx xx xx xx
+    H40: xxxx xx xx xx xx xx xx xx xx xx xxxx xx
+内部キー順は従来どおり F/P/S/D/R/L/C/W/M/A/U/N。F は16進4桁、L は
+音声リードの上位byte（256B単位）、P/S/D/R/C/W/M/A/N はlow byteの
+16進2桁、U は16進4桁。U はMain pattern転送時間（Mega-CD stopwatchの
+30.72 us tick）、N はcold-run数の下位byte。
 8x8セルをテンプレート(gen_debugfont.py と同じ字形)と正規化相互相関(NCC)で照合。
-背景映像に強いよう NCC(明暗オフセット不変) + 先頭Fで原点自動較正。
+背景映像に強いよう NCC(明暗オフセット不変) + 先頭4桁で原点自動較正。
 
 このモジュールの HUD_LAYOUT/HUD_H40_LAYOUT は boot/movieplay_ip.s の
-render_dbg と一致させること(HUDレイアウトを変えたら両方直す)。
+prepare_dbg と一致させること(HUDレイアウトを変えたら両方直す)。
 
 使い方:
     from read_frameno import read_frameno, read_hud
-    n, conf = read_frameno(pil_img)              # フレーム番号(F)のみ
+    n, conf = read_frameno(pil_img)              # 先頭4桁のフレーム番号のみ
     hud = read_hud(pil_img)                       # {'F':(v,conf), 'P':..., 'L':...}
 """
 import numpy as np
@@ -42,12 +41,11 @@ _HEX = {
     0xF: ["#######.", "##......", "##......", "#####...", "##......", "##......", "##......", "........"],
 }
 _T = {v: np.array([[1.0 if c == "#" else 0.0 for c in r] for r in rows]) for v, rows in _HEX.items()}
-_Fg = _T[0xF]
 
-# --- HUDレイアウト(boot/movieplay_ip.s の render_dbg と一致させる) ---
+# --- HUDレイアウト(boot/movieplay_ip.s の prepare_dbg と一致させる) ---
 CELL = 8                 # 1 HUDセル = 8px
 HUD_ROW = 0              # Window planeの最上段
-HUD_FIELD_DIGITS = (     # label 1セル + 指定桁数。field間の空けはない
+HUD_FIELD_DIGITS = (     # 値のみ。field間の空けはない
     ("F", 4),
     ("P", 2),
     ("S", 2),
@@ -67,7 +65,7 @@ def _make_layout(field_digits):
     fields = []
     for name, digits in field_digits:
         fields.append((name, col, digits))
-        col += 1 + digits
+        col += digits
     return tuple(fields), col
 
 
@@ -75,11 +73,17 @@ HUD_LAYOUT, HUD_CELLS = _make_layout(HUD_FIELD_DIGITS)
 HUD_FIELDS = tuple(name for name, _col, _digits in HUD_LAYOUT)
 HUD_H40_LAYOUT, HUD_H40_CELLS = _make_layout(HUD_H40_FIELD_DIGITS)
 HUD_H40_FIELDS = tuple(name for name, _col, _digits in HUD_H40_LAYOUT)
+H40_NATIVE_WIDTH = 320
 
 
 def hud_layout_for_width(width):
-    """Return the visible native-width HUD layout for an H32/H40 image."""
-    return HUD_H40_LAYOUT if width >= HUD_H40_CELLS * CELL else HUD_LAYOUT
+    """Return the native H32/H40 layout from the captured frame width.
+
+    The values-only H40 row now fits inside 256 pixels, so row length can no
+    longer identify the mode.  OCR input is expected to retain the emulator's
+    native 256- or 320-pixel width.
+    """
+    return HUD_H40_LAYOUT if width >= H40_NATIVE_WIDTH else HUD_LAYOUT
 
 
 def _ncc(a, b):
@@ -95,15 +99,19 @@ def _gray(img):
     return g.mean(axis=2) if g.ndim == 3 else g
 
 
-def _calib_origin(gray, required_width=5 * CELL):
-    """先頭 'F' glyph を左上窓で探し、その (x, y) を原点として返す。
+def _calib_origin(gray, required_width=4 * CELL):
+    """先頭4桁のhex glyph列を左上窓で探し、その (x, y) を原点として返す。
     HUD は左上端(col0,row0)。"""
     best, bx, by = -2.0, 0, HUD_ROW * CELL
     h, w = gray.shape[:2]
     max_x = max(0, w - required_width)
     for y in range(0, min(17, h - 7)):
         for x in range(0, min(16, max_x) + 1):
-            s = _ncc(gray[y:y + 8, x:x + 8].astype(float), _Fg)
+            scores = []
+            for digit in range(4):
+                cell = gray[y:y + 8, x + digit * CELL:x + (digit + 1) * CELL].astype(float)
+                scores.append(max(_ncc(cell, template) for template in _T.values()))
+            s = min(scores)
             if s > best:
                 best, bx, by = s, x, y
     return bx, by, best
@@ -129,20 +137,26 @@ def read_frameno(img):
     """PIL Image または grayscale ndarray -> (frame_no, confidence)。F(先頭値)のみ。"""
     gray = _gray(img)
     x0, y, fconf = _calib_origin(gray)
-    val, minsc = _read_hex(gray, x0 + CELL, y)   # hex は F glyph の1セル後ろから
+    val, minsc = _read_hex(gray, x0, y)
     return val, min(fconf, minsc)
 
 
-def read_hud(img):
-    """Read the 32-cell H32 HUD or the extended 40-cell H40 HUD."""
+def read_hud(img, layout=None):
+    """Read the values-only HUD, optionally using an explicit native layout.
+
+    Pass ``HUD_H40_LAYOUT`` when the image has already been cropped narrower
+    than its native 320-pixel frame; the 28-cell H40 row itself also fits in an
+    H32-width crop and therefore cannot identify the mode.
+    """
     gray = _gray(img)
-    layout = hud_layout_for_width(gray.shape[1])
-    cells = HUD_H40_CELLS if layout is HUD_H40_LAYOUT else HUD_CELLS
+    if layout is None:
+        layout = hud_layout_for_width(gray.shape[1])
+    cells = max(col + digits for _name, col, digits in layout)
     x0, y, fconf = _calib_origin(gray, cells * CELL)
     out = {}
     for name, col, digits in layout:
-        gx = x0 + col * CELL                     # この値の glyph x
-        val, minsc = _read_hex(gray, gx + CELL, y, digits)
+        gx = x0 + col * CELL
+        val, minsc = _read_hex(gray, gx, y, digits)
         out[name] = (val, round(min(fconf, minsc), 3))
     return out
 

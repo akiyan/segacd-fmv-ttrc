@@ -1,9 +1,11 @@
 # 22.05 kHz IMA ADPCM playback
 
-**Status: implementation complete; H40 Sonic is full-length emulator- and
-listening-qualified, and H40/15 Machi OP is full-length emulator- and
-automated-check-qualified.** The current v9 path decodes 22.05 kHz mono IMA ADPCM
-directly on the Sub CPU and writes the reconstructed 8-bit samples to the
+**Status: implementation complete. H40 Sonic is full-length emulator- and
+listening-qualified. H40/15 Machi OP and Machi ED, and the v10 four-supply
+H40/30 Bad Apple profile, completed their full recording, HUD, stream, and
+replay-equivalence checks.** The ADPCM22 path introduced in v9 and retained by
+the current v10 stream decodes 22.05 kHz mono IMA ADPCM directly on the Sub CPU
+and writes the reconstructed 8-bit samples to the
 RF5C164. H40 Sonic Jam completed all 2,714 frames in the lossless Genesis Plus
 GX recording with no CD slip, stream desync, audio re-sync, or blocking CD
 pump. The corrected sim audio uses the same reconstructed IMA/RF5C164 sample
@@ -118,7 +120,6 @@ cadence, 2,714 frames.
 | Display cadence | all 2,713 timed intervals exactly two VBlanks; no extra scanout |
 | Main pattern transfer | 17.69 ms maximum; at most one VBlank wait |
 | Offline IMA SNR on this source | 25.2 dB |
-| Capture jump gate | 0 candidates at a 12,000 threshold; no clipped samples |
 | Sim model | shared packer-reference IMA decode plus RF5C164 8-bit conversion |
 | Listening | corrected sim reconstruction and captured playback accepted |
 
@@ -154,17 +155,15 @@ long holds at `F0107`, `F0166`, and `F0391`.
 | Final CD slip / stream desync / audio re-sync | `S3 D0 R0` | `S0 D0 R0` |
 | Main VBlank waits | maximum `M2` | maximum `M2` |
 | `F0107` capture hold at about 59.94 fps | 16 display frames | 3 display frames |
-| Capture jump gate | not used for the diagnosis | 0 candidates at a 12,000 threshold |
-| Clipped samples | not used for the diagnosis | 0 |
 
 The old `F0107` hold was therefore not a Main-CPU four-VBlank stall. The N4
 decode ran longer than a CD-sector interval without reaching a CDC poll, after
 which the Sub CPU had to recover the missed delivery. Player p56 polls inside
 that decode, and the full replacement recording completed with no slips,
 desyncs, or audio re-syncs. Startup, movie start, `F0107`, middle, and tail were
-also checked visually. This recording received automated audio checks but no
-new listening comparison; the accepted listening qualification remains the H40
-Sonic result above.
+also checked visually. No waveform-threshold gate is used by the current
+recorder. No new listening comparison was made; the accepted listening
+qualification remains the H40 Sonic result above.
 
 ## Why the retry fits when the old one did not
 
@@ -181,9 +180,27 @@ not enough. BIOS calls, CDC readiness, Word-RAM access, and bank timing are not
 captured by the decoder stopwatch. Every new profile still needs a full DEBUG
 recording with stable `S`, `D`, `R`, `L`, `C`, `W`, and `A`.
 
+## H40/30 Bad Apple v10 qualification
+
+The current v10 four-supply path was qualified with 6,576 Bad Apple frames at
+320x224 H40, 1,120 active tiles, 30 fps, cold cap 178, and ADPCM22. The packer
+matched every frozen pattern source and run, the independent replay matched
+every reconstructed VRAM cell, PrgBuf stayed at or above 19 ready patterns,
+and the physical schedule had no under-run.
+
+Across all 6,575 timed DEBUG groups, `S`, `D`, `R`, and `C` stayed zero. Main
+VBlank wait `M` stayed at most one, Main transfer time `U` stayed at most 549
+stopwatch ticks, run count `N` stayed at most 69, and ADPCM decode `A` stayed
+between 62 and 66 units. The same Replay produced identical 14,801 video-frame
+hashes, 10,893,312 decoded stereo PCM sample frames, packet timing, and stream
+metadata in realtime, offline, and repeated-offline recordings. This proves
+deterministic capture equivalence and stream integrity; no new listening claim
+was made.
+
 ## Main-CPU fallback
 
-Main-side decode was considered but is not implemented in v9. In 1M/1M mode it
+Main-side decode was considered but is not implemented in the current v10
+player. In 1M/1M mode it
 would have to decode a future chunk from the bank Main currently owns, return
 the reconstructed PCM through a later handoff, and preserve the same startup
 shift. That adds a one-frame ferry and competes with video DMA preparation.

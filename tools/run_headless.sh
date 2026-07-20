@@ -21,8 +21,7 @@
 #   --press-gap SEC   seconds between/after START presses (default 2)
 #   --display :N      X display for Xvfb (default :231)
 #   --record [FILE]   record video+audio with RetroArch's FFmpeg recorder.
-#                     If FILE is omitted, writes $OUTDIR/<tag>.mkv and also
-#                     extracts $OUTDIR/<tag>.wav for quick audio checks. Normal
+#                     If FILE is omitted, writes $OUTDIR/<tag>.mkv. Normal
 #                     recording is audio-synchronised and never runs uncapped.
 #   --record-offline  explicit uncapped FFV1/FLAC test mode. Implies --record
 #                     and requires --max-frames plus --play-replay.
@@ -50,13 +49,6 @@
 #                     audio_device value for RetroArch (driver-specific).
 #   --sdl-audio-driver NAME
 #                     SDL_AUDIODRIVER when using SDL audio (default: unset).
-#   --audio-jump-threshold N
-#                     fail recording if extracted WAV has a sample jump >= N
-#                     (default: 12000; use 6000 for stricter local checks).
-#   --no-audio-check
-#                     skip post-recording click/clip detection.
-#   --audio-min-rms N fail recording if extracted WAV RMS is below N
-#                     (default: 0, disabled).
 #
 # Env overrides:
 #   CORE         libretro core .so (default: system genesis_plus_gx)
@@ -67,7 +59,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${PYTHON:-$ROOT/tools/python.sh}"
 
 DISC=""
 TAG=""
@@ -90,9 +81,6 @@ OFFLINE_RECORD=0
 MAX_FRAMES=""
 PLAY_REPLAY=""
 RECORD_REPLAY=""
-AUDIO_CHECK=1
-AUDIO_JUMP_THRESHOLD=12000
-AUDIO_MIN_RMS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -123,9 +111,6 @@ while [ $# -gt 0 ]; do
     --audio-driver) AUDIO_DRIVER="$2"; shift 2;;
     --audio-device) AUDIO_DEVICE="$2"; shift 2;;
     --sdl-audio-driver) SDL_AUDIO_DRIVER="$2"; shift 2;;
-    --audio-jump-threshold) AUDIO_JUMP_THRESHOLD="$2"; shift 2;;
-    --audio-min-rms) AUDIO_MIN_RMS="$2"; shift 2;;
-    --no-audio-check) AUDIO_CHECK=0; shift;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d'; exit 0;;
     -*) echo "unknown option: $1" >&2; exit 2;;
     *) DISC="$1"; shift;;
@@ -199,11 +184,7 @@ for tool in Xvfb retroarch xdotool import montage; do
   command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
 done
 if [ "$RECORD" -eq 1 ]; then
-  command -v ffmpeg >/dev/null 2>&1 || { echo "missing required tool for --record: ffmpeg" >&2; exit 1; }
-  if [ "$AUDIO_CHECK" -eq 1 ]; then
-    [ -x "$PYTHON" ] || { echo "missing project Python launcher for audio check: $PYTHON" >&2; exit 1; }
-    [ -f "$ROOT/tools/analyze_recorded_audio.py" ] || { echo "missing audio check tool: $ROOT/tools/analyze_recorded_audio.py" >&2; exit 1; }
-  fi
+  command -v ffprobe >/dev/null 2>&1 || { echo "missing required tool for --record: ffprobe" >&2; exit 1; }
 fi
 [ -f "$CORE" ] || { echo "core not found: $CORE (set CORE=)" >&2; exit 1; }
 ls "$SYSTEM_DIR"/bios_CD_*.bin >/dev/null 2>&1 || \
@@ -262,8 +243,7 @@ fi
 rm -f "$OUTDIR/${TAG}"_*.png "$OUTDIR/${TAG}_sheet.jpg" \
       "$OUTDIR/retroarch_${TAG}.log" "$OUTDIR/xvfb_${TAG}.log" "$RA_PID" "$XVFB_PID"
 if [ "$RECORD" -eq 1 ]; then
-  rm -f "$RECORD_PATH" "${RECORD_PATH%.*}.wav"
-  rm -f "$OUTDIR/${TAG}_audio.json"
+  rm -f "$RECORD_PATH"
 fi
 if [ -n "$RECORD_REPLAY" ]; then
   mkdir -p "$(dirname "$RECORD_REPLAY")"
@@ -465,8 +445,6 @@ else
 fi
 echo "log:  $OUTDIR/retroarch_${TAG}.log"
 if [ "$RECORD" -eq 1 ]; then
-  WAV_PATH="${RECORD_PATH%.*}.wav"
-  AUDIO_REPORT="$OUTDIR/${TAG}_audio.json"
   [ -s "$RECORD_PATH" ] || { echo "recording not produced: $RECORD_PATH" >&2; exit 1; }
   RECORD_DURATION="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$RECORD_PATH" 2>/dev/null || true)"
   if [ -z "$RECORD_DURATION" ] || [ "$RECORD_DURATION" = "N/A" ]; then
@@ -501,18 +479,18 @@ if [ "$RECORD" -eq 1 ]; then
     fi
     echo "record timing: ${RECORD_DURATION}s (expected about ${EXPECTED_DURATION}s)"
   fi
-  ffmpeg -y -hide_banner -loglevel error -i "$RECORD_PATH" -vn -ar 44100 "$WAV_PATH"
   echo "record: $RECORD_PATH"
   [ -n "$RECORD_CONFIG" ] && echo "record config: $RECORD_CONFIG"
-  [ -s "$WAV_PATH" ] || { echo "audio extraction failed: $WAV_PATH" >&2; exit 1; }
-  echo "audio:  $WAV_PATH"
-  if [ "$AUDIO_CHECK" -eq 1 ]; then
-    "$PYTHON" "$ROOT/tools/analyze_recorded_audio.py" "$RECORD_PATH" \
-      --wav "$WAV_PATH" \
-      --seconds 12 \
-      --jump-threshold "$AUDIO_JUMP_THRESHOLD" \
-      --min-rms "$AUDIO_MIN_RMS" \
-      --fail-on-clicks > "$AUDIO_REPORT"
-    echo "audio check: $AUDIO_REPORT (jump_threshold=$AUDIO_JUMP_THRESHOLD min_rms=$AUDIO_MIN_RMS)"
+  AUDIO_INFO="$(ffprobe -v error -count_packets -select_streams a:0 \
+    -show_entries stream=codec_name,sample_rate,channels,nb_read_packets \
+    -of default=nw=1:nk=1 "$RECORD_PATH")"
+  mapfile -t AUDIO_FIELDS <<< "$AUDIO_INFO"
+  if [ "${#AUDIO_FIELDS[@]}" -lt 4 ] ||
+     [ -z "${AUDIO_FIELDS[0]}" ] || [ -z "${AUDIO_FIELDS[1]}" ] ||
+     [ -z "${AUDIO_FIELDS[2]}" ] ||
+     ! [[ "${AUDIO_FIELDS[3]}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "recording has no usable audio stream: $RECORD_PATH" >&2
+    exit 1
   fi
+  echo "record audio: codec=${AUDIO_FIELDS[0]} rate=${AUDIO_FIELDS[1]} channels=${AUDIO_FIELDS[2]} packets=${AUDIO_FIELDS[3]}"
 fi

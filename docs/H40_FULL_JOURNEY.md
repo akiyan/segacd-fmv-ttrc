@@ -1,5 +1,13 @@
 # The Journey to a Full-Screen H40 Sega CD FMV
 
+> Historical investigation record (2026-07-11). It preserves the names,
+> commands, and v8-era layout used when the result was obtained. The current
+> v10 path uses split `HEADER.DAT` + `BODY.DAT`, calls the streamed physical
+> pattern ring `PrgBuf`, assigns boot patterns through `WordBuf0`, `WordBuf1`,
+> and `MainBuf`, and has no Tank meter. Use [`README.md`](../README.md),
+> [`MOVIE.md`](../MOVIE.md), [`CONFIG.md`](../CONFIG.md), and
+> [`BUEFFERING.md`](../BUEFFERING.md) for current instructions.
+
 *How the full-screen H40 (320×224, 40×28 = 1120 tiles) `machi` (街) ending was
 made to stream from disc and play back cleanly — video and audio — with no
 resolution or audio quality lost.*
@@ -15,7 +23,7 @@ Build `20260711.e8.p3` — https://youtu.be/5C6t5pvUo-Y (unlisted).
 The codec is the **Tile Texture Reuse Codec (TTRC)**. `tools/sim.py` decides, per
 cell, whether it is a *cold* tile (a fresh 32-byte pattern read from CD) or a
 *reuse* of a pattern already resident in VRAM. `tools/pack_stream.py` turns those
-decisions into `MOVIE.DAT`. On the console the **Sub CPU** (`movieplay_sp.s`)
+decisions into the then-current `MOVIE.DAT`. On the console the **Sub CPU** (`movieplay_sp.s`)
 streams the disc continuously and decodes each frame into a Word-RAM output
 buffer; the **Main CPU** (`movieplay_ip.s`) DMAs that buffer to VRAM and displays
 it. A 1M/1M Word-RAM double buffer swaps at each frame boundary. The disc is one
@@ -58,7 +66,8 @@ outside the ring. The ring's head/occupancy stays honest.
 ## Chapter 4 — The movie collapsed permanently mid-way
 
 On heavy frames a CD sector would slip (an **MSF gap** — the sector header's
-minute:second:frame counter jumps). Both the pattern ring and the control stream
+minute:second:frame counter jumps). Both the pattern ring (now called `PrgBuf`)
+and the control stream
 then shifted, and the two desynced into a cascading freeze. Simply raising the
 transfer-retry limit did **not** help — the sectors were genuinely lost.
 
@@ -151,7 +160,7 @@ Canonical build (reproducible):
 ```sh
 CBRSIM_W=320 CBRSIM_H=224 CBRSIM_MODE=H40 \
 CBRSIM_RING_CAP_KB=380 CBRSIM_PACK_MAXCOLD=200 \
-python3 tools/pack_stream.py \
+tools/python.sh tools/pack_stream.py \
   --dec-log videos/machi_ed_H40_320x224_pcm13/decisions.pkl \
   --audio  videos/machi_ed_H40_320x224_pcm13/audio_13k3_u8_mono.wav \
   --output out/movieplay/MOVIE.DAT
@@ -319,7 +328,7 @@ cold cap を直接指した。
 ```sh
 CBRSIM_W=320 CBRSIM_H=224 CBRSIM_MODE=H40 \
 CBRSIM_RING_CAP_KB=380 CBRSIM_PACK_MAXCOLD=200 \
-python3 tools/pack_stream.py \
+tools/python.sh tools/pack_stream.py \
   --dec-log videos/machi_ed_H40_320x224_pcm13/decisions.pkl \
   --audio  videos/machi_ed_H40_320x224_pcm13/audio_13k3_u8_mono.wav \
   --output out/movieplay/MOVIE.DAT

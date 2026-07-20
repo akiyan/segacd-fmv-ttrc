@@ -20,10 +20,10 @@ resize_filter = "area"
 master_denoise = false
 
 [audio]
-kind = "pcm13"
+kind = "adpcm22"
 
 [output]
-directory = "videos/BadApple_H40_320x224_pcm/tmp"
+directory = "videos/BadApple_H40_320x224_adpcm22/tmp"
 reuse = false
 emit_decisions = true
 

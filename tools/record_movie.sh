@@ -33,14 +33,8 @@
 #                  reuse an input replay for an exact-frame offline or realtime run
 #   --record-size WxH
 #                  native recording surface (H32: 256x224, H40: 320x224)
-#   --audio-jump-threshold N
-#                  pass through to run_headless (default: run_headless default)
-#   --audio-min-rms N
-#                  fail pre/post-transcode checks if RMS is below N
 #   --auto-audio-trim
 #                  explicitly choose a movie-only window from the recorded WAV
-#   --no-audio-check
-#                  pass through to run_headless
 #   --no-build     do not run `make disc` first
 #   --release-build
 #                  build with DEBUG=0 instead of the recording default DEBUG=1
@@ -62,7 +56,6 @@ PRESET="ffv1-flac"
 RECORD_SIZE=""
 BUILD=1
 BUILD_DEBUG=1
-AUDIO_CHECK_ARGS=()
 AUTO_AUDIO_TRIM=0
 OFFLINE_RECORD=1
 OFFLINE_REQUESTED=0
@@ -83,10 +76,7 @@ while [ $# -gt 0 ]; do
     --realtime-lossless) OFFLINE_RECORD=0; REALTIME_LOSSLESS_REQUESTED=1; shift;;
     --input-replay) INPUT_REPLAY="$2"; shift 2;;
     --record-size) RECORD_SIZE="$2"; shift 2;;
-    --audio-jump-threshold) AUDIO_CHECK_ARGS+=(--audio-jump-threshold "$2"); shift 2;;
-    --audio-min-rms) AUDIO_CHECK_ARGS+=(--audio-min-rms "$2"); shift 2;;
     --auto-audio-trim) AUTO_AUDIO_TRIM=1; shift;;
-    --no-audio-check) AUDIO_CHECK_ARGS+=(--no-audio-check); shift;;
     --no-build) BUILD=0; shift;;
     --release-build) BUILD_DEBUG=0; shift;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d'; exit 0;;
@@ -205,34 +195,29 @@ if [ "$OFFLINE_RECORD" -eq 1 ]; then
   OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record-offline --max-frames "$MAX_FRAMES" --play-replay "$REPLAY_FILE" \
     --display "$DISPLAY_NUM" \
-    "${RECORD_SIZE_ARGS[@]}" \
-    "${AUDIO_CHECK_ARGS[@]}"
+    "${RECORD_SIZE_ARGS[@]}"
 elif [ -n "$INPUT_REPLAY" ] && [ "$PRESET" = "realtime" ]; then
   OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record-realtime \
     --max-frames "$MAX_FRAMES" --play-replay "$REPLAY_FILE" \
     --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
-    "${RECORD_SIZE_ARGS[@]}" \
-    "${AUDIO_CHECK_ARGS[@]}"
+    "${RECORD_SIZE_ARGS[@]}"
 elif [ -n "$INPUT_REPLAY" ]; then
   OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record --record-preset "$PRESET" \
     --max-frames "$MAX_FRAMES" --play-replay "$REPLAY_FILE" \
     --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
-    "${RECORD_SIZE_ARGS[@]}" \
-    "${AUDIO_CHECK_ARGS[@]}"
+    "${RECORD_SIZE_ARGS[@]}"
 elif [ "$PRESET" = "realtime" ]; then
   OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record-realtime \
     --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
-    "${RECORD_SIZE_ARGS[@]}" \
-    "${AUDIO_CHECK_ARGS[@]}"
+    "${RECORD_SIZE_ARGS[@]}"
 else
   OUTDIR="$CAPTURE_DIR" tools/run_headless.sh "$DISC" --tag "$TAG" \
     --record --record-preset "$PRESET" \
     --shots "$SHOTS" --interval "$INTERVAL" --display "$DISPLAY_NUM" \
-    "${RECORD_SIZE_ARGS[@]}" \
-    "${AUDIO_CHECK_ARGS[@]}"
+    "${RECORD_SIZE_ARGS[@]}"
 fi
 
 RAW_MKV="$CAPTURE_DIR/${TAG}.mkv"
@@ -248,28 +233,20 @@ else
   BOUNDED_LABEL="native 4:2:0"
 fi
 [ -f "$RAW_MKV" ] || { echo "recording not produced: $RAW_MKV (see $CAPTURE_DIR/retroarch_${TAG}.log)" >&2; exit 1; }
-if [ "${#AUDIO_CHECK_ARGS[@]}" -eq 0 ] || [[ " ${AUDIO_CHECK_ARGS[*]} " != *" --no-audio-check "* ]]; then
-  [ -s "$CAPTURE_DIR/${TAG}_audio.json" ] || { echo "audio check report not produced: $CAPTURE_DIR/${TAG}_audio.json" >&2; exit 1; }
-fi
 
-MIN_RMS=0
-for ((i = 0; i < ${#AUDIO_CHECK_ARGS[@]}; i++)); do
-  if [ "${AUDIO_CHECK_ARGS[$i]}" = "--audio-min-rms" ]; then
-    MIN_RMS="${AUDIO_CHECK_ARGS[$((i + 1))]}"
-  fi
-done
+AUTO_TRIM_WAV=""
 if [ "$AUTO_AUDIO_TRIM" -eq 1 ]; then
-  [ -s "$CAPTURE_DIR/${TAG}.wav" ] || { echo "auto audio trim requires $CAPTURE_DIR/${TAG}.wav" >&2; exit 1; }
-  [ "$MIN_RMS" = "0" ] && MIN_RMS=1
-  TRIM="$("$PYTHON" - "$CAPTURE_DIR/${TAG}.wav" "$REC_SECS" "$MIN_RMS" <<'PY'
+  AUTO_TRIM_WAV="$CAPTURE_DIR/${TAG}_auto_trim.wav"
+  ffmpeg -y -hide_banner -loglevel error -i "$RAW_MKV" -vn -ar 44100 "$AUTO_TRIM_WAV"
+  [ -s "$AUTO_TRIM_WAV" ] || { echo "auto audio trim extraction failed: $AUTO_TRIM_WAV" >&2; exit 1; }
+  TRIM="$("$PYTHON" - "$AUTO_TRIM_WAV" "$REC_SECS" <<'PY'
 import math
 import struct
 import sys
 import wave
 
-path, seconds_s, min_rms_s = sys.argv[1:]
+path, seconds_s = sys.argv[1:]
 seconds = int(seconds_s)
-min_rms = float(min_rms_s)
 
 with wave.open(path, "rb") as wav:
     rate = wav.getframerate()
@@ -293,14 +270,14 @@ for start in range(0, last + 1, step_samples):
         best_rms = rms
         best_start = start
 
-if best_rms < min_rms:
-    raise SystemExit(f"no audio window reached min_rms={min_rms}; best_rms={best_rms:.4f}")
+if best_rms < 1:
+    raise SystemExit(f"no non-silent audio window found; best_rms={best_rms:.4f}")
 
 print(best_start // step_samples)
 print(f"auto audio trim: start={best_start // step_samples}s rms={best_rms:.4f}", file=sys.stderr)
 PY
 )"
-  echo ">> auto audio trim selected ${TRIM}s (min_rms=$MIN_RMS)"
+  echo ">> auto audio trim selected ${TRIM}s"
 fi
 
 if [ "$TRIM" = "0" ]; then
@@ -311,37 +288,10 @@ fi
 ffmpeg -y -hide_banner -loglevel error -ss "$TRIM" -i "$RAW_MKV" \
   -t "$REC_SECS" -map 0:v:0 -map '0:a:0?' -c copy "$BOUNDED_MKV"
 
-THRESHOLD=12000
-for ((i = 0; i < ${#AUDIO_CHECK_ARGS[@]}; i++)); do
-  if [ "${AUDIO_CHECK_ARGS[$i]}" = "--audio-jump-threshold" ]; then
-    THRESHOLD="${AUDIO_CHECK_ARGS[$((i + 1))]}"
-  elif [ "${AUDIO_CHECK_ARGS[$i]}" = "--audio-min-rms" ]; then
-    MIN_RMS="${AUDIO_CHECK_ARGS[$((i + 1))]}"
-  fi
-done
-if [ "${#AUDIO_CHECK_ARGS[@]}" -eq 0 ] || [[ " ${AUDIO_CHECK_ARGS[*]} " != *" --no-audio-check "* ]]; then
-  tools/verify_recording.sh "$BOUNDED_MKV" \
-    --out-prefix "${BOUNDED_MKV%.*}" \
-    --jump-threshold "$THRESHOLD" --min-rms "$MIN_RMS"
-fi
-
 echo ">> transcoding verification preview -> $OUT"
 ffmpeg -y -hide_banner -loglevel error -i "$BOUNDED_MKV" \
   -c:v libx264 -crf 18 -pix_fmt yuv420p \
   -c:a aac -b:a 128k -movflags +faststart "$OUT"
-
-if [ "${#AUDIO_CHECK_ARGS[@]}" -eq 0 ] || [[ " ${AUDIO_CHECK_ARGS[*]} " != *" --no-audio-check "* ]]; then
-  OUT_WAV="${OUT%.*}_audio.wav"
-  OUT_JSON="${OUT%.*}_audio.json"
-  ffmpeg -y -hide_banner -loglevel error -i "$OUT" -vn -ar 44100 "$OUT_WAV"
-  "$PYTHON" tools/analyze_recorded_audio.py "$OUT" \
-    --wav "$OUT_WAV" \
-    --seconds 12 \
-    --jump-threshold "$THRESHOLD" \
-    --min-rms "$MIN_RMS" \
-    --fail-on-clicks > "$OUT_JSON"
-  echo "mp4 audio check: $OUT_JSON (jump_threshold=$THRESHOLD min_rms=$MIN_RMS)"
-fi
 
 if [ -n "$PIPELINE_WALL_START_NS" ]; then
   PIPELINE_WALL_END_NS="$(date +%s%N)"
@@ -349,11 +299,22 @@ if [ -n "$PIPELINE_WALL_START_NS" ]; then
     'BEGIN { printf "%.3f", (end - start) / 1000000000 }')"
 fi
 
-rm -f "$RAW_MKV" "$CAPTURE_DIR/${TAG}.wav"
+rm -f "$RAW_MKV"
+[ -z "$AUTO_TRIM_WAV" ] || rm -f "$AUTO_TRIM_WAV"
 [ -n "$REPLAY_FILE" ] && echo "REPLAY=$REPLAY_FILE"
 [ -n "$PIPELINE_WALL_START_NS" ] && echo "PIPELINE_WALL_SECONDS=$PIPELINE_WALL_SECONDS"
 echo "$BOUNDED_KEY=$BOUNDED_MKV"
 echo "OUT=$OUT"
 for artifact in "$BOUNDED_MKV" "$OUT"; do
+  AUDIO_INFO="$(ffprobe -v error -count_packets -select_streams a:0 \
+    -show_entries stream=codec_name,sample_rate,channels,nb_read_packets \
+    -of csv=p=0 "$artifact")"
+  IFS=, read -r AUDIO_CODEC AUDIO_RATE AUDIO_CHANNELS AUDIO_PACKETS <<< "$AUDIO_INFO"
+  if [ -z "$AUDIO_CODEC" ] || [ -z "$AUDIO_RATE" ] || [ -z "$AUDIO_CHANNELS" ] ||
+     ! [[ "$AUDIO_PACKETS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "artifact has no usable audio stream: $artifact" >&2
+    exit 1
+  fi
+  echo "AUDIO=$artifact codec=$AUDIO_CODEC rate=$AUDIO_RATE channels=$AUDIO_CHANNELS packets=$AUDIO_PACKETS"
   ffprobe -hide_banner "$artifact" 2>&1 | grep -E 'Input|Duration|Stream' || true
 done

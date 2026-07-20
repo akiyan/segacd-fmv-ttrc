@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Extract and aggregate the DEBUG HUD from a native playback recording.
 
-The player renders this common row, with an H40-only diagnostic suffix:
+The player renders values only in this fixed internal order, with an H40-only
+diagnostic suffix:
 
-    H32: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxx
-    H40: FxxxxPxxSxxDxxRxxLxxCxxWxxMxxAxxUxxxxNxx
+    H32: xxxx xx xx xx xx xx xx xx xx xx
+    H40: xxxx xx xx xx xx xx xx xx xx xx xxxx xx
+
+The corresponding keys remain F/P/S/D/R/L/C/W/M/A/U/N in the CSV and report.
 
 Frames are decoded sequentially through ffmpeg.  High-confidence OCR samples
 with the same F value are combined before R transitions are reported.  This is
@@ -159,7 +162,7 @@ def iter_samples(
                 f"ffmpeg returned a partial raw frame: {len(raw)} / {frame_size} bytes"
             )
         image = np.frombuffer(raw, np.uint8).reshape(crop_h, crop_w)
-        hud = read_frameno.read_hud(image)
+        hud = read_frameno.read_hud(image, layout=layout)
         field_conf = {name: float(hud[name][1]) for name in fields}
         if min(field_conf.values()) >= confidence:
             yield Sample(
@@ -339,7 +342,7 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
         "loop", "capture_first", "capture_last", "time_first_s", "time_last_s",
         "sample_count", "confidence", "frame", "frame_hex", "palette", "slip",
         "desync", "resync", "lead_256b", "lead_hex", "cd_wait", "sub_wait_lines",
-        "main_vblank_wait", "startup_audio_left", "main_pattern_ticks",
+        "main_vblank_wait", "sub_adpcm_decode_units", "main_pattern_ticks",
         "main_pattern_ms", "cold_runs_low8",
         "r_transition", "prev_frame",
         "prev_lead_256b", "next_frame", "next_lead_256b",
@@ -371,7 +374,7 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
                 "cd_wait": values["C"],
                 "sub_wait_lines": values["W"],
                 "main_vblank_wait": values["M"],
-                "startup_audio_left": values["A"],
+                "sub_adpcm_decode_units": values["A"],
                 "main_pattern_ticks": values.get("U", ""),
                 "main_pattern_ms": (
                     f"{values['U'] * 0.03072:.5f}" if "U" in values else ""

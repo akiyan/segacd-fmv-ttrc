@@ -17,7 +17,7 @@ from pathlib import Path
 CODEGEN_BASE = 0x00FF2000
 TABLE_BYTES = 256 * 2
 HANDLERS_BASE = CODEGEN_BASE + TABLE_BYTES
-CODEGEN_LIMIT = 0x00FF8000
+CODEGEN_LIMIT = 0x00FF6600
 
 # The real address moves as movieplay_ip.s changes. It is deliberately placed
 # below CODEGEN_BASE here so every generated BRA.W exercises the same backward
@@ -27,8 +27,8 @@ PLAYER_SOURCE = Path("boot/movieplay_ip.s")
 
 OP_MOVE_ENTRY_D3 = 0x3618       # move.w (a0)+,d3
 OP_STRIP_COLD_D6_D3 = 0xC646    # and.w d6,d3
-IMM_ENTRY_MASK = 0x7FFF
-ENTRY_MASK_LONG = 0x7FFF7FFF
+IMM_ENTRY_MASK = 0x67FF
+ENTRY_MASK_LONG = 0x67FF67FF
 OP_STORE_D3_A1 = 0x3283         # move.w d3,(a1)
 OP_STORE_D3_D16_A1 = 0x3343     # move.w d3,disp(a1)
 OP_ADVANCE_SHADOW = 0x43E9      # lea 16(a1),a1
@@ -37,6 +37,7 @@ OP_BRA_W = 0x6000
 
 PLAYER_CONSTANTS = {
     "MAIN_CODEGEN_BASE": CODEGEN_BASE,
+    "MAIN_BUF": CODEGEN_LIMIT,
     "MAIN_CODEGEN_TABLE_BYTES": TABLE_BYTES,
     "MAIN_CODEGEN_HANDLER_MAX": 70,
     "MAIN_CODEGEN_EXPECTED_END": 0x00FF4900,

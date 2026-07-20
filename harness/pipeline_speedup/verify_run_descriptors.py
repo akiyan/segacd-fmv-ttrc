@@ -7,7 +7,7 @@ absolute-address alignment pad:
     n_runs:u16, repeated (slot_start:u16, count:u16)
 
 This checker does not import the packer.  It independently reads the real split
-TTRC v6-v9 files, reconstructs every current control and payload byte, and compares
+TTRC v6-v10 files, reconstructs every current control and payload byte, and compares
 two consumers:
 
 * the legacy/fallback Sub path scans all update entries, selects cold entries, builds
@@ -35,8 +35,18 @@ DEBUG_BYTES = 22
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
+FEATURE_PATTERN_SUPPLY = 0x0008
 ADPCM_TABLE_SECTORS = 5
 ROUTING_TOTAL_MAX = 5
+PATTERN_SUPPLY_OFFSET = 196
+SOURCE_SHIFT = 11
+SOURCE_MASK = 0x1800
+SOURCE_PRG = 0
+SOURCE_WR = 1
+SOURCE_MAIN = 2
+NAME_ENTRY_MASK = 0x67FF
+RUN_SOURCE_SHIFT = 14
+RUN_COUNT_MASK = 0x3FFF
 DEFAULT_DECISIONS = Path(
     "videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl"
 )
@@ -64,10 +74,26 @@ class Stream:
     f0_ctrl_sectors: int
     controls: tuple[Control, ...]
     payload: bytes
+    source_payloads: tuple[bytes, ...] | None
 
 
 def ceil_sectors(byte_count: int) -> int:
     return (byte_count + SECTOR - 1) // SECTOR
+
+
+def take_pattern_region(
+    header: bytes, offset: int, sectors: int, patterns: int, label: str,
+) -> tuple[bytes, int]:
+    """Read one sector-aligned boot pattern region and require zero padding."""
+    region = header[offset:offset + sectors * SECTOR]
+    if len(region) != sectors * SECTOR:
+        raise AssertionError(f"{label} region is truncated")
+    used = patterns * PATTERN_BYTES
+    if used > len(region):
+        raise AssertionError(f"{label} patterns exceed their sectors")
+    if any(region[used:]):
+        raise AssertionError(f"{label} sector padding is nonzero")
+    return region[:used], offset + len(region)
 
 
 def frame_sectors(
@@ -177,7 +203,8 @@ def parse_control(
             raise AssertionError(f"frame {seq}: invalid descriptor alignment pad")
         # Decode here as a structural check. The main proof below also compares
         # these actual on-disc bytes with the independently rebuilt descriptors.
-        decode_descriptors(descriptor_suffix)
+        decode_descriptors(
+            descriptor_suffix, bool(features & FEATURE_PATTERN_SUPPLY))
     else:
         pad = raw[audio_end:]
         descriptor_suffix = None
@@ -193,8 +220,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, pool, base = struct.unpack_from(
         ">4sHHHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8, 9):
-        raise AssertionError(f"expected split TTRC v6-v9, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10):
+        raise AssertionError(f"expected split TTRC v6-v10, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -210,7 +237,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     audio_preload_sectors = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
     unknown_features = features & ~(
-        FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_ADPCM22)
+        FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_ADPCM22
+        | FEATURE_PATTERN_SUPPLY)
     if unknown_features:
         raise AssertionError(f"unsupported header feature bits 0x{unknown_features:04X}")
     audio_bytes = (
@@ -220,9 +248,29 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     )
 
     table_sectors = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
-    frame0_offset = (
-        1 + palette_sectors + table_sectors + audio_preload_sectors
-    ) * SECTOR
+    wr0_patterns = wr1_patterns = main_patterns = 0
+    wr0_sectors = wr1_sectors = main_sectors = 0
+    if features & FEATURE_PATTERN_SUPPLY:
+        supply = struct.unpack_from(">4s8H", header, PATTERN_SUPPLY_OFFSET)
+        supply_magic, supply_version, supply_reserved = supply[:3]
+        if supply_magic != b"PSUP" or supply_version != 1 or supply_reserved:
+            raise AssertionError(f"invalid pattern-supply extension: {supply!r}")
+        (
+            wr0_patterns, wr1_patterns, main_patterns,
+            wr0_sectors, wr1_sectors, main_sectors,
+        ) = supply[3:]
+
+    cursor = (1 + palette_sectors + table_sectors) * SECTOR
+    wr0_payload = wr1_payload = main_payload = b""
+    if features & FEATURE_PATTERN_SUPPLY:
+        wr0_payload, cursor = take_pattern_region(
+            header, cursor, wr0_sectors, wr0_patterns, "Wr0")
+        wr1_payload, cursor = take_pattern_region(
+            header, cursor, wr1_sectors, wr1_patterns, "Wr1")
+        main_payload, cursor = take_pattern_region(
+            header, cursor, main_sectors, main_patterns, "Main")
+    cursor += audio_preload_sectors * SECTOR
+    frame0_offset = cursor
     frame0_len = struct.unpack_from(">H", header, frame0_offset)[0]
     controls = [
         parse_control(
@@ -243,14 +291,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     if frame0_cold * PATTERN_BYTES > f0_pattern_sectors * SECTOR:
         raise AssertionError("frame 0 pattern count exceeds its header sectors")
 
-    routing_offset = (
-        1
-        + palette_sectors
-        + table_sectors
-        + audio_preload_sectors
-        + f0_ctrl_sectors
-        + f0_pattern_sectors
-    ) * SECTOR
+    routing_offset = frame0_offset + (
+        f0_ctrl_sectors + f0_pattern_sectors) * SECTOR
     routing_raw = header[
         routing_offset : routing_offset + routing_sectors * SECTOR
     ]
@@ -314,17 +356,28 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
         )
         control_pos = block_end
 
+    source_aware = bool(features & FEATURE_PATTERN_SUPPLY)
     total_cold = sum(
-        bool(entry & 0x8000) for control in controls for entry in control.entries
-    )
-    streamed_pattern_bytes = (total_cold - frame0_cold) * PATTERN_BYTES
+        bool(entry & 0x8000) for control in controls for entry in control.entries)
+    timed_prg_cold = sum(
+        bool(entry & 0x8000)
+        and (not source_aware or (entry & SOURCE_MASK) >> SOURCE_SHIFT == SOURCE_PRG)
+        for control in controls[1:] for entry in control.entries)
+    streamed_pattern_bytes = timed_prg_cold * PATTERN_BYTES
     streamed_payload = bytes(prebuffer_payload + body_payload)
     if len(streamed_payload) < streamed_pattern_bytes:
         raise AssertionError("streamed cold payload is truncated")
     payload_tail = streamed_payload[streamed_pattern_bytes:]
     if any(payload_tail):
         raise AssertionError("nonzero bytes follow the final cold payload")
-    payload = frame0_payload + streamed_payload[:streamed_pattern_bytes]
+    prg_payload = streamed_payload[:streamed_pattern_bytes]
+    if source_aware:
+        source_payloads = (
+            frame0_payload, prg_payload, wr0_payload, wr1_payload, main_payload)
+        payload = b"".join(source_payloads)
+    else:
+        source_payloads = None
+        payload = frame0_payload + prg_payload
     return Stream(
         nfr,
         cells,
@@ -335,6 +388,7 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
         f0_ctrl_sectors,
         tuple(controls),
         payload,
+        source_payloads,
     )
 
 
@@ -361,50 +415,64 @@ def pack_pattern(key: bytes) -> bytes:
     return bytes(out)
 
 
-def old_sub_runs(entries: tuple[int, ...], base: int) -> tuple[tuple[int, int], ...]:
-    """Model the current entry scan and open-run accumulator."""
-    result: list[tuple[int, int]] = []
+def old_sub_runs(
+    entries: tuple[int, ...], base: int, source_aware: bool,
+) -> tuple[tuple[int, int, int], ...]:
+    """Model the entry scan and source-aware open-run accumulator."""
+    result: list[tuple[int, int, int]] = []
     for entry in entries:
         if not entry & 0x8000:
             continue
         slot = (entry & 0x07FF) - base
-        if result and result[-1][0] + result[-1][1] == slot:
-            start, count = result[-1]
-            result[-1] = start, count + 1
+        source = (entry & SOURCE_MASK) >> SOURCE_SHIFT if source_aware else 0
+        if (result and result[-1][0] + result[-1][1] == slot
+                and result[-1][2] == source):
+            start, count, _source = result[-1]
+            result[-1] = start, count + 1, source
         else:
-            result.append((slot, 1))
+            result.append((slot, 1, source))
     return tuple(result)
 
 
 def per_run_descriptors(
-    entries: tuple[int, ...], colds: tuple[bool, ...], base: int
-) -> tuple[tuple[int, int], ...]:
+    entries: tuple[int, ...], colds: tuple[bool, ...], sources: tuple[int, ...],
+    base: int,
+) -> tuple[tuple[int, int, int], ...]:
     """Build the proposed descriptor list from packer's logical per tuple."""
-    result: list[tuple[int, int]] = []
-    for entry, cold in zip(entries, colds, strict=True):
+    result: list[tuple[int, int, int]] = []
+    for entry, cold, source in zip(entries, colds, sources, strict=True):
         if not cold:
             continue
         slot = (entry & 0x07FF) - base
-        if result and result[-1][0] + result[-1][1] == slot:
-            start, count = result[-1]
-            result[-1] = start, count + 1
+        if (result and result[-1][0] + result[-1][1] == slot
+                and result[-1][2] == source):
+            start, count, _source = result[-1]
+            result[-1] = start, count + 1, source
         else:
-            result.append((slot, 1))
+            result.append((slot, 1, source))
     return tuple(result)
 
 
-def encode_descriptors(runs: tuple[tuple[int, int], ...]) -> bytes:
+def encode_descriptors(
+    runs: tuple[tuple[int, int, int], ...], source_aware: bool,
+) -> bytes:
     if len(runs) > 0xFFFF:
         raise AssertionError("descriptor count does not fit u16")
     raw = bytearray(struct.pack(">H", len(runs)))
-    for slot_start, count in runs:
-        if not 0 <= slot_start <= 0xFFFF or not 1 <= count <= 0xFFFF:
-            raise AssertionError(f"invalid run ({slot_start}, {count})")
-        raw += struct.pack(">HH", slot_start, count)
+    for slot_start, count, source in runs:
+        count_limit = RUN_COUNT_MASK if source_aware else 0xFFFF
+        if not 0 <= slot_start <= 0xFFFF or not 1 <= count <= count_limit:
+            raise AssertionError(f"invalid run ({slot_start}, {count}, {source})")
+        if source_aware and source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN):
+            raise AssertionError(f"invalid run source {source}")
+        source_count = count | (source << RUN_SOURCE_SHIFT) if source_aware else count
+        raw += struct.pack(">HH", slot_start, source_count)
     return bytes(raw)
 
 
-def decode_descriptors(raw: bytes) -> tuple[tuple[int, int], ...]:
+def decode_descriptors(
+    raw: bytes, source_aware: bool,
+) -> tuple[tuple[int, int, int], ...]:
     if len(raw) < 2:
         raise AssertionError("descriptor suffix is truncated")
     n_runs = struct.unpack_from(">H", raw)[0]
@@ -412,16 +480,27 @@ def decode_descriptors(raw: bytes) -> tuple[tuple[int, int], ...]:
         raise AssertionError(
             f"descriptor suffix is {len(raw)} bytes for {n_runs} runs"
         )
-    return tuple(
-        struct.unpack_from(">HH", raw, 2 + 4 * index)
-        for index in range(n_runs)
-    )
+    result = []
+    for index in range(n_runs):
+        slot, source_count = struct.unpack_from(">HH", raw, 2 + 4 * index)
+        if source_aware:
+            count = source_count & RUN_COUNT_MASK
+            source = source_count >> RUN_SOURCE_SHIFT
+            if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN) or not count:
+                raise AssertionError(
+                    f"invalid source-aware run ({slot}, 0x{source_count:04X})")
+        else:
+            count, source = source_count, SOURCE_PRG
+        result.append((slot, count, source))
+    return tuple(result)
 
 
-def expanded_slots(runs: tuple[tuple[int, int], ...]) -> tuple[int, ...]:
+def expanded_slots(
+    runs: tuple[tuple[int, int, int], ...],
+) -> tuple[tuple[int, int], ...]:
     return tuple(
-        slot
-        for slot_start, count in runs
+        (slot, source)
+        for slot_start, count, source in runs
         for slot in range(slot_start, slot_start + count)
     )
 
@@ -497,6 +576,8 @@ def main() -> None:
     total_runs = 0
     descriptor_bytes_by_frame: list[int] = []
     run_counts: list[int] = []
+    source_aware = bool(stream.features & FEATURE_PATTERN_SUPPLY)
+    source_positions = [0] * 5
 
     for seq, (decision_frame, control) in enumerate(
         zip(decision_frames, stream.controls, strict=True)
@@ -513,28 +594,25 @@ def main() -> None:
             )
 
         colds = tuple(bool(entry & 0x8000) for entry in control.entries)
-        old_runs = old_sub_runs(control.entries, stream.base)
-        logical_entries = tuple(entry & 0x7FFF for entry in control.entries)
-        proposed_runs = per_run_descriptors(logical_entries, colds, stream.base)
-        expected_suffix = encode_descriptors(proposed_runs)
+        sources = tuple(
+            (entry & SOURCE_MASK) >> SOURCE_SHIFT if cold and source_aware else 0
+            for entry, cold in zip(control.entries, colds, strict=True))
+        old_runs = old_sub_runs(control.entries, stream.base, source_aware)
+        entry_mask = NAME_ENTRY_MASK if source_aware else 0x7FFF
+        logical_entries = tuple(entry & entry_mask for entry in control.entries)
+        proposed_runs = per_run_descriptors(
+            logical_entries, colds, sources, stream.base)
+        expected_suffix = encode_descriptors(proposed_runs, source_aware)
         suffix = control.descriptor_suffix or expected_suffix
         if control.descriptor_suffix is not None and suffix != expected_suffix:
             raise AssertionError(
                 f"frame {seq}: packed descriptor bytes differ from logical per runs"
             )
-        decoded_runs = decode_descriptors(suffix)
+        decoded_runs = decode_descriptors(suffix, source_aware)
         if decoded_runs != old_runs:
             raise AssertionError(f"frame {seq}: run descriptors changed old Sub runs")
 
         cold_count = sum(colds)
-        frame_payload_bytes = cold_count * PATTERN_BYTES
-        frame_payload = stream.payload[
-            payload_pos : payload_pos + frame_payload_bytes
-        ]
-        if len(frame_payload) != frame_payload_bytes:
-            raise AssertionError(f"frame {seq}: cold payload is truncated")
-        payload_pos += frame_payload_bytes
-
         decision_patterns = [
             pack_pattern(bytes(item[2]))
             for item, cold in zip(ordered, colds, strict=True)
@@ -542,14 +620,50 @@ def main() -> None:
         ]
         expected_frame_payload = b"".join(decision_patterns)
         expected_payload += expected_frame_payload
-        if frame_payload != expected_frame_payload:
-            raise AssertionError(
-                f"frame {seq}: physical payload order differs from decisions.pkl"
-            )
+        if stream.source_payloads is None:
+            frame_payload_bytes = cold_count * PATTERN_BYTES
+            frame_payload = stream.payload[
+                payload_pos : payload_pos + frame_payload_bytes]
+            if len(frame_payload) != frame_payload_bytes:
+                raise AssertionError(f"frame {seq}: cold payload is truncated")
+            payload_pos += frame_payload_bytes
+            if frame_payload != expected_frame_payload:
+                raise AssertionError(
+                    f"frame {seq}: physical payload order differs from decisions.pkl")
+        else:
+            cold_index = 0
+            cold_sources = [
+                source for source, cold in zip(sources, colds, strict=True)
+                if cold]
+            for source in cold_sources:
+                if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN):
+                    raise AssertionError(f"frame {seq}: invalid source {source}")
+                if seq == 0:
+                    payload_index = 0
+                elif source == SOURCE_PRG:
+                    payload_index = 1
+                elif source == SOURCE_WR:
+                    payload_index = 2 if seq % 2 == 0 else 3
+                else:
+                    payload_index = 4
+                physical = stream.source_payloads[payload_index]
+                pos = source_positions[payload_index]
+                pattern = physical[pos:pos + PATTERN_BYTES]
+                if len(pattern) != PATTERN_BYTES:
+                    raise AssertionError(
+                        f"frame {seq}: source {payload_index} is exhausted")
+                if pattern != decision_patterns[cold_index]:
+                    raise AssertionError(
+                        f"frame {seq}: source {payload_index} payload differs")
+                source_positions[payload_index] += PATTERN_BYTES
+                cold_index += 1
+            if cold_index != len(decision_patterns):
+                raise AssertionError(
+                    f"frame {seq}: consumed {cold_index}/{len(decision_patterns)} patterns")
 
         old_slots = tuple(
-            (entry & 0x07FF) - stream.base
-            for entry in control.entries
+            ((entry & 0x07FF) - stream.base, source)
+            for entry, source in zip(control.entries, sources, strict=True)
             if entry & 0x8000
         )
         proposed_slots = expanded_slots(decoded_runs)
@@ -559,7 +673,7 @@ def main() -> None:
         proposed_output = tuple(zip(proposed_slots, decision_patterns, strict=True))
         if proposed_output != old_output:
             raise AssertionError(f"frame {seq}: descriptor output changed")
-        for slot in proposed_slots:
+        for slot, _source in proposed_slots:
             if not 0 <= slot < stream.pool:
                 raise AssertionError(f"frame {seq}: slot {slot} is outside the pool")
 
@@ -569,8 +683,15 @@ def main() -> None:
         run_counts.append(len(decoded_runs))
         descriptor_bytes_by_frame.append(len(suffix))
 
-    if payload_pos != len(stream.payload) or bytes(expected_payload) != stream.payload:
-        raise AssertionError("whole-stream payload comparison did not consume exactly")
+    if stream.source_payloads is None:
+        if payload_pos != len(stream.payload) or bytes(expected_payload) != stream.payload:
+            raise AssertionError("whole-stream payload comparison did not consume exactly")
+    else:
+        for index, (position, payload) in enumerate(
+                zip(source_positions, stream.source_payloads, strict=True)):
+            if position != len(payload):
+                raise AssertionError(
+                    f"source {index}: consumed {position}/{len(payload)} bytes")
 
     added_control_bytes = sum(descriptor_bytes_by_frame)
     actual_control_bytes = sum(len(control.raw) for control in stream.controls)

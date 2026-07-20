@@ -29,7 +29,7 @@ description: Prepare and upload an existing, verified record lossless playback c
 ## 入力
 
 - `record` が作成したネイティブ解像度のロスレスMKV
-- 同録画のRetroArchログ、音声JSON、タイミング確認結果
+- 同録画のRetroArchログ、音声ストリーム情報、タイミング確認結果
 - 対応するsim出力ディレクトリ（CRAMチャプター用）
 - `tools/av_version.txt` の現行ビルド版
 
@@ -54,9 +54,10 @@ H32とH40は異なるドット幅で同じ64:49の表示領域を表す。YouTub
 1. **入力を確認する**
 
    `ffprobe`で映像・音声、raster、約59.94fps、durationを確認する。対応する
-   音声JSONとRetroArchログも確認し、壊れた録画や未検証の録画を使わない。
+   音声ストリーム情報とRetroArchログも確認し、壊れた録画や未検証の録画を使わない。
    `record`の既定である固定Replay高速録画は、要求されたpacket/decoded-frame数、
-   正常終了、音声検査、代表フレーム確認を通ったFFV1/FLACなら正式な入力として使う。
+   正常終了、非空の音声ストリーム、代表フレーム確認を通ったFFV1/FLACなら
+   正式な入力として使う。音声波形のしきい値判定は入力条件にしない。
 
 2. **起動画面を残したまま配信用ファイルを作る**
 

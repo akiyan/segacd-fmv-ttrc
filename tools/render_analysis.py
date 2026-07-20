@@ -121,26 +121,38 @@ SCREEN_W = max(_M["sw"], W)
 SCREEN_H = max(_M["sh"], H)
 SCREEN_A = L.screen_aspect(MODE)               # 画面の表示アスペクト(H32/H40=64:49, mode4≈14:9)
 BUF = np.load(f"{SIM}/buffer_remaining.npz")
-BUF_CAP = int(BUF["total"]); BUF_REM = BUF["remaining"].astype(np.int64)
 BUF_SCHEMA = int(BUF["schema_version"]) if "schema_version" in BUF else 1
-BUF_KIND = str(BUF["remaining_kind"]) if "remaining_kind" in BUF else "legacy_vbv"
-VBV_REM = (BUF["vbv_remaining"].astype(np.int64)
-           if "vbv_remaining" in BUF else BUF_REM)
-if BUF_SCHEMA >= 2 and BUF_KIND != "payload_ring_patterns":
+BUF_KIND = str(BUF["remaining_kind"]) if "remaining_kind" in BUF else "legacy"
+if BUF_SCHEMA < 4 or BUF_KIND != "four_source_pattern_supply":
     raise SystemExit(
-        f"unsupported buffer_remaining metric {BUF_KIND!r}; re-run sim")
-if len(BUF_REM) != NF:
+        f"analysis requires four-source pattern supply schema 4, got "
+        f"schema={BUF_SCHEMA} kind={BUF_KIND!r}; re-run sim")
+SUPPLY_CAPACITIES = {
+    "Prg": int(BUF["prg_capacity"]),
+    "Wr0": int(BUF["wr0_capacity"]),
+    "Wr1": int(BUF["wr1_capacity"]),
+    "Main": int(BUF["main_capacity"]),
+}
+SUPPLY_REMAINING = {
+    "Prg": BUF["prg_remaining"].astype(np.int64),
+    "Wr0": BUF["wr0_remaining"].astype(np.int64),
+    "Wr1": BUF["wr1_remaining"].astype(np.int64),
+    "Main": BUF["main_remaining"].astype(np.int64),
+}
+if "quality_budget_remaining" not in BUF:
+    raise SystemExit("analysis quality-budget trace is missing; re-run sim")
+QUALITY_REM = BUF["quality_budget_remaining"].astype(np.int64)
+for _name, _remaining in SUPPLY_REMAINING.items():
+    _capacity = SUPPLY_CAPACITIES[_name]
+    if len(_remaining) != NF:
+        raise SystemExit(
+            f"{_name} trace has {len(_remaining)} frames, expected {NF}; re-run sim")
+    if (_remaining < 0).any() or (_remaining > _capacity).any():
+        raise SystemExit(
+            f"{_name} trace is outside capacity {_capacity}; re-run sim")
+if len(QUALITY_REM) != NF:
     raise SystemExit(
-        f"payload RING trace has {len(BUF_REM)} frames, expected {NF}; re-run sim")
-if len(VBV_REM) != NF:
-    raise SystemExit(
-        f"virtual VBV trace has {len(VBV_REM)} frames, expected {NF}; re-run sim")
-if (BUF_REM < 0).any() or (BUF_REM > BUF_CAP).any():
-    raise SystemExit(
-        "payload RING trace is outside its physical capacity; re-run sim")
-if BUF_SCHEMA < 3:
-    raise SystemExit(
-        "BODY useful-delivery trace is missing; re-run sim")
+        f"quality-budget trace has {len(QUALITY_REM)} frames, expected {NF}; re-run sim")
 _body_fields = (
     "body_useful_payload_bytes",
     "body_useful_control_bytes",
@@ -303,10 +315,8 @@ CAT_UNIQ = {"Same": int(_cu[0]), "Near": int(_cu[1]), "Coa": int(_cu[2]),
 Updated = col("updated")
 _cram = np.zeros(NF, np.int64); _cram[1:] = (FRAME_SEG[1:] != FRAME_SEG[:-1]).astype(np.int64) * 128
 FB = Raw * 32 + Buf * 32 + Updated * 2 + _cram        # 1コマの映像書込量(パターン+全ネーム+CRAM, タンク供給込み)
-FRAME_CD = int(z["frame_bytes"]) if "frame_bytes" in z else int(153600 / FPS)  # CBR配給/コマ(=このコマのCD読み量)
 # Band is useful BODY.DAT bytes in the physical delivery slot.  It excludes
 # HEADER/frame 0, stream-tail alignment zeros, and rate-match pad.
-TANK_DELTA = np.zeros(NF, np.int64); TANK_DELTA[1:] = BUF_REM[1:] - BUF_REM[:-1]   # コマ毎payload RING増減(タイル)
 BODY_USEFUL_BYTES = BODY_PAYLOAD_BYTES + BODY_CONTROL_BYTES
 BAND_BPS = stream_schedule.body_delivery_rate_bps(
     BODY_USEFUL_BYTES, BODY_PHYSICAL_BYTES)
@@ -333,12 +343,11 @@ def frame_plinfo(i):
 GAP = 16
 REQ_W = 180
 COLD_W = L._w(L.f_leg, "Cold:000") + 3                    # Coldバー(Req↔Bandの間)
-BAND_W, TANK_W, BUFF_W, DMA_W, RUN_W = L.meter_widths(C)
-X_TL_STATUS = (4 + REQ_W + GAP + COLD_W + GAP + BAND_W + GAP + TANK_W + GAP
-               + BUFF_W + GAP + DMA_W + GAP + RUN_W + GAP)
-# 指針器フルスケールの基準 C-MAX_RAW の MAX_RAW は「1コマのRaw予算」(=CDで新規に読める最大タイル数)。
-# 観測最大(Raw.max)は初期タンク放出で全タイル≈Cになり scale≈0=全塗りになるので使わない。
-MAX_RAW = int(z["budget_tiles"]) if "budget_tiles" in z else FRAME_CD // 34   # TANK_DELTA は上の Band 節で計算済み
+BAND_W, PRG_W, WR0_W, WR1_W, MAIN_W, DMA_W, RUN_W = L.meter_widths(C)
+X_TL_STATUS = (
+    4 + REQ_W + GAP + COLD_W + GAP + BAND_W + GAP
+    + PRG_W + GAP + WR0_W + GAP + WR1_W + GAP + MAIN_W + GAP
+    + DMA_W + GAP + RUN_W + GAP)
 
 
 def fit(A, bw, bh):
@@ -386,11 +395,13 @@ def build_tl_bg():
     x_tl = X_TL_STATUS
     tlw = L.STATUS_W - 4 - x_tl
     tlh = (L.STATUS_H - 2) - by
-    H_req = tlh // 2; H_buf = tlh // 4; H_dma = tlh - H_req - H_buf
+    H_req = tlh // 2
+    H_supply = tlh // 4
+    H_dma = tlh - H_req - H_supply
     im = Image.new("RGB", (tlw, tlh), (16, 16, 16))
     d = ImageDraw.Draw(im)
-    d.rectangle([0, H_req, tlw, H_req + H_buf], fill=(26, 20, 34))
-    d.rectangle([0, H_req + H_buf, tlw, tlh], fill=(18, 26, 20))
+    d.rectangle([0, H_req, tlw, H_req + H_supply], fill=(21, 22, 28))
+    d.rectangle([0, H_req + H_supply, tlw, tlh], fill=(18, 26, 20))
     order = [("Raw", L.CAT_RAW), ("Coa", L.CAT_COA), ("Flbk", L.CAT_FLBK),
              ("Buf", L.CAT_BUF), ("Miss", L.CAT_MISS)]
     for cx in range(tlw):
@@ -400,8 +411,13 @@ def build_tl_bg():
             seg = int(H_req * FULL[k][fi] / C)
             if seg > 0:
                 d.line([(cx, yb - seg), (cx, yb)], fill=c); yb -= seg
-        hb = int(H_buf * BUF_REM[fi] / max(BUF_CAP, 1))
-        d.line([(cx, H_req + H_buf - hb), (cx, H_req + H_buf)], fill=L.CAT_BUF)
+        ys = H_req + H_supply
+        total_capacity = max(sum(SUPPLY_CAPACITIES.values()), 1)
+        for name in L.SUPPLY_ORDER:
+            hs = int(H_supply * SUPPLY_REMAINING[name][fi] / total_capacity)
+            if hs > 0:
+                d.line([(cx, ys - hs), (cx, ys)], fill=L.SUPPLY_COLORS[name])
+                ys -= hs
         physical = max(int(BODY_PHYSICAL_BYTES[fi]), 1)
         hp = int(H_dma * int(BODY_PAYLOAD_BYTES[fi]) / physical)
         if hp > 0:
@@ -456,14 +472,21 @@ def draw_status_real(data):
     xb = L.draw_field(d, x, ly, "Band:", data["band_kbps"], 3, L.f_leg, L.COL_TXT)
     d.text((xb, ly), "KiB/sec", fill=L.COL_DIM, font=L.f_leg)
     x += BAND_W + GAP
-    # 3) Tank = 実payload RINGの現在残量(violet)。ラベルは現在数のみ、バー幅=ラベル幅
-    stacked([(data["buf_rem"], L.CAT_BUF)], data["buf_cap"], TANK_W)
-    L.draw_field(d, x, ly, "Tank:", data["buf_rem"], 5, L.f_leg, L.COL_TXT)
-    x += TANK_W + GAP
-    # 4) payload RING増減の指針器(中央薄線・減=左赤/増=右青)。フルスケール=描画範囲タイル数-最大Raw数
-    L.draw_tank_delta(d, x, by, BH, ly, BUFF_W, data["tank_delta"], max(1, C - data["max_raw"]))
-    x += BUFF_W + GAP
-    # 5) DMA = 今フレームの32Bパターンタイル数
+    # 3) Four independent physical pattern-supply meters.
+    supply_widths = {
+        "Prg": (PRG_W, 5), "Wr0": (WR0_W, 3),
+        "Wr1": (WR1_W, 3), "Main": (MAIN_W, 3),
+    }
+    for name in L.SUPPLY_ORDER:
+        width, digits = supply_widths[name]
+        remaining = data["supply_remaining"][name]
+        capacity = data["supply_capacities"][name]
+        stacked([(remaining, L.SUPPLY_COLORS[name])], capacity, width)
+        L.draw_field(
+            d, x, ly, name + ":", remaining, digits, L.f_leg, L.COL_TXT)
+        x += width + GAP
+
+    # 4) DMA = 今フレームの32Bパターンタイル数
     fillw = int(DMA_W * min(dval, dmax) / max(dmax, 1)); over = dval > dmax
     d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else L.COL_DMA)
     if over:
@@ -472,7 +495,7 @@ def draw_status_real(data):
     L.draw_field(d, x, ly, "DMA:", dval, L.dma_value_digits(C), L.f_leg, L.COL_TXT)
     x += DMA_W + GAP
 
-    # 6) Run = playerのcold-run record数。フル=1tile/runの理論最悪ケース。
+    # 5) Run = playerのcold-run record数。フル=1tile/runの理論最悪ケース。
     run_val = int(data["dma_runs"]); run_max = L.dma_run_worst_case(dval)
     run_fill = (max(1, int(RUN_W * min(run_val, run_max) / run_max))
                 if run_val > 0 and run_max > 0 else 0)
@@ -514,7 +537,11 @@ def frame_data(i):
                 mode=MODE, res=RES, audio=AUDIO_STR, avg_kbps=AVG_KBPS,
                 req=int(Want[i]), budget=BUDGET,
                 comp=cn["Same"] + cn["Near"] + cn["Coa"] + cn["Flbk"],
-                buf_cap=BUF_CAP, buf_rem=int(BUF_REM[i]),
+                supply_capacities=SUPPLY_CAPACITIES,
+                supply_remaining={
+                    name: int(values[i])
+                    for name, values in SUPPLY_REMAINING.items()
+                },
                 dma_tiles=int(DMA_TILES[i]), dma_runs=int(DMA_RUNS[i]),
                 body_payload_bytes=int(BODY_PAYLOAD_BYTES[i]),
                 body_control_bytes=int(BODY_CONTROL_BYTES[i]),
@@ -522,7 +549,6 @@ def frame_data(i):
                 band_kbps=int(BAND[i]),
                 cold=cn["Raw"] + cn["Buf"], cold_raw=cn["Raw"], cold_buf=cn["Buf"],
                 cold_cap=COLD_CAP,
-                tank_delta=int(TANK_DELTA[i]), max_raw=MAX_RAW,
                 pl_info=frame_plinfo(i),
                 frame=i, total_frames=NF, time_s=i / FPS, palettes=frame_palettes(i),
                 series={k: [int(FULL[k][min(max(j, 0), NF - 1)]) for j in range(i - HALF, i + HALF + 1)]

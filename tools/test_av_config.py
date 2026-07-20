@@ -12,7 +12,8 @@ class RingGeometryTests(unittest.TestCase):
         self.assertEqual(av_config.RING_SIZE_KB, 428)
         self.assertEqual(av_config.RING_JITTER_MARGIN_KB, 40)
         self.assertEqual(av_config.RING_CAP_KB, 388)
-        self.assertEqual(av_config.TANK_KB, 388)
+        self.assertEqual(av_config.PRG_BUF_CAP_KB, 388)
+        self.assertEqual(av_config.QUALITY_BUDGET_KB, 388)
         self.assertEqual(av_config.BACKPRESSURE_KB, 424)
         self.assertEqual(
             av_config.BACKPRESSURE_KB - av_config.RING_CAP_KB, 36)

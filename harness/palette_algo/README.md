@@ -6,7 +6,7 @@ used by the legacy `STL4` palette selector and the new `MOSAIC-GM` selector.
 Run from the repository root:
 
 ```sh
-python3 harness/palette_algo/verify_lut.py
+tools/python.sh harness/palette_algo/verify_lut.py
 ```
 
 When the optional CuPy environment is available, run the same verification on
@@ -32,7 +32,7 @@ The MOSAIC-GM structural checks cover automatic one-line stopping, shared-core
 growth for a source with more than 15 useful colours, and fixed HUD extrema:
 
 ```sh
-python3 harness/palette_algo/verify_mosaic.py
+tools/python.sh harness/palette_algo/verify_mosaic.py
 ```
 
 Compare both algorithms on evenly sampled Bad Apple and Sonic master frames:
@@ -89,7 +89,7 @@ fixed source frames. In addition to pixel and mapping errors, `seam` measures
 how much quantization residual changes specifically across 8x8 boundaries:
 
 ```sh
-python3 harness/palette_algo/compare_decisions.py \
+tools/python.sh harness/palette_algo/compare_decisions.py \
   videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/master \
   videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl \
   videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/decisions.pkl
@@ -108,7 +108,7 @@ Sweep the spatial assignment weight and checkerboard iteration count without
 re-learning the palettes:
 
 ```sh
-python3 harness/palette_algo/compare_decisions.py \
+tools/python.sh harness/palette_algo/compare_decisions.py \
   videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/master \
   videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/decisions.pkl \
   --coherent-weight 0 0.25 1 4 8 \

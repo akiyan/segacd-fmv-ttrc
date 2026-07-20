@@ -1,7 +1,7 @@
 """Whole-movie reserve planning for encoder quality allocation.
 
-The virtual tank is a quality-allocation model.  It is deliberately separate
-from the physical payload RING scheduler in :mod:`stream_schedule`.
+The virtual quality budget is deliberately separate from the physical PrgBuf
+scheduler in :mod:`stream_schedule`.
 
 This module replaces fixed occupancy percentages with a reserve curve derived
 from the already-quantized movie.  The final reserve is zero by definition;
@@ -12,10 +12,21 @@ larger than the per-frame supply.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 
 from tile_alloc import TileAllocator
+
+
+@dataclass(frozen=True)
+class DemandPrediction:
+    """Exact/protected byte demand plus their new-pattern counts."""
+
+    exact_bytes: np.ndarray
+    protected_bytes: np.ndarray
+    exact_cold: np.ndarray
+    protected_cold: np.ndarray
 
 
 def predict_update_demands(
@@ -42,6 +53,30 @@ def predict_update_demands(
     has zero streaming demand, while still seeding the predictive VRAM state.
     """
 
+    prediction = predict_update_demand_details(
+        pattern_frames,
+        palette_frames,
+        vram_tiles=vram_tiles,
+        name_bytes=name_bytes,
+        pattern_bytes=pattern_bytes,
+        max_cold=max_cold,
+        protected_frames=protected_frames,
+    )
+    return prediction.exact_bytes, prediction.protected_bytes
+
+
+def predict_update_demand_details(
+    pattern_frames: Sequence[np.ndarray],
+    palette_frames: Sequence[np.ndarray],
+    *,
+    vram_tiles: int,
+    name_bytes: int = 2,
+    pattern_bytes: int = 32,
+    max_cold: int = 0,
+    protected_frames: Sequence[np.ndarray] | None = None,
+) -> DemandPrediction:
+    """Return the byte-demand traces and the cold counts behind them."""
+
     n = len(pattern_frames)
     if len(palette_frames) != n:
         raise ValueError("pattern and palette frame counts differ")
@@ -49,7 +84,7 @@ def predict_update_demands(
         raise ValueError("protected frame count differs")
     if n == 0:
         empty = np.zeros(0, np.int64)
-        return empty, empty.copy()
+        return DemandPrediction(empty, empty.copy(), empty.copy(), empty.copy())
     if vram_tiles <= 0:
         raise ValueError("vram_tiles must be positive")
     if name_bytes < 0 or pattern_bytes < 0 or max_cold < 0:
@@ -68,6 +103,8 @@ def predict_update_demands(
     previous_palettes = np.full(cells, -1, np.int64)
     exact_demand = np.zeros(n, np.int64)
     protected_demand = np.zeros(n, np.int64)
+    exact_cold_demand = np.zeros(n, np.int64)
+    protected_cold_demand = np.zeros(n, np.int64)
 
     for frame_idx in range(n):
         patterns = np.asarray(pattern_frames[frame_idx])
@@ -112,12 +149,19 @@ def predict_update_demands(
             protected_demand[frame_idx] = (
                 len(protected_cells) * name_bytes
                 + protected_cold * pattern_bytes)
+            exact_cold_demand[frame_idx] = exact_cold
+            protected_cold_demand[frame_idx] = protected_cold
 
         for cell in changed_cells:
             previous_keys[cell] = keys[cell]
             previous_palettes[cell] = int(palettes[cell])
 
-    return exact_demand, protected_demand
+    return DemandPrediction(
+        exact_demand,
+        protected_demand,
+        exact_cold_demand,
+        protected_cold_demand,
+    )
 
 
 def build_reserve_curve(
@@ -125,7 +169,7 @@ def build_reserve_curve(
     supply: int | Sequence[int] | np.ndarray,
     capacity: int,
 ) -> np.ndarray:
-    """Return the minimum virtual-tank bytes to retain after each frame.
+    """Return the minimum quality-budget bytes to retain after each frame.
 
     ``reserve[-1]`` is always zero.  For every earlier frame, the backwards
     pass retains only the bytes that future demand cannot replenish from its
@@ -164,7 +208,7 @@ def build_reserve_curve(
 
 def planned_spend_limit(
     *,
-    tank_before: int,
+    budget_before: int,
     frame_supply: int,
     reserve_after: int,
     already_spent: int,
@@ -175,7 +219,8 @@ def planned_spend_limit(
     remains authoritative and later work receives no additional bytes.
     """
 
-    if min(tank_before, frame_supply, reserve_after, already_spent) < 0:
-        raise ValueError("tank, supply, reserve, and spending must be non-negative")
-    spendable = max(0, tank_before + frame_supply - reserve_after)
+    if min(budget_before, frame_supply, reserve_after, already_spent) < 0:
+        raise ValueError(
+            "budget, supply, reserve, and spending must be non-negative")
+    spendable = max(0, budget_before + frame_supply - reserve_after)
     return max(already_spent, spendable)

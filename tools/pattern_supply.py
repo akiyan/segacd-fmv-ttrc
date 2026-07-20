@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+"""Plan and materialize the four physical pattern-supply sources.
+
+``Prg`` is the streamed PRG-RAM circular buffer.  ``Wr0`` and ``Wr1`` are
+physical 1M Word-RAM banks, selected by frame parity, and ``Main`` is a small
+Main-RAM preload.  The encoder assigns a finite number of boot-preloaded
+pattern credits to demanding frames.  The final decision log freezes the
+source of every update, so simulation, packing, and the player all consume the
+same plan.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Sequence
+
+import numpy as np
+
+
+PATTERN_BYTES = 32
+
+SOURCE_PRG = 0
+SOURCE_WR = 1
+SOURCE_MAIN = 2
+SOURCE_RESERVED = 3
+
+SOURCE_SHIFT = 11
+SOURCE_MASK = 0x1800
+NAME_ENTRY_MASK = 0x67FF
+
+RUN_SOURCE_SHIFT = 14
+RUN_SOURCE_MASK = 0xC000
+RUN_COUNT_MASK = 0x3FFF
+
+# Initial hardware-proof layout.  These are mirrored by movieplay_ip.s,
+# movieplay_sp.s, and check_player_ring.py.
+WORD_BUF_OFFSET = 0x15200
+WORD_BUF_END = 0x1C000
+WORD_BUF_PATTERNS = (WORD_BUF_END - WORD_BUF_OFFSET) // PATTERN_BYTES
+
+MAIN_STAGE_OFFSET = 0x0D000
+MAIN_BUF_BASE = 0x00FF6600
+MAIN_BUF_END = 0x00FF8000
+MAIN_BUF_PATTERNS = (MAIN_BUF_END - MAIN_BUF_BASE) // PATTERN_BYTES
+
+
+def encode_entry_source(entry: int, source: int) -> int:
+    """Put a cold-pattern source in the two unused VDP-entry bits."""
+    if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN):
+        raise ValueError(f"invalid pattern source: {source}")
+    if entry & SOURCE_MASK:
+        raise ValueError(f"entry already uses source/flip bits: 0x{entry:04X}")
+    return int(entry) | (int(source) << SOURCE_SHIFT)
+
+
+def decode_entry_source(entry: int) -> int:
+    return (int(entry) & SOURCE_MASK) >> SOURCE_SHIFT
+
+
+def encode_run_count(count: int, source: int) -> int:
+    if not 0 < int(count) <= RUN_COUNT_MASK:
+        raise ValueError(f"invalid run count: {count}")
+    if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN):
+        raise ValueError(f"invalid pattern source: {source}")
+    return int(count) | (int(source) << RUN_SOURCE_SHIFT)
+
+
+def decode_run_count(value: int) -> tuple[int, int]:
+    return int(value) & RUN_COUNT_MASK, (int(value) & RUN_SOURCE_MASK) >> RUN_SOURCE_SHIFT
+
+
+def count_source_runs(slots: Sequence[int], sources: Sequence[int]) -> int:
+    """Count runs split by either a slot gap or a physical-source change."""
+    if len(slots) != len(sources):
+        raise ValueError("slot and source counts differ")
+    runs = 0
+    previous_slot: int | None = None
+    previous_source: int | None = None
+    for raw_slot, raw_source in zip(slots, sources):
+        slot = int(raw_slot)
+        source = int(raw_source)
+        if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN):
+            raise ValueError(f"invalid pattern source: {source}")
+        if (previous_slot is None or slot != previous_slot + 1
+                or source != previous_source):
+            runs += 1
+        previous_slot = slot
+        previous_source = source
+    return runs
+
+
+@dataclass(frozen=True)
+class SupplyPlan:
+    """Per-update sources and source-local pattern streams in use order."""
+
+    sources: tuple[tuple[int, ...], ...]
+    prg_patterns: tuple[bytes, ...]
+    wr0_patterns: tuple[bytes, ...]
+    wr1_patterns: tuple[bytes, ...]
+    main_patterns: tuple[bytes, ...]
+    prg_loads: np.ndarray
+    wr0_loads: np.ndarray
+    wr1_loads: np.ndarray
+    main_loads: np.ndarray
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.wr0_patterns or self.wr1_patterns or self.main_patterns)
+
+
+@dataclass(frozen=True)
+class FrameSupplyBudget:
+    """Maximum boot-preloaded cold patterns available to each frame."""
+
+    wr: np.ndarray
+    main: np.ndarray
+
+    @property
+    def total(self) -> np.ndarray:
+        return self.wr + self.main
+
+    @property
+    def wr0_patterns(self) -> int:
+        return int(self.wr[::2].sum())
+
+    @property
+    def wr1_patterns(self) -> int:
+        return int(self.wr[1::2].sum())
+
+    @property
+    def main_patterns(self) -> int:
+        return int(self.main.sum())
+
+
+def _credit_priority(
+    frame: int,
+    allocated: np.ndarray,
+    exact_bytes: np.ndarray,
+    protected_bytes: np.ndarray,
+    exact_cold: np.ndarray,
+    protected_cold: np.ndarray,
+) -> tuple[int, int, int, int]:
+    """Return the marginal priority of one more preload credit.
+
+    Credits first flatten frames whose protected changes are predicted to need
+    a new pattern.  Once those are covered, remaining capacity flattens the
+    complete exact demand.  Recomputing the residual after every 32-byte credit
+    avoids concentrating a whole buffer in one frame merely because it started
+    as the largest burst.
+    """
+    used = int(allocated[frame])
+    exact_left = max(0, int(exact_bytes[frame]) - used * PATTERN_BYTES)
+    cold_left = max(0, int(exact_cold[frame]) - used)
+    if used < int(protected_cold[frame]):
+        protected_left = max(
+            0, int(protected_bytes[frame]) - used * PATTERN_BYTES)
+        return (2, protected_left, exact_left, cold_left)
+    return (1, exact_left, cold_left, 0)
+
+
+def _allocate_credits(
+    target: np.ndarray,
+    available: np.ndarray,
+    allocated: np.ndarray,
+    frames: Sequence[int],
+    capacity: int,
+    exact_bytes: np.ndarray,
+    protected_bytes: np.ndarray,
+    exact_cold: np.ndarray,
+    protected_cold: np.ndarray,
+) -> None:
+    """Water-fill one physical source over its eligible frames."""
+    import heapq
+
+    heap: list[tuple[int, int, int, int, int, int]] = []
+
+    def push(frame: int) -> None:
+        if int(available[frame]) <= 0:
+            return
+        priority = _credit_priority(
+            frame, allocated, exact_bytes, protected_bytes,
+            exact_cold, protected_cold)
+        # heapq is a min-heap.  Negate the priority fields and retain the frame
+        # plus allocation generation for deterministic ordering/stale checks.
+        heapq.heappush(
+            heap,
+            (-priority[0], -priority[1], -priority[2], -priority[3],
+             int(frame), int(allocated[frame])),
+        )
+
+    for frame in frames:
+        push(int(frame))
+
+    remaining = max(0, int(capacity))
+    while remaining and heap:
+        *_priority, frame, generation = heapq.heappop(heap)
+        if generation != int(allocated[frame]):
+            continue
+        if int(available[frame]) <= 0:
+            continue
+        target[frame] += 1
+        available[frame] -= 1
+        allocated[frame] += 1
+        remaining -= 1
+        push(frame)
+
+
+def plan_frame_budgets(
+    prediction,
+    *,
+    enabled: bool = True,
+    wr_patterns: int = WORD_BUF_PATTERNS,
+    main_patterns: int = MAIN_BUF_PATTERNS,
+) -> FrameSupplyBudget:
+    """Allocate Wr0/Wr1/Main preload credits from predicted exact demand.
+
+    Word-RAM capacity is parity-constrained, so it is allocated first within
+    even and odd frames independently.  Main RAM can serve either parity and
+    then fills the largest residual risks.  Frame zero is always excluded: its
+    patterns already come from the boot-only frame-0 block.
+    """
+    exact_bytes = np.asarray(prediction.exact_bytes, dtype=np.int64)
+    protected_bytes = np.asarray(prediction.protected_bytes, dtype=np.int64)
+    exact_cold = np.asarray(prediction.exact_cold, dtype=np.int64)
+    protected_cold = np.asarray(prediction.protected_cold, dtype=np.int64)
+    shape = exact_bytes.shape
+    if exact_bytes.ndim != 1 or any(
+            values.shape != shape for values in (
+                protected_bytes, exact_cold, protected_cold)):
+        raise ValueError("pattern-supply demand arrays must be matching vectors")
+    if any(np.any(values < 0) for values in (
+            exact_bytes, protected_bytes, exact_cold, protected_cold)):
+        raise ValueError("pattern-supply demand must be non-negative")
+    if np.any(protected_cold > exact_cold):
+        raise ValueError("protected cold demand exceeds complete exact demand")
+
+    wr = np.zeros(shape, np.int64)
+    main = np.zeros(shape, np.int64)
+    if not enabled or not len(exact_bytes):
+        return FrameSupplyBudget(wr=wr, main=main)
+
+    available = exact_cold.copy()
+    available[0] = 0
+    allocated = np.zeros(shape, np.int64)
+    for parity in (0, 1):
+        _allocate_credits(
+            wr, available, allocated,
+            range(2 if parity == 0 else 1, len(exact_bytes), 2),
+            wr_patterns, exact_bytes, protected_bytes,
+            exact_cold, protected_cold)
+    _allocate_credits(
+        main, available, allocated, range(1, len(exact_bytes)),
+        main_patterns, exact_bytes, protected_bytes,
+        exact_cold, protected_cold)
+
+    if int(wr[::2].sum()) > int(wr_patterns):
+        raise AssertionError("Wr0 preload planner exceeded capacity")
+    if int(wr[1::2].sum()) > int(wr_patterns):
+        raise AssertionError("Wr1 preload planner exceeded capacity")
+    if int(main.sum()) > int(main_patterns):
+        raise AssertionError("Main preload planner exceeded capacity")
+    if np.any(wr + main > exact_cold):
+        raise AssertionError("preload planner exceeded predicted frame cold demand")
+    return FrameSupplyBudget(wr=wr, main=main)
+
+
+def _cold_runs(entries: Sequence[int], colds: Sequence[bool]) -> list[tuple[int, ...]]:
+    """Return update-index runs whose allocated slots are consecutive."""
+    runs: list[list[int]] = []
+    previous_slot: int | None = None
+    for update_index, (entry, cold) in enumerate(zip(entries, colds)):
+        if not cold:
+            continue
+        slot = (int(entry) & 0x07FF) - 1
+        if previous_slot is None or slot != previous_slot + 1:
+            runs.append([])
+        runs[-1].append(update_index)
+        previous_slot = slot
+    return [tuple(run) for run in runs]
+
+
+def _frame_risk(log: dict, frame_count: int) -> list[tuple[int, int, int]]:
+    """Rank legacy logs by Miss, then by low PrgBuf occupancy."""
+    miss = np.asarray(log.get("miss", np.zeros(frame_count)), np.int64)
+    if miss.shape != (frame_count,):
+        miss = np.zeros(frame_count, np.int64)
+    frozen = log.get("stream_schedule") or {}
+    ring = np.asarray(
+        frozen.get("ring_occupancy", np.full(frame_count, 1 << 30)), np.int64)
+    if ring.shape != (frame_count,):
+        ring = np.full(frame_count, 1 << 30, np.int64)
+    return sorted(
+        ((-int(miss[i]), int(ring[i]), i) for i in range(1, frame_count)),
+        key=lambda item: item,
+    )
+
+
+def _frozen_sources(
+    log: dict,
+    per: Sequence[tuple[Sequence[int], Sequence[int], Sequence[bool]]],
+) -> list[list[int]] | None:
+    """Validate and return source assignments frozen by a current sim."""
+    frozen = log.get("pattern_supply")
+    if frozen is None:
+        return None
+    if int(frozen.get("schema_version", 0)) != 1:
+        raise ValueError(
+            f"unsupported frozen pattern-supply schema: "
+            f"{frozen.get('schema_version')!r}")
+    raw_sources = frozen.get("sources")
+    if raw_sources is None or len(raw_sources) != len(per):
+        raise ValueError("frozen pattern-supply frame count differs from decisions")
+
+    sources: list[list[int]] = []
+    for frame, ((_, entries, colds), raw_frame) in enumerate(zip(per, raw_sources)):
+        frame_sources = [int(source) for source in raw_frame]
+        if len(frame_sources) != len(entries):
+            raise ValueError(
+                f"frozen pattern-supply update count differs at frame {frame}")
+        for update, (cold, source) in enumerate(zip(colds, frame_sources)):
+            if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN):
+                raise ValueError(
+                    f"invalid frozen pattern source {source} at frame "
+                    f"{frame}, update {update}")
+            if not cold and source != SOURCE_PRG:
+                raise ValueError(
+                    f"non-cold update has a preload source at frame "
+                    f"{frame}, update {update}")
+            if frame == 0 and source != SOURCE_PRG:
+                raise ValueError("frame zero cannot consume a boot preload")
+        sources.append(frame_sources)
+    return sources
+
+
+def plan_supply(
+    log: dict,
+    per: Sequence[tuple[Sequence[int], Sequence[int], Sequence[bool]]],
+    patterns: Sequence[bytes],
+    *,
+    enabled: bool = True,
+    wr_patterns: int = WORD_BUF_PATTERNS,
+    main_patterns: int = MAIN_BUF_PATTERNS,
+) -> SupplyPlan:
+    """Materialize cold patterns into their frozen physical sources.
+
+    Current decision logs carry the exact per-update sources selected during
+    simulation.  Older logs fall back to the hardware-proof planner, which
+    moves complete runs without changing their control length.  Blobs are
+    always emitted in chronological consumption order.
+    """
+    frame_count = len(per)
+    sources = [[SOURCE_PRG] * len(entries) for _cells, entries, _colds in per]
+    run_map = [_cold_runs(entries, colds) for _cells, entries, colds in per]
+
+    expected_patterns = sum(sum(bool(cold) for cold in colds) for _c, _e, colds in per)
+    if expected_patterns != len(patterns):
+        raise ValueError(
+            f"cold pattern stream mismatch: updates={expected_patterns} patterns={len(patterns)}")
+
+    frozen_sources = _frozen_sources(log, per) if enabled else None
+    if frozen_sources is not None:
+        sources = frozen_sources
+    elif enabled:
+        ranked = _frame_risk(log, frame_count)
+        main_left = int(main_patterns)
+        wr_left = [int(wr_patterns), int(wr_patterns)]
+
+        # Main can serve either parity, so reserve it for the globally riskiest
+        # complete runs before the parity-constrained Word-RAM passes.
+        for _neg_miss, _ring, frame in ranked:
+            for run in run_map[frame]:
+                count = len(run)
+                if count <= main_left:
+                    for update_index in run:
+                        sources[frame][update_index] = SOURCE_MAIN
+                    main_left -= count
+
+        for parity in (0, 1):
+            for _neg_miss, _ring, frame in ranked:
+                if frame & 1 != parity:
+                    continue
+                for run in run_map[frame]:
+                    if sources[frame][run[0]] != SOURCE_PRG:
+                        continue
+                    count = len(run)
+                    if count <= wr_left[parity]:
+                        for update_index in run:
+                            sources[frame][update_index] = SOURCE_WR
+                        wr_left[parity] -= count
+
+    prg: list[bytes] = []
+    wr0: list[bytes] = []
+    wr1: list[bytes] = []
+    main: list[bytes] = []
+    prg_loads = np.zeros(frame_count, np.int64)
+    wr0_loads = np.zeros(frame_count, np.int64)
+    wr1_loads = np.zeros(frame_count, np.int64)
+    main_loads = np.zeros(frame_count, np.int64)
+    pattern_index = 0
+    for frame, ((_cells, _entries, colds), frame_sources) in enumerate(zip(per, sources)):
+        for cold, source in zip(colds, frame_sources):
+            if not cold:
+                continue
+            pattern = bytes(patterns[pattern_index])
+            pattern_index += 1
+            if len(pattern) != PATTERN_BYTES:
+                raise ValueError(f"pattern is {len(pattern)} bytes, expected {PATTERN_BYTES}")
+            if frame == 0 or source == SOURCE_PRG:
+                prg.append(pattern)
+                prg_loads[frame] += 1
+            elif source == SOURCE_WR:
+                (wr1 if frame & 1 else wr0).append(pattern)
+                (wr1_loads if frame & 1 else wr0_loads)[frame] += 1
+            elif source == SOURCE_MAIN:
+                main.append(pattern)
+                main_loads[frame] += 1
+            else:  # pragma: no cover - guarded by construction
+                raise AssertionError(source)
+
+    if len(wr0) > wr_patterns or len(wr1) > wr_patterns or len(main) > main_patterns:
+        raise AssertionError("pattern supply planner exceeded a physical preload capacity")
+    if len(prg) + len(wr0) + len(wr1) + len(main) != len(patterns):
+        raise AssertionError("pattern supply planner lost or duplicated pattern occurrences")
+
+    return SupplyPlan(
+        sources=tuple(tuple(frame) for frame in sources),
+        prg_patterns=tuple(prg),
+        wr0_patterns=tuple(wr0),
+        wr1_patterns=tuple(wr1),
+        main_patterns=tuple(main),
+        prg_loads=prg_loads,
+        wr0_loads=wr0_loads,
+        wr1_loads=wr1_loads,
+        main_loads=main_loads,
+    )

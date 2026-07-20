@@ -53,6 +53,23 @@ class DemandPredictionTests(unittest.TestCase):
 
         np.testing.assert_array_equal(demand, [0, 0])
 
+    def test_detail_exposes_the_cold_counts_behind_byte_demand(self) -> None:
+        zero = np.zeros(4, np.uint8)
+        one = np.array([1, 0, 0, 0], np.uint8)
+        two = np.array([2, 0, 0, 0], np.uint8)
+        details = upgrade_planner.predict_update_demand_details(
+            [np.stack([zero, zero]), np.stack([one, two])],
+            [np.zeros(2, np.int16), np.zeros(2, np.int16)],
+            vram_tiles=4,
+            max_cold=1,
+            protected_frames=[np.ones(2, bool), np.array([True, False])],
+        )
+
+        np.testing.assert_array_equal(details.exact_cold, [0, 1])
+        np.testing.assert_array_equal(details.protected_cold, [0, 1])
+        np.testing.assert_array_equal(details.exact_bytes, [0, 2 * 2 + 32])
+        np.testing.assert_array_equal(details.protected_bytes, [0, 2 + 32])
+
 
 class ReserveCurveTests(unittest.TestCase):
     def test_future_burst_builds_only_the_needed_reserve(self) -> None:
@@ -86,7 +103,7 @@ class ReserveCurveTests(unittest.TestCase):
     def test_spend_limit_preserves_reserve_unless_base_work_already_used_it(self) -> None:
         self.assertEqual(
             upgrade_planner.planned_spend_limit(
-                tank_before=100,
+                budget_before=100,
                 frame_supply=50,
                 reserve_after=80,
                 already_spent=20,
@@ -95,7 +112,7 @@ class ReserveCurveTests(unittest.TestCase):
         )
         self.assertEqual(
             upgrade_planner.planned_spend_limit(
-                tank_before=100,
+                budget_before=100,
                 frame_supply=50,
                 reserve_after=80,
                 already_spent=90,

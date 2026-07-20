@@ -18,6 +18,7 @@ from pathlib import Path
 
 import ttrc_routing
 import ima_adpcm
+import pattern_supply
 
 
 SECTOR = 2048
@@ -25,6 +26,10 @@ FIXED_HEADER_BYTES = 64
 SEG0_BYTES = 128
 HEADER_SIGNATURE_OFFSET = FIXED_HEADER_BYTES + SEG0_BYTES
 HEADER_STRUCT = struct.Struct(">4s9H4LBB3L6H")
+PATTERN_SUPPLY_OFFSET = HEADER_SIGNATURE_OFFSET + 4
+PATTERN_SUPPLY_MAGIC = b"PSUP"
+PATTERN_SUPPLY_VERSION = 1
+PATTERN_SUPPLY_STRUCT = struct.Struct(">4s8H")
 
 MODE_SPECS = {
     0: ("H32", 32, 2800),
@@ -93,6 +98,12 @@ class PlayerConstants:
     sec_mod: int
     sec_base: int
     sec_rem: int
+    wr0_patterns: int
+    wr1_patterns: int
+    main_patterns: int
+    wr0_sectors: int
+    wr1_sectors: int
+    main_sectors: int
 
 
 def parse_header_sector(sector: bytes) -> PlayerConstants:
@@ -147,6 +158,7 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
 
     fixed_n2 = bool(features & ttrc_routing.FEATURE_FIXED_N2)
     adpcm22 = bool(features & ttrc_routing.FEATURE_ADPCM22)
+    pattern_supply_enabled = bool(features & ttrc_routing.FEATURE_PATTERN_SUPPLY)
     if adpcm22 and audio_bytes & 1:
         raise ValueError(f"ADPCM decoded audio_bytes must be even, got {audio_bytes}")
     audio_control_bytes = (
@@ -156,6 +168,40 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
     sec_num, sec_mod = (1001, 400) if fixed_n2 else (75, fps_int)
     sec_base, sec_rem = divmod(sec_num, sec_mod)
     fast_poll = fps_int >= 24
+
+    supply_values = PATTERN_SUPPLY_STRUCT.unpack_from(sector, PATTERN_SUPPLY_OFFSET)
+    (
+        supply_magic, supply_version, supply_reserved,
+        wr0_patterns, wr1_patterns, main_patterns,
+        wr0_sectors, wr1_sectors, main_sectors,
+    ) = supply_values
+    if pattern_supply_enabled:
+        if supply_magic != PATTERN_SUPPLY_MAGIC:
+            raise ValueError(f"bad pattern-supply magic: {supply_magic!r}")
+        if supply_version != PATTERN_SUPPLY_VERSION or supply_reserved != 0:
+            raise ValueError(
+                f"invalid pattern-supply header: version={supply_version} "
+                f"reserved={supply_reserved}")
+        capacities = (
+            ("Wr0", wr0_patterns, pattern_supply.WORD_BUF_PATTERNS, wr0_sectors),
+            ("Wr1", wr1_patterns, pattern_supply.WORD_BUF_PATTERNS, wr1_sectors),
+            ("Main", main_patterns, pattern_supply.MAIN_BUF_PATTERNS, main_sectors),
+        )
+        for name, count, capacity, sectors in capacities:
+            if not 0 <= count <= capacity:
+                raise ValueError(
+                    f"{name} preload count {count} exceeds capacity {capacity}")
+            expected_sectors = (count + 63) // 64
+            if sectors != expected_sectors:
+                raise ValueError(
+                    f"{name} preload sectors {sectors} != {expected_sectors} for {count} patterns")
+        if not fast_poll:
+            raise ValueError("pattern supply currently requires a 24fps-or-faster profile")
+    else:
+        if supply_magic != b"\0\0\0\0" or any(supply_values[1:]):
+            raise ValueError("pattern-supply extension is present while feature bit 3 is clear")
+        wr0_patterns = wr1_patterns = main_patterns = 0
+        wr0_sectors = wr1_sectors = main_sectors = 0
 
     return PlayerConstants(
         signature=signature,
@@ -198,6 +244,12 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
         sec_mod=sec_mod,
         sec_base=sec_base,
         sec_rem=sec_rem,
+        wr0_patterns=wr0_patterns,
+        wr1_patterns=wr1_patterns,
+        main_patterns=main_patterns,
+        wr0_sectors=wr0_sectors,
+        wr1_sectors=wr1_sectors,
+        main_sectors=main_sectors,
     )
 
 
@@ -210,6 +262,8 @@ INCLUDE_ORDER = (
     "audio_control_bytes", "adpcm_table_sectors", "fps_int",
     "audio_fd", "audio_preload_sec", "features", "pump_mask",
     "wave_pump_mask", "sec_num", "sec_mod", "sec_base", "sec_rem",
+    "wr0_patterns", "wr1_patterns", "main_patterns",
+    "wr0_sectors", "wr1_sectors", "main_sectors",
 )
 
 

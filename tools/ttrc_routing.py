@@ -5,10 +5,11 @@ from __future__ import annotations
 import operator
 
 
-VERSION = 9
+VERSION = 10
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
+FEATURE_PATTERN_SUPPLY = 0x0008
 SECTOR_BYTES = 2048
 ROUTE_BYTES = 16 * 1024
 # Compatibility name for callers that describe the allocation as a table.

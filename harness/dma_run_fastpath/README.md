@@ -7,7 +7,7 @@ player implementation.
 Run it from the repository root:
 
 ```sh
-python3 harness/dma_run_fastpath/verify.py
+tools/python.sh harness/dma_run_fastpath/verify.py
 ```
 
 The proof covers:

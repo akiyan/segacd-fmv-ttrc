@@ -1,5 +1,10 @@
 # Reasoning Without an Advisor — A Field Method for Not Guessing
 
+> This is a historical method note. Names inside quoted H40 examples describe
+> the implementation at that time: the current public names are `PrgBuf` for
+> the streamed physical ring and whole-movie quality budget for the encoder-only
+> accounting formerly called Tank.
+
 *The advisor was a stronger reviewer that saw the whole context and pushed back
 before you committed to a wrong path. When it is gone, you have to be your own
 reviewer. This is the discipline that replaces it. Every principle below is drawn
@@ -137,7 +142,8 @@ agree (at build time, loudly). A knob that can be set independently on two sides
 > the cold cap lived in *both* the sim and the pack. The pack cap then diverged
 > from the sim, so the analysis (from the sim) stopped matching the disc (from
 > the pack). The fix was structural, not a value tweak: one `av_config.py`
-> defines the ring; cap/tank derive from it; the player's `RING_SIZE` is
+> defines the ring; the schedule and quality ceilings derive from it; the
+> player's `RING_SIZE` is
 > build-asserted equal; and the pack now *refuses* a cold cap with a message
 > pointing you back to the encoder. The bug class is designed out, not patched.
 
@@ -154,6 +160,9 @@ usually right.
 ---
 
 # アドバイザー無しで考える — あてずっぽうにならないための実地メソッド（日本語訳）
+
+> これは当時の調査手法を残した履歴資料である。引用内の旧称Tankは現在の
+> エンコーダ専用whole-movie quality budget、pattern ringは現在の`PrgBuf`を指す。
 
 *アドバイザーは、全体の文脈を見て、あなたが誤った道に踏み込む前に押し戻してくれる、
 より強力なレビュアーだった。それが無くなったら、自分が自分のレビュアーになるしかない。

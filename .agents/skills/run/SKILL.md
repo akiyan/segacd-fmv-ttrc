@@ -180,7 +180,8 @@ Before accepting the recording, verify:
 - native raster, about 60000/1001 fps, audio, and bounded duration with `ffprobe`;
 - exact raw packet/decoded-frame counts, media-to-wall speed, and normal
   RetroArch/core shutdown logs;
-- nonzero movie audio and the audio JSON's RMS, peak, clip, and jump results;
+- a non-empty recorded audio stream with valid codec, sample-rate, channel,
+  and packet metadata;
 - startup screens, later movie playback, visible DEBUG HUD, progression, and tail;
 - representative lossless frames against the sim when timing or fps behavior is new or suspect.
 
@@ -189,9 +190,10 @@ timestamps and a `videos/<stem>/record_check` base; inspect only the new directo
 manifest/montage. Never build a montage from a shared `*.png` glob or loose stills left by a
 previous capture.
 
-Treat the audio JSON as a mechanical gate. State that human listening occurred
-only if it actually occurred. Call this an emulator recording, not a physical
-hardware recording.
+Do not apply waveform-threshold gates to routine recordings; legitimate source
+transients and lossy-preview ringing make them content-dependent. State that
+human listening occurred only if it actually occurred. Call this an emulator
+recording, not a physical hardware recording.
 
 Use full HUD OCR only for requested diagnostics or to investigate a failure.
 Never use HUD OCR to choose a publication head cue or chapter offset.
