@@ -346,15 +346,15 @@ def verify_sim_pattern_transfers(log, packed_tiles, packed_runs):
 
 
 def verify_sim_stream_schedule(log, packed_schedule):
-    """Require the analysis RING trace to match the actual packed schedule."""
+    """Require the analysis BODY/RING trace to match the packed schedule."""
     frozen = log.get("stream_schedule")
     if frozen is None:
-        print("  payload RING照合: 旧decision logのため省略 (再simで有効化)")
-        return False
-    if int(frozen.get("schema_version", 0)) != 1:
+        raise SystemExit(
+            "pack: decision log has no BODY delivery trace; re-run sim")
+    if int(frozen.get("schema_version", 0)) != stream_schedule.STREAM_SCHEDULE_SCHEMA_VERSION:
         raise SystemExit(
             "pack: unsupported stream_schedule schema "
-            f"{frozen.get('schema_version')!r}")
+            f"{frozen.get('schema_version')!r}; re-run sim")
 
     expected = {
         "block_lengths": np.asarray(packed_schedule["blk_len"], np.int64),
@@ -364,6 +364,14 @@ def verify_sim_stream_schedule(log, packed_schedule):
             packed_schedule["n_pay_sec"], np.int64),
         "control_sectors": np.asarray(
             packed_schedule["n_ctrl_sec"], np.int64),
+        "body_useful_payload_bytes": np.asarray(
+            packed_schedule["body_useful_payload_bytes"], np.int64),
+        "body_useful_control_bytes": np.asarray(
+            packed_schedule["body_useful_control_bytes"], np.int64),
+        "body_pad_bytes": np.asarray(
+            packed_schedule["body_pad_bytes"], np.int64),
+        "body_physical_bytes": np.asarray(
+            packed_schedule["body_physical_bytes"], np.int64),
     }
     for name, actual in expected.items():
         simulated = np.asarray(frozen.get(name, ()), np.int64)
@@ -379,9 +387,66 @@ def verify_sim_stream_schedule(log, packed_schedule):
                 f"sim={int(simulated[frame])} pack={int(actual[frame])}. "
                 "Control layout or delivery scheduling changed after simulation; "
                 "re-run sim.")
-    print(
-        f"  payload RING照合: {len(expected['ring_occupancy'])} frames exact")
+    print(f"  BODY配送/RING照合: {len(expected['ring_occupancy'])} slots exact")
     return True
+
+
+def verify_body_delivery_file(
+        body_path, stream_ctrl, stream_pay, schedule, *, prebuf_patterns):
+    """Check every written BODY slot against useful-byte and pad traces."""
+    n_pay = np.asarray(schedule["n_pay_sec"], np.int64)
+    n_ctrl = np.asarray(schedule["n_ctrl_sec"], np.int64)
+    fsec = np.asarray(schedule["fsec"], np.int64)
+    useful_pay = np.asarray(schedule["body_useful_payload_bytes"], np.int64)
+    useful_ctrl = np.asarray(schedule["body_useful_control_bytes"], np.int64)
+    pad = np.asarray(schedule["body_pad_bytes"], np.int64)
+    cc = 0
+    pc = int(prebuf_patterns) * PAT
+    seen_pay = np.zeros(len(fsec), np.int64)
+    seen_ctrl = np.zeros(len(fsec), np.int64)
+    seen_pad = np.zeros(len(fsec), np.int64)
+    with Path(body_path).open("rb") as body:
+        for i in range(1, len(fsec)):
+            ncb = int(n_ctrl[i]) * SECTOR
+            npb = int(n_pay[i]) * SECTOR
+            slot_size = int(fsec[i]) * SECTOR
+            slot = body.read(slot_size)
+            if len(slot) != slot_size:
+                raise AssertionError(f"BODY.DAT slot {i} is truncated")
+
+            ctrl_src = stream_ctrl[cc:cc + ncb]
+            pay_src = stream_pay[pc:pc + npb]
+            ctrl_area = slot[:ncb]
+            pay_area = slot[ncb:ncb + npb]
+            rate_area = slot[ncb + npb:]
+            if ctrl_area[:len(ctrl_src)] != ctrl_src or any(ctrl_area[len(ctrl_src):]):
+                raise AssertionError(f"BODY.DAT control bytes/pad mismatch at slot {i}")
+            if pay_area[:len(pay_src)] != pay_src or any(pay_area[len(pay_src):]):
+                raise AssertionError(f"BODY.DAT payload bytes/pad mismatch at slot {i}")
+            if any(rate_area):
+                raise AssertionError(f"BODY.DAT rate-match pad is nonzero at slot {i}")
+
+            seen_ctrl[i] = len(ctrl_src)
+            seen_pay[i] = len(pay_src)
+            seen_pad[i] = slot_size - len(ctrl_src) - len(pay_src)
+            cc += ncb
+            pc += npb
+        if body.read(1):
+            raise AssertionError("BODY.DAT has bytes beyond the slot schedule")
+    for name, actual, traced in (
+            ("useful control", seen_ctrl, useful_ctrl),
+            ("useful payload", seen_pay, useful_pay),
+            ("pad", seen_pad, pad)):
+        mismatch = np.flatnonzero(actual != traced)
+        if mismatch.size:
+            i = int(mismatch[0])
+            raise AssertionError(
+                f"BODY.DAT {name} trace mismatch at slot {i}: "
+                f"file={int(actual[i])} trace={int(traced[i])}")
+    print(
+        f"  BODY.DAT slot照合: {len(fsec) - 1} slots exact; useful "
+        f"control={int(seen_ctrl.sum())}B payload={int(seen_pay.sum())}B "
+        f"pad={int(seen_pad.sum())}B")
 
 
 def _read_audio_samples(audio_path):
@@ -912,6 +977,13 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, Plist, sc, POOL):
     frames_stream_sec = int(sum(fsec_list))
     if body_path.stat().st_size != frames_stream_sec * SECTOR:
         raise AssertionError("BODY.DAT size disagrees with frame sector schedule")
+    verify_body_delivery_file(
+        body_path,
+        stream_ctrl,
+        stream_pay,
+        sc,
+        prebuf_patterns=Bpat,
+    )
 
     # Preserve MOVIE.DAT for offline tools.  Derive it from the two physical
     # disc files so there cannot be a third, subtly different representation.

@@ -28,7 +28,7 @@ automates: update layout -> update this file -> notify).
 | STATUS BAR                                   |   | | AUDIO WAVEFORM          | |
 |  [Req] [Cold] [Band] [Tank] [Buff] [DMA] [Run]|  | | (+/-2s, now = centre)   | |
 |  Prev/Current/Next palette strip             |   | +-------------------------+ |
-|  3 stacked timelines (Req / Tank / transfer) |   +-----------------------------+
+|  3 stacked timelines (Req / Tank / BODY Band)|  +-----------------------------+
 +----------------------------------------------+
 ```
 
@@ -43,7 +43,7 @@ graph (`GRAPH_FRAME`) and its bottom-right totals slot (`PAL_XY`) are gone.
   `mode / WxH (cols x rows) / audio / fps / avg N KiB/sec`.
   - `mode` = screen mode (H32 / H40 / mode4). `WxH` = encoded tile grid in
     pixels; `cols x rows` = tile grid (each tile 8x8).
-  - `avg N KiB/sec` = average of the effective Band over the whole clip
+  - `avg N KiB/sec` = average of useful BODY delivery Band over the whole clip
     (see Band below).
 - **PL/Time/Frame** (top-right, small): `PL:cur/total Time:MM:SS.ss Frame:XXXX`.
   `PL` = current palette-segment index / highest index (zero-padded to the
@@ -68,11 +68,8 @@ Low-resolution grids therefore appear at their true on-screen size.
   classes. Each shows the swatch and the name; the resident-reuse classes
   (`Same/Near/Coa/Flbk`) show `unique/used` counts for the frame (how many
   distinct resident tiles served how many cells), the others a single count.
-  The numeric field has a subtle seven-character-wide horizontal level fill.
-  The largest used-cell count in the frame reaches the full width and the other
-  categories are proportional to it; the tint is derived from the category
-  colour. `unique/used` entries use the `used` value for the fill. All
-  zero-padded digits use the normal text colour.
+  Numeric fields are text directly on the legend background; there is no level
+  fill behind the digits. All zero-padded digits use the normal text colour.
   Swatch styles mirror the map: `Raw` = black/white checker, `Same` = grey
   checker (both meaning "content fill, no border"), `Miss` = red fill,
   `Near`/`Coa` = thin frame, `Flbk`/`Buf` = thick frame.
@@ -186,26 +183,29 @@ Raw-coloured and a Buf-coloured segment; full-scale = `cold_cap_for_fps`
 measured tuple; an unmeasured tuple is rejected before encoding).
 This visualises the value the hardware slip investigations were fought over.
 
-### Band meter (effective CD usage) - KiB/sec
-`Band` is the encoder's **virtual CBR-budget use**: how much of the fixed
-`FRAME_BYTES` allowance it put to use this frame. It is a quality-allocation
-model, not a reading of physical BODY sectors or payload-RING occupancy. The
-bar is split, in order, into:
+### Band meter (useful BODY delivery) - KiB/sec
+`Band` is the non-pad data physically read from `BODY.DAT` in this delivery
+slot, converted to a per-second rate at the content fps:
 
-- **Raw colour** = video written this frame (patterns + name table + CRAM).
-- **Buf/violet colour** = bytes banked into the encoder's virtual VBV budget
-  this frame (saving for future hard frames is also "effective" use).
-- **dim blue-grey colour** = audio + every other fixed header (name-table base,
-  flag maps, CRAM, and anything else in the stream).
+`Band = (useful payload bytes + useful control bytes) * fps / 1024`.
 
-`Band = FRAME_BYTES - padding`, where *padding* is the unused part of this
-virtual budget. So Band sits at the CBR ceiling (~144 KiB/sec) almost always,
-dipping only when the VBV budget is full and there is nothing useful to send.
-The value comes from the encoder's own
-`cd_used` log, so it includes bytes the renderer does not otherwise model.
-`avg N KiB/sec` in the top meta is the mean of this Band. The bar's full-scale
-(like the effective-transfer timeline's) is the CD 1x per-frame byte count
-(`153600 / fps`).
+The bar is split into **Raw colour** for the continuous 32-byte cold-pattern
+payload stream and **dim blue-grey** for the continuous control stream
+(control header, name entries, audio, palette reference, DEBUG data, and run
+descriptors). Future-frame payload is counted in the slot where it is actually
+prefetched, not where the target frame later consumes it.
+
+The metric excludes rate-match pad sectors, the zero-filled tail of the final
+control/payload sectors, all of `HEADER.DAT`, frame 0 patterns/control, startup
+audio, palettes, routing, and the compatibility `MOVIE.DAT` container. Slot 0
+therefore reads `Band:000`. `avg N KiB/sec` in the top meta and
+`body_useful_bps` in `report.txt` are calculated from this same slot series.
+`codec_work_bps` remains a separate quality-allocation diagnostic.
+
+One slot may burst above CD 1x and repay that lead in later slots. The bar and
+timeline use one whole-clip scale large enough for the maximum useful burst,
+without clamping it. A thin yellow comparison line marks CD 1x
+(`153600 / fps` bytes per slot); the scale is at least that large.
 
 Before making these per-frame choices, the encoder dry-runs the complete
 quantized movie through the shared VRAM allocator. A backwards pass builds two
@@ -278,11 +278,13 @@ playhead:
 1. **Req heatmap** - `Raw / Coa / Flbk / Buf / Miss` stacked per frame (same
    colours; `Same` and `Near` are omitted so the interesting load shows).
 2. **Tank level** - actual physical payload-RING occupancy (violet).
-3. **Effective transfer** - Raw (video) plus Buf (banked) per frame.
+3. **BODY Band** - useful payload (Raw colour) plus useful control (dim
+   blue-grey) in each physical delivery slot. A horizontal comparison line
+   marks CD 1x; bursts above it remain visible.
 
 ## Colours (RGB)
 
 Raw `(205,205,205)`, Same `(150,150,158)` grey, Near `(95,115,215)` blue,
 Coa `(45,240,70)` green, Flbk `(240,150,50)` orange,
 Buf `(175,120,235)` violet, Miss `(220,70,70)` red, DMA `(70,190,90)` green,
-DMA-run `(215,165,65)` amber, Band-overhead `(95,110,122)`.
+DMA-run `(215,165,65)` amber, Band-control `(95,110,122)` blue-grey.

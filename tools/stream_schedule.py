@@ -17,6 +17,7 @@ SECTOR_BYTES = 2048
 PATTERN_BYTES = 32
 PATTERNS_PER_SECTOR = SECTOR_BYTES // PATTERN_BYTES
 DEBUG_BLOCK_BYTES = 22
+STREAM_SCHEDULE_SCHEMA_VERSION = 2
 
 
 class ScheduleError(ValueError):
@@ -84,6 +85,61 @@ def rate_match_sectors(payload_sectors, control_sectors, *, fps):
             raise AssertionError("rate-match lead became negative")
         lead_trace[i] = lead
     return fsec, ratedelta, lead_trace
+
+
+def _allocate_useful_bytes(delivery_sectors, total_useful_bytes, *, name):
+    """Assign a continuous stream's real bytes to its physical delivery slots."""
+    sectors = np.asarray(delivery_sectors, np.int64)
+    useful = np.zeros(len(sectors), np.int64)
+    remaining = int(total_useful_bytes)
+    for i, count in enumerate(sectors):
+        take = min(remaining, int(count) * SECTOR_BYTES)
+        useful[i] = take
+        remaining -= take
+    if remaining:
+        raise ScheduleError(
+            f"{name} delivery omitted {remaining} useful BODY bytes")
+    return useful
+
+
+def useful_body_delivery_trace(
+        payload_sectors, control_sectors, physical_sectors, *,
+        body_payload_bytes, body_control_bytes):
+    """Return per-slot useful BODY bytes and all physical padding.
+
+    Control and payload are independent continuous streams.  A final sector can
+    therefore contain alignment zeros even when another stream still has real
+    data.  ``pad_bytes`` combines those stream-tail zeros with rate-match pad;
+    HEADER data and frame 0 are absent by construction.
+    """
+    n_pay = np.asarray(payload_sectors, np.int64)
+    n_ctrl = np.asarray(control_sectors, np.int64)
+    fsec = np.asarray(physical_sectors, np.int64)
+    if n_pay.ndim != 1 or n_pay.shape != n_ctrl.shape or n_pay.shape != fsec.shape:
+        raise ValueError("BODY delivery sector vectors must have equal length")
+    if (n_pay < 0).any() or (n_ctrl < 0).any() or (fsec < n_pay + n_ctrl).any():
+        raise ValueError("BODY delivery sector vectors are physically inconsistent")
+
+    useful_payload = _allocate_useful_bytes(
+        n_pay, body_payload_bytes, name="payload")
+    useful_control = _allocate_useful_bytes(
+        n_ctrl, body_control_bytes, name="control")
+    physical_bytes = fsec * SECTOR_BYTES
+    rate_pad_bytes = (fsec - n_pay - n_ctrl) * SECTOR_BYTES
+    stream_pad_bytes = (
+        (n_pay + n_ctrl) * SECTOR_BYTES - useful_payload - useful_control)
+    pad_bytes = rate_pad_bytes + stream_pad_bytes
+    if not np.array_equal(
+            useful_payload + useful_control + pad_bytes, physical_bytes):
+        raise AssertionError("useful BODY trace does not sum to physical slots")
+    return {
+        "body_useful_payload_bytes": useful_payload,
+        "body_useful_control_bytes": useful_control,
+        "body_pad_bytes": pad_bytes,
+        "body_rate_pad_bytes": rate_pad_bytes,
+        "body_stream_pad_bytes": stream_pad_bytes,
+        "body_physical_bytes": physical_bytes,
+    }
 
 
 def schedule_payload_ring(
@@ -212,13 +268,24 @@ def schedule_payload_ring(
 
     fsec, ratedelta, rate_lead_trace = rate_match_sectors(
         n_pay_sec, nc, fps=fps)
+    body_payload_bytes = max(
+        0, (total_patterns - prebuffer_sec * PATTERNS_PER_SECTOR)
+        * PATTERN_BYTES)
+    body_control_bytes = int(blk_len[1:].sum())
+    delivery_trace = useful_body_delivery_trace(
+        n_pay_sec,
+        nc,
+        fsec,
+        body_payload_bytes=body_payload_bytes,
+        body_control_bytes=body_control_bytes,
+    )
     rate_lead_peak = int(rate_lead_trace.max())
     rate_lead_end = int(rate_lead_trace[-1])
     feasible = (
         (n_pay_sec >= 0).all() and over == 0 and under == 0
         and ready_min >= 0 and ctrl_min >= 0 and rate_lead_end == 0
     )
-    return {
+    result = {
         "n_pay_sec": n_pay_sec,
         "n_ctrl_sec": nc,
         "feasible": bool(feasible),
@@ -240,3 +307,5 @@ def schedule_payload_ring(
         "f0_cold": int(n_load[0]),
         "f0_ctrl_len": int(blk_len[0]),
     }
+    result.update(delivery_trace)
+    return result

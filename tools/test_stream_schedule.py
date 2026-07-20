@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 
 import numpy as np
 
@@ -25,6 +27,41 @@ class ControlLengthTests(unittest.TestCase):
 
 
 class PayloadRingScheduleTests(unittest.TestCase):
+    def test_useful_body_trace_excludes_header_and_all_padding(self) -> None:
+        result = schedule.schedule_payload_ring(
+            [64, 64, 64, 1],
+            [100, 2050, 10, 0],
+            fps=15,
+            ring_capacity_patterns=64,
+            frame_sectors=5,
+            fill=True,
+        )
+        useful_control = result["body_useful_control_bytes"]
+        useful_payload = result["body_useful_payload_bytes"]
+        pad = result["body_pad_bytes"]
+        physical = result["body_physical_bytes"]
+        self.assertEqual(int(useful_control[0]), 0)
+        self.assertEqual(int(useful_payload[0]), 0)
+        self.assertEqual(int(useful_control.sum()), 2060)
+        self.assertEqual(int(useful_payload.sum()), 65 * 32)
+        np.testing.assert_array_equal(
+            useful_control + useful_payload + pad, physical)
+
+    def test_continuous_control_bytes_are_counted_in_delivery_slot(self) -> None:
+        trace = schedule.useful_body_delivery_trace(
+            [0, 0, 0], [0, 1, 1], [0, 5, 5],
+            body_payload_bytes=0,
+            body_control_bytes=2050,
+        )
+        self.assertEqual(
+            trace["body_useful_control_bytes"].tolist(), [0, 2048, 2])
+        with self.assertRaisesRegex(schedule.ScheduleError, "omitted 2"):
+            schedule.useful_body_delivery_trace(
+                [0, 0, 0], [0, 1, 0], [0, 5, 5],
+                body_payload_bytes=0,
+                body_control_bytes=2050,
+            )
+
     def test_terminal_frames_do_not_refill_after_payload_exhaustion(self) -> None:
         result = schedule.schedule_payload_ring(
             [0, 64, 64, 0, 0],
@@ -76,14 +113,22 @@ class PayloadRingScheduleTests(unittest.TestCase):
             "ring_occupancy": np.array([64, 32]),
             "n_pay_sec": np.array([0, 1]),
             "n_ctrl_sec": np.array([0, 1]),
+            "body_useful_payload_bytes": np.array([0, 32]),
+            "body_useful_control_bytes": np.array([0, 12]),
+            "body_pad_bytes": np.array([0, 4052]),
+            "body_physical_bytes": np.array([0, 4096]),
         }
         frozen = {
             "stream_schedule": {
-                "schema_version": 1,
+                "schema_version": schedule.STREAM_SCHEDULE_SCHEMA_VERSION,
                 "block_lengths": np.array([10, 12]),
                 "ring_occupancy": np.array([64, 31]),
                 "payload_sectors": np.array([0, 1]),
                 "control_sectors": np.array([0, 1]),
+                "body_useful_payload_bytes": np.array([0, 32]),
+                "body_useful_control_bytes": np.array([0, 12]),
+                "body_pad_bytes": np.array([0, 4052]),
+                "body_physical_bytes": np.array([0, 4096]),
             }
         }
         with self.assertRaisesRegex(SystemExit, "ring_occupancy mismatch at frame 1"):
@@ -95,17 +140,56 @@ class PayloadRingScheduleTests(unittest.TestCase):
             "ring_occupancy": np.array([64, 32]),
             "n_pay_sec": np.array([0, 1]),
             "n_ctrl_sec": np.array([0, 1]),
+            "body_useful_payload_bytes": np.array([0, 32]),
+            "body_useful_control_bytes": np.array([0, 12]),
+            "body_pad_bytes": np.array([0, 4052]),
+            "body_physical_bytes": np.array([0, 4096]),
         }
         frozen = {
             "stream_schedule": {
-                "schema_version": 1,
+                "schema_version": schedule.STREAM_SCHEDULE_SCHEMA_VERSION,
                 "block_lengths": np.array([10, 12]),
                 "ring_occupancy": np.array([64, 32]),
                 "payload_sectors": np.array([0, 1]),
                 "control_sectors": np.array([0, 1]),
+                "body_useful_payload_bytes": np.array([0, 32]),
+                "body_useful_control_bytes": np.array([0, 12]),
+                "body_pad_bytes": np.array([0, 4052]),
+                "body_physical_bytes": np.array([0, 4096]),
             }
         }
         self.assertTrue(pack.verify_sim_stream_schedule(frozen, packed))
+
+    def test_pack_requires_the_current_body_trace_schema(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "re-run sim"):
+            pack.verify_sim_stream_schedule(
+                {"stream_schedule": {"schema_version": 1}}, {})
+
+    def test_packer_verifies_written_body_slots_and_padding(self) -> None:
+        packed = {
+            "n_pay_sec": np.array([0, 1]),
+            "n_ctrl_sec": np.array([0, 1]),
+            "fsec": np.array([0, 3]),
+            "body_useful_payload_bytes": np.array([0, 32]),
+            "body_useful_control_bytes": np.array([0, 3]),
+            "body_pad_bytes": np.array([0, 3 * 2048 - 35]),
+        }
+        control = b"abc"
+        payload = b"p" * 32
+        slot = (
+            control.ljust(2048, b"\0")
+            + payload.ljust(2048, b"\0")
+            + bytes(2048)
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "BODY.DAT"
+            body.write_bytes(slot)
+            pack.verify_body_delivery_file(
+                body, control, payload, packed, prebuf_patterns=0)
+            body.write_bytes(slot[:-1] + b"x")
+            with self.assertRaisesRegex(AssertionError, "rate-match pad"):
+                pack.verify_body_delivery_file(
+                    body, control, payload, packed, prebuf_patterns=0)
 
 
 if __name__ == "__main__":

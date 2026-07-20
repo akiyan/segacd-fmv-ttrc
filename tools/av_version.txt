@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e65 : Define analysis Band from useful BODY.DAT bytes in each physical
+#        delivery slot. Save and pack-verify payload/control/pad traces, expose
+#        unclamped bursts against a CD-1x line, and remove legend number fills.
 #   e64 : Require an exact measured mode/fps/active-tile tuple for cold-cap
 #        selection. Measurements from larger active areas are no longer reused
 #        for smaller profile areas; every distinct tuple must be qualified.
@@ -436,6 +439,6 @@
 #   e17: Raise requested startup PCM arming from 32 to 45 frames. The pack
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
-date=20260719
-e=64
+date=20260720
+e=65
 p=56

@@ -48,7 +48,7 @@ COL_BORDER = (200, 200, 200)
 COL_FRAME_IN = (70, 70, 70)
 COL_TXT = (225, 225, 225)
 COL_DIM = (150, 150, 155)
-COL_OVH = (95, 110, 122)         # 有効Bandの「音声+その他ヘッダ」セグメント(くすんだ青灰)
+COL_OVH = (95, 110, 122)         # BODY useful controlセグメント(くすんだ青灰)
 COL_DMA = (70, 190, 90)          # DMAパターンタイル数(green)
 COL_RUN = (215, 165, 65)         # cold pattern run分断度(amber)
 
@@ -162,23 +162,24 @@ def dummy_data():
         r = max(0, min(buf_cap, r + random.randint(-40, 40)))
         rem.append(r)
     dma_tl = [(tl["Raw"][i] + tl["Buf"][i]) * 32 + C * 2 for i in range(tln)]   # 毎コマVRAM転送量
-    cd1x_bpf = int(153600 / fps)                 # CD1xのコマ上限(CD読みはこれを超えない)
+    cd1x_bpf = int(153600 / fps)                 # CD1xの1コマ相当bytes（比較線）
     frame_cd = int(147456 / fps)                 # CBR予算/コマ(この範囲=新規CD, 超過はタンク供給)
-    # 有効Band = 映像に使った分(Raw色) + タンクに貯めた分(Buf色, 貯蓄も有効)。CD読み量(frame_cd)が上限。
     _upd = counts["Raw"] + counts["Buf"] + counts["Coa"] + counts["Flbk"] + counts["Near"]
     _fb = counts["Raw"] * 32 + counts["Buf"] * 32 + _upd * 2
     max_raw = frame_cd // 34                      # 1コマのRaw予算(指針器フルスケール C-max_raw の基準)
-    # デモ(充填コマ・パディング無し): 有効Band = frame_cd を 映像 + 貯蓄 + 音声/ヘッダ で満たす
-    ovh_bytes = int(frame_cd * 0.10)             # 音声+その他ヘッダ(dim色, デモ約10%)
-    raw_bytes = min(_fb, int((frame_cd - ovh_bytes) * 0.70))  # 映像(Raw色, デモは残りを貯蓄に回して3セグ見せる)
-    buf_bytes = max(0, frame_cd - raw_bytes - ovh_bytes)   # 貯蓄(Buf色)=余りをタンクへ
-    band_kbps = int((raw_bytes + buf_bytes + ovh_bytes) * fps / 1024)   # 有効Band(全部込み=frame_cd)
-    tank_delta = buf_bytes // 32                  # このコマのタンク充填(タイル, 指針器=右へ青)
-    def _fbi(i):
-        u = tl["Raw"][i] + tl["Coa"][i] + tl["Flbk"][i] + tl["Buf"][i]
-        return tl["Raw"][i] * 32 + tl["Buf"][i] * 32 + u * 2
-    raw_tl = [min(_fbi(i), frame_cd) for i in range(tln)]                   # 映像分
-    buf_tl = [max(0, frame_cd - min(_fbi(i), frame_cd)) for i in range(tln)]  # 貯蓄分(有効Bandを満たす)
+    # BODY物理配送slotのダミー。payload burstはCD1x比較線を越え、後続slotで返済する。
+    body_payload_tl = [
+        5600 if i % 47 == 0 else max(0, 3200 + int(900 * math.sin(i / 13.0)))
+        for i in range(tln)
+    ]
+    body_control_tl = [720 + (160 if i % 31 == 0 else 0) for i in range(tln)]
+    body_payload_bytes = body_payload_tl[0]
+    body_control_bytes = body_control_tl[0]
+    body_useful_tl = [p + c for p, c in zip(body_payload_tl, body_control_tl)]
+    band_scale_bpf = max(cd1x_bpf, max(body_useful_tl))
+    band_kbps = int((body_payload_bytes + body_control_bytes) * fps / 1024)
+    avg_kbps = int(round(sum(body_useful_tl) / len(body_useful_tl) * fps / 1024))
+    tank_delta = body_payload_bytes // 32 - counts["Raw"] - counts["Buf"]
     pl_info = {"Prev": dict(pl=11, frame=980), "Current": dict(pl=12, frame=1122),
                "Next": dict(pl=13, frame=1544)}   # 各パレットの番号と切替開始フレーム
     pl_cur, pl_total = 12, 13                       # 現在パレット番号 / 総数(最大番号)
@@ -193,16 +194,19 @@ def dummy_data():
     dma_tiles = counts["Raw"] + counts["Buf"]
     return dict(C=C, counts=counts, counts_uniq=counts_uniq, series=series, fps=fps, win=win,
                 palettes=palettes, cat_totals=cat_totals, cat_uniq=cat_uniq, tank_delta=tank_delta, max_raw=max_raw,
-                cd1x_bpf=cd1x_bpf, raw_bytes=raw_bytes, buf_bytes=buf_bytes, ovh_bytes=ovh_bytes, band_kbps=band_kbps,
-                raw_tl=raw_tl, buf_tl=buf_tl, pl_info=pl_info, pl_cur=pl_cur, pl_total=pl_total,
-                mode="H32", res="176x144 (22x18)", audio="13.3kHz mono 8bit PCM", avg_kbps=146,
+                cd1x_bpf=cd1x_bpf, band_scale_bpf=band_scale_bpf,
+                body_payload_bytes=body_payload_bytes, body_control_bytes=body_control_bytes,
+                band_kbps=band_kbps, body_payload_tl=body_payload_tl,
+                body_control_tl=body_control_tl,
+                pl_info=pl_info, pl_cur=pl_cur, pl_total=pl_total,
+                mode="H32", res="176x144 (22x18)", audio="13.3kHz mono 8bit PCM", avg_kbps=avg_kbps,
                 src_spec="256x224 / 30fps / AAC 48kHz stereo",
                 req=sum(counts[k] for k, _ in CATS),
                 budget=273,
                 comp=counts["Same"] + counts["Near"] + counts["Coa"] + counts["Flbk"],
                 buf_cap=buf_cap, buf_rem=13900,
                 cold=counts["Raw"] + counts["Buf"], cold_raw=counts["Raw"], cold_buf=counts["Buf"],
-                cold_cap=av_config.cold_cap_for_fps(fps, "H32", 22 * 18),
+                cold_cap=av_config.cold_cap_for_fps(fps, "H32", 896),
                 dma_tiles=dma_tiles, dma_runs=23,
                 tl=tl, buf_rem_series=rem, dma_tl=dma_tl, tln=tln,
                 time_s=42.0, frame=1260, total_frames=2712)
@@ -319,44 +323,19 @@ def swatch(d, x, y, sw, name, col):
         d.rectangle([x, y, x + sw, y + sw], outline=col, width=CAT_THICK.get(name, 1))  # 枠(細/太)
 
 
-def _mix_col(base, tint, amount):
-    """RGBを混ぜる。凡例メーターはカテゴリ色を暗い背景へ薄く足す。"""
-    return tuple(round(b + (t - b) * amount) for b, t in zip(base, tint))
-
-
-def legend_level(d, x0, x1, y, value, maximum, col):
-    """数字欄の背景を、frame内の最大カテゴリ比で伸びる薄い横メーターとして描く。"""
-    bg = (14, 14, 14)
-    top, bottom = y - 1, y + 16
-    d.rectangle([x0, top, x1, bottom], fill=_mix_col(bg, col, 0.14))
-    ratio = min(max(float(value) / max(int(maximum), 1), 0.0), 1.0)
-    fillw = round((x1 - x0 + 1) * ratio)
-    if value > 0:
-        fillw = max(1, fillw)
-    if fillw:
-        d.rectangle([x0, top, min(x1, x0 + fillw - 1), bottom],
-                    fill=_mix_col(bg, col, 0.38))
-
-
 def draw_legend(w, h, data):
-    """凡例(2行)。数字欄はカテゴリ色の薄いframe内レベルメーター。"""
+    """凡例(2行)。数字欄は背景を塗らず文字だけを描く。"""
     im = Image.new("RGB", (w, h), (14, 14, 14))
     d = ImageDraw.Draw(im)
     per_row = 4
     cw = w // per_row
     sw = 14
-    meter_max = max(data["counts"].values(), default=1)
-    meter_chars_w = _w(f_leg, "000/000")
     for i, (name, col) in enumerate(CATS):
         row = i // per_row; c = i % per_row
         x = c * cw + 6; y = row * (h // 2) + (h // 2 - sw) // 2
         swatch(d, x, y, sw, name, col)
         tx = x + sw + 6
         label = DISP[name] + ":"
-        nx = tx + _w(f_leg, label) - 2
-        meter_right = min(nx + meter_chars_w - 1, (c + 1) * cw - 6)
-        legend_level(d, nx, meter_right, y - 1,
-                     data["counts"][name], meter_max, col)
         if name in UNIQ_CATS:      # ユニーク数/総数 を併記
             draw_field(d, tx, y - 1, label, data["counts_uniq"][name], 3, f_leg,
                        COL_TXT, data["counts"][name], 3)
@@ -432,9 +411,12 @@ def draw_status(w, h, data):
     stacked([(data["cold_raw"], CAT_RAW), (data["cold_buf"], CAT_BUF)], data["cold_cap"], COLD_W)
     draw_field(d, x, ly, "Cold:", data["cold"], 3, f_leg, COL_TXT)
     x += COLD_W + GAP
-    # 2) 有効Band = 映像(Raw色) + 貯蓄(Buf色) + 音声/その他ヘッダ(dim色)。バー幅=ラベル幅。単位 KiB/sec
-    stacked([(data["raw_bytes"], CAT_RAW), (data["buf_bytes"], CAT_BUF),
-             (data["ovh_bytes"], COL_OVH)], data["cd1x_bpf"], BAND_W)
+    # 2) Band = この物理配送slotのBODY useful payload + control。pad/Headerは除外。
+    stacked([(data["body_payload_bytes"], CAT_RAW),
+             (data["body_control_bytes"], COL_OVH)],
+            data["band_scale_bpf"], BAND_W)
+    cd1x_x = x + int(BAND_W * data["cd1x_bpf"] / data["band_scale_bpf"])
+    d.line([cd1x_x, by - 2, cd1x_x, by + BH + 2], fill=(210, 190, 90))
     xb = draw_field(d, x, ly, "Band:", data["band_kbps"], 3, f_leg, COL_TXT)
     d.text((xb, ly), "KiB/sec", fill=COL_DIM, font=f_leg)
     x += BAND_W + GAP
@@ -474,7 +456,8 @@ def draw_status(w, h, data):
     tlw = w - 4 - x_tl
     if tlw > 20:
         tl = data["tl"]; rem = data["buf_rem_series"]; tln = data["tln"]
-        raw_tl = data["raw_tl"]; buf_tl = data["buf_tl"]
+        payload_tl = data["body_payload_tl"]
+        control_tl = data["body_control_tl"]
         tlh = (h - 2) - by
         # 正確に 2:1:1(区切り無し・隙間無し)
         H_req = tlh // 2                          # Req = 2
@@ -486,7 +469,7 @@ def draw_status(w, h, data):
         # 各段の背景を極暗色で塗る(下段の空きが純黒=marginに見えないように)
         d.rectangle([x_tl, y_buf, x_tl + tlw, y_buf + H_buf], fill=(26, 20, 34))   # Buf段 暗violet
         d.rectangle([x_tl, y_dma, x_tl + tlw, y_dma + H_dma], fill=(18, 26, 20))   # 有効転送段 暗green
-        escale = max(data["cd1x_bpf"], 1)                   # 有効転送段フルスケール=CD1x/コマ
+        escale = data["band_scale_bpf"]                    # 全BODY useful burstを収める共通scale
         stack_order = [("Raw", CAT_RAW), ("Coa", CAT_COA), ("Flbk", CAT_FLBK),
                        ("Buf", CAT_BUF), ("Miss", CAT_MISS)]
         for col_i in range(tlw):
@@ -499,11 +482,14 @@ def draw_status(w, h, data):
                     d.line([(X, yb - seg), (X, yb)], fill=col); yb -= seg
             hb = int(H_buf * rem[fi] / max(data["buf_cap"], 1))   # 中段: Buf残量(violet下から)
             d.line([(X, y_buf + H_buf - hb), (X, y_buf + H_buf)], fill=CAT_BUF)
-            hr = int(H_dma * min(raw_tl[fi], escale) / escale)   # 下段: 有効転送量(Raw色下+Buf色上)
-            d.line([(X, y_dma + H_dma - hr), (X, y_dma + H_dma)], fill=CAT_RAW)
-            hb2 = int(H_dma * min(raw_tl[fi] + buf_tl[fi], escale) / escale)
-            if hb2 > hr:
-                d.line([(X, y_dma + H_dma - hb2), (X, y_dma + H_dma - hr)], fill=CAT_BUF)
+            hp = int(H_dma * payload_tl[fi] / escale)
+            if hp > 0:
+                d.line([(X, y_dma + H_dma - hp), (X, y_dma + H_dma)], fill=CAT_RAW)
+            hc = int(H_dma * (payload_tl[fi] + control_tl[fi]) / escale)
+            if hc > hp:
+                d.line([(X, y_dma + H_dma - hc), (X, y_dma + H_dma - hp)], fill=COL_OVH)
+        cd1x_y = y_dma + H_dma - int(H_dma * data["cd1x_bpf"] / escale)
+        d.line([x_tl, cd1x_y, x_tl + tlw, cd1x_y], fill=(110, 105, 70))
         d.rectangle([x_tl, by, x_tl + tlw, by + tlh], outline=COL_FRAME_IN)
         head = x_tl + int(tlw * data["frame"] / data["total_frames"])
         d.line([head, by, head, by + tlh], fill=(255, 255, 255))

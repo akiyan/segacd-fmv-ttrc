@@ -1165,7 +1165,6 @@ def main():
     transfer_runs_log = []     # pack/player照合用: packed cold-run record数
     tank = TANK_CAP_BYTES if VBV_ON else 0        # 貯水池残量(bytes)。開始時=満タン
     tank_tiles_log = []                           # 毎フレームのタンク残量(タイル換算)
-    cd_used_log = []                              # 毎フレームの有効CD使用量(=FRAME_BYTES - パディング捨て分)
 
     # DEBUG色はCRAMに既にある色だけを並べ替えて固定する。異なるパレット行との
     # 入替があり得るので、全フレームを最終的な行構成に対して量子化する前に行う。
@@ -1609,10 +1608,6 @@ def main():
 
         # 貯水池更新(漏れバケツ): このフレームのCD余り(frame_cd-使った分)を貯める / 引いた分を減らす
         if VBV_ON:
-            # 有効CD使用量 = FRAME_BYTES - パディング(タンク満杯で貯めきれず捨てた余り)。CDは毎コマ
-            # FRAME_BYTES を読み、内訳は 音声+ネーム+CRAM+フラグ等の固定分 + 映像書込 + 貯蓄。捨てた分だけが無効。
-            over = max(0, tank + frame_cd - spent_tiles - TANK_CAP_BYTES)
-            cd_used_log.append(FRAME_BYTES - over)
             if i == 0:
                 tank = TANK_CAP_BYTES        # header: frame0はリング/Tankを消費せず満タン維持
             else:
@@ -1795,11 +1790,21 @@ def main():
     ring_remaining = np.asarray(
         physical_schedule["ring_occupancy"], np.int64)
     vbv_remaining = np.asarray(tank_tiles_log, np.int64)
+    body_payload_bytes = np.asarray(
+        physical_schedule["body_useful_payload_bytes"], np.int64)
+    body_control_bytes = np.asarray(
+        physical_schedule["body_useful_control_bytes"], np.int64)
+    body_pad_bytes = np.asarray(
+        physical_schedule["body_pad_bytes"], np.int64)
+    body_physical_bytes = np.asarray(
+        physical_schedule["body_physical_bytes"], np.int64)
+    body_useful_bytes = body_payload_bytes + body_control_bytes
+    body_useful_bps = float(body_useful_bytes.mean() * FPS)
 
     report = "\n".join([
         f"resolution={W}x{H} cells/frame={C_CELLS} active_tiles={ACTIVE_TILES} fps={FPS}",
         f"cbr_frame_bytes={FRAME_BYTES} (純CBR, 繰り越し無し)",
-        f"avg_bytes_per_frame={fb.mean():.1f} (<= {FRAME_BYTES})",
+        f"avg_codec_work_bytes_per_frame={fb.mean():.1f}",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
         f"avg_cold_miss_per_frame={tr.mean():.1f} (CDから32B/枚を実際に読んだ数)",
         f"avg_L2_dedup_hit_per_frame={ded.mean():.1f} (VRAM常駐で0転送)",
@@ -1816,7 +1821,9 @@ def main():
         f"payload_RING: start={ring_remaining[0]} end={ring_remaining[-1]} "
         f"min={ring_remaining.min()} peak={ring_remaining.max()}tiles",
         f"starved_frames={starved_frames} ({starved_frames/n*100:.1f}%)",
-        f"avg_bps={fb.mean()*FPS:.0f} (target={TARGET_RATE}, CD1x={CD_RATE})",
+        f"codec_work_bps={fb.mean()*FPS:.0f} (quality-allocation diagnostic)",
+        f"body_useful_bps={body_useful_bps:.0f} "
+        f"(physical delivery slots, HEADER/frame0/pad excluded; CD1x={CD_RATE})",
         (f"upgrade(格上げ): 余剰でRaw化 avg {np.mean([u for u, _ in upgrade_log]):.1f}/コマ, "
          f"まだ近似のセル avg {np.mean([a for _, a in upgrade_log]):.1f}; "
          f"upgrade reserve start/peak/end="
@@ -1853,7 +1860,7 @@ def main():
         # diagnostics; it must never silently drive the hardware meter again.
         np.savez(
             OUT / "buffer_remaining.npz",
-            schema_version=np.int64(2),
+            schema_version=np.int64(3),
             remaining_kind=np.array("payload_ring_patterns"),
             remaining=ring_remaining,
             total=TANK_CAP_BYTES // PATTERN_BYTES,
@@ -1862,12 +1869,15 @@ def main():
             upgrade_reserve_bytes=upgrade_reserve,
             main_risk_demand_bytes=main_demand,
             main_risk_reserve_bytes=main_reserve,
-            cd_used=np.array(cd_used_log, np.int64),
             block_lengths=control_lengths,
             payload_sectors=np.asarray(
                 physical_schedule["n_pay_sec"], np.int64),
             control_sectors=np.asarray(
                 physical_schedule["n_ctrl_sec"], np.int64),
+            body_useful_payload_bytes=body_payload_bytes,
+            body_useful_control_bytes=body_control_bytes,
+            body_pad_bytes=body_pad_bytes,
+            body_physical_bytes=body_physical_bytes,
         )
     print(f"wrote {main_dir}, {catmap_dir}, {misscarry_dir}; stats.npz + miss_masks.npy saved")
 
@@ -1941,13 +1951,17 @@ def main():
             # Analysis and pack must show the same physical PRG payload RING.
             # The packer compares this frozen trace with its built control data.
             "stream_schedule": {
-                "schema_version": 1,
+                "schema_version": stream_schedule.STREAM_SCHEDULE_SCHEMA_VERSION,
                 "block_lengths": control_lengths,
                 "ring_occupancy": ring_remaining,
                 "payload_sectors": np.asarray(
                     physical_schedule["n_pay_sec"], np.int64),
                 "control_sectors": np.asarray(
                     physical_schedule["n_ctrl_sec"], np.int64),
+                "body_useful_payload_bytes": body_payload_bytes,
+                "body_useful_control_bytes": body_control_bytes,
+                "body_pad_bytes": body_pad_bytes,
+                "body_physical_bytes": body_physical_bytes,
             },
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]
