@@ -9,8 +9,8 @@ ratios compensate for that difference:
 
 Both modes therefore describe the same visible NTSC aperture (64:49) when
 224 lines are shown.  The default ``pad`` fit preserves every source pixel;
-``crop`` is an explicit opt-in for inputs whose outer margins are known to be
-black.
+``crop`` is an explicit, HAR-aware object-fit-cover conversion that fills the
+output raster and may discard active pixels at the source edges.
 """
 
 from __future__ import annotations
@@ -156,7 +156,10 @@ def source_filter(mode: str, width: int, height: int, src_w: int, src_h: int,
     fw, fh = p["fit_size"]
     if fit == "crop":
         vf = ["setsar=1", f"crop={cw}:{ch}:{cx}:{cy}"]
-        iw, ih = cw, ch
+        # The crop already has the output mode's displayed aspect after HAR.
+        # Scale it to the complete coded raster: this is object-fit: cover,
+        # not merely removal of black source margins.
+        iw, ih = width, height
     else:
         # Normalize source SAR, then scale the complete source to the largest
         # raster with the target mode's displayed aspect. Padding never drops
@@ -165,7 +168,7 @@ def source_filter(mode: str, width: int, height: int, src_w: int, src_h: int,
         iw, ih = fw, fh
     if denoise:
         # Keep the source's displayed shape during the denoise pass. Scaling
-        # to the MD raster here would apply the HAR twice.
+        # to the MD raster before cropping/padding would apply the HAR twice.
         vf += [f"scale={iw * 2}:{ih * 2}:flags={resize_filter}",
                "hqdn3d=6:6:8:8", "gblur=sigma=1.6"]
     vf.append(f"scale={iw}:{ih}:flags={resize_filter}")

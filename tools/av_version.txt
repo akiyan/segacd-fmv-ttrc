@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e68 : Make video.fit="crop" a complete HAR-aware object-fit-cover path:
+#        centre-crop to the mode's displayed aperture, then scale to the full
+#        coded raster. The explicit crop mode may discard active edge pixels;
+#        pad remains the source-preserving default.
 #   e67 : Introduce TTRC v10 four-source pattern supply. Predict exact and
 #        Miss-risk cold demand, water-fill distinct WordBuf0/WordBuf1/MainBuf
 #        boot credits, freeze every realized Prg/Wr/Main source, and verify the
@@ -460,5 +464,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260720
-e=67
+e=68
 p=58
