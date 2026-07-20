@@ -355,6 +355,12 @@ armed.
 [ pad to fsec sectors ]
 ```
 
+The analysis trace accounts for this physical slot as useful continuous-control
+bytes, useful cold-pattern payload bytes, and pad bytes. Pad includes both the
+unused tail of each stream's final sector and the final rate-match region. The
+three values must sum to `fsec * 2048`; HEADER regions and frame 0 are not BODY
+delivery and are recorded as zero in slot 0.
+
 **Control** comes first so the Sub CPU can begin the current frame as soon as
 its complete control prefix has arrived, without waiting for the future payload
 refill in the same slot. Readiness is based on all `n_ctrl_sec` sectors, not

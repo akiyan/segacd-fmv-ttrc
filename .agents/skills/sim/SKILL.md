@@ -177,7 +177,9 @@ that intentionally have no profile.
 After completion:
 
 - Check the completion line: `starved_frames=N (X%)`.
-- Check `avg_bps`, which should stay within CD 1x budget, about `<=153600`.
+- Check `body_useful_bps`, the mean useful BODY delivery rate shown by Band.
+  Individual delivery slots may burst above CD 1x and repay the lead later;
+  `codec_work_bps` is a separate quality-allocation diagnostic.
 - Starvation is allowed, but report it.
 - Output appears under `videos/<stem>/`:
   - `preview/`
@@ -222,9 +224,9 @@ tools/python.sh tools/render_analysis.py --config configs/<source>-<mode>.toml <
 
 Important rendering notes:
 
-- W/H, tile count, display aspect, resolution text, fps, and average kbps are
-  auto-derived from simulation output: `stats.npz`, `report.txt`, preview, and
-  raw images.
+- W/H, tile count, display aspect, resolution text, fps, and average useful
+  BODY kbps are auto-derived from simulation output: `stats.npz`,
+  `buffer_remaining.npz`, preview, and raw images.
 - Only the source label is passed with `CBRSIM_SRCLABEL`.
 - Layout details are implemented in `layout_preview.py`:
   - right column: Source / Category / Miss+MissCarry
@@ -232,8 +234,10 @@ Important rendering notes:
   - legend: 2 rows, 7 categories
   - zero padding and dark leading zeros
   - scrolling line graph with +/-4 seconds and now centered
-  - status uses fixed-width Req / Comp / Buff / DMA
-  - three-row timeline: Req2 : Buff1 : DMA1
+  - status uses Req / Cold / Band / Tank / Buff / DMA / Run
+  - Band is physical-slot useful BODY payload + control, excluding all pad and
+    HEADER
+  - three-row timeline: Req2 : Tank1 : BODY-Band1
   - DMA is compared against theoretical `(60/fps)` VBlank budget
   - heading metadata plus small top-right Time / Frame, baseline-aligned
   - palette used-color blocks have no outline

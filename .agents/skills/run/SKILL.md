@@ -123,13 +123,15 @@ Run `tools/sim.py` with the profile and preferred GPU Python. Require a normal
 completion and record:
 
 - frame count and effective source fps;
-- average payload rate;
+- average useful BODY delivery rate (`body_useful_bps`), kept separate from
+  the encoder's `codec_work_bps` diagnostic;
 - starved-frame count and percentage;
 - resolved output raster/grid and audio settings.
 
 Starvation is reportable, not automatically a failure. Reject an incomplete
-run, missing decision data, or an average rate outside the project's stated
-CD budget without an explanation.
+run or missing decision data. A physical delivery slot may exceed CD 1x when
+the scheduler proves that later slots repay its lead; do not reject or clamp
+that burst based on the average alone.
 
 Render the full canonical 1920x1080 analysis with
 `tools/render_analysis.py`. Verify its video, audio, duration, and selected

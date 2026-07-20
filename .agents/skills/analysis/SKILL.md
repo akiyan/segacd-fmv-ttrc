@@ -54,7 +54,9 @@ drawing functions and layout constants in `tools/layout_preview.py`
 
 - Do not let the code and `ANALYSIS.md` diverge - they change in the same commit.
 - Layout edits start in `layout_preview.py`; `render_analysis.py` mirrors them.
-- Meter widths are each label-width (no unified width). Band is the *effective*
-  CD usage (video + banked tank + audio/headers = `FRAME_BYTES - padding`).
+- Meter widths are each label-width (no unified width). Band is useful
+  `BODY.DAT` delivery in the physical slot (payload + control, excluding pad,
+  HEADER, and frame 0), with CD 1x retained as a comparison line.
 - If a new value must come from the encoder, add it to the sim's saved npz and
-  read it in `render_analysis.py`; keep a fallback for older sim outputs.
+  read it in `render_analysis.py`. Do not infer physical delivery metrics from
+  older sim outputs; require a re-sim when the trace is absent.

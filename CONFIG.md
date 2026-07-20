@@ -247,6 +247,13 @@ virtual tank without a separate end-of-movie rule. The physical payload RING
 sector schedule remains a separate exact proof in `stream_schedule.py`. See
 [`BUEFFERING.md`](BUEFFERING.md) for the complete planning flow and validation.
 
+`buffer_remaining.npz` also stores the physical BODY delivery-slot trace:
+`body_useful_payload_bytes`, `body_useful_control_bytes`, `body_pad_bytes`, and
+`body_physical_bytes`. The four values are pack-verified for every slot, with
+useful payload + useful control + pad equal to physical bytes. Analysis Band
+uses only the first two. `report.txt:body_useful_bps` is their whole-series
+mean; `codec_work_bps` is the separate encoder quality-allocation diagnostic.
+
 ## H. Per-source TOML profiles
 
 Use one `schema_version = 1` TOML file per source/mode combination. Examples are

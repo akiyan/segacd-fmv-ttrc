@@ -87,7 +87,10 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
   3. How to read the analysis layout — what each panel, meter, and timeline
      shows and how to interpret it (left = SEGA-CD sim output; right = Source /
      category map / per-metric flow graph; bottom status = Req / Band / Tank /
-     Tank-delta / DMA plus the stacked timelines).
+     Tank-delta / DMA plus the stacked timelines). Define Band as useful
+     `BODY.DAT` payload + control bytes in the physical delivery slot, excluding
+     all pad, `HEADER.DAT`, and frame 0; note that bursts above CD 1x are shown
+     without clamping and repay their lead in later slots.
   4. What the encoder does — first a short list of the techniques applied, then
      the details for each.
   5. Project link — always include the source repository URL:
