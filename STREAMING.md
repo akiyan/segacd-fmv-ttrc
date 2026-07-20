@@ -13,7 +13,7 @@ The short answer is:
 | Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 16 bytes of SP boot-slot growth, not data RAM |
 | Word RAM bank 0 | 12.14 KiB | 48.70 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
 | Word RAM bank 1 | 12.14 KiB | 48.70 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Main RAM | 20.08 KiB | 21.82 KiB | None counted from palette or stack reservations |
+| Main RAM | 19.54 KiB | 21.27 KiB | Boot UI shares the future generated-code area; none counted from palette or stack reservations |
 | Main CPU | no hard positive guarantee | about 39,930 local cycles (5.21 ms) | qualified H40 reference only; Sub must already be ready |
 | Sub CPU | no hard positive guarantee | ADPCM decoder measured 7.62-8.11 ms in H40/N2 | full Sonic capture passes; BIOS/CD/Word-RAM waits remain outside that stopwatch |
 
@@ -154,21 +154,22 @@ a separate proof that its maximum output ends at `0xFF6580`.
 
 | Address | Size | Current owner / worst use | Safe headroom |
 |---|---:|---|---:|
-| `0xFF0000..0xFF157F` | 5.375 KiB | loaded Main player image | 0 |
-| `0xFF1580..0xFF1EA9` | 2,346 B | BSS, including the 2,240-byte name-table shadow and 56-byte prebuilt DEBUG HUD row | 0 |
-| `0xFF1EAA..0xFF1FFF` | **342 B** | link gap before generated code | **342 B** of static code/BSS growth |
+| `0xFF0000..0xFF17AF` | 5.922 KiB | permanent Main player text/data, including the preload UI routines but excluding its transient font and strings | 0 |
+| `0xFF17B0..0xFF1FFF` | **2.078 KiB** | link gap before generated code | **2.078 KiB** of permanent code/data growth |
 | `0xFF2000..0xFF657F` | 17.375 KiB | maximum generated bitmap handlers and two H40 blitters | 0 |
+| `0xFF2000..0xFF265F` at boot only | 1.594 KiB | transient SGDK font, preload-screen text, and lookup data; deliberately overwritten by generated code before playback | 0 additional runtime use |
 | `0xFF6580..0xFF65FF` | **128 B** | asserted guard after maximum generated code | **128 B** |
 | `0xFF6600..0xFF7FFF` | 6.50 KiB | immutable MainBuf, 208 patterns | 0 |
 | `0xFF8000..0xFF8C7F` | 3.125 KiB | 400 worst-case run records at 8 B each | 0 |
 | `0xFF8C80..0xFFAFFF` | **8.875 KiB** | all-rate RUN_TABLE tail | **8.875 KiB**; H40/N2 has 10.609 KiB |
 | `0xFFB000..0xFFCFFF` | 8.00 KiB | 64-entry resident PALTAB | 0 |
-| `0xFFD000..0xFFFAFF` | **10.750 KiB** | unused below the stack guard | **10.750 KiB** |
+| `0xFFD000..0xFFD929` | 2,346 B | BSS, including the 2,240-byte name-table shadow and 56-byte prebuilt DEBUG HUD row | 0 |
+| `0xFFD92A..0xFFFAFF` | **8.459 KiB** | unused below the stack guard | **8.459 KiB** |
 | `0xFFFB00..0xFFFCFF` | 512 B | conservative stack and interrupt reserve | 0 |
 | `0xFFFD00..0xFFFFFF` | 768 B | above configured stack top / BIOS reserve | 0 |
 
-This yields **20.084 KiB** safe across all supported rates. Restricting the run
-table to H40/N2's 178-cold cap raises it to **21.818 KiB**. The 512-byte stack
+This yields **19.537 KiB** safe across all supported rates. Restricting the run
+table to H40/N2's 178-cold cap raises it to **21.271 KiB**. The 512-byte stack
 reserve is deliberately larger than the approximately 80-byte deepest visible
 player call chain; it leaves room for interrupt/BIOS use that the assembly call
 graph alone cannot prove.
@@ -315,7 +316,7 @@ profile and does not turn either arithmetic remainder into spendable time.
 
 Use the low-risk spaces in this order:
 
-1. Use Main RAM `0xFFD000..0xFFFAFF` (10.75 KiB) for Main-only state, retaining
+1. Use Main RAM `0xFFD92A..0xFFFAFF` (8.459 KiB) for Main-only state, retaining
    the 512-byte stack guard.
 2. Put small bank-local state in the 5.5 KiB tail after MainBuf staging or the
    416-byte ADPCM alignment gap, with explicit overlap assertions. Do not use

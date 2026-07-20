@@ -306,17 +306,18 @@ it does not change the packed stream or encoded image.
 writes `player_constants.inc` beside `HEADER.DAT`; both player objects depend on
 that generated file, and the Sub CPU verifies the matching fixed-header
 signature before using any immediate. Set `PLAYER_SPECIALIZE=0` only for the
-generic runtime-header A/B player. For the Sonic H32 profile the specialized Sub
-text is 3,754 bytes in Release and 3,804 bytes in DEBUG, versus 4,034 and 4,084
-bytes for the generic path. Both remain below the 4,096-byte boot-SP limit; any
-future change must check the DEBUG size as well as Release.
+generic runtime-header A/B player. The linker enforces the 4,096-byte boot-SP
+limit; the H40 ADPCM22 DEBUG build including preload progress publication is
+4,032 bytes. Any future change must check the DEBUG size as well as Release.
 
-The same generated constants specialize the Main object. For Sonic H32 the
-complete IP binary is 5,024 bytes in Release and 5,216 bytes in DEBUG, versus
-5,360 and 5,584 bytes for the generic build. The existing runtime bitmap-handler
-and name-table code generation remains enabled; specialization
+The same generated constants specialize the Main object. The existing runtime
+bitmap-handler and name-table code generation remains enabled; specialization
 removes the remaining per-frame RAM reads and the zero `col0` additions around
-that generated fast path.
+that generated fast path. Linker assertions keep permanent text/data below
+`0xFF2000`, place the preload UI's transient font and strings at the future
+generated-code base, and place BSS above PALTAB at `0xFFD000`. Code generation
+overwrites the transient UI assets before playback without taking capacity from
+MainBuf or any streamed buffer.
 
 `sim.py` resolves the profile once and stores the exact geometry, timing, audio,
 stream, hardware, palette, and pack settings plus the TOML SHA-256 in
@@ -335,8 +336,18 @@ cannot silently overwrite one shared image or one shared temporary directory.
 `HEADER.DAT` and `BODY.DAT` keep their fixed names inside the artifact directory
 and on the disc because those are TTRC format names read by the player.
 
+Before the first movie frame, specialized builds show a profile and live boot
+preload screen. It uses SGDK's default 8x8 font and temporary CRAM, name-table,
+and font VRAM that the movie later reuses; it does not reserve or reduce
+PrgBuf, APPLY, WordBuf0/1, MainBuf, or the movie tile pool. The fixed HEADER
+regions switch to `OK` when the first PrgBuf sector arrives. `PrgBuf` then
+shows its loaded KiB count and a live 30-cell progress bar through the full
+safe 388 KiB preload. The generic `PLAYER_SPECIALIZE=0` diagnostic build skips
+this profile-specific screen.
+
 | TOML table | Keys | Meaning |
 |---|---|---|
+| `[metadata]` | optional `title` | Human-readable video title shown on the boot preload screen. If omitted, the TOML filename stem is used. |
 | `[source]` | `path`, `fps`, `duration`, optional `sar` | Input identity and native timing. `sar` repairs missing/wrong source metadata; it does not crop. |
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when it reduces that count, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel and adds bars when the displayed aspects differ. `fit="crop"` is an explicit object-fit-cover conversion: it fills the complete output raster while preserving displayed aspect, so it may discard active pixels at the outer source edges. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |

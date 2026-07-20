@@ -25,6 +25,7 @@
 .equ GA_COMCMD0, 0x00A12010
 .equ GA_COMCMD1, 0x00A12012
 .equ GA_COMSTAT0, 0x00A12020
+.equ GA_COMSTAT1, 0x00A12022
 .equ GA_STOPWATCH, 0x00A1200C		/* 12-bit, 30.72 us/tick, Main read-only */
 
 .equ PROBE_BANK, 0x00200000
@@ -83,7 +84,7 @@
    容量はav_config.PALTAB_MAX_SEGと一致必須(check_player_ring.pyがビルド時検証)。 */
 .equ PALTAB_OFF, 0xB000			/* Word-RAM内ステージ位置(sp.sと一致必須) */
 .equ PALTAB_MAX_SEG, 64			/* Main-RAM表の容量(区間数)。64*128B=8KB */
-.equ PALTAB_RAM, 0x00FFB000		/* 表本体 0xFFB000..0xFFD000(スタックまで11KB余裕) */
+.equ PALTAB_RAM, 0x00FFB000		/* 表本体 0xFFB000..0xFFD000; high BSS follows */
 /* 1VBLANKで安全に転送できる語数はモード別(md_vbudget)。実測(dmabench)に基づき保守的に。
    これを超える転送はランをまたいで次VBLANKへ分割=active表示中へのはみ出し防止(ares対策)。 */
 .equ VB_WORDS_H32, 2800		/* H32 V28 NTSC */
@@ -166,13 +167,14 @@ ip_entry:
 	move.w	#0, (VDP_DATA).l
 	move.w	#0, (VDP_DATA).l
 
-	/* palette -> CRAM 0 */
-	move.l	#0xC0000000, (VDP_CTRL).l
-	lea	palettes, a0
-	move.w	#64-1, d0
-1:
-	move.w	(a0)+, (VDP_DATA).l
-	dbra	d0, 1b
+.ifdef PLAYER_SPECIALIZED
+.if PC_MODE == 1
+	move.w	#0x8C81, (VDP_CTRL).l		/* show the preload screen in H40 too */
+.endif
+	bsr	draw_startup
+.else
+	bsr	load_movie_palette
+.endif
 
 	jsr	BIOS_VDP_DISP_ENABLE
 	move.w	#0x8174, (VDP_CTRL).l		/* reg1: 表示on+vint+DMA許可(M1)+mode5 */
@@ -182,7 +184,12 @@ ip_entry:
 	clr.w	back_idx			/* 裏=NT0(0) から構築, 表示=NT1 */
 
 	move.w	#CMD_STREAM, d0
+.ifdef PLAYER_SPECIALIZED
+	bsr	cmd_wait_startup
+	bsr	load_movie_palette		/* replace temporary UI colours before frame 0 */
+.else
 	bsr	cmd_wait_ready
+.endif
 
 	/* frame0準備完了=バンクにヘッダ写し(O_HDR)がある。mode/tcols/trows/pool/base を読み
 	   モード依存のVDP設定と実行時変数を確定する(汎用化: H32/H40, mode4は将来) */
@@ -658,10 +665,10 @@ bf_upd:
 	PC_MOVE_W md_bmbytes, PC_BMBYTES, d5
 	subq.w	#1, d5
 .ifdef MAIN_CODEGEN
-	/* PC-relative flag check is the only fixed success-path overhead.  The
+	/* The fixed flag check is the only generated success-path overhead.  The
 	   fallback branches around the generated loop; the successful loop falls
 	   directly into bf_blit. */
-	move.w	md_codegen(pc), d0
+	move.w	(md_codegen).l, d0
 	bne	bf_cg_start
 .endif
 bf_ubyte:
@@ -726,11 +733,11 @@ bf_blit:
 	lsl.l	#5, d5				/* back_idx*0x2000 */
 	add.l	#NT0, d5			/* back_base = 0xC000 or 0xE000 (flipまで保持) */
 .ifdef MAIN_CODEGEN
-	move.w	md_codegen_blit(pc), d0
+	move.w	(md_codegen_blit).l, d0
 	beq	bf_blit_reference
-	move.w	back_idx(pc), d0
+	move.w	(back_idx).l, d0
 	lsl.w	#2, d0
-	lea	md_codegen_blit_addr(pc), a3
+	lea	(md_codegen_blit_addr).l, a3
 	movea.l	(a3,d0.w), a3
 	jsr	(a3)
 	bra	bf_dma
@@ -1208,6 +1215,199 @@ set_vram_write:
 	move.l	d0, (VDP_CTRL).l
 	rts
 
+load_movie_palette:
+	move.l	#0xC0000000, (VDP_CTRL).l
+	lea	palettes, a0
+	move.w	#64-1, d0
+1:
+	move.w	(a0)+, (VDP_DATA).l
+	dbra	d0, 1b
+	rts
+
+.ifdef PLAYER_SPECIALIZED
+/* The preload UI uses only temporary CRAM, name-table and font VRAM. It does
+   not reserve or reduce PrgBuf, APPLY, WordBuf, MainBuf, or the movie pool. */
+draw_startup:
+	movem.l	d0-d5/a0-a1, -(sp)
+	move.l	#0xC0000000, (VDP_CTRL).l
+	lea	startup_palette, a0
+	move.w	#64-1, d0
+1:
+	move.w	(a0)+, (VDP_DATA).l
+	dbra	d0, 1b
+
+	move.l	#PC_FONT_ADDR, d0
+	bsr	set_vram_write
+	lea	startup_font_bits, a0
+	lea	startup_nibble_words, a1
+	move.w	#STARTUP_FONT_N*8-1, d4
+1:
+	moveq	#0, d0
+	move.b	(a0)+, d0
+	move.w	d0, d1
+	lsr.w	#4, d1
+	add.w	d1, d1
+	move.w	(a1,d1.w), (VDP_DATA).l
+	andi.w	#0x000F, d0
+	add.w	d0, d0
+	move.w	(a1,d0.w), (VDP_DATA).l
+	dbra	d4, 1b
+
+	lea	startup_lines, a0
+2:
+	moveq	#0, d0
+	move.b	(a0)+, d0			/* row or 0xFF terminator */
+	cmpi.b	#0xFF, d0
+	beq.s	5f
+	lsl.w	#7, d0			/* 64-cell plane row = 128 bytes */
+	moveq	#0, d1
+	move.b	(a0)+, d1			/* column */
+	add.w	d1, d1
+	add.w	d1, d0
+	addi.l	#NT1, d0
+	moveq	#0, d3
+	move.b	(a0)+, d3			/* palette number */
+	lsl.w	#8, d3
+	lsl.w	#5, d3			/* name-table palette bits 13..14 */
+	moveq	#0, d4
+	move.b	(a0)+, d4			/* glyph count */
+	bsr	set_vram_write
+	subq.w	#1, d4
+3:
+	moveq	#0, d0
+	move.b	(a0)+, d0
+	addi.w	#PC_FONT_VTILE, d0
+	or.w	d3, d0
+	move.w	d0, (VDP_DATA).l
+	dbra	d4, 3b
+	bra.s	2b
+5:
+	movem.l	(sp)+, d0-d5/a0-a1
+	rts
+
+/* d0.w = remaining 2-KiB PrgBuf preload sectors. */
+startup_update_prg:
+	movem.l	d0-d5, -(sp)
+	move.w	#PC_PREBUF_SEC, d4
+	sub.w	d0, d4
+	add.w	d4, d4			/* sectors -> KiB */
+	move.w	d4, d3			/* preserve loaded KiB across set_vram_write */
+	move.l	#STARTUP_PRG_VALUE_ADDR, d0
+	bsr	set_vram_write
+	moveq	#0, d5
+	move.w	d4, d5
+	divu.w	#100, d5
+	move.w	d5, d0			/* hundreds */
+	addi.w	#PC_FONT_VTILE+STARTUP_GLYPH_0, d0
+	ori.w	#0x6000, d0			/* amber streaming preload line */
+	move.w	d0, (VDP_DATA).l
+	swap	d5				/* remainder */
+	moveq	#0, d4
+	move.w	d5, d4
+	divu.w	#10, d4
+	move.w	d4, d0			/* tens */
+	addi.w	#PC_FONT_VTILE+STARTUP_GLYPH_0, d0
+	ori.w	#0x6000, d0
+	move.w	d0, (VDP_DATA).l
+	swap	d4				/* ones */
+	move.w	d4, d0
+	addi.w	#PC_FONT_VTILE+STARTUP_GLYPH_0, d0
+	ori.w	#0x6000, d0
+	move.w	d0, (VDP_DATA).l
+
+	/* Redraw the 30-cell object-style progress bar from the same live count. */
+	moveq	#0, d5
+	move.w	d3, d5
+	mulu.w	#30, d5
+	divu.w	#STARTUP_PRG_CAP_KB, d5
+	move.l	#STARTUP_PRG_BAR_ADDR, d0
+	bsr	set_vram_write
+	move.w	#30-1, d2
+1:
+	move.w	#STARTUP_GLYPH_DASH, d0
+	tst.w	d5
+	beq.s	2f
+	move.w	#STARTUP_GLYPH_HASH, d0
+	subq.w	#1, d5
+2:
+	addi.w	#PC_FONT_VTILE, d0
+	ori.w	#0x6000, d0
+	move.w	d0, (VDP_DATA).l
+	dbra	d2, 1b
+	movem.l	(sp)+, d0-d5
+	rts
+
+/* Earlier HEADER.DAT regions are complete when the first PrgBuf sector is
+   reported. Turn their staged dotted rows into OK together at that boundary. */
+startup_mark_prefix_ok:
+	movem.l	d0-d2/a0, -(sp)
+	lea	startup_prefix_ok_addrs, a0
+	move.w	#STARTUP_PREFIX_OK_N-1, d2
+1:
+	moveq	#0, d0
+	move.w	(a0)+, d0
+	bsr	set_vram_write
+	move.w	#PC_FONT_VTILE+STARTUP_GLYPH_O, d0
+	ori.w	#0x4000, d0
+	move.w	d0, (VDP_DATA).l
+	move.w	#PC_FONT_VTILE+STARTUP_GLYPH_K, d0
+	ori.w	#0x4000, d0
+	move.w	d0, (VDP_DATA).l
+	dbra	d2, 1b
+	movem.l	(sp)+, d0-d2/a0
+	rts
+
+startup_mark_ok:
+	movem.l	d0-d2/a0, -(sp)
+	move.l	#STARTUP_PRG_STATUS_ADDR, d0
+	bsr	set_vram_write
+	lea	startup_ok_glyphs, a0
+	moveq	#7-1, d2
+1:
+	moveq	#0, d0
+	move.b	(a0)+, d0
+	addi.w	#PC_FONT_VTILE, d0
+	ori.w	#0x4000, d0
+	move.w	d0, (VDP_DATA).l
+	dbra	d2, 1b
+	movem.l	(sp)+, d0-d2/a0
+	rts
+
+/* Initial-stream wait with live PrgBuf preload progress. COMSTAT1 is otherwise
+   still free for boot errors and later desync diagnostics. */
+cmd_wait_startup:
+	move.w	d0, (GA_COMCMD0).l
+	move.w	#0xFFFF, d5			/* last displayed remaining count */
+	moveq	#0, d4				/* prefix rows not yet marked OK */
+1:
+	cmp.w	#STAT_READY, (GA_COMSTAT0).l
+	beq.s	3f
+	move.w	(GA_COMSTAT1).l, d0
+	tst.w	d0				/* zero is also the prebuffer-complete value */
+	beq.s	1b
+	tst.w	d0				/* 0xBADx boot errors stay negative */
+	bmi.s	1b
+	cmp.w	d5, d0
+	beq.s	1b
+	move.w	d0, d5
+	tst.w	d4
+	bne.s	2f
+	bsr	startup_mark_prefix_ok
+	moveq	#1, d4
+2:
+	bsr	startup_update_prg
+	bra.s	1b
+3:
+	moveq	#0, d0
+	bsr	startup_update_prg
+	bsr	startup_mark_ok
+	move.w	#0, (GA_COMCMD0).l
+4:
+	tst.w	(GA_COMSTAT0).l
+	bne.s	4b
+	rts
+.endif
+
 cmd_wait_ready:
 	move.w	d0, (GA_COMCMD0).l
 1:
@@ -1388,6 +1588,13 @@ palettes:
 	.incbin "palettes.bin"
 dbgfont:
 	.incbin "dbgfont.bin"
+.ifdef PLAYER_SPECIALIZED
+	.section .startup,"a"
+	.include "startup_screen.inc"
+.if PC_FONT_VTILE + STARTUP_FONT_N > NT0/32
+	.error "startup font overlaps the movie name table"
+.endif
+.endif
 
 	.bss
 	.align 2

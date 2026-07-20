@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p59 : Add a profile-specific boot preload screen using SGDK's default 8x8
+#        font in temporary VRAM. It shows stream metadata and cold cap, marks
+#        completed HEADER regions, and animates the live PrgBuf KiB count and
+#        progress bar without reducing any streaming buffer.
 #   e68 : Make video.fit="crop" a complete HAR-aware object-fit-cover path:
 #        centre-crop to the mode's displayed aperture, then scale to the full
 #        coded raster. The explicit crop mode may discard active edge pixels;
@@ -465,4 +469,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260720
 e=68
-p=58
+p=59

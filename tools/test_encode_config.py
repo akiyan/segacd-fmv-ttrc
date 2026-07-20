@@ -43,6 +43,14 @@ output = "out/movieplay/MOVIE.DAT"
 
 
 class EncodeProfileArtifactTests(unittest.TestCase):
+    def test_metadata_title_is_optional_but_not_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "metadata.toml"
+            path.write_text(PROFILE.replace(
+                "[source]", '[metadata]\ntitle = ""\n\n[source]'))
+            with self.assertRaisesRegex(ValueError, "metadata.title"):
+                load_profile(path)
+
     def test_all_repository_profiles_have_measured_cold_cap_coverage(self) -> None:
         root = Path(__file__).resolve().parents[1]
         for path in sorted((root / "configs").glob("*.toml")):

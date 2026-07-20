@@ -75,6 +75,7 @@ PROFILE_ENV_DEFAULTS = {
 }
 
 ALLOWED = {
+    "metadata": {"title"},
     "source": ({key for section, key in ENV_MAP if section == "source"}
                | {"preprocess"}),
     "video": {key for section, key in ENV_MAP if section == "video"},
@@ -181,6 +182,9 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         if missing:
             raise ValueError(
                 f"{profile_path}: missing [{section}] keys: {', '.join(sorted(missing))}")
+    title = str(data.get("metadata", {}).get("title", "")).strip()
+    if "metadata" in data and not title:
+        raise ValueError(f"{profile_path}: metadata.title must not be empty")
     mode = str(data["video"]["mode"]).upper()
     if mode not in {"H32", "H40", "MODE4"}:
         raise ValueError(f"{profile_path}: unsupported video.mode {mode!r}")

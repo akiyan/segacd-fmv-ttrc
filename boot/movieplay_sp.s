@@ -514,6 +514,7 @@ pb_lp:
 	lea	0x800(a0), a0
 	move.l	a0, ring_tail
 	subq.w	#1, d7
+	move.w	d7, (COMSTAT1).l		/* boot UI: remaining PrgBuf preload sectors */
 	bne	pb_lp
 pb_done:
 	/* Validate every v7+ route once before it can steer BODY sectors. Values above
