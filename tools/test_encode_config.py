@@ -81,6 +81,23 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             env["CBRSIM_QUALITY_BUDGET_KB"],
             str(av_config.QUALITY_BUDGET_KB))
 
+    def test_bad_apple_h32_is_full_cover_adpcm22(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        h32 = load_profile(root / "configs/bad-apple-h32.toml")
+        env = apply_profile_env(h32, {})
+        self.assertEqual(h32.section("metadata")["title"], "BAD APPLE!!")
+        self.assertEqual(env["CBRSIM_GEOMETRY_FIT"], "crop")
+        self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "896")
+        self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "area")
+        self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
+        self.assertEqual(env["CBRSIM_AUDIO"], "adpcm22")
+        self.assertEqual(
+            env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX"], "2")
+        self.assertEqual(
+            env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN"], "253")
+        self.assertTrue(env["CBRSIM_OUT"].endswith(
+            "videos/BadApple_H32_256x224_adpcm22/tmp"))
+
     def test_machi_op_declares_its_confirmed_active_tile_area(self) -> None:
         root = Path(__file__).resolve().parents[1]
         profile = load_profile(root / "configs/machi-op-h40.toml")
@@ -94,12 +111,13 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "1040")
 
     def test_profile_without_preprocess_clears_inherited_snap(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        h32 = load_profile(root / "configs/bad-apple-h32.toml")
-        env = apply_profile_env(h32, {
-            "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX": "2",
-            "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN": "253",
-        })
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "no-preprocess.toml"
+            path.write_text(PROFILE)
+            env = apply_profile_env(load_profile(path), {
+                "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX": "2",
+                "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN": "253",
+            })
         self.assertEqual(
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX"], "-1")
         self.assertEqual(

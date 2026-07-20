@@ -1,23 +1,33 @@
 schema_version = 1
 
+[metadata]
+title = "BAD APPLE!!"
+
 [source]
 path = "assets/BadApple.mp4"
 fps = "30"
 duration = "219.213021"
 sar = "1:1"
 
+[source.preprocess.endpoint_snap]
+black_max = 2
+white_min = 253
+
 [video]
 mode = "H32"
 width = 256
 height = 224
-fit = "pad"
+active_tiles = 896
+fit = "crop"
+resize_filter = "area"
+master_denoise = false
 
 [audio]
-kind = "pcm13"
+kind = "adpcm22"
 
 [output]
-directory = "videos/BadApple_H32_256x224_pcm/tmp"
-reuse = true
+directory = "videos/BadApple_H32_256x224_adpcm22/tmp"
+reuse = false
 emit_decisions = true
 
 [encoder]
