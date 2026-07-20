@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p60 : Frame-pace the boot preload monitor instead of polling the gate array
+#        without a bound. Show Sub-CPU acknowledgement, exact BADx startup
+#        failures, and the live PrgBuf count/bar reliably before playback.
 #   p59 : Add a profile-specific boot preload screen using SGDK's default 8x8
 #        font in temporary VRAM. It shows stream metadata and cold cap, marks
 #        completed HEADER regions, and animates the live PrgBuf KiB count and
@@ -469,4 +472,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260720
 e=68
-p=59
+p=60

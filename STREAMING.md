@@ -154,10 +154,10 @@ a separate proof that its maximum output ends at `0xFF6580`.
 
 | Address | Size | Current owner / worst use | Safe headroom |
 |---|---:|---|---:|
-| `0xFF0000..0xFF17AF` | 5.922 KiB | permanent Main player text/data, including the preload UI routines but excluding its transient font and strings | 0 |
-| `0xFF17B0..0xFF1FFF` | **2.078 KiB** | link gap before generated code | **2.078 KiB** of permanent code/data growth |
+| `0xFF0000..0xFF185F` | 6.094 KiB | permanent Main player text/data, including the preload UI routines but excluding its transient font and strings | 0 |
+| `0xFF1860..0xFF1FFF` | **1.906 KiB** | link gap before generated code | **1.906 KiB** of permanent code/data growth |
 | `0xFF2000..0xFF657F` | 17.375 KiB | maximum generated bitmap handlers and two H40 blitters | 0 |
-| `0xFF2000..0xFF265F` at boot only | 1.594 KiB | transient SGDK font, preload-screen text, and lookup data; deliberately overwritten by generated code before playback | 0 additional runtime use |
+| `0xFF2000..0xFF267F` at boot only | 1.625 KiB | transient SGDK font, preload-screen text, and lookup data; deliberately overwritten by generated code before playback | 0 additional runtime use |
 | `0xFF6580..0xFF65FF` | **128 B** | asserted guard after maximum generated code | **128 B** |
 | `0xFF6600..0xFF7FFF` | 6.50 KiB | immutable MainBuf, 208 patterns | 0 |
 | `0xFF8000..0xFF8C7F` | 3.125 KiB | 400 worst-case run records at 8 B each | 0 |
@@ -168,8 +168,8 @@ a separate proof that its maximum output ends at `0xFF6580`.
 | `0xFFFB00..0xFFFCFF` | 512 B | conservative stack and interrupt reserve | 0 |
 | `0xFFFD00..0xFFFFFF` | 768 B | above configured stack top / BIOS reserve | 0 |
 
-This yields **19.537 KiB** safe across all supported rates. Restricting the run
-table to H40/N2's 178-cold cap raises it to **21.271 KiB**. The 512-byte stack
+This yields **19.365 KiB** safe across all supported rates. Restricting the run
+table to H40/N2's 178-cold cap raises it to **21.099 KiB**. The 512-byte stack
 reserve is deliberately larger than the approximately 80-byte deepest visible
 player call chain; it leaves room for interrupt/BIOS use that the assembly call
 graph alone cannot prove.

@@ -129,7 +129,8 @@ def screen_lines(profile: encode_config.EncodeProfile,
         (20, 0, 3, "[" + "-" * 30 + "]"),
         (22, 0, 0, f"Physical ring {av_config.RING_SIZE_KB} / safe "
                      f"{av_config.PRG_BUF_CAP_KB} KiB"),
-        (24, 5, 0, "Preparing playback..."),
+        (24, 5, 0, "Sub CPU ...... WAIT"),
+        (26, 5, 0, "Preparing playback..."),
     ]
     for row, col, _palette, text in lines:
         if not 0 <= row < MAX_ROWS or not 0 <= col < MAX_COLS:
@@ -166,6 +167,7 @@ def render_include(profile: encode_config.EncodeProfile,
     lines = screen_lines(profile, constants, version)
     prg = next(item for item in lines if item[3].startswith("PrgBuf "))
     bar = next(item for item in lines if item[3].startswith("["))
+    sub = next(item for item in lines if "Sub CPU" in item[3])
     prefix = [item for item in lines if item[0] >= 14 and item[3].startswith(
         ("PalTab ", "ADPCM ", "Audio ", "Frame0 ", "Routing "))]
     value_col = prg[1] + len("PrgBuf ")
@@ -181,6 +183,7 @@ def render_include(profile: encode_config.EncodeProfile,
         f".equ STARTUP_PRG_VALUE_ADDR, 0x{0xE000 + prg[0] * 128 + value_col * 2:04X}",
         f".equ STARTUP_PRG_STATUS_ADDR, 0x{0xE000 + prg[0] * 128 + status_col * 2:04X}",
         f".equ STARTUP_PRG_BAR_ADDR, 0x{0xE000 + bar[0] * 128 + (bar[1] + 1) * 2:04X}",
+        f".equ STARTUP_SUB_STATUS_ADDR, 0x{0xE000 + sub[0] * 128 + (sub[1] + sub[3].index('WAIT')) * 2:04X}",
         f".equ STARTUP_PRG_CAP_KB, {av_config.PRG_BUF_CAP_KB}",
         f".equ STARTUP_PREFIX_OK_N, {len(prefix)}",
         "",
@@ -207,6 +210,12 @@ def render_include(profile: encode_config.EncodeProfile,
     text += _asm_bytes(
         "startup_ok_glyphs",
         bytes(GLYPH_INDEX[char] for char in "OK     "))
+    text += _asm_bytes(
+        "startup_bad_glyphs",
+        bytes(GLYPH_INDEX[char] for char in "BAD"))
+    text += _asm_bytes(
+        "startup_sub_ok_glyphs",
+        bytes(GLYPH_INDEX[char] for char in "OK  "))
     text.append("")
     return "\n".join(text)
 

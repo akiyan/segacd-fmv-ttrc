@@ -1373,22 +1373,80 @@ startup_mark_ok:
 	movem.l	(sp)+, d0-d2/a0
 	rts
 
+/* d0.w = negative 0xBADx startup diagnostic from the Sub CPU. Keep the
+   preload screen visible and replace LOADING with the exact failing marker. */
+startup_mark_error:
+	movem.l	d0-d3/a0, -(sp)
+	move.w	d0, d3
+	move.l	#STARTUP_PRG_STATUS_ADDR, d0
+	bsr	set_vram_write
+	lea	startup_bad_glyphs, a0
+	moveq	#3-1, d2
+1:
+	moveq	#0, d0
+	move.b	(a0)+, d0
+	addi.w	#PC_FONT_VTILE, d0
+	ori.w	#0x6000, d0
+	move.w	d0, (VDP_DATA).l
+	dbra	d2, 1b
+	andi.w	#0x000F, d3
+	addi.w	#PC_FONT_VTILE+STARTUP_GLYPH_0, d3
+	ori.w	#0x6000, d3
+	move.w	d3, (VDP_DATA).l
+	moveq	#0, d0
+	move.w	#3-1, d2
+2:
+	move.w	#PC_FONT_VTILE, d0
+	ori.w	#0x6000, d0
+	move.w	d0, (VDP_DATA).l
+	dbra	d2, 2b
+	movem.l	(sp)+, d0-d3/a0
+	rts
+
+startup_mark_sub_ok:
+	movem.l	d0-d2/a0, -(sp)
+	move.l	#STARTUP_SUB_STATUS_ADDR, d0
+	bsr	set_vram_write
+	lea	startup_sub_ok_glyphs, a0
+	moveq	#4-1, d2
+1:
+	moveq	#0, d0
+	move.b	(a0)+, d0
+	addi.w	#PC_FONT_VTILE, d0
+	ori.w	#0x4000, d0
+	move.w	d0, (VDP_DATA).l
+	dbra	d2, 1b
+	movem.l	(sp)+, d0-d2/a0
+	rts
+
 /* Initial-stream wait with live PrgBuf preload progress. COMSTAT1 is otherwise
    still free for boot errors and later desync diagnostics. */
 cmd_wait_startup:
 	move.w	d0, (GA_COMCMD0).l
 	move.w	#0xFFFF, d5			/* last displayed remaining count */
 	moveq	#0, d4				/* prefix rows not yet marked OK */
+	moveq	#0, d6				/* Sub CPU acknowledgement not yet drawn */
 1:
-	cmp.w	#STAT_READY, (GA_COMSTAT0).l
+	move.w	(GA_COMSTAT0).l, d0
+	tst.w	d0
+	beq.s	6f
+	tst.w	d6
+	bne.s	6f
+	bsr	startup_mark_sub_ok
+	moveq	#1, d6
+6:
+	cmp.w	#STAT_READY, d0
 	beq.s	3f
 	move.w	(GA_COMSTAT1).l, d0
 	tst.w	d0				/* zero is also the prebuffer-complete value */
-	beq.s	1b
+	beq.s	7f
 	tst.w	d0				/* 0xBADx boot errors stay negative */
-	bmi.s	1b
+	bpl.s	5f
+	bsr	startup_mark_error
+	bra.s	7f
+5:
 	cmp.w	d5, d0
-	beq.s	1b
+	beq.s	7f
 	move.w	d0, d5
 	tst.w	d4
 	bne.s	2f
@@ -1396,7 +1454,11 @@ cmd_wait_startup:
 	moveq	#1, d4
 2:
 	bsr	startup_update_prg
-	bra.s	1b
+7:
+	/* The UI is frame-paced: sample the Sub state once per VBlank instead of
+	   hammering the gate-array registers in an unbounded Main-CPU loop. */
+	bsr	wait_vblank
+	bra	1b
 3:
 	moveq	#0, d0
 	bsr	startup_update_prg

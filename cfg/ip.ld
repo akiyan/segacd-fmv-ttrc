@@ -21,6 +21,7 @@ SECTIONS
   .startup 0xFF2000 :
   {
     *(.startup)
+    . = ALIGN(0x10);
   }
 
   ASSERT(. <= 0xFF4900, "transient startup assets exceed generated-code area")

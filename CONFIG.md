@@ -342,8 +342,10 @@ and font VRAM that the movie later reuses; it does not reserve or reduce
 PrgBuf, APPLY, WordBuf0/1, MainBuf, or the movie tile pool. The fixed HEADER
 regions switch to `OK` when the first PrgBuf sector arrives. `PrgBuf` then
 shows its loaded KiB count and a live 30-cell progress bar through the full
-safe 388 KiB preload. The generic `PLAYER_SPECIALIZE=0` diagnostic build skips
-this profile-specific screen.
+safe 388 KiB preload. The display also acknowledges the Sub CPU, reports an
+exact `BADx` marker if startup validation fails, and samples progress once per
+VBlank. The generic `PLAYER_SPECIALIZE=0` diagnostic build skips this
+profile-specific screen.
 
 | TOML table | Keys | Meaning |
 |---|---|---|
