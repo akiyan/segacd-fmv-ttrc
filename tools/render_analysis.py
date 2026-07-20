@@ -34,6 +34,7 @@ from encode_config import consume_config_arg
 CONFIG_PROFILE = consume_config_arg(sys.argv)
 
 import layout_preview as L
+import stream_schedule
 from cbr_paths import artifact_path, sim_work_dir
 
 SIM = str(sim_work_dir())
@@ -307,11 +308,12 @@ FRAME_CD = int(z["frame_bytes"]) if "frame_bytes" in z else int(153600 / FPS)  #
 # HEADER/frame 0, stream-tail alignment zeros, and rate-match pad.
 TANK_DELTA = np.zeros(NF, np.int64); TANK_DELTA[1:] = BUF_REM[1:] - BUF_REM[:-1]   # コマ毎payload RING増減(タイル)
 BODY_USEFUL_BYTES = BODY_PAYLOAD_BYTES + BODY_CONTROL_BYTES
-BAND = (BODY_USEFUL_BYTES * FPS // 1024).astype(np.int64)
+BAND_BPS = stream_schedule.body_delivery_rate_bps(
+    BODY_USEFUL_BYTES, BODY_PHYSICAL_BYTES)
+BAND = BAND_BPS // 1024
 EFF = FB                                              # (互換)
-AVG_KBPS = int(round(float(BODY_USEFUL_BYTES.mean() * FPS / 1024)))
-CD1X_BPF = int(153600 / FPS)                         # CD1xのコマあたりバイト(有効転送メーターのフル)
-BAND_SCALE_BPF = max(CD1X_BPF, int(BODY_USEFUL_BYTES.max()), 1)
+AVG_KBPS = int(round(stream_schedule.average_body_delivery_rate_bps(
+    BODY_USEFUL_BYTES, BODY_PHYSICAL_BYTES) / 1024))
 SEG_STARTS = {}
 for _i, _s in enumerate(FRAME_SEG):
     SEG_STARTS.setdefault(int(_s), _i)               # 各区間の開始フレーム=CRAM切替点
@@ -389,7 +391,6 @@ def build_tl_bg():
     d = ImageDraw.Draw(im)
     d.rectangle([0, H_req, tlw, H_req + H_buf], fill=(26, 20, 34))
     d.rectangle([0, H_req + H_buf, tlw, tlh], fill=(18, 26, 20))
-    escale = BAND_SCALE_BPF                          # 3段目=全BODY useful burstを収める共通scale
     order = [("Raw", L.CAT_RAW), ("Coa", L.CAT_COA), ("Flbk", L.CAT_FLBK),
              ("Buf", L.CAT_BUF), ("Miss", L.CAT_MISS)]
     for cx in range(tlw):
@@ -401,14 +402,14 @@ def build_tl_bg():
                 d.line([(cx, yb - seg), (cx, yb)], fill=c); yb -= seg
         hb = int(H_buf * BUF_REM[fi] / max(BUF_CAP, 1))
         d.line([(cx, H_req + H_buf - hb), (cx, H_req + H_buf)], fill=L.CAT_BUF)
-        hp = int(H_dma * int(BODY_PAYLOAD_BYTES[fi]) / escale)
+        physical = max(int(BODY_PHYSICAL_BYTES[fi]), 1)
+        hp = int(H_dma * int(BODY_PAYLOAD_BYTES[fi]) / physical)
         if hp > 0:
             d.line([(cx, tlh - hp), (cx, tlh)], fill=L.CAT_RAW)
-        hc = int(H_dma * int(BODY_USEFUL_BYTES[fi]) / escale)
+        hc = int(H_dma * int(BODY_USEFUL_BYTES[fi]) / physical)
         if hc > hp:
             d.line([(cx, tlh - hc), (cx, tlh - hp)], fill=L.COL_OVH)
-    cd1x_y = tlh - int(H_dma * CD1X_BPF / escale)
-    d.line([(0, cd1x_y), (tlw - 1, cd1x_y)], fill=(110, 105, 70))
+    d.line([(0, tlh - H_dma), (tlw - 1, tlh - H_dma)], fill=(110, 105, 70))
     d.rectangle([0, 0, tlw - 1, tlh - 1], outline=L.COL_FRAME_IN)
     return im, x_tl, by, tlw, tlh
 
@@ -450,9 +451,8 @@ def draw_status_real(data):
     # 2) Band = この物理配送slotのBODY useful payload + control。pad/Headerは除外。
     stacked([(data["body_payload_bytes"], L.CAT_RAW),
              (data["body_control_bytes"], L.COL_OVH)],
-            data["band_scale_bpf"], BAND_W)
-    cd1x_x = x + int(BAND_W * data["cd1x_bpf"] / data["band_scale_bpf"])
-    d.line([cd1x_x, by - 2, cd1x_x, by + BH + 2], fill=(210, 190, 90))
+            max(data["body_physical_bytes"], 1), BAND_W)
+    d.line([x + BAND_W, by - 2, x + BAND_W, by + BH + 2], fill=(210, 190, 90))
     xb = L.draw_field(d, x, ly, "Band:", data["band_kbps"], 3, L.f_leg, L.COL_TXT)
     d.text((xb, ly), "KiB/sec", fill=L.COL_DIM, font=L.f_leg)
     x += BAND_W + GAP
@@ -518,8 +518,8 @@ def frame_data(i):
                 dma_tiles=int(DMA_TILES[i]), dma_runs=int(DMA_RUNS[i]),
                 body_payload_bytes=int(BODY_PAYLOAD_BYTES[i]),
                 body_control_bytes=int(BODY_CONTROL_BYTES[i]),
-                band_kbps=int(BAND[i]), cd1x_bpf=CD1X_BPF,
-                band_scale_bpf=BAND_SCALE_BPF,
+                body_physical_bytes=int(BODY_PHYSICAL_BYTES[i]),
+                band_kbps=int(BAND[i]),
                 cold=cn["Raw"] + cn["Buf"], cold_raw=cn["Raw"], cold_buf=cn["Buf"],
                 cold_cap=COLD_CAP,
                 tank_delta=int(TANK_DELTA[i]), max_raw=MAX_RAW,

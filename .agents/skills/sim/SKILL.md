@@ -178,8 +178,9 @@ After completion:
 
 - Check the completion line: `starved_frames=N (X%)`.
 - Check `body_useful_bps`, the mean useful BODY delivery rate shown by Band.
-  Individual delivery slots may burst above CD 1x and repay the lead later;
-  `codec_work_bps` is a separate quality-allocation diagnostic.
+  It is weighted by total physical BODY read time, and each slot must remain at
+  or below CD 1x (150 KiB/s). `codec_work_bps` is a separate
+  quality-allocation diagnostic.
 - Starvation is allowed, but report it.
 - Output appears under `videos/<stem>/`:
   - `preview/`
@@ -236,7 +237,7 @@ Important rendering notes:
   - scrolling line graph with +/-4 seconds and now centered
   - status uses Req / Cold / Band / Tank / Buff / DMA / Run
   - Band is physical-slot useful BODY payload + control, excluding all pad and
-    HEADER
+    HEADER, divided by that slot's actual CD read time (0 to 150 KiB/s)
   - three-row timeline: Req2 : Tank1 : BODY-Band1
   - DMA is compared against theoretical `(60/fps)` VBlank budget
   - heading metadata plus small top-right Time / Frame, baseline-aligned

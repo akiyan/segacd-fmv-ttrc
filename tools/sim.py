@@ -1799,7 +1799,8 @@ def main():
     body_physical_bytes = np.asarray(
         physical_schedule["body_physical_bytes"], np.int64)
     body_useful_bytes = body_payload_bytes + body_control_bytes
-    body_useful_bps = float(body_useful_bytes.mean() * FPS)
+    body_useful_bps = stream_schedule.average_body_delivery_rate_bps(
+        body_useful_bytes, body_physical_bytes)
 
     report = "\n".join([
         f"resolution={W}x{H} cells/frame={C_CELLS} active_tiles={ACTIVE_TILES} fps={FPS}",
@@ -1823,7 +1824,8 @@ def main():
         f"starved_frames={starved_frames} ({starved_frames/n*100:.1f}%)",
         f"codec_work_bps={fb.mean()*FPS:.0f} (quality-allocation diagnostic)",
         f"body_useful_bps={body_useful_bps:.0f} "
-        f"(physical delivery slots, HEADER/frame0/pad excluded; CD1x={CD_RATE})",
+        f"(useful BODY / physical CD read time; HEADER/frame0/pad excluded; "
+        f"CD1x={CD_RATE})",
         (f"upgrade(格上げ): 余剰でRaw化 avg {np.mean([u for u, _ in upgrade_log]):.1f}/コマ, "
          f"まだ近似のセル avg {np.mean([a for _, a in upgrade_log]):.1f}; "
          f"upgrade reserve start/peak/end="

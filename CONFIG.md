@@ -251,8 +251,10 @@ sector schedule remains a separate exact proof in `stream_schedule.py`. See
 `body_useful_payload_bytes`, `body_useful_control_bytes`, `body_pad_bytes`, and
 `body_physical_bytes`. The four values are pack-verified for every slot, with
 useful payload + useful control + pad equal to physical bytes. Analysis Band
-uses only the first two. `report.txt:body_useful_bps` is their whole-series
-mean; `codec_work_bps` is the separate encoder quality-allocation diagnostic.
+divides the first two by each slot's physical CD read time, so it ranges from
+0 to the CD-1x limit of 150 KiB/s. `report.txt:body_useful_bps` divides the
+whole-series useful total by the whole-series physical read time;
+`codec_work_bps` is the separate encoder quality-allocation diagnostic.
 
 ## H. Per-source TOML profiles
 

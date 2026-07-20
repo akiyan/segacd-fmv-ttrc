@@ -17,6 +17,7 @@ import random
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import av_config   # cold_cap_for_fps (Coldバーのフルスケール)
+import stream_schedule
 
 FONT = "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf"
 CW, CH = 1920, 1080
@@ -162,23 +163,25 @@ def dummy_data():
         r = max(0, min(buf_cap, r + random.randint(-40, 40)))
         rem.append(r)
     dma_tl = [(tl["Raw"][i] + tl["Buf"][i]) * 32 + C * 2 for i in range(tln)]   # 毎コマVRAM転送量
-    cd1x_bpf = int(153600 / fps)                 # CD1xの1コマ相当bytes（比較線）
     frame_cd = int(147456 / fps)                 # CBR予算/コマ(この範囲=新規CD, 超過はタンク供給)
     _upd = counts["Raw"] + counts["Buf"] + counts["Coa"] + counts["Flbk"] + counts["Near"]
     _fb = counts["Raw"] * 32 + counts["Buf"] * 32 + _upd * 2
     max_raw = frame_cd // 34                      # 1コマのRaw予算(指針器フルスケール C-max_raw の基準)
-    # BODY物理配送slotのダミー。payload burstはCD1x比較線を越え、後続slotで返済する。
+    # BODY物理配送slotのダミー。padを含む物理bytesが各slotのCD実時間を決める。
     body_payload_tl = [
         5600 if i % 47 == 0 else max(0, 3200 + int(900 * math.sin(i / 13.0)))
         for i in range(tln)
     ]
     body_control_tl = [720 + (160 if i % 31 == 0 else 0) for i in range(tln)]
+    body_physical_tl = [5 * 2048 for _ in range(tln)]
     body_payload_bytes = body_payload_tl[0]
     body_control_bytes = body_control_tl[0]
     body_useful_tl = [p + c for p, c in zip(body_payload_tl, body_control_tl)]
-    band_scale_bpf = max(cd1x_bpf, max(body_useful_tl))
-    band_kbps = int((body_payload_bytes + body_control_bytes) * fps / 1024)
-    avg_kbps = int(round(sum(body_useful_tl) / len(body_useful_tl) * fps / 1024))
+    body_physical_bytes = body_physical_tl[0]
+    band_kbps = int(stream_schedule.body_delivery_rate_bps(
+        [body_payload_bytes + body_control_bytes], [body_physical_bytes])[0] // 1024)
+    avg_kbps = int(round(stream_schedule.average_body_delivery_rate_bps(
+        body_useful_tl, body_physical_tl) / 1024))
     tank_delta = body_payload_bytes // 32 - counts["Raw"] - counts["Buf"]
     pl_info = {"Prev": dict(pl=11, frame=980), "Current": dict(pl=12, frame=1122),
                "Next": dict(pl=13, frame=1544)}   # 各パレットの番号と切替開始フレーム
@@ -194,10 +197,10 @@ def dummy_data():
     dma_tiles = counts["Raw"] + counts["Buf"]
     return dict(C=C, counts=counts, counts_uniq=counts_uniq, series=series, fps=fps, win=win,
                 palettes=palettes, cat_totals=cat_totals, cat_uniq=cat_uniq, tank_delta=tank_delta, max_raw=max_raw,
-                cd1x_bpf=cd1x_bpf, band_scale_bpf=band_scale_bpf,
                 body_payload_bytes=body_payload_bytes, body_control_bytes=body_control_bytes,
+                body_physical_bytes=body_physical_bytes,
                 band_kbps=band_kbps, body_payload_tl=body_payload_tl,
-                body_control_tl=body_control_tl,
+                body_control_tl=body_control_tl, body_physical_tl=body_physical_tl,
                 pl_info=pl_info, pl_cur=pl_cur, pl_total=pl_total,
                 mode="H32", res="176x144 (22x18)", audio="13.3kHz mono 8bit PCM", avg_kbps=avg_kbps,
                 src_spec="256x224 / 30fps / AAC 48kHz stereo",
@@ -414,9 +417,8 @@ def draw_status(w, h, data):
     # 2) Band = この物理配送slotのBODY useful payload + control。pad/Headerは除外。
     stacked([(data["body_payload_bytes"], CAT_RAW),
              (data["body_control_bytes"], COL_OVH)],
-            data["band_scale_bpf"], BAND_W)
-    cd1x_x = x + int(BAND_W * data["cd1x_bpf"] / data["band_scale_bpf"])
-    d.line([cd1x_x, by - 2, cd1x_x, by + BH + 2], fill=(210, 190, 90))
+            max(data["body_physical_bytes"], 1), BAND_W)
+    d.line([x + BAND_W, by - 2, x + BAND_W, by + BH + 2], fill=(210, 190, 90))
     xb = draw_field(d, x, ly, "Band:", data["band_kbps"], 3, f_leg, COL_TXT)
     d.text((xb, ly), "KiB/sec", fill=COL_DIM, font=f_leg)
     x += BAND_W + GAP
@@ -458,6 +460,7 @@ def draw_status(w, h, data):
         tl = data["tl"]; rem = data["buf_rem_series"]; tln = data["tln"]
         payload_tl = data["body_payload_tl"]
         control_tl = data["body_control_tl"]
+        physical_tl = data["body_physical_tl"]
         tlh = (h - 2) - by
         # 正確に 2:1:1(区切り無し・隙間無し)
         H_req = tlh // 2                          # Req = 2
@@ -469,7 +472,6 @@ def draw_status(w, h, data):
         # 各段の背景を極暗色で塗る(下段の空きが純黒=marginに見えないように)
         d.rectangle([x_tl, y_buf, x_tl + tlw, y_buf + H_buf], fill=(26, 20, 34))   # Buf段 暗violet
         d.rectangle([x_tl, y_dma, x_tl + tlw, y_dma + H_dma], fill=(18, 26, 20))   # 有効転送段 暗green
-        escale = data["band_scale_bpf"]                    # 全BODY useful burstを収める共通scale
         stack_order = [("Raw", CAT_RAW), ("Coa", CAT_COA), ("Flbk", CAT_FLBK),
                        ("Buf", CAT_BUF), ("Miss", CAT_MISS)]
         for col_i in range(tlw):
@@ -482,14 +484,14 @@ def draw_status(w, h, data):
                     d.line([(X, yb - seg), (X, yb)], fill=col); yb -= seg
             hb = int(H_buf * rem[fi] / max(data["buf_cap"], 1))   # 中段: Buf残量(violet下から)
             d.line([(X, y_buf + H_buf - hb), (X, y_buf + H_buf)], fill=CAT_BUF)
-            hp = int(H_dma * payload_tl[fi] / escale)
+            physical = max(physical_tl[fi], 1)
+            hp = int(H_dma * payload_tl[fi] / physical)
             if hp > 0:
                 d.line([(X, y_dma + H_dma - hp), (X, y_dma + H_dma)], fill=CAT_RAW)
-            hc = int(H_dma * (payload_tl[fi] + control_tl[fi]) / escale)
+            hc = int(H_dma * (payload_tl[fi] + control_tl[fi]) / physical)
             if hc > hp:
                 d.line([(X, y_dma + H_dma - hc), (X, y_dma + H_dma - hp)], fill=COL_OVH)
-        cd1x_y = y_dma + H_dma - int(H_dma * data["cd1x_bpf"] / escale)
-        d.line([x_tl, cd1x_y, x_tl + tlw, cd1x_y], fill=(110, 105, 70))
+        d.line([x_tl, y_dma, x_tl + tlw, y_dma], fill=(110, 105, 70))
         d.rectangle([x_tl, by, x_tl + tlw, by + tlh], outline=COL_FRAME_IN)
         head = x_tl + int(tlw * data["frame"] / data["total_frames"])
         d.line([head, by, head, by + tlh], fill=(255, 255, 255))

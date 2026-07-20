@@ -89,8 +89,8 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
      category map / per-metric flow graph; bottom status = Req / Band / Tank /
      Tank-delta / DMA plus the stacked timelines). Define Band as useful
      `BODY.DAT` payload + control bytes in the physical delivery slot, excluding
-     all pad, `HEADER.DAT`, and frame 0; note that bursts above CD 1x are shown
-     without clamping and repay their lead in later slots.
+     all pad, `HEADER.DAT`, and frame 0, divided by that slot's actual physical
+     CD read time. Its range is 0 to CD 1x (150 KiB/s); pad is unused bandwidth.
   4. What the encoder does — first a short list of the techniques applied, then
      the details for each.
   5. Project link — always include the source repository URL:

@@ -129,9 +129,9 @@ completion and record:
 - resolved output raster/grid and audio settings.
 
 Starvation is reportable, not automatically a failure. Reject an incomplete
-run or missing decision data. A physical delivery slot may exceed CD 1x when
-the scheduler proves that later slots repay its lead; do not reject or clamp
-that burst based on the average alone.
+run or missing decision data. Band divides useful bytes by each slot's actual
+physical CD read time, so it must stay at or below CD 1x (150 KiB/s); pad is
+shown as unused bandwidth.
 
 Render the full canonical 1920x1080 analysis with
 `tools/render_analysis.py`. Verify its video, audio, duration, and selected

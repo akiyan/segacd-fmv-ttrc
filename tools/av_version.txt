@@ -11,9 +11,12 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e66 : Normalize BODY Band by each delivery slot's actual physical CD read
+#        time. Pad is unused bandwidth, every valid slot is capped naturally at
+#        CD 1x (150 KiB/s), and the reported average is physical-time weighted.
 #   e65 : Define analysis Band from useful BODY.DAT bytes in each physical
 #        delivery slot. Save and pack-verify payload/control/pad traces, expose
-#        unclamped bursts against a CD-1x line, and remove legend number fills.
+#        payload/control separately, and remove legend number fills.
 #   e64 : Require an exact measured mode/fps/active-tile tuple for cold-cap
 #        selection. Measurements from larger active areas are no longer reused
 #        for smaller profile areas; every distinct tuple must be qualified.
@@ -440,5 +443,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260720
-e=65
+e=66
 p=56

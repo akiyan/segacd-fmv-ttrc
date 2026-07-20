@@ -185,9 +185,13 @@ This visualises the value the hardware slip investigations were fought over.
 
 ### Band meter (useful BODY delivery) - KiB/sec
 `Band` is the non-pad data physically read from `BODY.DAT` in this delivery
-slot, converted to a per-second rate at the content fps:
+slot, divided by that slot's actual CD read time:
 
-`Band = (useful payload bytes + useful control bytes) * fps / 1024`.
+`Band = useful BODY bytes / physical BODY bytes * 150 KiB/sec`.
+
+The physical bytes are the slot's whole sectors, including pad. At CD 1x each
+sector takes 1/75 second, so a completely useful slot reads `Band:150`, a
+half-pad slot reads `Band:075`, and a valid slot never exceeds 150 KiB/sec.
 
 The bar is split into **Raw colour** for the continuous 32-byte cold-pattern
 payload stream and **dim blue-grey** for the continuous control stream
@@ -199,13 +203,14 @@ The metric excludes rate-match pad sectors, the zero-filled tail of the final
 control/payload sectors, all of `HEADER.DAT`, frame 0 patterns/control, startup
 audio, palettes, routing, and the compatibility `MOVIE.DAT` container. Slot 0
 therefore reads `Band:000`. `avg N KiB/sec` in the top meta and
-`body_useful_bps` in `report.txt` are calculated from this same slot series.
+`body_useful_bps` in `report.txt` divide all useful BODY bytes by the complete
+physical BODY read time. This is a physical-time-weighted average, not a simple
+mean of the displayed slots.
 `codec_work_bps` remains a separate quality-allocation diagnostic.
 
-One slot may burst above CD 1x and repay that lead in later slots. The bar and
-timeline use one whole-clip scale large enough for the maximum useful burst,
-without clamping it. A thin yellow comparison line marks CD 1x
-(`153600 / fps` bytes per slot); the scale is at least that large.
+The bar uses the slot's physical bytes as full-scale. Payload and control fill
+their useful fractions; all pad remains blank. A thin yellow line at the right
+edge marks CD 1x.
 
 Before making these per-frame choices, the encoder dry-runs the complete
 quantized movie through the shared VRAM allocator. A backwards pass builds two
@@ -279,8 +284,8 @@ playhead:
    colours; `Same` and `Near` are omitted so the interesting load shows).
 2. **Tank level** - actual physical payload-RING occupancy (violet).
 3. **BODY Band** - useful payload (Raw colour) plus useful control (dim
-   blue-grey) in each physical delivery slot. A horizontal comparison line
-   marks CD 1x; bursts above it remain visible.
+   blue-grey) as a fraction of the physical bytes in each delivery slot. Pad
+   remains blank and a horizontal line at the top marks CD 1x (150 KiB/sec).
 
 ## Colours (RGB)
 

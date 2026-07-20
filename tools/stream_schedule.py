@@ -14,6 +14,8 @@ import av_config
 
 
 SECTOR_BYTES = 2048
+CD_SECTORS_PER_SECOND = 75
+CD_BYTES_PER_SECOND = SECTOR_BYTES * CD_SECTORS_PER_SECOND
 PATTERN_BYTES = 32
 PATTERNS_PER_SECTOR = SECTOR_BYTES // PATTERN_BYTES
 DEBUG_BLOCK_BYTES = 22
@@ -22,6 +24,38 @@ STREAM_SCHEDULE_SCHEMA_VERSION = 2
 
 class ScheduleError(ValueError):
     """The requested stream cannot satisfy the player's delivery rules."""
+
+
+def body_delivery_rate_bps(useful_bytes, physical_bytes):
+    """Return useful BODY bandwidth over each slot's actual CD read time.
+
+    A physical slot containing ``n`` sectors occupies ``n / 75`` seconds on a
+    CD-1x drive.  Dividing useful bytes by that duration makes pad visible as
+    unused bandwidth and guarantees that a valid slot cannot exceed CD 1x.
+    """
+    useful = np.asarray(useful_bytes, np.int64)
+    physical = np.asarray(physical_bytes, np.int64)
+    if useful.shape != physical.shape:
+        raise ValueError("useful and physical BODY bytes must have equal shapes")
+    if (useful < 0).any() or (physical < 0).any() or (useful > physical).any():
+        raise ValueError("useful BODY bytes must be within physical BODY bytes")
+    rate = np.zeros(useful.shape, np.int64)
+    present = physical > 0
+    rate[present] = (
+        useful[present] * CD_BYTES_PER_SECOND // physical[present])
+    return rate
+
+
+def average_body_delivery_rate_bps(useful_bytes, physical_bytes):
+    """Return useful BODY bandwidth over the complete physical read time."""
+    useful = np.asarray(useful_bytes, np.int64)
+    physical = np.asarray(physical_bytes, np.int64)
+    # Reuse the per-slot validation even though only the totals are needed.
+    body_delivery_rate_bps(useful, physical)
+    physical_total = int(physical.sum())
+    if not physical_total:
+        return 0.0
+    return float(useful.sum()) * CD_BYTES_PER_SECOND / physical_total
 
 
 def control_block_lengths(

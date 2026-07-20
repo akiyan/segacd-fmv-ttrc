@@ -26,6 +26,23 @@ class ControlLengthTests(unittest.TestCase):
         self.assertEqual(int(debug[0] - normal[0]), pack.DBG_LEN)
 
 
+class BodyDeliveryRateTests(unittest.TestCase):
+    def test_rate_uses_each_slots_physical_cd_time(self) -> None:
+        rate = schedule.body_delivery_rate_bps(
+            [0, 2048, 1024, 3072], [0, 2048, 2048, 4096])
+        self.assertEqual(rate.tolist(), [0, 153600, 76800, 115200])
+        self.assertLessEqual(int(rate.max()), schedule.CD_BYTES_PER_SECOND)
+
+    def test_average_is_weighted_by_total_physical_read_time(self) -> None:
+        average = schedule.average_body_delivery_rate_bps(
+            [2048, 2048], [2048, 6144])
+        self.assertEqual(average, 76800.0)
+
+    def test_useful_bytes_cannot_exceed_physical_bytes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "within physical"):
+            schedule.body_delivery_rate_bps([2049], [2048])
+
+
 class PayloadRingScheduleTests(unittest.TestCase):
     def test_useful_body_trace_excludes_header_and_all_padding(self) -> None:
         result = schedule.schedule_payload_ring(
