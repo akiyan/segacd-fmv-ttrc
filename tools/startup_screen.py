@@ -23,6 +23,15 @@ MAX_COLS = 32
 MAX_ROWS = 28
 
 
+def column_offset(profile: encode_config.EncodeProfile) -> int:
+    """Center the fixed 32-column panel in the selected display width."""
+    mode = str(profile.data["video"]["mode"]).upper()
+    screen_cols = {"H32": 32, "H40": 40}.get(mode)
+    if screen_cols is None:
+        raise ValueError(f"startup screen does not support mode {mode!r}")
+    return (screen_cols - MAX_COLS) // 2
+
+
 def _font_bits(font_path: Path) -> bytes:
     """Extract the used ASCII glyphs from SGDK's default 16x6 tile sheet."""
     sheet = Image.open(font_path)
@@ -147,11 +156,11 @@ def screen_lines(profile: encode_config.EncodeProfile,
     return lines
 
 
-def _bytes(lines: list[tuple[int, int, int, str]]) -> bytes:
+def _bytes(lines: list[tuple[int, int, int, str]], col_offset: int = 0) -> bytes:
     out = bytearray()
     for row, col, palette, text in lines:
         encoded = bytes(GLYPH_INDEX[char] for char in text)
-        out += bytes((row, col, palette, len(encoded))) + encoded
+        out += bytes((row, col + col_offset, palette, len(encoded))) + encoded
     out.append(0xFF)
     return bytes(out)
 
@@ -168,6 +177,7 @@ def render_include(profile: encode_config.EncodeProfile,
                    constants: player_constants.PlayerConstants,
                    version: str, font_path: Path) -> str:
     lines = screen_lines(profile, constants, version)
+    col_offset = column_offset(profile)
     prg = next(item for item in lines if item[3].startswith("PrgBuf "))
     bar = next(item for item in lines if item[3].startswith("["))
     sub = next(item for item in lines if "Sub CPU" in item[3])
@@ -183,10 +193,11 @@ def render_include(profile: encode_config.EncodeProfile,
         f".equ STARTUP_GLYPH_DASH, {GLYPH_INDEX['-']}",
         f".equ STARTUP_GLYPH_O, {GLYPH_INDEX['O']}",
         f".equ STARTUP_GLYPH_K, {GLYPH_INDEX['K']}",
-        f".equ STARTUP_PRG_VALUE_ADDR, 0x{0xE000 + prg[0] * 128 + value_col * 2:04X}",
-        f".equ STARTUP_PRG_STATUS_ADDR, 0x{0xE000 + prg[0] * 128 + status_col * 2:04X}",
-        f".equ STARTUP_PRG_BAR_ADDR, 0x{0xE000 + bar[0] * 128 + (bar[1] + 1) * 2:04X}",
-        f".equ STARTUP_SUB_STATUS_ADDR, 0x{0xE000 + sub[0] * 128 + (sub[1] + sub[3].index('WAIT')) * 2:04X}",
+        f".equ STARTUP_COLUMN_OFFSET, {col_offset}",
+        f".equ STARTUP_PRG_VALUE_ADDR, 0x{0xE000 + prg[0] * 128 + (value_col + col_offset) * 2:04X}",
+        f".equ STARTUP_PRG_STATUS_ADDR, 0x{0xE000 + prg[0] * 128 + (status_col + col_offset) * 2:04X}",
+        f".equ STARTUP_PRG_BAR_ADDR, 0x{0xE000 + bar[0] * 128 + (bar[1] + col_offset + 1) * 2:04X}",
+        f".equ STARTUP_SUB_STATUS_ADDR, 0x{0xE000 + sub[0] * 128 + (sub[1] + col_offset + sub[3].index('WAIT')) * 2:04X}",
         f".equ STARTUP_PRG_CAP_KB, {av_config.PRG_BUF_CAP_KB}",
         f".equ STARTUP_PREFIX_OK_N, {len(prefix)}",
         "",
@@ -204,10 +215,10 @@ def render_include(profile: encode_config.EncodeProfile,
             word = (word << 4) | ((value >> bit) & 1)
         text.append(f"\t.word\t0x{word:04X}")
     text += _asm_bytes("startup_font_bits", _font_bits(font_path))
-    text += _asm_bytes("startup_lines", _bytes(lines))
+    text += _asm_bytes("startup_lines", _bytes(lines, col_offset))
     prefix_addresses = bytearray()
     for row, col, _palette, line in prefix:
-        addr = 0xE000 + row * 128 + (col + len(line) - 2) * 2
+        addr = 0xE000 + row * 128 + (col + col_offset + len(line) - 2) * 2
         prefix_addresses += addr.to_bytes(2, "big")
     text += _asm_bytes("startup_prefix_ok_addrs", bytes(prefix_addresses))
     text += _asm_bytes(

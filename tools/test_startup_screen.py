@@ -15,14 +15,15 @@ from encode_config import EncodeProfile
 import startup_screen
 
 
-def profile() -> EncodeProfile:
+def profile(mode: str = "H32") -> EncodeProfile:
+    h40 = mode == "H40"
     return EncodeProfile(
-        Path("/tmp/bad-apple-h32.toml"),
+        Path(f"/tmp/bad-apple-{mode.lower()}.toml"),
         {
             "metadata": {"title": "BAD APPLE!!"},
             "source": {"path": "assets/BadApple.mp4", "fps": "30",
                        "duration": "219.213021"},
-            "video": {"mode": "H32", "width": 256, "height": 224,
+            "video": {"mode": mode, "width": 320 if h40 else 256, "height": 224,
                       "fit": "crop", "resize_filter": "area",
                       "master_denoise": False},
             "audio": {"kind": "adpcm22"},
@@ -36,9 +37,9 @@ def profile() -> EncodeProfile:
     )
 
 
-def constants() -> SimpleNamespace:
+def constants(mode: str = "H32") -> SimpleNamespace:
     return SimpleNamespace(
-        tcols=32, trows=28, frames=6576, nseg=1,
+        tcols=40 if mode == "H40" else 32, trows=28, frames=6576, nseg=1,
         paltab_sec=1, adpcm_table_sectors=5, audio_preload_sec=19,
         wr0_patterns=880, wr1_patterns=880, main_patterns=208,
         f0_ctrl_sec=2, f0_pat_sec=1, routing_sec=4,
@@ -68,6 +69,36 @@ class StartupScreenTests(unittest.TestCase):
         self.assertIn("STARTUP_PRG_BAR_ADDR", rendered)
         self.assertIn("STARTUP_PREFIX_OK_N, 5", rendered)
         self.assertIn("startup_prefix_ok_addrs:", rendered)
+
+    def test_h40_centers_panel_and_live_targets_by_four_columns(self) -> None:
+        h32_lines = startup_screen.screen_lines(
+            profile("H32"), constants("H32"), "20260721.E70.P64")
+        h40_lines = startup_screen.screen_lines(
+            profile("H40"), constants("H40"), "20260721.E70.P64")
+        self.assertEqual(startup_screen.column_offset(profile("H32")), 0)
+        self.assertEqual(startup_screen.column_offset(profile("H40")), 4)
+        self.assertEqual(startup_screen._bytes(h40_lines, 4)[1], h40_lines[0][1] + 4)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            font = Path(tmp) / "font_default.png"
+            Image.new("P", (128, 48), 0).save(font)
+            h32 = startup_screen.render_include(
+                profile("H32"), constants("H32"), "20260721.E70.P64", font)
+            h40 = startup_screen.render_include(
+                profile("H40"), constants("H40"), "20260721.E70.P64", font)
+        self.assertIn("STARTUP_COLUMN_OFFSET, 0", h32)
+        self.assertIn("STARTUP_COLUMN_OFFSET, 4", h40)
+
+        def address(rendered: str, name: str) -> int:
+            prefix = f".equ {name}, 0x"
+            line = next(line for line in rendered.splitlines() if line.startswith(prefix))
+            return int(line.removeprefix(prefix), 16)
+
+        for name in (
+            "STARTUP_PRG_VALUE_ADDR", "STARTUP_PRG_STATUS_ADDR",
+            "STARTUP_PRG_BAR_ADDR", "STARTUP_SUB_STATUS_ADDR",
+        ):
+            self.assertEqual(address(h40, name) - address(h32, name), 8)
 
 
 if __name__ == "__main__":

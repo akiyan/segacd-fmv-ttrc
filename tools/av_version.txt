@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p65 : Center the fixed 32-column preload status panel in H40 by applying a
+#        four-tile offset to every startup line and live progress/status target.
+#        H32 retains its existing zero-offset layout.
 #   p64 : Re-enable VDP timing on a cleared black front name table after the
 #        hidden startup-font replacement. A disabled display can keep VBlank
 #        status asserted and stall frame-0 construction; the black transition
@@ -494,4 +497,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
 e=70
-p=64
+p=65

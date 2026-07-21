@@ -341,8 +341,10 @@ and on the disc because those are TTRC format names read by the player.
 Before the first movie frame, specialized builds show a profile and live boot
 preload screen. It uses SGDK's default 8x8 font and temporary CRAM, name-table,
 and font VRAM that the movie later reuses; it does not reserve or reduce
-PrgBuf, APPLY, WordBuf0/1, MainBuf, or the movie tile pool. The fixed HEADER
-regions switch to `OK` when the first PrgBuf sector arrives. `PrgBuf` then
+PrgBuf, APPLY, WordBuf0/1, MainBuf, or the movie tile pool. The panel is 32
+tiles wide: H32 places it at column 0, while H40 centers it with four empty
+tile columns on each side. The fixed HEADER regions switch to `OK` when the
+first PrgBuf sector arrives. `PrgBuf` then
 shows its loaded KiB count and a live 30-cell progress bar through the full
 safe 388 KiB preload. The display also acknowledges the Sub CPU, reports an
 exact `BADx` marker if startup validation fails, and samples progress once per
