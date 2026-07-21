@@ -6,7 +6,7 @@ render_analysis.py が同じ描画関数と定数を実データに使う。
 新レイアウト(この版):
   左  = SEGA-CD sim output(4:3枠) + 下に status帯
   右  = Source / Category(Miss赤塗り) / 全編カテゴリ合計 / Audio波形
-  下  = Req/Cold/Band/Prg/Wr0/Wr1/Main/DMA/Run、パレット、3段タイムライン
+  下  = Req/Cold/Pre/Band/Prg/Wr0/Wr1/DMA/Run、パレット、3段タイムライン
         ※ Miss&MissCarryパネルと per-metric flow は廃止。
 出力: tmp/layout_preview.png
 
@@ -24,27 +24,14 @@ CW, CH = 1920, 1080
 BG = (12, 12, 12)
 
 # ---- カテゴリ色(sim.py と一致) ----
-CAT_RAW   = (205, 205, 205)   # Raw   新規CD転送(塗り=枠なし内容)
-CAT_SAME  = (150, 150, 158)   # Same  不変(塗り=枠なし内容)  ※旧Coaの色
+CAT_RAW   = (205, 205, 205)   # Raw   same-frame exact load (black/white dashed frame)
+CAT_SAME  = (150, 150, 158)   # Same  resident exact reuse (legend mesh; no tile frame)
 CAT_NEAR  = (95, 115, 215)    # Near  近似で更新省略        ※旧Sameの色
-CAT_FLBK  = (240, 150, 50)    # Flbk  Missのフォールバック(荒くても常駐で穴埋め)(オレンジ・太枠)
+CAT_MISS  = (220, 70, 70)     # Miss  取りこぼし(赤・塗りつぶし)
+CAT_FLBK  = CAT_MISS          # Flbk  Missより良いresident fallback (red thin frame)
 CAT_DEDUP = (0, 190, 175)     # Dedup(旧・表示では Same に畳む。互換用に定義だけ残す)
 CAT_COA   = (45, 240, 70)     # Coa   粗い近似dedup            ※判別しやすい鮮やかな緑
-CAT_BUF   = (175, 120, 235)   # Buf   saved-budget / boot-preload funding class
-CAT_MISS  = (220, 70, 70)     # Miss  取りこぼし(赤・塗りつぶし)
 CAT_PREFETCH = (85, 175, 225) # future raw loaded into VRAM before first display use
-
-# カテゴリマップ/凡例での描き方: fill=枠なし内容塗り, thick=太枠(px), 他=細枠(1px)
-CAT_FILL = {"Raw", "Same", "Miss"}          # 塗り(▓)で表現(Missは赤塗り)
-CAT_THICK = {"Flbk": 3, "Buf": 3}  # 太枠カテゴリと枠幅
-# 凡例/線グラフで使う項目(順序=表示順)。1要素目=データキー
-CATS = [("Raw", CAT_RAW), ("Same", CAT_SAME), ("Near", CAT_NEAR), ("Coa", CAT_COA),
-        ("Flbk", CAT_FLBK), ("Buf", CAT_BUF), ("Miss", CAT_MISS)]
-# 表示ラベルは全て4文字に揃える(桁揃え)。データキー -> 表示4文字
-DISP = {"Raw": "Raw ", "Same": "Same", "Near": "Near", "Coa": "Coa ",
-        "Flbk": "Flbk", "Buf": "Buff", "Miss": "Miss"}
-# 常駐流用カテゴリ=「ユニーク数/総数」を併記(区別できる=何枚の別タイルを何セルで使い回したか)
-UNIQ_CATS = {"Same", "Near", "Coa", "Flbk"}
 
 COL_BORDER = (200, 200, 200)
 COL_FRAME_IN = (70, 70, 70)
@@ -56,14 +43,31 @@ COL_RUN = (215, 165, 65)         # cold pattern run分断度(amber)
 COL_PRG = (165, 105, 225)        # streamed PrgBuf
 COL_WR0 = (80, 145, 235)         # boot-preloaded WordBuf0
 COL_WR1 = (65, 205, 195)         # boot-preloaded WordBuf1
-COL_MAIN = (235, 175, 70)        # boot-preloaded MainBuf
+COL_DIC = (235, 175, 70)         # persistent MainBuf dictionary
 SUPPLY_COLORS = {
     "Prg": COL_PRG,
     "Wr0": COL_WR0,
     "Wr1": COL_WR1,
-    "Main": COL_MAIN,
+    "Dic": COL_DIC,
 }
-SUPPLY_ORDER = ("Prg", "Wr0", "Wr1", "Main")
+DISPLAY_SOURCE_ORDER = ("Prg", "Wr0", "Wr1", "Dic")
+METER_SUPPLY_ORDER = ("Prg", "Wr0", "Wr1")
+
+# Category is now based on display-time behavior and physical supply. Raw is a
+# same-frame CD load used immediately. The four supply categories replace the
+# old encoder-funding class Buf. Prefetch is not visible yet, so it has only a
+# status meter and becomes Same if the resident pattern is used later.
+QUALITY_CATS = [
+    ("Raw", CAT_RAW), ("Same", CAT_SAME), ("Near", CAT_NEAR),
+    ("Coa", CAT_COA), ("Flbk", CAT_FLBK), ("Miss", CAT_MISS),
+]
+SOURCE_CATS = [(name, SUPPLY_COLORS[name]) for name in DISPLAY_SOURCE_ORDER]
+CATS = QUALITY_CATS + SOURCE_CATS
+CAT_FILL = {"Miss"}
+CAT_THICK = {name: 3 for name in DISPLAY_SOURCE_ORDER}
+DISP = {name: name for name, _ in CATS}
+REQ_TIMELINE_CATS = (
+    "Raw", "Prg", "Wr0", "Wr1", "Dic", "Coa", "Flbk", "Miss")
 
 # ---- レイアウト定数(枠 = [x0,y0,x1,y1]) ----
 PAD = 11
@@ -147,9 +151,12 @@ def dummy_data():
     import random
     random.seed(7)
     C = 396                                   # 総セル(例: SonicJam 22x18)
-    # カテゴリ別カウント(1フレーム) と そのユニーク数(別タイル数)
-    counts = {"Raw": 118, "Same": 150, "Near": 40, "Coa": 52, "Flbk": 24, "Buf": 10, "Miss": 2}
-    counts_uniq = {"Raw": 118, "Same": 96, "Near": 21, "Coa": 15, "Flbk": 13, "Buf": 8, "Miss": 2}
+    # Mutually exclusive per-frame displayed-cell counts. The four physical
+    # sources replace the old Buf funding class.
+    counts = {
+        "Raw": 90, "Same": 130, "Near": 40, "Coa": 45, "Flbk": 20,
+        "Miss": 5, "Prg": 30, "Wr0": 15, "Wr1": 12, "Dic": 9,
+    }
     # 線グラフ用: 前後4秒×fps の各指標時系列(中央=現在)
     fps = 30; win = 4
     n = win * fps * 2 + 1
@@ -158,17 +165,18 @@ def dummy_data():
         base = counts[k]
         series[k] = [max(0, base + int(30 * math.sin(i / 7.0 + hash(k) % 7)) + random.randint(-12, 12))
                      for i in range(n)]
-    supply_capacities = {"Prg": 12416, "Wr0": 880, "Wr1": 880, "Main": 208}
+    supply_capacities = {"Prg": 12416, "Wr0": 880, "Wr1": 880}
     # 全編タイムライン用の時系列(ダミー): Miss多発帯とPrgBuf枯渇帯を作り込む
     tln = 360
     tl = {}
-    for k in ["Raw", "Coa", "Flbk", "Buf", "Miss"]:
+    for k in REQ_TIMELINE_CATS:
         b = counts[k]
         tl[k] = [max(0, int(b + 22 * math.sin(i / 11.0 + hash(k) % 5) + random.randint(-8, 8))) for i in range(tln)]
     miss_zones = lambda i: (80 <= i <= 112) or (248 <= i <= 276)
     for i in range(tln):
         if miss_zones(i):
-            tl["Miss"][i] += random.randint(25, 70); tl["Buf"][i] += random.randint(15, 35)
+            tl["Miss"][i] += random.randint(25, 70)
+            tl["Prg"][i] += random.randint(15, 35)
     prg_rem = []; r = supply_capacities["Prg"]
     for i in range(tln):
         r += (-350 if miss_zones(i) else 260) * -1   # miss帯=枯渇へ / それ以外=補充
@@ -178,7 +186,6 @@ def dummy_data():
         "Prg": prg_rem,
         "Wr0": [max(0, 820 - i * 2) for i in range(tln)],
         "Wr1": [max(0, 760 - i * 2) for i in range(tln)],
-        "Main": [max(0, 190 - i // 2) for i in range(tln)],
     }
     # BODY物理配送slotのダミー。padを含む物理bytesが各slotのCD実時間を決める。
     body_payload_tl = [
@@ -203,12 +210,13 @@ def dummy_data():
         return [[(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for _ in range(15)]
                 for _ in range(4)]
     palettes = {"Prev": _pal(), "Current": _pal(), "Next": _pal()}
-    # カテゴリ合計(全編累積のダミー) と そのユニーク数(全編で使われた別タイル数)
+    # カテゴリ合計(全編累積のダミー)。unique counts are no longer displayed.
     cat_totals = {k: counts[k] * (200 + (hash(k) % 90)) for k, _ in CATS}
-    cat_uniq = {k: max(1, int(cat_totals[k] * (0.06 + 0.05 * (hash(k) % 7) / 7))) for k, _ in CATS}
-    dma_tiles = counts["Raw"] + counts["Buf"]
-    return dict(C=C, counts=counts, counts_uniq=counts_uniq, series=series, fps=fps, win=win,
-                palettes=palettes, cat_totals=cat_totals, cat_uniq=cat_uniq,
+    prefetch = 18
+    displayed_cold = sum(counts[name] for name in ("Raw",) + DISPLAY_SOURCE_ORDER)
+    dma_tiles = displayed_cold + prefetch
+    return dict(C=C, counts=counts, series=series, fps=fps, win=win,
+                palettes=palettes, cat_totals=cat_totals,
                 body_payload_bytes=body_payload_bytes, body_control_bytes=body_control_bytes,
                 body_physical_bytes=body_physical_bytes,
                 band_kbps=band_kbps, body_payload_tl=body_payload_tl,
@@ -216,13 +224,13 @@ def dummy_data():
                 pl_info=pl_info, pl_cur=pl_cur, pl_total=pl_total,
                 mode="H32", res="176x144 (22x18)", audio="13.3kHz mono 8bit PCM", avg_kbps=avg_kbps,
                 src_spec="256x224 / 30fps / AAC 48kHz stereo",
-                req=sum(counts[k] for k, _ in CATS),
+                req=246, miss=counts["Miss"],
                 budget=273,
                 comp=counts["Same"] + counts["Near"] + counts["Coa"] + counts["Flbk"],
                 supply_capacities=supply_capacities,
                 supply_remaining={name: values[126] for name, values in supply_series.items()},
-                cold=counts["Raw"] + counts["Buf"], cold_raw=counts["Raw"], cold_buf=counts["Buf"],
-                cold_prefetch=0,
+                cold=displayed_cold + prefetch, cold_prefetch=prefetch,
+                prefetch_cap=32,
                 cold_cap=av_config.cold_cap_for_fps(fps, "H32", 896),
                 dma_tiles=dma_tiles, dma_runs=23,
                 tl=tl, supply_series=supply_series, tln=tln,
@@ -261,13 +269,12 @@ def draw_field(d, x, y, label, value, width, font, col, maxval=None, maxwidth=No
 def meter_widths(cells):
     """Each bar follows its label width.
 
-    Returns Band, Prg, Wr0, Wr1, Main, DMA, and Run widths.
+    Returns Band, Prg, Wr0, Wr1, DMA, and Run widths.
     """
-    return (_w(f_leg, "Band:000KiB/sec") + 3,
+    return (_w(f_leg, "Band:000") + 3,
             _w(f_leg, "Prg:00000") + 3,
             _w(f_leg, "Wr0:000") + 3,
             _w(f_leg, "Wr1:000") + 3,
-            _w(f_leg, "Main:000") + 3,
             _w(f_leg, dma_label_template(cells)) + 3,
             _w(f_leg, run_label_template()) + 3)
 
@@ -284,7 +291,8 @@ def dummy_image(w, h, seed):
 
 def draw_catmap(w, h, data):
     """カテゴリマップ: ダミータイル格子。
-    Raw/Same=枠なし内容塗り(▓) / Near/Coa/Buf=細枠 / Flbk(橙)=太枠 / Miss=赤塗りつぶし。"""
+    Raw=thin black/white dashed frame / Same=no frame / Near/Coa/Flbk=thin
+    frame / physical sources=thick frame / Miss=red fill."""
     im = Image.new("RGB", (w, h), (18, 18, 18))
     d = ImageDraw.Draw(im)
     cols, rows = 22, 18
@@ -296,31 +304,53 @@ def draw_catmap(w, h, data):
         for c in range(cols):
             x0, y0 = int(c * tw), int(r * th)
             x1, y1 = int((c + 1) * tw) - 1, int((r + 1) * th) - 1
-            k = random.choices(cats, weights=[25, 40, 8, 10, 10, 3, 4])[0]  # Raw/Same/Near/Coa/Flbk/Buf/Miss
+            k = random.choices(
+                cats, weights=[24, 34, 8, 10, 5, 2, 7, 4, 3, 3])[0]
             col = dict(CATS)[k]
             if k == "Miss":
                 d.rectangle([x0, y0, x1, y1], fill=CAT_MISS)                  # 赤で塗りつぶし
                 continue
             # 内容(色ブロック)を塗る
             d.rectangle([x0, y0, x1, y1], fill=((c * 11 + r * 7) % 256, (r * 13) % 256, (c * 17) % 256))
-            if k in CAT_FILL:
-                continue                                                     # Raw/Same=枠なし
-            d.rectangle([x0, y0, x1, y1], outline=col, width=CAT_THICK.get(k, 1))  # 細枠/太枠
+            if k == "Raw":
+                dashed_rect(d, (x0, y0, x1, y1))
+            elif k == "Same":
+                continue
+            elif k not in CAT_FILL:
+                d.rectangle([x0, y0, x1, y1], outline=col, width=CAT_THICK.get(k, 1))
     return im
 
 
+def dashed_rect(d, box, dash=3):
+    """One-pixel alternating black/white dashed rectangle."""
+    x0, y0, x1, y1 = map(int, box)
+    for start in range(x0, x1 + 1, dash):
+        end = min(start + dash - 1, x1)
+        phase = ((start - x0) // dash) & 1
+        d.line((start, y0, end, y0), fill=(235, 235, 235) if not phase else (15, 15, 15))
+        d.line((start, y1, end, y1), fill=(15, 15, 15) if not phase else (235, 235, 235))
+    for start in range(y0, y1 + 1, dash):
+        end = min(start + dash - 1, y1)
+        phase = ((start - y0) // dash) & 1
+        d.line((x0, start, x0, end), fill=(15, 15, 15) if not phase else (235, 235, 235))
+        d.line((x1, start, x1, end), fill=(235, 235, 235) if not phase else (15, 15, 15))
+
+
 def swatch(d, x, y, sw, name, col):
-    """凡例四角。Raw=白黒の▓ / Same=Same色(グレー)濃淡の▓(どちらも枠を描かない内容塗りの意) /
-    Miss=赤塗り / Near/Coa/Buf=細枠 / Flbk=太枠。"""
-    if name in ("Raw", "Same"):
-        hi, lo = ((210, 210, 210), (45, 45, 45)) if name == "Raw" \
-            else (col, tuple(int(v * 0.35) for v in col))        # Same=グレー濃淡
-        cs = max(2, (sw + 1) // 4)                               # 市松のマス
+    """Legend swatch mirroring the category-map border/fill semantics."""
+    if name == "Raw":
+        dashed_rect(d, (x, y, x + sw, y + sw), dash=3)
+    elif name == "Same":
+        # Reuse the original Raw legend's light/dark checker exactly.
+        hi, lo = (210, 210, 210), (45, 45, 45)
+        cs = max(2, (sw + 1) // 4)
         for iy in range(0, sw + 1, cs):
             for ix in range(0, sw + 1, cs):
                 on = (((ix // cs) + (iy // cs)) % 2 == 0)
-                d.rectangle([x + ix, y + iy, min(x + ix + cs - 1, x + sw), min(y + iy + cs - 1, y + sw)],
-                            fill=hi if on else lo)
+                d.rectangle(
+                    [x + ix, y + iy, min(x + ix + cs - 1, x + sw),
+                     min(y + iy + cs - 1, y + sw)],
+                    fill=hi if on else lo)
     elif name in CAT_FILL:                                        # Miss
         d.rectangle([x, y, x + sw, y + sw], fill=col)
     else:
@@ -328,10 +358,10 @@ def swatch(d, x, y, sw, name, col):
 
 
 def draw_legend(w, h, data):
-    """凡例(2行)。数字欄は背景を塗らず文字だけを描く。"""
+    """Five-column, two-row legend with one displayed-cell count per item."""
     im = Image.new("RGB", (w, h), (14, 14, 14))
     d = ImageDraw.Draw(im)
-    per_row = 4
+    per_row = 5
     cw = w // per_row
     sw = 14
     for i, (name, col) in enumerate(CATS):
@@ -340,11 +370,7 @@ def draw_legend(w, h, data):
         swatch(d, x, y, sw, name, col)
         tx = x + sw + 6
         label = DISP[name] + ":"
-        if name in UNIQ_CATS:      # ユニーク数/総数 を併記
-            draw_field(d, tx, y - 1, label, data["counts_uniq"][name], 3, f_leg,
-                       COL_TXT, data["counts"][name], 3)
-        else:
-            draw_field(d, tx, y - 1, label, data["counts"][name], 3, f_leg, COL_TXT)
+        draw_field(d, tx, y - 1, label, data["counts"][name], 3, f_leg, COL_TXT)
     return im
 
 
@@ -377,19 +403,20 @@ def draw_graph(w, h, data):
 
 
 def draw_status(w, h, data):
-    """status帯: Req / Cold / Band / Prg / Wr0 / Wr1 / Main / DMA / Run + timeline。
+    """status帯: Req / Cold / Pre / Band / Prg / Wr0 / Wr1 / DMA / Run + timeline。
     数値は同じ文字色のゼロ埋めで桁固定。Tank/BufメーターとMissCarryは廃止。"""
     im = Image.new("RGB", (w, h), (16, 16, 16))
     d = ImageDraw.Draw(im)
     by, BH = 8, 16                   # 上マージンを半分(16→8)。タイムラインもこのbyから始まり下端は据置=縦に伸びる
     C = data["C"]
     GAP = 16
-    REQ_W = 180                     # Req は同ラインに Raw/Comp を並べるので広め
+    REQ_W = _w(f_leg, "Req:000  Miss:000") + 3
     dmax = dma_tile_capacity(data["mode"], data["fps"], C)
     dval = data["dma_tiles"]
     # メーター幅の統一を廃止=各バーは自分のラベル幅
-    BAND_W, PRG_W, WR0_W, WR1_W, MAIN_W, DMA_W, RUN_W = meter_widths(C)
-    COLD_W = _w(f_leg, "Cold:000") + 3          # 新: Coldバー幅=ラベル幅(Req↔Bandの間に挿入)
+    BAND_W, PRG_W, WR0_W, WR1_W, DMA_W, RUN_W = meter_widths(C)
+    COLD_W = _w(f_leg, "Cold:000") + 3
+    PRE_W = _w(f_leg, "Pre:000") + 3
     ly = by + BH + 3
     x = 4
 
@@ -402,35 +429,41 @@ def draw_status(w, h, data):
                 d.rectangle([px, by, px + seg, by + BH], fill=col); px += seg
         d.rectangle([x, by, x + bw, by + BH], outline=COL_FRAME_IN)
 
-    # 1) Req = 全カテゴリ積み(全幅=C) + 予算ライン(黄)。同ラインに Raw数 / Comp数を横並び
+    # 1) Req = mutually-exclusive displayed categories; headline values only.
     stacked([(data["counts"][k], dict(CATS)[k]) for k, _ in CATS], C, REQ_W)
     bx = x + int(REQ_W * data["budget"] / C)
     d.line([bx, by - 2, bx, by + BH + 2], fill=(255, 214, 0))
     xq = draw_field(d, x, ly, "Req:", data["req"], 3, f_leg, COL_TXT)
-    xr = draw_field(d, xq + 10, ly, "Raw:", data["counts"]["Raw"], 3, f_leg, COL_DIM)
-    draw_field(d, xr + 8, ly, "Comp:", data["comp"], 3, f_leg, COL_DIM)
+    draw_field(d, xq + 8, ly, "Miss:", data["miss"], 3, f_leg, COL_TXT)
     x += REQ_W + GAP
-    # 1.5) Cold = このコマの新規タイル(Raw+Buf+future prefetch)。
-    #      これまで苦しんだcold値を視覚化。Req↔Bandの空間に配置。
-    stacked([(data["cold_raw"], CAT_RAW), (data["cold_buf"], CAT_BUF),
-             (data["cold_prefetch"], CAT_PREFETCH)], data["cold_cap"], COLD_W)
+    # 2) Cold = same-frame exact loads by physical source + future prefetch.
+    cold_parts = [(data["counts"]["Raw"], CAT_RAW)]
+    cold_parts += [
+        (data["counts"][name], SUPPLY_COLORS[name])
+        for name in DISPLAY_SOURCE_ORDER
+    ]
+    cold_parts.append((data["cold_prefetch"], CAT_PREFETCH))
+    stacked(cold_parts, data["cold_cap"], COLD_W)
     draw_field(d, x, ly, "Cold:", data["cold"], 3, f_leg, COL_TXT)
     x += COLD_W + GAP
-    # 2) Band = この物理配送slotのBODY useful payload + control。pad/Headerは除外。
+    # 3) Pre = future exact patterns written to VRAM but not displayed yet.
+    stacked([(data["cold_prefetch"], CAT_PREFETCH)], data["prefetch_cap"], PRE_W)
+    draw_field(d, x, ly, "Pre:", data["cold_prefetch"], 3, f_leg, COL_TXT)
+    x += PRE_W + GAP
+    # 4) Band = this physical BODY slot's useful payload + control; no pad/Header.
     stacked([(data["body_payload_bytes"], CAT_RAW),
              (data["body_control_bytes"], COL_OVH)],
             max(data["body_physical_bytes"], 1), BAND_W)
     d.line([x + BAND_W, by - 2, x + BAND_W, by + BH + 2], fill=(210, 190, 90))
-    xb = draw_field(d, x, ly, "Band:", data["band_kbps"], 3, f_leg, COL_TXT)
-    d.text((xb, ly), "KiB/sec", fill=COL_DIM, font=f_leg)
+    draw_field(d, x, ly, "Band:", data["band_kbps"], 3, f_leg, COL_TXT)
     x += BAND_W + GAP
-    # 3) Four independent physical pattern-supply meters.  Wr0/Wr1/Main are
-    # boot preloads; Prg is the streamed circular supply.
+    # 5) The persistent dictionary has no remaining count. Prg/Wr0/Wr1 retain
+    # independent occupancy/credit meters.
     supply_widths = {
         "Prg": (PRG_W, 5), "Wr0": (WR0_W, 3),
-        "Wr1": (WR1_W, 3), "Main": (MAIN_W, 3),
+        "Wr1": (WR1_W, 3),
     }
-    for name in SUPPLY_ORDER:
+    for name in METER_SUPPLY_ORDER:
         width, digits = supply_widths[name]
         remaining = data["supply_remaining"][name]
         capacity = data["supply_capacities"][name]
@@ -462,7 +495,7 @@ def draw_status(w, h, data):
     py0 = ly + 16
     draw_palettes_strip(d, 4, py0, meters_right - 4, (h - 2) - py0, data["palettes"], data.get("pl_info"))
 
-    # 6) Three-row timeline: request heatmap / four-source remaining stack /
+    # 6) Three-row timeline: request heatmap / Prg+Wr0+Wr1 remaining stack /
     # useful BODY delivery.  Height ratio is 2:1:1.
     x_tl = x
     tlw = w - 4 - x_tl
@@ -482,8 +515,7 @@ def draw_status(w, h, data):
         # 各段の背景を極暗色で塗る(下段の空きが純黒=marginに見えないように)
         d.rectangle([x_tl, y_supply, x_tl + tlw, y_supply + H_supply], fill=(21, 22, 28))
         d.rectangle([x_tl, y_dma, x_tl + tlw, y_dma + H_dma], fill=(18, 26, 20))   # 有効転送段 暗green
-        stack_order = [("Raw", CAT_RAW), ("Coa", CAT_COA), ("Flbk", CAT_FLBK),
-                       ("Buf", CAT_BUF), ("Miss", CAT_MISS)]
+        stack_order = [(name, dict(CATS)[name]) for name in REQ_TIMELINE_CATS]
         for col_i in range(tlw):
             fi = min(int(col_i / tlw * tln), tln - 1)
             X = x_tl + col_i
@@ -493,8 +525,10 @@ def draw_status(w, h, data):
                 if seg > 0:
                     d.line([(X, yb - seg), (X, yb)], fill=col); yb -= seg
             ys = y_supply + H_supply
-            total_capacity = max(sum(data["supply_capacities"].values()), 1)
-            for name in SUPPLY_ORDER:
+            total_capacity = max(
+                sum(data["supply_capacities"][name]
+                    for name in METER_SUPPLY_ORDER), 1)
+            for name in METER_SUPPLY_ORDER:
                 hs = int(H_supply * supply[name][fi] / total_capacity)
                 if hs > 0:
                     d.line([(X, ys - hs), (X, ys)], fill=SUPPLY_COLORS[name])
@@ -588,7 +622,7 @@ def load_fonts():
 
 def draw_footer(cv, data):
     """Analysis / Comparison 共通フッター。上部レイアウトを差し替えても使い回せる。
-    status帯(Req/Comp/Buff/DMA + パレット Prev/Current/Next + 3段タイムライン)と
+    status帯(Req/Cold/Pre/Band/physical supplies/DMA/Run + palettes + timelines)と
     カテゴリ合計バーを、共通の STATUS_XY / PAL_XY へ貼る。"""
     st = draw_status(STATUS_W, STATUS_H, data)
     cv.paste(st, STATUS_XY)

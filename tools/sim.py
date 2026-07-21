@@ -140,15 +140,18 @@ NBINS = 12                    # MissCarry年齢分布のビン数(1..11, 12+)
 # dedupタイル枠で共有する(render_statusline.py の COL_SAME と一致させること)。
 COL_SAME = (0, 190, 175)      # teal
 # カテゴリマップ(catmap)の縁取り色。status/凡例と一致させること。
-CAT_RAW = (205, 205, 205)     # Raw = 新規CD転送 (やや暗い白, 枠なし内容)
-CAT_SAME = (150, 150, 158)    # Same = 不変 (gray, 枠なし内容)  ※色巡回
+CAT_RAW = (205, 205, 205)     # Raw = same-frame exact load (black/white dashed frame)
+CAT_SAME = (150, 150, 158)    # Same = exact resident reuse (legend only; no tile frame)
 CAT_DEDUP = (0, 190, 175)     # Dedup = VRAM流用 (teal, 互換用)
-CAT_BUF = (175, 120, 235)     # Buf = saved-budget / boot-preload funding class (violet)
 CAT_MISS = (220, 70, 70)      # Miss = 取りこぼし (red, 塗りつぶし)
 CAT_CARRY = (235, 160, 70)    # MissCarry = 繰越Miss (amber)
 CAT_NEAR = (95, 115, 215)     # Near = ほぼ同一の常駐を流用 (blue)  ※色巡回
 CAT_COA = (45, 240, 70)       # Coa = 近い常駐を流用 (鮮やかな緑)  ※色巡回+判別性
-CAT_FLBK = (240, 150, 50)     # Flbk = Missのフォールバック(荒くても常駐で穴埋め) (orange, 太枠)
+CAT_FLBK = CAT_MISS            # Flbk = resident fallback (red, thin frame)
+CAT_PRG = (165, 105, 225)     # old Buf exact load, physically supplied by PrgBuf
+CAT_WR0 = (80, 145, 235)      # old Buf exact load, supplied by WordBuf0
+CAT_WR1 = (65, 205, 195)      # old Buf exact load, supplied by WordBuf1
+CAT_MAIN = (235, 175, 70)     # old Buf exact load, supplied by MainBuf
 # 粗い近似dedup(env CBRSIM_COA=1): 平坦なコールドタイルを、見た目(2×2低周波)が近い常駐パターンで
 # 流用(ネームテーブルだけ=0転送)。ディザの点々差は無視。構造崩れを避けるため detail が低い平坦タイル限定。
 COA_ON = os.environ.get("CBRSIM_COA", "1") != "0"          # 既定ON(全機能ON)。OFFは CBRSIM_COA=0
@@ -1261,7 +1264,7 @@ def main():
     _t = _mark("パレット学習", _t)
 
     main_dir = OUT / "preview"      # SEGA-CD 実出力(ゴースト有り)
-    catmap_dir = OUT / "catmap"     # Same/Dedup/Buf を縁取り(Raw/Missは枠なし)
+    catmap_dir = OUT / "catmap"     # category borders; Raw has none, Miss is overlaid later
     misscarry_dir = OUT / "misscarry"  # Miss(赤)/MissCarry(amber) を縁取り
     if not NO_PANELS:
         for d in (main_dir, catmap_dir, misscarry_dir):
@@ -2067,6 +2070,50 @@ def main():
                 pattern_supply.SOURCE_WR if ordinal < wr_used
                 else pattern_supply.SOURCE_MAIN)
 
+        # Resolve display categories from the allocator's actual cold update,
+        # not from decision order. Decisions are priority-ordered but the
+        # player applies cells in cell order, so when several cells choose the
+        # same key, the cell that physically carries the pattern can differ
+        # from the cell that funded it. Only that actual cold cell is Raw or a
+        # physical-source category; the other same-frame users are Same.
+        raw_display_mask = np.zeros(C_CELLS, bool)
+        prg_source_mask = np.zeros(C_CELLS, bool)
+        wr0_source_mask = np.zeros(C_CELLS, bool)
+        wr1_source_mask = np.zeros(C_CELLS, bool)
+        main_source_mask = np.zeros(C_CELLS, bool)
+        raw_keys = {cur_key[int(cell)] for cell in np.where(raw_mask)[0]}
+        buf_keys = {cur_key[int(cell)] for cell in np.where(prg_mask)[0]}
+        if raw_keys & buf_keys:
+            raise AssertionError(
+                f"frame {i}: exact key has both Raw and Buf funding")
+        for (cell, key), (_slot, cold), source in zip(
+                upd_ck, placements, frame_sources):
+            if not cold:
+                continue
+            if key in raw_keys:
+                raw_display_mask[cell] = True
+                continue
+            if key not in buf_keys:
+                raise AssertionError(
+                    f"frame {i}: cold cell {cell} has no Raw/Buf funding")
+            if source == pattern_supply.SOURCE_PRG:
+                prg_source_mask[cell] = True
+            elif source == pattern_supply.SOURCE_WR:
+                (wr0_source_mask if i % 2 == 0 else wr1_source_mask)[cell] = True
+            elif source == pattern_supply.SOURCE_MAIN:
+                main_source_mask[cell] = True
+            else:
+                raise AssertionError(
+                    f"frame {i}: unknown pattern source {source}")
+        if int(raw_display_mask.sum()) != int(raw_mask.sum()):
+            raise AssertionError(
+                f"frame {i}: allocator Raw split does not match funded loads")
+        if sum(mask.sum() for mask in (
+                prg_source_mask, wr0_source_mask, wr1_source_mask,
+                main_source_mask)) != int(prg_mask.sum()):
+            raise AssertionError(
+                f"frame {i}: physical source split does not cover Buf loads")
+
         # Greedy raw prefetch runs only after visible updates and upgrades have
         # been decided.  It may consume spare BODY bytes/cold slots for the
         # next frame's predicted cold excess.  A speculative request is simply
@@ -2236,15 +2283,26 @@ def main():
         want = int(changed.sum())
         upd = int(updated.sum())
         miss = int(stale.sum())
+        raw_count = int(raw_display_mask.sum())
+        source_count = sum(int(mask.sum()) for mask in (
+            prg_source_mask, wr0_source_mask, wr1_source_mask,
+            main_source_mask))
+        near_count = int(near_eff.sum())
+        coa_count = int(coa_mask.sum())
+        flbk_count = int(flbk_mask.sum())
+        same_count = (
+            C_CELLS - raw_count - source_count - near_count
+            - coa_count - flbk_count - miss)
+        if same_count < 0:
+            raise AssertionError(
+                f"frame {i}: display categories exceed {C_CELLS} cells")
         if EMIT_DEC:
             dec_miss.append(miss)
             # デバッグ欄用カテゴリ数: catmap と同一定義(Raw/Buf/Coa/Flbk/Near/Miss は互いに素、
             # 残り=Same(不変+Dedup畳み込み))。7種は必ず C_CELLS に合計する。
-            _raw = int(raw_mask.sum()); _buf = int(prg_mask.sum())
-            _coa = int(coa_mask.sum()); _flbk = int(flbk_mask.sum())
-            _near = int(near_disp.sum())
-            _same = int(C_CELLS - _raw - _buf - _coa - _flbk - _near - miss)
-            dec_cats.append((_raw, _same, _near, _coa, _flbk, _buf, miss))
+            dec_cats.append((
+                raw_count, same_count, near_count, coa_count, flbk_count,
+                source_count, miss))
         # MissCarry = 前フレームでMissして今も未解決(=stale かつ wait>=1)。旧waitで判定。
         carry_mask = stale & (wait >= 1)
         carry = int(carry_mask.sum())
@@ -2260,6 +2318,9 @@ def main():
         stat_rows.append((
             i, f_fixed, want, upd, miss, C_CELLS - want, dedup_saved, tile_recs, carry, age_max,
             want / C_CELLS, int(near_eff.sum()), coa_hits, flbk_hits, prg_hits,
+            int(prg_source_mask.sum()), int(wr0_source_mask.sum()),
+            int(wr1_source_mask.sum()), int(main_source_mask.sum()),
+            same_count,
             len(u_same), len(u_near), len(u_coa), len(u_flbk), dma_tiles, dma_runs,
             len(prefetch_cold_slots)))
 
@@ -2285,13 +2346,32 @@ def main():
                               np.s_[ii, :, k, :], np.s_[ii, :, TILE - 1 - k, :]):
                         base_rgb[s] = A * c + (1 - A) * base_rgb[s]
 
-            # カテゴリマップ: Near/Coa/Buf=細枠, Flbk(橙)=太枠。Raw/Same=枠なし内容表示。
-            # Miss は黒(render_analysis 側で赤塗りつぶし)。Dedup(完全一致)は Same に畳む=枠なし。
+            def dashed_raw_border(base_rgb, mask):
+                """Draw a one-pixel alternating black/white Raw perimeter."""
+                ii = np.where(mask)[0]
+                if not ii.size:
+                    return
+                white = np.array((235, 235, 235), np.float64)
+                black = np.array((15, 15, 15), np.float64)
+                for p in range(TILE):
+                    a, b = (white, black) if p % 2 == 0 else (black, white)
+                    base_rgb[ii, 0, p, :] = a
+                    base_rgb[ii, TILE - 1, p, :] = b
+                    base_rgb[ii, p, 0, :] = b
+                    base_rgb[ii, p, TILE - 1, :] = a
+
+            # Category map: Raw=thin dashed frame; Same=no frame;
+            # Near/Coa/Flbk=thin frame; old Buf exact loads use a thick
+            # physical-source frame. Miss becomes a red fill in the renderer.
             cat = cur_rgb.astype(np.float64)
             cat[stale] = 0
-            border(cat, near_disp, CAT_NEAR); border(cat, coa_mask, CAT_COA)
-            border(cat, flbk_mask, CAT_FLBK, 3)
-            border(cat, prg_mask, CAT_BUF, 3)
+            dashed_raw_border(cat, raw_display_mask)
+            border(cat, near_eff, CAT_NEAR); border(cat, coa_mask, CAT_COA)
+            border(cat, flbk_mask, CAT_FLBK)
+            border(cat, prg_source_mask, CAT_PRG, 3)
+            border(cat, wr0_source_mask, CAT_WR0, 3)
+            border(cat, wr1_source_mask, CAT_WR1, 3)
+            border(cat, main_source_mask, CAT_MAIN, 3)
             _save_png(cells_to_image(cat.clip(0, 255).astype(np.uint8)), catmap_dir / f"{i:05d}.png")
 
             # Miss/Carry マップ: Miss/Carryタイルだけ内容表示+縁取り(fresh=赤/繰越=amber)。他は黒。
@@ -2541,7 +2621,7 @@ def main():
 
     # status line 用の per-frame 実測を保存
     cols = ("frame ffix want updated miss delta dedup tx carry age want_frac near coa flbk buf"
-            " same_u near_u coa_u flbk_u dma_tiles dma_runs prefetch")
+            " prg wr0 wr1 main same same_u near_u coa_u flbk_u dma_tiles dma_runs prefetch")
     budget_tiles = int(np.median(stats[:, 1]))   # ffix中央値 = 固定予算タイル数(fps依存)
     # 全編ユニーク(cattotals併記用): same/near/coa/flbk の別タイル総数
     cat_uniq = np.array([len(guniq["same"]), len(guniq["near"]), len(guniq["coa"]),
@@ -2549,6 +2629,7 @@ def main():
     np.savez(OUT / "stats.npz", stats=stats, cols=cols, fps=FPS, cells=C_CELLS,
              active_tiles=ACTIVE_TILES, max_cold=MAX_COLD,
              raw_prefetch=np.asarray(prefetch_cold_log, np.int64),
+             raw_prefetch_cap=np.int64(RAW_PREFETCH_MAX_REQUESTS_PER_FRAME),
              cd1x=CD_RATE,
              body_gross_bytes=body_gross_bytes,
              body_fixed_control_bytes=body_fixed_control_bytes,

@@ -239,13 +239,19 @@ Important rendering notes:
 - Layout details are implemented in `layout_preview.py`:
   - right column: Source / Category / whole-clip category totals / Audio
   - Miss in Category is a filled red hole
-  - legend: 2 rows, 7 categories
-  - zero padding and dark leading zeros
+  - legend: 2 rows, 10 mutually-exclusive categories:
+    Raw/Same/Near/Coa/Flbk/Miss/Prg/Wr0/Wr1/Dic
+  - each legend item shows one displayed-cell count
+  - Same uses the original light/dark checker legend swatch but no
+    category-map tile border
+  - Raw uses a thin black/white dashed border in both legend and category map
   - scrolling audio waveform with +/-2 seconds and now centered
-  - status uses Req / Cold / Band / Prg / Wr0 / Wr1 / Main / DMA / Run
+  - status uses Req / Cold / Pre / Band / Prg / Wr0 / Wr1 / DMA / Run
+  - Pre is the number of future patterns actually written to VRAM in the frame;
+    a prefetched pattern used later is displayed as Same
   - Band is physical-slot useful BODY payload + control, excluding all pad and
     HEADER, divided by that slot's actual CD read time (0 to 150 KiB/s)
-  - three-row timeline: Req2 : four-source remaining stack1 : BODY-Band1
+  - three-row timeline: Req2 : Prg/Wr0/Wr1 remaining stack1 : BODY-Band1
   - DMA is compared against theoretical `(60/fps)` VBlank budget
   - heading metadata plus small top-right Time / Frame, baseline-aligned
   - palette used-color blocks have no outline

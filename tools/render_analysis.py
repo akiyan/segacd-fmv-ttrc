@@ -131,13 +131,11 @@ SUPPLY_CAPACITIES = {
     "Prg": int(BUF["prg_capacity"]),
     "Wr0": int(BUF["wr0_capacity"]),
     "Wr1": int(BUF["wr1_capacity"]),
-    "Main": int(BUF["main_capacity"]),
 }
 SUPPLY_REMAINING = {
     "Prg": BUF["prg_remaining"].astype(np.int64),
     "Wr0": BUF["wr0_remaining"].astype(np.int64),
     "Wr1": BUF["wr1_remaining"].astype(np.int64),
-    "Main": BUF["main_remaining"].astype(np.int64),
 }
 if "quality_budget_remaining" not in BUF:
     raise SystemExit("analysis quality-budget trace is missing; re-run sim")
@@ -185,19 +183,28 @@ if any(int(values[0]) != 0 for values in (
     raise SystemExit("BODY delivery slot 0 must exclude HEADER/frame 0; re-run sim")
 MISS_MASKS = np.load(f"{SIM}/miss_masks.npy")
 
-# ---- stats -> 8カテゴリ時系列。mid/far/buf 列が無い旧statsは0扱い(後方互換) ----
+# ---- stats -> mutually-exclusive display categories ----
 col = lambda k: S[:, idx[k]].astype(np.int64) if k in idx else np.zeros(NF, np.int64)
 Raw = col("tx"); Dedup = col("dedup"); Coa = col("coa"); Near = col("near")
 # Flbk = 旧Mid+Farを統合(Missのフォールバック)。新statsは flbk 列, 旧statsは mid+far を合算(後方互換)
 Flbk = col("flbk") + col("mid") + col("far")
 Want = col("want"); Miss = col("miss")
 Buf = col("buf") if "buf" in idx else np.maximum(col("updated") - Raw - Dedup - Coa, 0)
-Same = np.maximum(C - Want, 0) + Dedup          # Dedup(完全一致流用)を Same に畳む
-# カテゴリ別ユニークタイル数(何枚の別タイルを使い回したか)。旧statsに無ければ0(後方互換)
-Same_u = col("same_u"); Near_u = col("near_u"); Coa_u = col("coa_u")
-Flbk_u = col("flbk_u") + col("mid_u") + col("far_u")
+_source_fields = ("prg", "wr0", "wr1", "main")
+if any(name not in idx for name in _source_fields):
+    raise SystemExit(
+        "analysis physical-source categories are missing; re-run sim")
+Prg, Wr0, Wr1, Main = (col(name) for name in _source_fields)
+if not np.array_equal(Prg + Wr0 + Wr1 + Main, Buf):
+    raise SystemExit(
+        "analysis physical-source categories do not sum to legacy Buf; re-run sim")
+if "same" not in idx:
+    raise SystemExit("analysis exact Same category is missing; re-run sim")
+Same = col("same")
 DMA_TILES = col("dma_tiles") if "dma_tiles" in idx else Raw + Buf
 PREFETCH = col("prefetch")
+PREFETCH_CAP = int(z["raw_prefetch_cap"]) if "raw_prefetch_cap" in z else max(
+    1, int(PREFETCH.max(initial=0)))
 
 
 def _legacy_dma_runs():
@@ -244,8 +251,17 @@ def _legacy_dma_runs():
 
 
 DMA_RUNS = col("dma_runs") if "dma_runs" in idx else _legacy_dma_runs()
-FULL = {"Raw": Raw, "Same": Same, "Near": Near, "Coa": Coa,
-        "Flbk": Flbk, "Buf": Buf, "Miss": Miss}
+FULL = {
+    "Raw": Raw, "Same": Same, "Near": Near, "Coa": Coa,
+    "Flbk": Flbk, "Miss": Miss,
+    "Prg": Prg, "Wr0": Wr0, "Wr1": Wr1, "Dic": Main,
+}
+_category_sum = sum(FULL.values())
+if not np.array_equal(_category_sum, np.full(NF, C, np.int64)):
+    bad = int(np.flatnonzero(_category_sum != C)[0])
+    raise SystemExit(
+        f"analysis categories do not cover frame {bad}: "
+        f"{int(_category_sum[bad])} != {C}; re-run sim")
 WIN = 4; HALF = int(round(FPS * WIN))                       # 線グラフ ±4秒
 
 # ---- palettes.bin(MDワード 0000BBB0GGG0RRR0) -> RGB(使用色枠なし) ----
@@ -307,10 +323,7 @@ def frame_palettes(i):
             "Next": seg_pal_rgb(s + 1) if s < last else None}
 
 
-CAT_TOTALS = {k: int(FULL[k].sum()) for k in FULL}   # cattotals(全編合計)
-_cu = z["cat_uniq"] if "cat_uniq" in z else np.zeros(4, np.int64)   # 全編ユニーク(same/near/coa/flbk; 旧はfar含む5)
-CAT_UNIQ = {"Same": int(_cu[0]), "Near": int(_cu[1]), "Coa": int(_cu[2]),
-            "Flbk": int(_cu[3]) + (int(_cu[4]) if len(_cu) > 4 else 0)}
+CAT_TOTALS = {k: int(FULL[k].sum()) for k, _ in L.CATS}
 
 # ---- 有効転送量(新規パターンのCDバイト) + CD1x/コマ + パレット切替フレーム ----
 Updated = col("updated")
@@ -342,12 +355,13 @@ def frame_plinfo(i):
 
 # ---- メーター幅(統一廃止=各バーは自分のラベル幅) ----
 GAP = 16
-REQ_W = 180
-COLD_W = L._w(L.f_leg, "Cold:000") + 3                    # Coldバー(Req↔Bandの間)
-BAND_W, PRG_W, WR0_W, WR1_W, MAIN_W, DMA_W, RUN_W = L.meter_widths(C)
+REQ_W = L._w(L.f_leg, "Req:000  Miss:000") + 3
+COLD_W = L._w(L.f_leg, "Cold:000") + 3
+PRE_W = L._w(L.f_leg, "Pre:000") + 3
+BAND_W, PRG_W, WR0_W, WR1_W, DMA_W, RUN_W = L.meter_widths(C)
 X_TL_STATUS = (
-    4 + REQ_W + GAP + COLD_W + GAP + BAND_W + GAP
-    + PRG_W + GAP + WR0_W + GAP + WR1_W + GAP + MAIN_W + GAP
+    4 + REQ_W + GAP + COLD_W + GAP + PRE_W + GAP + BAND_W + GAP
+    + PRG_W + GAP + WR0_W + GAP + WR1_W + GAP
     + DMA_W + GAP + RUN_W + GAP)
 
 
@@ -385,7 +399,7 @@ def build_base():
     d.text((_sx + L._w(L.f_sm, AUDIO_STR) + 14, _ay), "±2s, now=center, scroll left",
            fill=L.COL_DIM, font=L.f_sm, anchor="ls")   # 波形の読み方=見出しの後ろ
     # カテゴリ合計(全編合計=静的)を Category の下へ
-    cv.paste(L.draw_cattotals(L.CATTOT_W, L.CATTOT_H, {"cat_totals": CAT_TOTALS, "cat_uniq": CAT_UNIQ}),
+    cv.paste(L.draw_cattotals(L.CATTOT_W, L.CATTOT_H, {"cat_totals": CAT_TOTALS}),
              L.CATTOT_XY)
     return cv
 
@@ -403,8 +417,7 @@ def build_tl_bg():
     d = ImageDraw.Draw(im)
     d.rectangle([0, H_req, tlw, H_req + H_supply], fill=(21, 22, 28))
     d.rectangle([0, H_req + H_supply, tlw, tlh], fill=(18, 26, 20))
-    order = [("Raw", L.CAT_RAW), ("Coa", L.CAT_COA), ("Flbk", L.CAT_FLBK),
-             ("Buf", L.CAT_BUF), ("Miss", L.CAT_MISS)]
+    order = [(name, dict(L.CATS)[name]) for name in L.REQ_TIMELINE_CATS]
     for cx in range(tlw):
         fi = min(int(cx / tlw * NF), NF - 1)
         yb = H_req
@@ -414,7 +427,7 @@ def build_tl_bg():
                 d.line([(cx, yb - seg), (cx, yb)], fill=c); yb -= seg
         ys = H_req + H_supply
         total_capacity = max(sum(SUPPLY_CAPACITIES.values()), 1)
-        for name in L.SUPPLY_ORDER:
+        for name in L.METER_SUPPLY_ORDER:
             hs = int(H_supply * SUPPLY_REMAINING[name][fi] / total_capacity)
             if hs > 0:
                 d.line([(cx, ys - hs), (cx, ys)], fill=L.SUPPLY_COLORS[name])
@@ -453,33 +466,41 @@ def draw_status_real(data):
                 d.rectangle([px, by, px + seg, by + BH], fill=c); px += seg
         d.rectangle([x, by, x + bw, by + BH], outline=L.COL_FRAME_IN)
 
-    # 1) Req(広め) + 同ラインに Raw / Comp
+    # 1) Req + Miss headline values.
     stacked([(cn[k], dict(L.CATS)[k]) for k, _ in L.CATS], C, REQ_W)
     bx = x + int(REQ_W * data["budget"] / C)
     d.line([bx, by - 2, bx, by + BH + 2], fill=(255, 214, 0))
     xq = L.draw_field(d, x, ly, "Req:", data["req"], 3, L.f_leg, L.COL_TXT)
-    xr = L.draw_field(d, xq + 10, ly, "Raw:", cn["Raw"], 3, L.f_leg, L.COL_DIM)
-    L.draw_field(d, xr + 8, ly, "Comp:", data["comp"], 3, L.f_leg, L.COL_DIM)
+    L.draw_field(d, xq + 8, ly, "Miss:", data["miss"], 3, L.f_leg, L.COL_TXT)
     x += REQ_W + GAP
-    # 1.5) Cold = this frame's new patterns, including future raw prefetch.
-    stacked([(data["cold_raw"], L.CAT_RAW), (data["cold_buf"], L.CAT_BUF),
-             (data["cold_prefetch"], L.CAT_PREFETCH)], data["cold_cap"], COLD_W)
+    # 2) Cold = same-frame exact loads by source + future prefetch.
+    cold_parts = [(cn["Raw"], L.CAT_RAW)]
+    cold_parts += [
+        (cn[name], L.SUPPLY_COLORS[name])
+        for name in L.DISPLAY_SOURCE_ORDER
+    ]
+    cold_parts.append((data["cold_prefetch"], L.CAT_PREFETCH))
+    stacked(cold_parts, data["cold_cap"], COLD_W)
     L.draw_field(d, x, ly, "Cold:", data["cold"], 3, L.f_leg, L.COL_TXT)
     x += COLD_W + GAP
-    # 2) Band = この物理配送slotのBODY useful payload + control。pad/Headerは除外。
+    # 3) Prefetch activity is not a displayed-cell category.
+    stacked([(data["cold_prefetch"], L.CAT_PREFETCH)],
+            data["prefetch_cap"], PRE_W)
+    L.draw_field(d, x, ly, "Pre:", data["cold_prefetch"], 3, L.f_leg, L.COL_TXT)
+    x += PRE_W + GAP
+    # 4) Band = physical slot useful BODY payload + control, excluding pad/Header.
     stacked([(data["body_payload_bytes"], L.CAT_RAW),
              (data["body_control_bytes"], L.COL_OVH)],
             max(data["body_physical_bytes"], 1), BAND_W)
     d.line([x + BAND_W, by - 2, x + BAND_W, by + BH + 2], fill=(210, 190, 90))
-    xb = L.draw_field(d, x, ly, "Band:", data["band_kbps"], 3, L.f_leg, L.COL_TXT)
-    d.text((xb, ly), "KiB/sec", fill=L.COL_DIM, font=L.f_leg)
+    L.draw_field(d, x, ly, "Band:", data["band_kbps"], 3, L.f_leg, L.COL_TXT)
     x += BAND_W + GAP
-    # 3) Four independent physical pattern-supply meters.
+    # 5) MainBuf is a persistent dictionary and has no remaining meter.
     supply_widths = {
         "Prg": (PRG_W, 5), "Wr0": (WR0_W, 3),
-        "Wr1": (WR1_W, 3), "Main": (MAIN_W, 3),
+        "Wr1": (WR1_W, 3),
     }
-    for name in L.SUPPLY_ORDER:
+    for name in L.METER_SUPPLY_ORDER:
         width, digits = supply_widths[name]
         remaining = data["supply_remaining"][name]
         capacity = data["supply_capacities"][name]
@@ -533,11 +554,9 @@ def catmap_panel(i, sw, sh):
 
 def frame_data(i):
     cn = {k: int(FULL[k][i]) for k in FULL}
-    cu = {"Same": int(Same_u[i]), "Near": int(Near_u[i]), "Coa": int(Coa_u[i]),
-          "Flbk": int(Flbk_u[i]), "Raw": cn["Raw"], "Buf": cn["Buf"], "Miss": cn["Miss"]}
-    return dict(C=C, counts=cn, counts_uniq=cu, fps=FPS, win=WIN,
+    return dict(C=C, counts=cn, fps=FPS, win=WIN,
                 mode=MODE, res=RES, audio=AUDIO_STR, avg_kbps=AVG_KBPS,
-                req=int(Want[i]), budget=BUDGET,
+                req=int(Want[i]), miss=cn["Miss"], budget=BUDGET,
                 comp=cn["Same"] + cn["Near"] + cn["Coa"] + cn["Flbk"],
                 supply_capacities=SUPPLY_CAPACITIES,
                 supply_remaining={
@@ -549,9 +568,11 @@ def frame_data(i):
                 body_control_bytes=int(BODY_CONTROL_BYTES[i]),
                 body_physical_bytes=int(BODY_PHYSICAL_BYTES[i]),
                 band_kbps=int(BAND[i]),
-                cold=cn["Raw"] + cn["Buf"] + int(PREFETCH[i]),
-                cold_raw=cn["Raw"], cold_buf=cn["Buf"],
+                cold=(cn["Raw"] + sum(
+                    cn[name] for name in L.DISPLAY_SOURCE_ORDER)
+                      + int(PREFETCH[i])),
                 cold_prefetch=int(PREFETCH[i]),
+                prefetch_cap=PREFETCH_CAP,
                 cold_cap=COLD_CAP,
                 pl_info=frame_plinfo(i),
                 frame=i, total_frames=NF, time_s=i / FPS, palettes=frame_palettes(i),
