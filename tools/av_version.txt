@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e76/p69 : Replace the profile preload panel with a four-digit hexadecimal
+#        loaded-PrgBuf KiB counter using the shared 16-glyph font in DEBUG and
+#        release builds. Make 1518 the common even resident-pool maximum for
+#        H32 and H40: tiles 1519-1534 hold the font, tile 1535 is a guard, and
+#        the first movie name table starts at tile 1536.
 #   e75/p68 : Add optional one-frame raw-pattern VRAM prefetch. The encoder
 #        targets only protected cold demand above the measured cap, uses exact
 #        spare per-frame BODY/cold capacity after visible work, requires a
@@ -525,5 +530,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
-e=75
-p=68
+e=76
+p=69

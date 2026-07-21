@@ -28,15 +28,17 @@ ARTIFACT_ROOT = Path("out")
 TEMP_ROOT = Path("tmp")
 _ARTIFACT_STEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
-# VRAM tile 0 is clear, then the resident movie pool starts at tile 1. The
-# profile-specific SGDK startup font temporarily occupies 95 tiles immediately
-# above that pool, and the first movie name table begins at tile 1536 (0xC000).
-# The movie HUD later reuses only 16 of those transient font slots.
+# VRAM tile 0 is clear, then the resident movie pool starts at tile 1.  The
+# shared hexadecimal font occupies 16 tiles immediately above the pool in both
+# DEBUG and release builds.  Keep one guard tile before the first movie name
+# table at tile 1536 (0xC000), giving a deliberately even 1518-slot pool.
 VRAM_PATTERN_BASE_TILE = 1
 VRAM_FIRST_MOVIE_NT_TILE = 0xC000 // 32
-STARTUP_FONT_TILES = 95
+HUD_FONT_TILES = 16
+VRAM_GUARD_TILES = 1
 MAX_RESIDENT_VRAM_TILES = (
-    VRAM_FIRST_MOVIE_NT_TILE - VRAM_PATTERN_BASE_TILE - STARTUP_FONT_TILES)
+    VRAM_FIRST_MOVIE_NT_TILE - VRAM_PATTERN_BASE_TILE
+    - HUD_FONT_TILES - VRAM_GUARD_TILES)
 
 # (section, key): legacy internal variable.  Keeping this table in one place is
 # deliberate: TOML is the user interface; CBRSIM_* is an implementation detail.
@@ -86,7 +88,6 @@ PROFILE_ENV_DEFAULTS = {
 }
 
 ALLOWED = {
-    "metadata": {"title"},
     "source": ({key for section, key in ENV_MAP if section == "source"}
                | {"preprocess"}),
     "video": {key for section, key in ENV_MAP if section == "video"},
@@ -193,9 +194,6 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         if missing:
             raise ValueError(
                 f"{profile_path}: missing [{section}] keys: {', '.join(sorted(missing))}")
-    title = str(data.get("metadata", {}).get("title", "")).strip()
-    if "metadata" in data and not title:
-        raise ValueError(f"{profile_path}: metadata.title must not be empty")
     mode = str(data["video"]["mode"]).upper()
     if mode not in {"H32", "H40", "MODE4"}:
         raise ValueError(f"{profile_path}: unsupported video.mode {mode!r}")
@@ -206,12 +204,13 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
     if not 1 <= active_tiles <= total_tiles:
         raise ValueError(
             f"{profile_path}: video.active_tiles must be within 1..{total_tiles}")
-    vram_tiles = int(data.get("encoder", {}).get("vram_tiles", 1440))
+    vram_tiles = int(data.get("encoder", {}).get(
+        "vram_tiles", MAX_RESIDENT_VRAM_TILES))
     if not 1 <= vram_tiles <= MAX_RESIDENT_VRAM_TILES:
         raise ValueError(
             f"{profile_path}: encoder.vram_tiles must be within "
-            f"1..{MAX_RESIDENT_VRAM_TILES} so the startup font stays below "
-            "the movie name table")
+            f"1..{MAX_RESIDENT_VRAM_TILES} so the shared HUD font and guard "
+            "tile stay below the movie name table")
     try:
         source_fps = float(Fraction(str(data["source"]["fps"])))
         av_config.cold_cap_for_fps(source_fps, mode, active_tiles)

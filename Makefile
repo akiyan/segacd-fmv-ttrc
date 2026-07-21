@@ -38,7 +38,6 @@ MOVIEPLAY_DISC := $(MOVIEPLAY_TMP_DIR)/disc
 MOVIEPLAY_ISO := $(OUT_DIR)/$(CONFIG_STEM).iso
 MOVIEPLAY_CUE := $(OUT_DIR)/$(CONFIG_STEM).cue
 PLAYER_CONSTANTS := $(MOVIEPLAY_STREAM_DIR)/player_constants.inc
-STARTUP_SCREEN := $(MOVIEPLAY_STREAM_DIR)/startup_screen.inc
 
 MARSDEV ?= $(HOME)/toolchains/mars
 M68K_PREFIX ?= $(MARSDEV)/m68k-elf/bin/m68k-elf-
@@ -228,11 +227,7 @@ movieplay-force:
 $(PLAYER_CONSTANTS): $(MOVIEPLAY_STREAM_DIR)/HEADER.DAT tools/player_constants.py tools/ttrc_routing.py tools/ima_adpcm.py | movieplay-setup
 	$(PYTHON) tools/player_constants.py $< --output $@
 
-$(STARTUP_SCREEN): $(MOVIEPLAY_STREAM_DIR)/HEADER.DAT $(PLAYER_CONSTANTS) tools/startup_screen.py tools/av_version.txt $(MARSDEV)/m68k-elf/res/image/font_default.png $(CONFIG) | movieplay-setup
-	$(PYTHON) tools/startup_screen.py --config $(CONFIG) --header $< \
-		--font $(MARSDEV)/m68k-elf/res/image/font_default.png --output $@
-
-$(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin $(MOVIEPLAY_STREAM_DIR)/palettes.bin $(PLAYER_CONSTANTS) $(STARTUP_SCREEN) $(BOOT_DIR)/dbgfont.bin tools/av_config.py tools/ttrc_routing.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
+$(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(BOOT_DIR)/security.bin $(MOVIEPLAY_STREAM_DIR)/palettes.bin $(PLAYER_CONSTANTS) $(BOOT_DIR)/dbgfont.bin tools/av_config.py tools/ttrc_routing.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
 	$(PYTHON) tools/check_player_ring.py
 	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter 1,$(MAIN_CODEGEN)),--defsym MAIN_CODEGEN=1) $(if $(filter 1,$(DMA_RUN_FASTPATH)),--defsym DMA_RUN_FASTPATH=1) $(if $(filter 1,$(PLAYER_SPECIALIZE)),--defsym PLAYER_SPECIALIZED=1) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
 

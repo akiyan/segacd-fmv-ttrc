@@ -202,7 +202,7 @@ ip_entry:
 
 .ifdef PLAYER_SPECIALIZED
 .if PC_MODE == 1
-	move.w	#0x8C81, (VDP_CTRL).l		/* show the preload screen in H40 too */
+	move.w	#0x8C81, (VDP_CTRL).l		/* show the preload counter in H40 too */
 .endif
 	bsr	draw_startup
 .else
@@ -220,12 +220,10 @@ ip_entry:
 	move.w	#CMD_STREAM, d0
 .ifdef PLAYER_SPECIALIZED
 	bsr	cmd_wait_startup
-	/* The SGDK startup font and the movie HUD share the transient font range.
-	   Hide all initialization that replaces it, then reveal frame 0 only after
-	   its complete Plane A table has been selected in do_flip. */
+	/* Hide post-preload initialization, then reveal frame 0 only after its
+	   complete Plane A table has been selected in do_flip. */
 	move.w	#0x8134, (VDP_CTRL).l		/* display off; keep VInt, DMA and mode 5 */
 	move.w	#1, display_blank
-	bsr	load_movie_palette		/* replace temporary UI colours before frame 0 */
 .else
 	bsr	cmd_wait_ready
 .endif
@@ -341,9 +339,10 @@ ip_entry:
 	bsr	reset_pattern_supply
 .endif
 .endif
-	/* Upload the 16-glyph DEBUG font once. Expand source index 1 to P0/index15
-	   (brightest) and source index 0 to P0/index1 (darkest). */
+	/* Generic DEBUG builds have no preload counter, so upload the shared font
+	   here. Specialized DEBUG/release builds already uploaded it at startup. */
 .ifdef DEBUG
+.ifndef PLAYER_SPECIALIZED
 	PC_MOVE_L md_font_addr, PC_FONT_ADDR, d0
 	bsr	set_vram_write
 	lea	dbgfont, a0
@@ -361,11 +360,11 @@ ip_entry:
 	move.w	d0, (VDP_DATA).l
 	dbra	d1, 1b
 .endif
+.endif
 	/* With display disabled, some VDP implementations keep the VBlank status
-	   asserted and the first frame's VBlank waits cannot advance. After every
-	   startup-font replacement is complete, erase the old startup table while
-	   still hidden, then re-enable a clean black front plane. Frame 0 is built
-	   into NT0 and replaces this black transition at its normal atomic flip. */
+	   asserted and the first frame's VBlank waits cannot advance. Erase the
+	   preload counter while hidden, then re-enable a clean black front plane.
+	   Frame 0 replaces it at the normal atomic flip. */
 	tst.w	display_blank
 	beq.s	2f
 	move.l	#NT1, d0
@@ -1266,198 +1265,66 @@ load_movie_palette:
 	rts
 
 .ifdef PLAYER_SPECIALIZED
-/* The preload UI uses only temporary CRAM, name-table and font VRAM. It does
-   not reserve or reduce PrgBuf, APPLY, WordBuf, MainBuf, or the movie pool. */
+/* Minimal preload display. The same 16 hexadecimal glyphs are permanently
+   reserved immediately above the resident pool in DEBUG and release builds.
+   NT1 row 0, columns 0..3 show loaded PrgBuf KiB as four hexadecimal digits. */
 draw_startup:
-	movem.l	d0-d5/a0-a1, -(sp)
-	move.l	#0xC0000000, (VDP_CTRL).l
-	lea	startup_palette, a0
-	move.w	#64-1, d0
-1:
-	move.w	(a0)+, (VDP_DATA).l
-	dbra	d0, 1b
-
+	movem.l	d0-d2/a0, -(sp)
+	bsr	load_movie_palette
 	move.l	#PC_FONT_ADDR, d0
 	bsr	set_vram_write
-	lea	startup_font_bits, a0
-	lea	startup_nibble_words, a1
-	move.w	#STARTUP_FONT_N*8-1, d4
+	lea	dbgfont, a0
+	move.w	#DBGFONT_N*16-1, d1
 1:
-	moveq	#0, d0
-	move.b	(a0)+, d0
-	move.w	d0, d1
-	lsr.w	#4, d1
-	add.w	d1, d1
-	move.w	(a1,d1.w), (VDP_DATA).l
-	andi.w	#0x000F, d0
-	add.w	d0, d0
-	move.w	(a1,d0.w), (VDP_DATA).l
-	dbra	d4, 1b
-
-	lea	startup_lines, a0
-2:
-	moveq	#0, d0
-	move.b	(a0)+, d0			/* row or 0xFF terminator */
-	cmpi.b	#0xFF, d0
-	beq.s	5f
-	lsl.w	#7, d0			/* 64-cell plane row = 128 bytes */
-	moveq	#0, d1
-	move.b	(a0)+, d1			/* column */
-	add.w	d1, d1
-	add.w	d1, d0
-	addi.l	#NT1, d0
-	moveq	#0, d3
-	move.b	(a0)+, d3			/* palette number */
-	lsl.w	#8, d3
-	lsl.w	#5, d3			/* name-table palette bits 13..14 */
-	moveq	#0, d4
-	move.b	(a0)+, d4			/* glyph count */
-	bsr	set_vram_write
-	subq.w	#1, d4
-3:
-	moveq	#0, d0
-	move.b	(a0)+, d0
-	addi.w	#PC_FONT_VTILE, d0
-	or.w	d3, d0
+	move.w	(a0)+, d0			/* each nibble is 0 or 1 */
+	move.w	d0, d2
+	lsl.w	#1, d2
+	or.w	d2, d0
+	lsl.w	#1, d2
+	or.w	d2, d0
+	lsl.w	#1, d2
+	or.w	d2, d0			/* 1 -> 0xF independently in every nibble */
+	ori.w	#0x1111, d0			/* 0 -> 0x1; 0xF remains 0xF */
 	move.w	d0, (VDP_DATA).l
-	dbra	d4, 3b
-	bra.s	2b
-5:
-	movem.l	(sp)+, d0-d5/a0-a1
+	dbra	d1, 1b
+	moveq	#0, d0
+	bsr	startup_write_hex
+	movem.l	(sp)+, d0-d2/a0
 	rts
 
-/* d0.w = remaining 2-KiB PrgBuf preload sectors. */
+/* d0.w = remaining 2-KiB PrgBuf preload sectors. Display loaded KiB. */
 startup_update_prg:
-	movem.l	d0-d5, -(sp)
 	move.w	#PC_PREBUF_SEC, d4
 	sub.w	d0, d4
-	add.w	d4, d4			/* sectors -> KiB */
-	move.w	d4, d3			/* preserve loaded KiB across set_vram_write */
-	move.l	#STARTUP_PRG_VALUE_ADDR, d0
-	bsr	set_vram_write
-	moveq	#0, d5
-	move.w	d4, d5
-	divu.w	#100, d5
-	move.w	d5, d0			/* hundreds */
-	addi.w	#PC_FONT_VTILE+STARTUP_GLYPH_0, d0
-	ori.w	#0x6000, d0			/* amber streaming preload line */
-	move.w	d0, (VDP_DATA).l
-	swap	d5				/* remainder */
-	moveq	#0, d4
-	move.w	d5, d4
-	divu.w	#10, d4
-	move.w	d4, d0			/* tens */
-	addi.w	#PC_FONT_VTILE+STARTUP_GLYPH_0, d0
-	ori.w	#0x6000, d0
-	move.w	d0, (VDP_DATA).l
-	swap	d4				/* ones */
+	add.w	d4, d4			/* 2-KiB sectors -> KiB */
 	move.w	d4, d0
-	addi.w	#PC_FONT_VTILE+STARTUP_GLYPH_0, d0
-	ori.w	#0x6000, d0
-	move.w	d0, (VDP_DATA).l
+	bra	startup_write_hex
 
-	/* Redraw the 30-cell object-style progress bar from the same live count. */
-	moveq	#0, d5
-	move.w	d3, d5
-	mulu.w	#30, d5
-	divu.w	#STARTUP_PRG_CAP_KB, d5
-	move.l	#STARTUP_PRG_BAR_ADDR, d0
+/* d0.w = four hexadecimal digits written to NT1 row 0, columns 0..3. */
+startup_write_hex:
+	movem.l	d0-d2/d4, -(sp)
+	move.w	d0, d4
+	move.l	#NT1, d0
 	bsr	set_vram_write
-	move.w	#30-1, d2
-1:
-	move.w	#STARTUP_GLYPH_DASH, d0
-	tst.w	d5
-	beq.s	2f
-	move.w	#STARTUP_GLYPH_HASH, d0
-	subq.w	#1, d5
-2:
+	move.w	d4, d0
+	rol.w	#4, d0
+	andi.w	#0x000F, d0
 	addi.w	#PC_FONT_VTILE, d0
-	ori.w	#0x6000, d0
 	move.w	d0, (VDP_DATA).l
-	dbra	d2, 1b
-	movem.l	(sp)+, d0-d5
-	rts
-
-/* Earlier HEADER.DAT regions are complete when the first PrgBuf sector is
-   reported. Turn their staged dotted rows into OK together at that boundary. */
-startup_mark_prefix_ok:
-	movem.l	d0-d2/a0, -(sp)
-	lea	startup_prefix_ok_addrs, a0
-	move.w	#STARTUP_PREFIX_OK_N-1, d2
-1:
-	moveq	#0, d0
-	move.w	(a0)+, d0
-	bsr	set_vram_write
-	move.w	#PC_FONT_VTILE+STARTUP_GLYPH_O, d0
-	ori.w	#0x4000, d0
-	move.w	d0, (VDP_DATA).l
-	move.w	#PC_FONT_VTILE+STARTUP_GLYPH_K, d0
-	ori.w	#0x4000, d0
-	move.w	d0, (VDP_DATA).l
-	dbra	d2, 1b
-	movem.l	(sp)+, d0-d2/a0
-	rts
-
-startup_mark_ok:
-	movem.l	d0-d2/a0, -(sp)
-	move.l	#STARTUP_PRG_STATUS_ADDR, d0
-	bsr	set_vram_write
-	lea	startup_ok_glyphs, a0
-	moveq	#7-1, d2
-1:
-	moveq	#0, d0
-	move.b	(a0)+, d0
+	move.w	d4, d0
+	lsr.w	#8, d0
+	andi.w	#0x000F, d0
 	addi.w	#PC_FONT_VTILE, d0
-	ori.w	#0x4000, d0
 	move.w	d0, (VDP_DATA).l
-	dbra	d2, 1b
-	movem.l	(sp)+, d0-d2/a0
-	rts
-
-/* d0.w = negative 0xBADx startup diagnostic from the Sub CPU. Keep the
-   preload screen visible and replace LOADING with the exact failing marker. */
-startup_mark_error:
-	movem.l	d0-d3/a0, -(sp)
-	move.w	d0, d3
-	move.l	#STARTUP_PRG_STATUS_ADDR, d0
-	bsr	set_vram_write
-	lea	startup_bad_glyphs, a0
-	moveq	#3-1, d2
-1:
-	moveq	#0, d0
-	move.b	(a0)+, d0
+	move.w	d4, d0
+	lsr.w	#4, d0
+	andi.w	#0x000F, d0
 	addi.w	#PC_FONT_VTILE, d0
-	ori.w	#0x6000, d0
 	move.w	d0, (VDP_DATA).l
-	dbra	d2, 1b
-	andi.w	#0x000F, d3
-	addi.w	#PC_FONT_VTILE+STARTUP_GLYPH_0, d3
-	ori.w	#0x6000, d3
-	move.w	d3, (VDP_DATA).l
-	moveq	#0, d0
-	move.w	#3-1, d2
-2:
-	move.w	#PC_FONT_VTILE, d0
-	ori.w	#0x6000, d0
-	move.w	d0, (VDP_DATA).l
-	dbra	d2, 2b
-	movem.l	(sp)+, d0-d3/a0
-	rts
-
-startup_mark_sub_ok:
-	movem.l	d0-d2/a0, -(sp)
-	move.l	#STARTUP_SUB_STATUS_ADDR, d0
-	bsr	set_vram_write
-	lea	startup_sub_ok_glyphs, a0
-	moveq	#4-1, d2
-1:
-	moveq	#0, d0
-	move.b	(a0)+, d0
-	addi.w	#PC_FONT_VTILE, d0
-	ori.w	#0x4000, d0
-	move.w	d0, (VDP_DATA).l
-	dbra	d2, 1b
-	movem.l	(sp)+, d0-d2/a0
+	andi.w	#0x000F, d4
+	addi.w	#PC_FONT_VTILE, d4
+	move.w	d4, (VDP_DATA).l
+	movem.l	(sp)+, d0-d2/d4
 	rts
 
 /* Initial-stream wait with live PrgBuf preload progress. COMSTAT1 is otherwise
@@ -1465,45 +1332,30 @@ startup_mark_sub_ok:
 cmd_wait_startup:
 	move.w	d0, (GA_COMCMD0).l
 	move.w	#0xFFFF, d5			/* last displayed remaining count */
-	moveq	#0, d4				/* prefix rows not yet marked OK */
-	moveq	#0, d6				/* Sub CPU acknowledgement not yet drawn */
 1:
 	move.w	(GA_COMSTAT0).l, d0
-	tst.w	d0
-	beq.s	6f
-	tst.w	d6
-	bne.s	6f
-	bsr	startup_mark_sub_ok
-	moveq	#1, d6
-6:
 	cmp.w	#STAT_READY, d0
 	beq.s	3f
 	move.w	(GA_COMSTAT1).l, d0
-	tst.w	d0				/* zero is also the prebuffer-complete value */
+	tst.w	d0				/* zero is shown only after STAT_READY */
 	beq.s	7f
-	tst.w	d0				/* 0xBADx boot errors stay negative */
-	bpl.s	5f
-	bsr	startup_mark_error
-	bra.s	7f
-5:
 	cmp.w	d5, d0
 	beq.s	7f
 	move.w	d0, d5
-	tst.w	d4
-	bne.s	2f
-	bsr	startup_mark_prefix_ok
-	moveq	#1, d4
-2:
+	tst.w	d0				/* negative 0xBADx is directly displayable */
+	bmi.s	5f
 	bsr	startup_update_prg
+	bra.s	7f
+5:
+	bsr	startup_write_hex
 7:
-	/* The UI is frame-paced: sample the Sub state once per VBlank instead of
+	/* The counter is frame-paced: sample Sub once per VBlank instead of
 	   hammering the gate-array registers in an unbounded Main-CPU loop. */
 	bsr	wait_vblank
 	bra	1b
 3:
 	moveq	#0, d0
 	bsr	startup_update_prg
-	bsr	startup_mark_ok
 	move.w	#0, (GA_COMCMD0).l
 4:
 	tst.w	(GA_COMSTAT0).l
@@ -1714,13 +1566,8 @@ dbg_hex_pairs:
 	.endr
 .endif
 .ifdef PLAYER_SPECIALIZED
-	.section .startup,"a"
-	.include "startup_screen.inc"
 .if PC_FONT_VTILE + DBGFONT_N > NT0/32
-	.error "DEBUG font overlaps the movie name table"
-.endif
-.if PC_FONT_VTILE + STARTUP_FONT_N > NT0/32
-	.error "startup font overlaps the movie name table"
+	.error "hexadecimal font overlaps the movie name table"
 .endif
 .endif
 

@@ -151,8 +151,11 @@ category.
   internal order is `F/P/S/D/R/L/C/W/M/A`; H40 appends `U/N` for Main
   pattern-transfer stopwatch ticks and the source-aware cold-run count's low
   byte. Only the occupied 22/28 cells are replaced; the unused right-hand cells
-  retain the current movie frame. The fixed P0/index15 font is uploaded once,
-  so video-plane flips and palette switches do not recolour or blink the text.
+  retain the current movie frame. Before playback, specialized DEBUG and
+  release builds use the same 16-glyph font to show loaded PrgBuf KiB as four
+  hexadecimal digits at the physical top-left. The font remains reserved above
+  the 1,518-tile resident pool; its fixed P0/index15 colours do not blink across
+  video-plane flips or palette switches.
 
 ## Build Targets
 

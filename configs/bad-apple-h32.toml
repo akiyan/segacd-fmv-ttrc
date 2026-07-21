@@ -1,8 +1,5 @@
 schema_version = 1
 
-[metadata]
-title = "BAD APPLE!!"
-
 [source]
 path = "assets/BadApple.mp4"
 fps = "30"
@@ -32,7 +29,7 @@ emit_decisions = true
 
 [encoder]
 gpu = true
-vram_tiles = 1440
+vram_tiles = 1518
 dither = true
 segment_palettes = true
 near = true

@@ -43,14 +43,6 @@ output = "out/movieplay/MOVIE.DAT"
 
 
 class EncodeProfileArtifactTests(unittest.TestCase):
-    def test_metadata_title_is_optional_but_not_empty(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "metadata.toml"
-            path.write_text(PROFILE.replace(
-                "[source]", '[metadata]\ntitle = ""\n\n[source]'))
-            with self.assertRaisesRegex(ValueError, "metadata.title"):
-                load_profile(path)
-
     def test_all_repository_profiles_have_measured_cold_cap_coverage(self) -> None:
         root = Path(__file__).resolve().parents[1]
         for path in sorted((root / "configs").glob("*.toml")):
@@ -86,7 +78,6 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         h32 = load_profile(root / "configs/bad-apple-h32.toml")
         env = apply_profile_env(h32, {})
-        self.assertEqual(h32.section("metadata")["title"], "BAD APPLE!!")
         self.assertEqual(env["CBRSIM_GEOMETRY_FIT"], "crop")
         self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "896")
         self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "area")
@@ -162,7 +153,7 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "video.active_tiles"):
                 load_profile(path)
 
-    def test_vram_pool_must_leave_room_for_startup_font(self) -> None:
+    def test_vram_pool_must_leave_room_for_hud_font_and_guard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             valid = Path(tmp) / "valid-vram.toml"
             valid.write_text(PROFILE.replace(
@@ -174,7 +165,7 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             invalid.write_text(PROFILE.replace(
                 "[palette]",
                 f"[encoder]\nvram_tiles = {MAX_RESIDENT_VRAM_TILES + 1}\n\n[palette]"))
-            with self.assertRaisesRegex(ValueError, "startup font"):
+            with self.assertRaisesRegex(ValueError, "HUD font and guard"):
                 load_profile(invalid)
 
     def test_profile_without_measured_cold_cap_is_rejected(self) -> None:

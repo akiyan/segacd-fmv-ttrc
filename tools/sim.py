@@ -124,7 +124,7 @@ AUDIO_PLAYBACK_RATE = (
     int(round(AUDIO_PCM_BYTES * FPS)) if AUDIO_KIND == "adpcm22" else AUDIO_RATE)
 PATTERN_BYTES = 32              # 4bpp 8x8 パターン
 NAME_BYTES = 2                  # ネームテーブル1エントリ(tile index + palette + priority)
-VRAM_TILES = int(os.environ.get("CBRSIM_VRAM_TILES", "1440"))   # VRAM常駐パターン数(LRU)。
+VRAM_TILES = int(os.environ.get("CBRSIM_VRAM_TILES", "1518"))   # VRAM常駐パターン数(LRU)。
 # デバッグオーバーレイのフォント予約分だけ実機側で減らす(例 1360)ときは env で指定。
 FLATTEN_STD = 0.12              # rgb333(0-7)タイル内std平均。ディザ除去済みなので低め
 DETAIL_ALPHA = 1.5

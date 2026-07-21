@@ -2,8 +2,10 @@
 
 This document is the complete reference for the values-only playback HUD drawn
 by `boot/movieplay_ip.s` in `DEBUG=1` builds. It covers the runtime movie HUD,
-not the boot preload screen and not the offline analysis overlay documented in
-[`ANALYSIS.md`](ANALYSIS.md).
+not the minimal four-digit boot preload counter and not the offline analysis
+overlay documented in [`ANALYSIS.md`](ANALYSIS.md). The boot counter reuses the
+same 16 hexadecimal glyphs; their VRAM remains reserved in both DEBUG and
+release builds.
 
 The HUD answers three different questions at once:
 

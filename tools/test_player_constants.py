@@ -9,7 +9,7 @@ import pattern_supply
 
 
 def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x345,
-                supply_counts=(0, 0, 0)):
+                supply_counts=(0, 0, 0), pool=1400, base=1):
     if features is None:
         features = ttrc_routing.FEATURE_COLD_RUNS | ttrc_routing.FEATURE_FIXED_N2
     tcols = 32 if mode == 0 else 40
@@ -21,7 +21,7 @@ def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x3
     prefix = struct.pack(
         ">4s9H4LBB3L6H",
         b"TTRC", ttrc_routing.VERSION, frames, tcols, trows, cells,
-        1400, 1, ttrc_routing.FRAME_SECTORS, 13,
+        pool, base, ttrc_routing.FRAME_SECTORS, 13,
         12416, ttrc_routing.routing_sector_count(frames), 194, 12416,
         mode, 0, 2, 14, 1, 2 if fps >= 24 else 4,
         audio_bytes, fps, audio_fd, 30, features,
@@ -40,6 +40,13 @@ def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x3
 
 
 class PlayerConstantsTest(unittest.TestCase):
+    def test_1518_pool_leaves_font_and_one_guard_tile_before_name_table(self):
+        values = player_constants.parse_header_sector(make_header(pool=1518))
+        self.assertEqual(values.pool, 1518)
+
+        with self.assertRaisesRegex(ValueError, "HUD-font tiles.*guard tile"):
+            player_constants.parse_header_sector(make_header(pool=1519))
+
     def test_sonic_h32_current_values(self):
         values = player_constants.parse_header_sector(make_header())
         self.assertEqual(values.bmbytes, 112)

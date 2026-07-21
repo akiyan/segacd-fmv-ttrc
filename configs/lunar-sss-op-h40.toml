@@ -22,7 +22,7 @@ emit_decisions = true
 
 [encoder]
 gpu = true
-vram_tiles = 1440
+vram_tiles = 1518
 dither = true
 segment_palettes = true
 near = true

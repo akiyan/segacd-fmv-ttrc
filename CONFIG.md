@@ -138,8 +138,8 @@ two-VBlank cadence for all 2,713 intervals. The lower cap 175 is being retained
 to add headroom for the mixed shadow-update path; 195 and 200 remain unqualified.
 This value is specific to H40, 30 fps, and the full 1,120-tile raster.
 
-The current Bad Apple H40 full-raster profile combines cap 175 with the
-1,440-tile resident VRAM pool. Its 6,576-frame TTRC v11 stream selected 557
+The previously qualified Bad Apple H40 full-raster stream combined cap 175
+with a 1,440-tile resident VRAM pool. Its 6,576-frame TTRC v11 stream selected 557
 completed shadow-update lists, saved 3,565,954 modelled Main-CPU cycles, and
 reduced control by 28,126 bytes. Pack verification reconstructed every frame
 exactly with no ring underrun; the minimum PrgBuf occupancy was 59 patterns.
@@ -248,7 +248,7 @@ values in this document.
 
 | Name | Default | Meaning |
 |---|---|---|
-| `encoder.vram_tiles` | 1440 | Resident tile pool size (LRU). The standard and maximum is 1440: tile 1 plus 1440 resident patterns and the temporary 95-tile SGDK startup font end exactly where the first movie name table begins. The 16-tile playback HUD reuses the bottom of that transient font range. |
+| `encoder.vram_tiles` | 1518 | Resident tile pool size (LRU), shared by H32 and H40. The standard even-sized maximum uses tiles 1-1518. The common 16-glyph hexadecimal font uses tiles 1519-1534 in both DEBUG and release, tile 1535 is deliberately left as a guard, and the first movie name table starts at tile 1536 (`0xC000`). |
 | `CBRSIM_COA_DETAIL` / `_MEAN` / `_MAX` / `_K` | 0.7 / 4 / 8 / 24 | Coa = reuse a resident tile whose low-frequency look matches a flat cold tile (detail below DETAIL; 2x2 mean color diff within MEAN/MAX; check K newest candidates). |
 | `CBRSIM_NEAR_YM` / `_YP` / `_C` | 10 / 28 / 24 | Near = reuse an almost-identical resident tile (mean/max luma diff, mean chroma diff). |
 | `CBRSIM_FLBK_IMPROVE_ONLY` / `_MIN_IMPROVE` | 1 / 0 | Flbk = fill a Miss with a resident tile only if it improves the picture. |
@@ -361,22 +361,18 @@ cannot silently overwrite one shared image or one shared temporary directory.
 `HEADER.DAT` and `BODY.DAT` keep their fixed names inside the artifact directory
 and on the disc because those are TTRC format names read by the player.
 
-Before the first movie frame, specialized builds show a profile and live boot
-preload screen. It uses SGDK's default 8x8 font and temporary CRAM, name-table,
-and font VRAM that the movie later reuses; it does not reserve or reduce
-PrgBuf, APPLY, WordBuf0/1, MainBuf, or the movie tile pool. The panel is 32
-tiles wide: H32 places it at column 0, while H40 centers it with four empty
-tile columns on each side. The fixed HEADER regions switch to `OK` when the
-first PrgBuf sector arrives. `PrgBuf` then
-shows its loaded KiB count and a live 30-cell progress bar through the full
-safe 388 KiB preload. The display also acknowledges the Sub CPU, reports an
-exact `BADx` marker if startup validation fails, and samples progress once per
-VBlank. The generic `PLAYER_SPECIALIZE=0` diagnostic build skips this
-profile-specific screen.
+Before the first movie frame, specialized builds show only four hexadecimal
+digits at the physical top-left of Plane A. The value is the amount of safe
+PrgBuf preload already received, in KiB (`0000` through `0184` for the standard
+388 KiB preload). An exact negative startup status remains visible as its
+`BADx` code. Progress is sampled once per VBlank. The display uses the same
+16-glyph hexadecimal font as the runtime DEBUG HUD; those tiles stay reserved
+and are uploaded during startup in both DEBUG and release builds. H32 and H40
+use the same top-left placement. The generic `PLAYER_SPECIALIZE=0` diagnostic
+build skips this profile-derived counter.
 
 | TOML table | Keys | Meaning |
 |---|---|---|
-| `[metadata]` | optional `title` | Human-readable video title shown on the boot preload screen. If omitted, the TOML filename stem is used. |
 | `[source]` | `path`, `fps`, `duration`, optional `sar` | Input identity and native timing. `sar` repairs missing/wrong source metadata; it does not crop. |
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when it reduces that count, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel and adds bars when the displayed aspects differ. `fit="crop"` is an explicit object-fit-cover conversion: it fills the complete output raster while preserving displayed aspect, so it may discard active pixels at the outer source edges. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
