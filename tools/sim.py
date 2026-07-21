@@ -2041,7 +2041,8 @@ def main():
          f"main_saved_avg="
          f"{sum(cost.saved_cycles for cost, chosen in zip(shadow_plan['costs'], shadow_list_flags) if chosen) / max(1, len(shadow_list_flags)):.1f}cycles/frame "
          f"control_delta={int((control_lengths - legacy_lengths).sum())}B "
-         f"threshold={shadow_plan['cutoff_numerator']}/{shadow_plan['cutoff_denominator']} "
+         f"threshold="
+         f"{'schedule' if shadow_plan['control_growth_enabled'] else 'no-control-growth'} "
          f"baseline/selected ring_min="
          f"{shadow_plan['baseline_schedule']['ring_min']}/{physical_schedule['ring_min']} "
          f"ready_min={shadow_plan['baseline_schedule']['ready_min']}/{physical_schedule['ready_min']}"
@@ -2258,6 +2259,9 @@ def main():
                     if shadow_plan is not None else int(physical_schedule["ready_min"])),
                 "selected_ring_min": int(physical_schedule["ring_min"]),
                 "selected_ready_min": int(physical_schedule["ready_min"]),
+                "control_growth_enabled": (
+                    bool(shadow_plan["control_growth_enabled"])
+                    if shadow_plan is not None else False),
             },
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]

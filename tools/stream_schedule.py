@@ -184,8 +184,13 @@ def body_funded_work_bytes(
 def select_shadow_update_lists(
         cell_lists, runs, pattern_loads, *, cells, fps, ring_capacity_patterns,
         frame_sectors, audio_frame_bytes, debug=False, fill=True,
-        max_control_bytes=0x2000):
-    """Select the lowest whole-movie cycle/byte threshold preserving margins."""
+        max_control_bytes=0x2000, allow_control_growth=False):
+    """Select faster lists without reducing physical delivery margins.
+
+    Positive control growth is disabled in the qualified path. Full Bad Apple
+    playback proved that unchanged PrgBuf/readiness minima do not by themselves
+    protect the Sub-CPU completion phase from extra APPLY copies.
+    """
     frames = tuple(tuple(int(cell) for cell in frame) for frame in cell_lists)
     n_upd = np.asarray([len(frame) for frame in frames], np.int64)
     n_runs = np.asarray(runs, np.int64)
@@ -240,21 +245,23 @@ def select_shadow_update_lists(
             groups.setdefault(ratio, []).append(index)
 
     cutoff = None
-    rejected_ratio = None
-    for ratio in sorted(groups, reverse=True):
-        trial = selected.copy()
-        trial[groups[ratio]] = True
-        trial_lengths, trial_schedule = run_schedule(trial)
-        if (trial_schedule["feasible"]
-                and int(trial_schedule["ring_min"]) >= target_ring
-                and int(trial_schedule["ready_min"]) >= target_ready):
-            selected = trial
-            lengths = trial_lengths
-            chosen_schedule = trial_schedule
-            cutoff = ratio
-        else:
-            rejected_ratio = ratio
-            break
+    rejected_ratio = max(groups, default=None)
+    if allow_control_growth:
+        rejected_ratio = None
+        for ratio in sorted(groups, reverse=True):
+            trial = selected.copy()
+            trial[groups[ratio]] = True
+            trial_lengths, trial_schedule = run_schedule(trial)
+            if (trial_schedule["feasible"]
+                    and int(trial_schedule["ring_min"]) >= target_ring
+                    and int(trial_schedule["ready_min"]) >= target_ready):
+                selected = trial
+                lengths = trial_lengths
+                chosen_schedule = trial_schedule
+                cutoff = ratio
+            else:
+                rejected_ratio = ratio
+                break
 
     return {
         "schema_version": 1,
@@ -270,6 +277,7 @@ def select_shadow_update_lists(
             int(rejected_ratio.numerator) if rejected_ratio is not None else 0),
         "rejected_denominator": (
             int(rejected_ratio.denominator) if rejected_ratio is not None else 1),
+        "control_growth_enabled": bool(allow_control_growth),
     }
 
 

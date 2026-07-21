@@ -78,6 +78,8 @@ def main() -> None:
             raise AssertionError(f"frame {seq}: mixed shadow differs from legacy output")
 
         if use_list:
+            if cost.added_bytes > 0:
+                raise AssertionError(f"frame {seq}: selected list grows control")
             saved_cycles += cost.saved_cycles
             control_delta += cost.added_bytes
 
@@ -85,6 +87,8 @@ def main() -> None:
     baseline_ready = int(metadata["baseline_ready_min"])
     selected_ring = int(metadata["selected_ring_min"])
     selected_ready = int(metadata["selected_ready_min"])
+    if metadata.get("control_growth_enabled", False):
+        raise AssertionError("qualified shadow-list decisions must not grow control")
     if selected_ring < baseline_ring or selected_ready < baseline_ready:
         raise AssertionError(
             "selected stream reduced PrgBuf or control-readiness minimum")

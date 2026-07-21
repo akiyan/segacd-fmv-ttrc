@@ -42,6 +42,11 @@ class ControlLengthTests(unittest.TestCase):
         self.assertGreaterEqual(
             int(plan["schedule"]["ready_min"]),
             int(plan["baseline_schedule"]["ready_min"]))
+        self.assertFalse(plan["control_growth_enabled"])
+        self.assertTrue(all(
+            cost.added_bytes <= 0
+            for cost, selected in zip(plan["costs"], plan["selected"], strict=True)
+            if selected))
 
     def test_lengths_match_the_packed_layout_formula(self) -> None:
         lengths = schedule.control_block_lengths(

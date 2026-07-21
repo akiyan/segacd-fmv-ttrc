@@ -522,13 +522,13 @@ runtime offset mask confines a corrupt item to an even address inside a padded
 uses the ordinary source-aware run suffix for every physical pattern transfer.
 Frame 0 always uses the legacy representation.
 
-The encoder freezes this choice per frame. It first accepts every list that is
-both faster and no larger, then considers larger lists from highest saved
-Main-CPU cycles per added control byte downward. A threshold group is kept only
-when the complete physical schedule remains feasible and both the minimum
-PrgBuf occupancy and minimum control-readiness margin stay at least as large as
-the all-legacy baseline. The packer recomputes the cycle model and rejects a
-stale or non-improving frozen choice.
+The encoder freezes this choice per frame. The qualified path accepts a list
+only when it is faster and no larger than the legacy bytes. Early full-length
+testing showed that unchanged PrgBuf and control-readiness minima alone do not
+protect the Sub CPU from the cumulative cost of copying larger controls, so the
+planned positive-growth cycle/byte threshold remains disabled. The complete
+physical schedule must still preserve the all-legacy minima. The packer
+recomputes the cycle model and rejects a stale or non-improving frozen choice.
 
 **Audio**: PCM streams carry `audio_bytes` per frame of RF5C164 sign-magnitude 8-bit PCM (positive
 = `0..0x7F`, negative = `0x80 | magnitude`, magnitude clamped to `0x7E` so the
