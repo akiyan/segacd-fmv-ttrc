@@ -14,7 +14,7 @@ white_min = 253
 mode = "H40"
 width = 320
 height = 224
-fit = "pad"
+fit = "crop"
 # Final Bad Apple choice: preserve hard silhouette edges without Lanczos ringing.
 resize_filter = "area"
 master_denoise = false
