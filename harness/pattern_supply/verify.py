@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independently replay the v10 Prg/Wr0/Wr1/Main pattern supply format.
+"""Independently replay the current Prg/Wr0/Wr1/Main pattern supply format.
 
 This verifier deliberately does not import the production packer, scheduler,
 or pattern-supply planner.  It walks the real HEADER.DAT and BODY.DAT, consumes
@@ -21,11 +21,12 @@ from pathlib import Path
 SECTOR = 2048
 PATTERN_BYTES = 32
 DEBUG_BYTES = 22
-VERSION = 10
+VERSION = 11
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
+FEATURE_SHADOW_UPDATE_LISTS = 0x0010
 SOURCE_PRG = 0
 SOURCE_WR = 1
 SOURCE_MAIN = 2
@@ -34,6 +35,8 @@ SOURCE_SHIFT = 11
 RUN_COUNT_MASK = 0x3FFF
 RUN_SOURCE_SHIFT = 14
 ENTRY_DISPLAY_MASK = 0x67FF
+SHADOW_UPDATE_LIST_TAG = 0x8000
+SHADOW_UPDATE_COUNT_MASK = 0x7FFF
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,7 @@ class Control:
     bitmap: bytes
     entries: tuple[int, ...]
     runs: tuple[tuple[int, int, int], ...]
+    use_list: bool
 
 
 def packed_pattern(key: bytes) -> bytes:
@@ -59,7 +63,9 @@ def packed_pattern(key: bytes) -> bytes:
 def parse_control(raw: bytes, seq: int, cells: int, audio_bytes: int) -> Control:
     if len(raw) < 8:
         raise AssertionError(f"frame {seq}: control is truncated")
-    total, packed_seq, n_upd = struct.unpack_from(">HHH", raw)
+    total, packed_seq, raw_count = struct.unpack_from(">HHH", raw)
+    n_upd = raw_count & SHADOW_UPDATE_COUNT_MASK
+    use_list = bool(raw_count & SHADOW_UPDATE_LIST_TAG)
     if total != len(raw) or total & 1:
         raise AssertionError(f"frame {seq}: invalid total_len {total}/{len(raw)}")
     if packed_seq != seq or n_upd > cells:
@@ -70,6 +76,9 @@ def parse_control(raw: bytes, seq: int, cells: int, audio_bytes: int) -> Control
     bitmap_bytes = (cells + 7) // 8
     entries_start = bitmap_start + bitmap_bytes
     entries_end = entries_start + n_upd * 2
+    if use_list:
+        entries_start = bitmap_start
+        entries_end = entries_start + n_upd * 4
     audio_end = entries_end + audio_bytes
     suffix_start = (audio_end + 1) & ~1
     if suffix_start + 2 > len(raw):
@@ -77,13 +86,30 @@ def parse_control(raw: bytes, seq: int, cells: int, audio_bytes: int) -> Control
     if raw[audio_end:suffix_start] != (b"\0" if audio_end & 1 else b""):
         raise AssertionError(f"frame {seq}: invalid audio alignment byte")
 
-    bitmap = raw[bitmap_start:entries_start]
+    if use_list:
+        bitmap_mut = bytearray(bitmap_bytes)
+        entries_mut = []
+        previous_cell = -1
+        for index in range(n_upd):
+            offset, entry = struct.unpack_from(">HH", raw, entries_start + index * 4)
+            if offset & 1 or offset >= cells * 2:
+                raise AssertionError(f"frame {seq}: invalid shadow offset {offset}")
+            cell = offset // 2
+            if cell <= previous_cell:
+                raise AssertionError(f"frame {seq}: list cells are not ascending")
+            bitmap_mut[cell >> 3] |= 1 << (cell & 7)
+            entries_mut.append(entry)
+            previous_cell = cell
+        bitmap = bytes(bitmap_mut)
+        entries = tuple(entries_mut)
+    else:
+        bitmap = raw[bitmap_start:entries_start]
+        entries = (
+            tuple(struct.unpack_from(f">{n_upd}H", raw, entries_start))
+            if n_upd else ()
+        )
     if sum(value.bit_count() for value in bitmap) != n_upd:
-        raise AssertionError(f"frame {seq}: bitmap population differs from n_upd")
-    entries = (
-        tuple(struct.unpack_from(f">{n_upd}H", raw, entries_start))
-        if n_upd else ()
-    )
+        raise AssertionError(f"frame {seq}: update cell population differs from n_upd")
     n_runs = struct.unpack_from(">H", raw, suffix_start)[0]
     suffix_end = suffix_start + 2 + n_runs * 4
     if suffix_end != len(raw):
@@ -98,7 +124,7 @@ def parse_control(raw: bytes, seq: int, cells: int, audio_bytes: int) -> Control
             raise AssertionError(
                 f"frame {seq}: invalid run {index}: slot={slot} count={count} source={source}")
         runs.append((slot, count, source))
-    return Control(seq, bitmap, entries, tuple(runs))
+    return Control(seq, bitmap, entries, tuple(runs), use_list)
 
 
 def expected_runs(entries: tuple[int, ...], base: int) -> tuple[tuple[int, int, int], ...]:
@@ -203,8 +229,10 @@ def main() -> None:
         FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_PATTERN_SUPPLY)
     if features & required_supply_features != required_supply_features:
         raise SystemExit(
-            f"expected v10 cold-run/fixed-N2/pattern-supply features, "
+            f"expected v11 cold-run/fixed-N2/pattern-supply features, "
             f"got 0x{features:04X}")
+    if features & FEATURE_SHADOW_UPDATE_LISTS and not features & FEATURE_PATTERN_SUPPLY:
+        raise SystemExit("shadow update lists require pattern supply")
     if vsync_n <= 0 or fps < 24:
         raise SystemExit(f"invalid supply timing N={vsync_n} fps={fps}")
     audio_bytes = 4 + decoded_audio // 2 if features & FEATURE_ADPCM22 else decoded_audio
@@ -294,9 +322,8 @@ def main() -> None:
             f"decision log has {len(decision_frames)} frames, stream has {frames}")
 
     prg_count = sum(
-        1 for frame, control in enumerate(controls) for entry in control.entries
-        if frame and entry & 0x8000 and ((entry & SOURCE_MASK) >> SOURCE_SHIFT) == SOURCE_PRG
-    )
+        count for frame, control in enumerate(controls) if frame
+        for _slot, count, source in control.runs if source == SOURCE_PRG)
     streamed_prg = prebuffer + body_payload
     useful_prg_bytes = prg_count * 32
     if len(streamed_prg) < useful_prg_bytes or any(streamed_prg[useful_prg_bytes:]):
@@ -324,8 +351,36 @@ def main() -> None:
             raise AssertionError(f"frame {frame}: bitmap cells differ from decisions")
         if len(ordered) != len(control.entries):
             raise AssertionError(f"frame {frame}: decision/update count differs")
-        if control.runs != expected_runs(control.entries, base):
+        if not control.use_list and control.runs != expected_runs(control.entries, base):
             raise AssertionError(f"frame {frame}: source-coded cold runs differ from entries")
+
+        expected_by_slot = {}
+        for item, entry in zip(ordered, control.entries, strict=True):
+            expected_by_slot[(entry & 0x07FF) - base] = packed_pattern(bytes(item[2]))
+
+        if frame:
+            armed_slots = set()
+            for run_slot, run_count, source_id in control.runs:
+                source_name = (
+                    "Prg" if source_id == SOURCE_PRG else
+                    ("Wr1" if frame & 1 else "Wr0") if source_id == SOURCE_WR else
+                    "Main" if source_id == SOURCE_MAIN else "reserved"
+                )
+                for slot in range(run_slot, run_slot + run_count):
+                    if slot in armed_slots or slot not in expected_by_slot:
+                        raise AssertionError(
+                            f"frame {frame}: run arms invalid/duplicate slot {slot}")
+                    if source_name not in sources or not sources[source_name]:
+                        raise AssertionError(
+                            f"frame {frame}: {source_name} is empty before slot {slot}")
+                    actual = sources[source_name].popleft()
+                    consumed[source_name] += 1
+                    if actual != expected_by_slot[slot]:
+                        raise AssertionError(
+                            f"frame {frame}: {source_name} pattern differs at slot {slot}")
+                    vram[slot] = actual
+                    armed_slots.add(slot)
+                    total_cold += 1
 
         for item, entry in zip(ordered, control.entries, strict=True):
             expected = packed_pattern(bytes(item[2]))
@@ -335,14 +390,9 @@ def main() -> None:
             slot = (entry & 0x07FF) - base
             if not 0 <= slot < pool:
                 raise AssertionError(f"frame {frame}: VRAM slot {slot} is outside the pool")
-            if entry & 0x8000:
+            if frame == 0 and entry & 0x8000:
                 source_id = (entry & SOURCE_MASK) >> SOURCE_SHIFT
-                source_name = (
-                    "F0" if frame == 0 else
-                    "Prg" if source_id == SOURCE_PRG else
-                    ("Wr1" if frame & 1 else "Wr0") if source_id == SOURCE_WR else
-                    "Main" if source_id == SOURCE_MAIN else "reserved"
-                )
+                source_name = "F0"
                 if source_name not in sources or not sources[source_name]:
                     raise AssertionError(
                         f"frame {frame}: {source_name} is empty before slot {slot}")

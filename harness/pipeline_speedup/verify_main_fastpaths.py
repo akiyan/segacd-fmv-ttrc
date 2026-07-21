@@ -28,9 +28,12 @@ ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
+FEATURE_SHADOW_UPDATE_LISTS = 0x0010
 ADPCM_TABLE_SECTORS = 5
 PATTERN_SUPPLY_OFFSET = 196
 NAME_ENTRY_MASK = 0x67FF
+SHADOW_UPDATE_LIST_TAG = 0x8000
+SHADOW_UPDATE_COUNT_MASK = 0x7FFF
 DEFAULT_DECISIONS = Path(
     "videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl"
 )
@@ -133,7 +136,9 @@ def pattern_supply_sectors(header: bytes, version: int, features: int) -> int:
 def parse_control(raw: bytes, seq: int, cells: int) -> ControlBlock:
     if len(raw) < 8:
         raise AssertionError(f"frame {seq}: control block is shorter than 8 bytes")
-    total_len, packed_seq, n_upd = struct.unpack_from(">HHH", raw)
+    total_len, packed_seq, raw_count = struct.unpack_from(">HHH", raw)
+    n_upd = raw_count & SHADOW_UPDATE_COUNT_MASK
+    use_list = bool(raw_count & SHADOW_UPDATE_LIST_TAG)
     if total_len != len(raw):
         raise AssertionError(f"frame {seq}: total_len {total_len} != {len(raw)}")
     if packed_seq != seq:
@@ -145,12 +150,32 @@ def parse_control(raw: bytes, seq: int, cells: int) -> ControlBlock:
     bitmap_len = (cells + 7) // 8
     entries_start = bitmap_start + bitmap_len
     entries_end = entries_start + n_upd * 2
+    if use_list:
+        entries_start = bitmap_start
+        entries_end = entries_start + n_upd * 4
     if entries_end > len(raw):
         raise AssertionError(f"frame {seq}: entries extend beyond the control block")
-    bitmap = raw[bitmap_start:entries_start]
-    entries = (
-        struct.unpack_from(f">{n_upd}H", raw, entries_start) if n_upd else ()
-    )
+    if use_list:
+        bitmap_mut = bytearray(bitmap_len)
+        entries_mut = []
+        previous_cell = -1
+        for index in range(n_upd):
+            offset, entry = struct.unpack_from(">HH", raw, entries_start + index * 4)
+            if offset & 1 or offset >= cells * 2:
+                raise AssertionError(f"frame {seq}: invalid shadow offset {offset}")
+            cell = offset // 2
+            if cell <= previous_cell:
+                raise AssertionError(f"frame {seq}: list cells are not ascending")
+            bitmap_mut[cell >> 3] |= 1 << (cell & 7)
+            entries_mut.append(entry)
+            previous_cell = cell
+        bitmap = bytes(bitmap_mut)
+        entries = tuple(entries_mut)
+    else:
+        bitmap = raw[bitmap_start:entries_start]
+        entries = (
+            struct.unpack_from(f">{n_upd}H", raw, entries_start) if n_upd else ()
+        )
     if sum(byte.bit_count() for byte in bitmap) != n_upd:
         raise AssertionError(f"frame {seq}: bitmap population differs from n_upd")
     for cell in range(cells, bitmap_len * 8):
@@ -164,8 +189,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, _pool = struct.unpack_from(
         ">4sHHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10):
-        raise AssertionError(f"expected split TTRC v6-v10, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10, 11):
+        raise AssertionError(f"expected split TTRC v6-v11, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -176,6 +201,9 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     fps = struct.unpack_from(">H", header, 56)[0] or 15
     audio_preload_sec = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
+    if version >= 11 and features & FEATURE_SHADOW_UPDATE_LISTS \
+            and not features & FEATURE_PATTERN_SUPPLY:
+        raise AssertionError("shadow update lists require pattern supply")
     table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
     supply_sec = pattern_supply_sectors(header, version, features)
 

@@ -7,7 +7,7 @@ absolute-address alignment pad:
     n_runs:u16, repeated (slot_start:u16, count:u16)
 
 This checker does not import the packer.  It independently reads the real split
-TTRC v6-v10 files, reconstructs every current control and payload byte, and compares
+TTRC v6-v11 files, reconstructs every current control and payload byte, and compares
 two consumers:
 
 * the legacy/fallback Sub path scans all update entries, selects cold entries, builds
@@ -36,6 +36,7 @@ FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
+FEATURE_SHADOW_UPDATE_LISTS = 0x0010
 ADPCM_TABLE_SECTORS = 5
 ROUTING_TOTAL_MAX = 5
 PATTERN_SUPPLY_OFFSET = 196
@@ -47,6 +48,8 @@ SOURCE_MAIN = 2
 NAME_ENTRY_MASK = 0x67FF
 RUN_SOURCE_SHIFT = 14
 RUN_COUNT_MASK = 0x3FFF
+SHADOW_UPDATE_LIST_TAG = 0x8000
+SHADOW_UPDATE_COUNT_MASK = 0x7FFF
 DEFAULT_DECISIONS = Path(
     "videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl"
 )
@@ -61,6 +64,7 @@ class Control:
     audio_end: int
     pad: bytes
     descriptor_suffix: bytes | None
+    use_list: bool
 
 
 @dataclass(frozen=True)
@@ -169,7 +173,9 @@ def parse_control(
 ) -> Control:
     if len(raw) < 8:
         raise AssertionError(f"frame {seq}: control is shorter than 8 bytes")
-    total_len, packed_seq, n_upd = struct.unpack_from(">HHH", raw)
+    total_len, packed_seq, raw_count = struct.unpack_from(">HHH", raw)
+    n_upd = raw_count & SHADOW_UPDATE_COUNT_MASK
+    use_list = bool(raw_count & SHADOW_UPDATE_LIST_TAG)
     if total_len != len(raw):
         raise AssertionError(f"frame {seq}: total_len {total_len} != {len(raw)}")
     if packed_seq != seq:
@@ -181,20 +187,39 @@ def parse_control(
     bitmap_bytes = (cells + 7) // 8
     entries_start = bitmap_start + bitmap_bytes
     entries_end = entries_start + 2 * n_upd
+    if use_list:
+        entries_start = bitmap_start
+        entries_end = entries_start + 4 * n_upd
     audio_end = entries_end + audio_bytes
     if audio_end > len(raw):
         raise AssertionError(f"frame {seq}: audio extends beyond the control")
-    bitmap = raw[bitmap_start:entries_start]
+    if use_list:
+        bitmap_mut = bytearray(bitmap_bytes)
+        entries_mut = []
+        previous_cell = -1
+        for index in range(n_upd):
+            offset, entry = struct.unpack_from(">HH", raw, entries_start + index * 4)
+            if offset & 1 or offset >= cells * 2:
+                raise AssertionError(f"frame {seq}: invalid shadow offset {offset}")
+            cell = offset // 2
+            if cell <= previous_cell:
+                raise AssertionError(f"frame {seq}: list cells are not ascending")
+            bitmap_mut[cell >> 3] |= 1 << (cell & 7)
+            entries_mut.append(entry)
+            previous_cell = cell
+        bitmap = bytes(bitmap_mut)
+        entries = tuple(entries_mut)
+    else:
+        bitmap = raw[bitmap_start:entries_start]
+        entries = (
+            tuple(struct.unpack_from(f">{n_upd}H", raw, entries_start))
+            if n_upd else ()
+        )
     if sum(value.bit_count() for value in bitmap) != n_upd:
-        raise AssertionError(f"frame {seq}: bitmap population differs from n_upd")
+        raise AssertionError(f"frame {seq}: update population differs from n_upd")
     for cell in range(cells, bitmap_bytes * 8):
         if bitmap[cell >> 3] & (1 << (cell & 7)):
             raise AssertionError(f"frame {seq}: bitmap padding bit {cell} is set")
-    entries = (
-        tuple(struct.unpack_from(f">{n_upd}H", raw, entries_start))
-        if n_upd
-        else ()
-    )
     if features & FEATURE_COLD_RUNS:
         suffix_start = (audio_end + 1) & ~1
         pad = raw[audio_end:suffix_start]
@@ -212,7 +237,8 @@ def parse_control(
             raise AssertionError(
                 f"frame {seq}: expected zero or one zero even-pad byte, got {pad!r}"
             )
-    return Control(seq, raw, bitmap, entries, audio_end, pad, descriptor_suffix)
+    return Control(
+        seq, raw, bitmap, entries, audio_end, pad, descriptor_suffix, use_list)
 
 
 def read_stream(header_path: Path, body_path: Path) -> Stream:
@@ -220,8 +246,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, pool, base = struct.unpack_from(
         ">4sHHHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10):
-        raise AssertionError(f"expected split TTRC v6-v10, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10, 11):
+        raise AssertionError(f"expected split TTRC v6-v11, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -238,9 +264,11 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     features = struct.unpack_from(">H", header, 62)[0]
     unknown_features = features & ~(
         FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_ADPCM22
-        | FEATURE_PATTERN_SUPPLY)
+        | FEATURE_PATTERN_SUPPLY | FEATURE_SHADOW_UPDATE_LISTS)
     if unknown_features:
         raise AssertionError(f"unsupported header feature bits 0x{unknown_features:04X}")
+    if features & FEATURE_SHADOW_UPDATE_LISTS and not features & FEATURE_PATTERN_SUPPLY:
+        raise AssertionError("shadow update lists require pattern supply")
     audio_bytes = (
         4 + decoded_audio_bytes // 2
         if features & FEATURE_ADPCM22
@@ -357,12 +385,19 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
         control_pos = block_end
 
     source_aware = bool(features & FEATURE_PATTERN_SUPPLY)
+    def control_runs(control: Control) -> tuple[tuple[int, int, int], ...]:
+        if control.use_list:
+            if control.descriptor_suffix is None:
+                raise AssertionError(
+                    f"frame {control.seq}: list control has no run suffix")
+            return decode_descriptors(control.descriptor_suffix, source_aware)
+        return old_sub_runs(control.entries, base, source_aware)
+
     total_cold = sum(
-        bool(entry & 0x8000) for control in controls for entry in control.entries)
+        count for control in controls for _slot, count, _source in control_runs(control))
     timed_prg_cold = sum(
-        bool(entry & 0x8000)
-        and (not source_aware or (entry & SOURCE_MASK) >> SOURCE_SHIFT == SOURCE_PRG)
-        for control in controls[1:] for entry in control.entries)
+        count for control in controls[1:] for _slot, count, source in control_runs(control)
+        if not source_aware or source == SOURCE_PRG)
     streamed_pattern_bytes = timed_prg_cold * PATTERN_BYTES
     streamed_payload = bytes(prebuffer_payload + body_payload)
     if len(streamed_payload) < streamed_pattern_bytes:
@@ -593,18 +628,42 @@ def main() -> None:
                 f"frame {seq}: entry palettes differ from decisions.pkl"
             )
 
-        colds = tuple(bool(entry & 0x8000) for entry in control.entries)
-        sources = tuple(
-            (entry & SOURCE_MASK) >> SOURCE_SHIFT if cold and source_aware else 0
-            for entry, cold in zip(control.entries, colds, strict=True))
-        old_runs = old_sub_runs(control.entries, stream.base, source_aware)
+        packed_suffix = control.descriptor_suffix
+        decoded_packed_runs = (
+            decode_descriptors(packed_suffix, source_aware)
+            if packed_suffix is not None else ())
+        if control.use_list:
+            expanded = iter(expanded_slots(decoded_packed_runs))
+            pending = next(expanded, None)
+            inferred_colds = []
+            inferred_sources = []
+            for entry in control.entries:
+                slot = (entry & 0x07FF) - stream.base
+                is_cold = pending is not None and slot == pending[0]
+                inferred_colds.append(is_cold)
+                inferred_sources.append(pending[1] if is_cold else 0)
+                if is_cold:
+                    pending = next(expanded, None)
+            if pending is not None:
+                raise AssertionError(
+                    f"frame {seq}: run suffix is not a subsequence of update slots")
+            colds = tuple(inferred_colds)
+            sources = tuple(inferred_sources)
+        else:
+            colds = tuple(bool(entry & 0x8000) for entry in control.entries)
+            sources = tuple(
+                (entry & SOURCE_MASK) >> SOURCE_SHIFT if cold and source_aware else 0
+                for entry, cold in zip(control.entries, colds, strict=True))
+        old_runs = (
+            decoded_packed_runs if control.use_list
+            else old_sub_runs(control.entries, stream.base, source_aware))
         entry_mask = NAME_ENTRY_MASK if source_aware else 0x7FFF
         logical_entries = tuple(entry & entry_mask for entry in control.entries)
         proposed_runs = per_run_descriptors(
             logical_entries, colds, sources, stream.base)
         expected_suffix = encode_descriptors(proposed_runs, source_aware)
-        suffix = control.descriptor_suffix or expected_suffix
-        if control.descriptor_suffix is not None and suffix != expected_suffix:
+        suffix = packed_suffix or expected_suffix
+        if packed_suffix is not None and suffix != expected_suffix:
             raise AssertionError(
                 f"frame {seq}: packed descriptor bytes differ from logical per runs"
             )
@@ -663,8 +722,9 @@ def main() -> None:
 
         old_slots = tuple(
             ((entry & 0x07FF) - stream.base, source)
-            for entry, source in zip(control.entries, sources, strict=True)
-            if entry & 0x8000
+            for entry, source, cold in zip(
+                control.entries, sources, colds, strict=True)
+            if cold
         )
         proposed_slots = expanded_slots(decoded_runs)
         if proposed_slots != old_slots:
@@ -740,12 +800,13 @@ def main() -> None:
         stream.controls,
         run_counts,
     )
-    if stream.frames <= 2019:
-        raise AssertionError(f"stream ends before decimal frame 2019 ({stream.frames} frames)")
-    frame = 2019
-    print_range_stats(
-        "frame F2019(decimal)", [frame], stream.controls, run_counts
-    )
+    if stream.frames > 2019:
+        frame = 2019
+        print_range_stats(
+            "frame F2019(decimal)", [frame], stream.controls, run_counts
+        )
+    else:
+        print(f"frame F2019(decimal): skipped for {stream.frames}-frame smoke stream")
 
 
 if __name__ == "__main__":

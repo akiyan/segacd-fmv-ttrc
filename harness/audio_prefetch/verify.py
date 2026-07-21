@@ -17,6 +17,8 @@ ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
+SHADOW_UPDATE_LIST_TAG = 0x8000
+SHADOW_UPDATE_COUNT_MASK = 0x7FFF
 PATTERN_SUPPLY_OFFSET = 196
 
 
@@ -42,9 +44,12 @@ def sign_magnitude_audio(path: Path, target_len: int) -> bytes:
 def control_audio(block: bytes, cells: int, audio_bytes: int) -> bytes:
     if len(block) < 8:
         raise SystemExit("truncated control block")
-    n_upd = struct.unpack_from(">H", block, 4)[0]
+    raw_count = struct.unpack_from(">H", block, 4)[0]
+    n_upd = raw_count & SHADOW_UPDATE_COUNT_MASK
+    use_list = bool(raw_count & SHADOW_UPDATE_LIST_TAG)
     dbg = block[7]
-    pos = 8 + (DBG_LEN if dbg else 0) + ((cells + 7) // 8) + n_upd * 2
+    update_bytes = n_upd * 4 if use_list else ((cells + 7) // 8) + n_upd * 2
+    pos = 8 + (DBG_LEN if dbg else 0) + update_bytes
     chunk = block[pos:pos + audio_bytes]
     if len(chunk) != audio_bytes:
         raise SystemExit(
@@ -178,8 +183,8 @@ def main() -> int:
         raise SystemExit("HEADER.DAT and BODY.DAT must be sector aligned")
 
     version = struct.unpack_from(">H", header, 4)[0]
-    if version not in (6, 7, 8, 9, 10):
-        raise SystemExit(f"expected split TTRC v6-v10, got v{version}")
+    if version not in (6, 7, 8, 9, 10, 11):
+        raise SystemExit(f"expected split TTRC v6-v11, got v{version}")
     nframes = struct.unpack_from(">H", header, 6)[0]
     cells = struct.unpack_from(">H", header, 12)[0]
     routing_sec = struct.unpack_from(">L", header, 26)[0]

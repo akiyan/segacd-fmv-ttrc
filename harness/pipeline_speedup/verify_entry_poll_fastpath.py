@@ -29,6 +29,8 @@ ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
+SHADOW_UPDATE_LIST_TAG = 0x8000
+SHADOW_UPDATE_COUNT_MASK = 0x7FFF
 ADPCM_TABLE_SECTORS = 5
 PATTERN_SUPPLY_OFFSET = 196
 
@@ -123,13 +125,30 @@ def parse_entries(block: bytes, seq: int, cells: int) -> tuple[int, ...]:
     """Return entries from one validated control block."""
     if len(block) < 8:
         raise AssertionError(f"frame {seq}: control block is shorter than 8 bytes")
-    total_len, packed_seq, n_upd = struct.unpack_from(">HHH", block)
+    total_len, packed_seq, raw_count = struct.unpack_from(">HHH", block)
+    n_upd = raw_count & SHADOW_UPDATE_COUNT_MASK
+    use_list = bool(raw_count & SHADOW_UPDATE_LIST_TAG)
     if total_len != len(block):
         raise AssertionError(f"frame {seq}: total_len {total_len} != {len(block)}")
     if packed_seq != seq:
         raise AssertionError(f"frame {seq}: packed sequence is {packed_seq}")
     if n_upd > cells:
         raise AssertionError(f"frame {seq}: {n_upd} updates exceed {cells} cells")
+
+    if use_list:
+        list_start = 8 + (22 if block[7] else 0)
+        list_end = list_start + 4 * n_upd
+        if list_end > len(block):
+            raise AssertionError(f"frame {seq}: shadow list exceeds the control block")
+        previous = -1
+        for index in range(n_upd):
+            offset = struct.unpack_from(">H", block, list_start + index * 4)[0]
+            if offset & 1 or offset >= cells * 2 or offset <= previous:
+                raise AssertionError(f"frame {seq}: invalid shadow-list offset {offset}")
+            previous = offset
+        # List frames use the authoritative run suffix; the legacy Sub entry
+        # walker measured by this harness is intentionally not entered.
+        return ()
 
     bitmap_start = 8 + (22 if block[7] else 0)
     bitmap_len = (cells + 7) // 8
@@ -151,8 +170,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, _cols, _rows, cells = struct.unpack_from(
         ">4sHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10):
-        raise AssertionError(f"expected split TTRC v6-v10, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10, 11):
+        raise AssertionError(f"expected split TTRC v6-v11, got {magic!r} v{version}")
 
     routing_sec = struct.unpack_from(">L", header, 26)[0]
     prebuf_sec = struct.unpack_from(">L", header, 30)[0]

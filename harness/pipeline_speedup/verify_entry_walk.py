@@ -124,11 +124,13 @@ def pattern_supply_sectors(header: bytes, version: int, features: int) -> int:
 
 
 def verify_block(
-    block: bytes, seq: int, cells: int, pool: int,
+    block: bytes, seq: int, cells: int, pool: int, audio_bytes: int,
 ) -> tuple[int, int, int]:
     if len(block) < 8:
         raise AssertionError(f"frame {seq}: short control block")
-    total_len, frame_seq, n_upd = struct.unpack_from(">HHH", block)
+    total_len, frame_seq, raw_count = struct.unpack_from(">HHH", block)
+    n_upd = raw_count & 0x7FFF
+    use_list = bool(raw_count & 0x8000)
     if total_len != len(block):
         raise AssertionError(f"frame {seq}: total_len {total_len} != {len(block)}")
     if frame_seq != seq:
@@ -138,6 +140,39 @@ def verify_block(
 
     dbg = block[7]
     bitmap_off = 8 + (22 if dbg else 0)
+    if use_list:
+        list_end = bitmap_off + n_upd * 4
+        if list_end > len(block):
+            raise AssertionError(f"frame {seq}: shadow list exceeds control block")
+        previous = -1
+        for index in range(n_upd):
+            offset = struct.unpack_from(">H", block, bitmap_off + index * 4)[0]
+            if offset & 1 or offset >= cells * 2 or offset <= previous:
+                raise AssertionError(f"frame {seq}: invalid shadow-list offset {offset}")
+            previous = offset
+        # v11 list frames bypass the legacy Sub entry walk and consume the
+        # authoritative run suffix instead. Count that suffix so the delivery
+        # proof below retains its exact Prg demand.
+        suffix = list_end + audio_bytes
+        suffix = (suffix + 1) & ~1
+        if suffix + 2 > len(block):
+            raise AssertionError(f"frame {seq}: missing run suffix")
+        n_runs = struct.unpack_from(">H", block, suffix)[0]
+        suffix += 2
+        if suffix + n_runs * 4 != len(block):
+            raise AssertionError(f"frame {seq}: invalid run suffix length")
+        cold = 0
+        prg_cold = 0
+        for index in range(n_runs):
+            slot, encoded = struct.unpack_from(">HH", block, suffix + index * 4)
+            count = encoded & 0x3FFF
+            source = encoded >> 14
+            if not count or slot + count > pool or source > 2:
+                raise AssertionError(f"frame {seq}: invalid run descriptor")
+            cold += count
+            if source == 0:
+                prg_cold += count
+        return n_upd, cold, prg_cold
     bitmap_len = (cells + 7) // 8
     entries_off = bitmap_off + bitmap_len
     entries_end = entries_off + 2 * n_upd
@@ -208,8 +243,8 @@ def main() -> None:
     magic, version, nfr, _cols, _rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", data, 0
     )
-    if magic != b"TTRC" or version not in (4, 5, 6, 7, 8, 9, 10):
-        raise SystemExit(f"expected TTRC v4-v10, got {magic!r} v{version}")
+    if magic != b"TTRC" or version not in (4, 5, 6, 7, 8, 9, 10, 11):
+        raise SystemExit(f"expected TTRC v4-v11, got {magic!r} v{version}")
     prebuf_pat = struct.unpack_from(">L", data, 22)[0]
     routing_sec = struct.unpack_from(">L", data, 26)[0]
     prebuf_sec = struct.unpack_from(">L", data, 30)[0]
@@ -218,6 +253,10 @@ def main() -> None:
     fps = struct.unpack_from(">H", data, 56)[0] or 15
     audio_preload_sec = struct.unpack_from(">H", data, 60)[0]
     features = struct.unpack_from(">H", data, 62)[0]
+    decoded_audio_bytes = struct.unpack_from(">H", data, 54)[0]
+    audio_bytes = (
+        4 + decoded_audio_bytes // 2
+        if features & FEATURE_ADPCM22 else decoded_audio_bytes)
     table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
     supply_sec = pattern_supply_sectors(data, version, features)
 
@@ -297,7 +336,7 @@ def main() -> None:
     prg_by_frame = []
     for seq, block in enumerate(controls):
         frame_updates, frame_cold, frame_prg = verify_block(
-            block, seq, cells, pool)
+            block, seq, cells, pool, audio_bytes)
         updates += frame_updates
         cold += frame_cold
         prg_by_frame.append(frame_prg)
