@@ -128,9 +128,13 @@ The H40/30 fps/1,120-active-tile value of 178 is full-length-qualified with the
 2,714-frame Sonic Jam OP stream. The pack had `under=0`, exact reconstruction,
 and a 17-pattern minimum ready payload. The DEBUG recording kept `S=0`, `D=0`,
 `R=0`, and `C=0`; every one of the 2,713 timed frame intervals was exactly two
-VBlanks. Cold 179 inserted one extra scanout between frames 30 and 31, while
-200 depleted delivery margin and held `S=2` from frame 2,126 onward. This value
-is specific to H40, 30 fps, and the full 1,120-tile raster.
+VBlanks. Current-player full-length cap-195 and cap-200 retries also kept
+`S=0`, `D=0`, and `R=0`, but missed the fixed cadence: cap 195 first displayed
+frames `0x0565` and `0x0A3C` after three VBlanks, while cap 200 did so at
+`0x0A3E`. A repeated cap-195 recording was byte-for-byte equivalent at the
+decoded video and PCM levels. The matching cap-178 recording retained exact
+two-VBlank cadence for all 2,713 intervals, so 195 and 200 remain unqualified.
+This value is specific to H40, 30 fps, and the full 1,120-tile raster.
 
 The H40/15 fps/1,040-active-tile value of 400 is full-length-qualified with the
 3,998-frame Machi ED stream. Its 320x204 picture touches 40x26 tile cells after
