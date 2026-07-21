@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e73 : Raise the Bad Apple H40 resident VRAM pool from the legacy 1400
+#        profile value to the qualified 1440-tile H40 limit enabled by the
+#        16-pattern playback HUD font.
 #   e72 : Lower the H40/30/full-raster cold cap from the previously qualified
 #        178 to 175 as a conservative headroom step while qualifying the TTRC
 #        v11 mixed shadow-update path toward a future cold-190 retry.
@@ -509,5 +512,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
-e=72
+e=73
 p=67
