@@ -146,11 +146,11 @@ CAT_DEDUP = (0, 190, 175)     # Dedup = VRAM流用 (teal, 互換用)
 CAT_MISS = (220, 70, 70)      # Miss = 取りこぼし (red, 塗りつぶし)
 CAT_CARRY = (235, 160, 70)    # MissCarry = 繰越Miss (amber)
 CAT_NEAR = (95, 115, 215)     # Near = ほぼ同一の常駐を流用 (blue)  ※色巡回
-CAT_COA = (45, 240, 70)       # Coa = 近い常駐を流用 (鮮やかな緑)  ※色巡回+判別性
+CAT_COA = (45, 240, 70)       # Coa metric colour; category frame uses CAT_NEAR
 CAT_FLBK = CAT_MISS            # Flbk = resident fallback (red, thin frame)
 CAT_PRG = (165, 105, 225)     # old Buf exact load, physically supplied by PrgBuf
-CAT_WR0 = (80, 145, 235)      # old Buf exact load, supplied by WordBuf0
-CAT_WR1 = (65, 205, 195)      # old Buf exact load, supplied by WordBuf1
+CAT_WR1 = (65, 205, 195)      # exact load supplied by WordBuf0/1 (shared display colour)
+CAT_WR0 = CAT_WR1             # WordBuf banks remain separate data, unified visually
 CAT_DIC = (235, 175, 70)      # exact load supplied by persistent DicBuf
 # 粗い近似dedup(env CBRSIM_COA=1): 平坦なコールドタイルを、見た目(2×2低周波)が近い常駐パターンで
 # 流用(ネームテーブルだけ=0転送)。ディザの点々差は無視。構造崩れを避けるため detail が低い平坦タイル限定。
@@ -2394,19 +2394,32 @@ def main():
                     base_rgb[ii, p, 0, :] = b
                     base_rgb[ii, p, TILE - 1, :] = a
 
+            def dashed_color_border(base_rgb, mask, col):
+                """Blend a one-pixel colour dash; leave each gap untouched."""
+                ii = np.where(mask)[0]
+                if not ii.size:
+                    return
+                c = np.array(col, np.float64)
+                for p in range(TILE):
+                    if (p // 2) & 1:
+                        continue
+                    for s in (np.s_[ii, 0, p, :], np.s_[ii, TILE - 1, p, :],
+                              np.s_[ii, p, 0, :], np.s_[ii, p, TILE - 1, :]):
+                        base_rgb[s] = A * c + (1 - A) * base_rgb[s]
+
             # Category map: Raw=thin dashed frame; Same=no frame;
-            # Near/Coa/Flbk and Dic use thin frames; streamed/preloaded
-            # Prg/Wr exact loads use thick physical-source frames.
+            # Near/Flbk use thin frames; Coa uses a thick Near-colour frame.
+            # Dic/Prg/Wr use thin colour-and-transparent dashed frames.
             # Miss becomes a red fill in the renderer.
             cat = cur_rgb.astype(np.float64)
             cat[stale] = 0
             dashed_raw_border(cat, raw_display_mask)
-            border(cat, near_eff, CAT_NEAR); border(cat, coa_mask, CAT_COA)
+            border(cat, near_eff, CAT_NEAR); border(cat, coa_mask, CAT_NEAR, 3)
             border(cat, flbk_mask, CAT_FLBK)
-            border(cat, prg_source_mask, CAT_PRG, 3)
-            border(cat, wr0_source_mask, CAT_WR0, 3)
-            border(cat, wr1_source_mask, CAT_WR1, 3)
-            border(cat, dic_source_mask, CAT_DIC, 1)
+            dashed_color_border(cat, prg_source_mask, CAT_PRG)
+            dashed_color_border(cat, wr0_source_mask, CAT_WR1)
+            dashed_color_border(cat, wr1_source_mask, CAT_WR1)
+            dashed_color_border(cat, dic_source_mask, CAT_DIC)
             _save_png(cells_to_image(cat.clip(0, 255).astype(np.uint8)), catmap_dir / f"{i:05d}.png")
 
             # Miss/Carry マップ: Miss/Carryタイルだけ内容表示+縁取り(fresh=赤/繰越=amber)。他は黒。

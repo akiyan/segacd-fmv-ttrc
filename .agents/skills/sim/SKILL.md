@@ -239,12 +239,16 @@ Important rendering notes:
 - Layout details are implemented in `layout_preview.py`:
   - right column: Source / Category / whole-clip category totals / Audio
   - Miss in Category is a filled red hole
-  - legend: 2 rows, 10 mutually-exclusive categories:
-    Raw/Same/Near/Coa/Flbk/Miss/Prg/Wr0/Wr1/Dic
-  - each legend item shows one displayed-cell count
+  - legend: `Raw/Same/Dic/Prg/Wr` on row 1 and
+    `Near/Coa/Flbk/Miss` on row 2; the displayed Wr count is Wr0 + Wr1
+  - each legend item shows one displayed-cell count (Wr shows the combined
+    count while the underlying Wr0/Wr1 data remains separate)
   - Same uses the original light/dark checker legend swatch but no
     category-map tile border
   - Raw uses a thin black/white dashed border in both legend and category map
+  - Dic/Prg/Wr use a thin colour-and-transparent dashed border; both Wr banks
+    use the Wr1 cyan display colour
+  - Coa uses a thick Near-blue border; its meter/timeline fill remains green
   - scrolling audio waveform with +/-2 seconds and now centered
   - status uses Req / Cold / Pre / Band / Prg / Wr0 / Wr1 / DMA / Run
   - Pre is the number of future patterns actually written to VRAM in the frame;

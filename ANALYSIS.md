@@ -64,20 +64,23 @@ Low-resolution grids therefore appear at their true on-screen size.
 
 - **Source** (top): the source frame after crop, scaled into the panel (4:3
   panel, same footprint as the category map).
-- **Legend** (between Source and the category map): two rows of five, ten
-  mutually exclusive classes. Each shows one displayed-cell count.
+- **Legend** (between Source and the category map): five entries on the first
+  row and four on the second, ordered `Raw Same Dic Prg Wr` then
+  `Near Coa Flbk Miss`. The ten mutually exclusive data classes remain intact,
+  but the displayed `Wr` count combines `Wr0 + Wr1`.
   Numeric fields are text directly on the legend background; there is no level
   fill behind the digits. All zero-padded digits use the normal text colour.
   Swatch styles mirror the map except that borderless `Same` uses the original
-  light/dark checker swatch in the legend. `Raw` = black/white dashed frame, `Miss` = red
-  fill, `Near/Coa/Flbk/Dic` = thin frame, and
-  `Prg/Wr0/Wr1` = thick physical-source frame. Dic remains distinguishable by
-  its amber colour.
+  light/dark checker swatch in the legend. `Raw` = black/white dashed frame,
+  `Miss` = red fill, `Near/Flbk` = thin frame, and `Coa` = a thick frame in the
+  same blue as Near. `Dic/Prg/Wr` use thin borders alternating between their
+  colour and transparent gaps.
 - **Category map** (middle): the tile grid. Each 8x8 tile shows its
   **reconstructed content**; the category (see Tile Categories) is indicated by
   the border: `Raw` = thin black/white dashed frame, `Same` = no border,
-  `Near/Coa/Flbk/Dic` = thin 1px border, and `Prg/Wr0/Wr1` = thick 3px
-  border. A `Miss` tile is
+  `Near/Flbk` = thin 1px border, `Coa` = thick 3px Near-blue border, and
+  `Dic/Prg/Wr0/Wr1` = thin colour-and-transparent dashed border. Wr0 and Wr1
+  share the Wr1 cyan display colour. A `Miss` tile is
   drawn as a **red-filled hole** (its content is not updated this frame).
 - **Category totals** (directly below the category map, `CATTOT_XY`): a thin
   stacked horizontal bar of the whole-clip totals per category, with a compact
@@ -137,13 +140,13 @@ find *some* resident rather than leave a hole.
 | **Raw**  | black/white dashed border | 34 | An exact pattern delivered for this frame, loaded into VRAM before display, and used immediately. It is bounded by the per-frame cold cap. |
 | **Same** | light/dark checker in legend; no map border | 0 or 2 (name only) | The target tile's exact pattern is **already resident** in VRAM. This includes a pattern prefetched in an earlier frame and first displayed now. No pattern transfer occurs this frame. |
 | **Near** | blue | 2 (name) | No exact match, but a resident pattern passes the **Near** thresholds; the cell points to it. Near-perfect reuse. Also covers "keep the current display" when the currently shown tile is already accurate and still within Near of the new target. |
-| **Coa**  | green | 2 (name) | Best resident passes **Coa** (a bit rougher than Near). Used for flat/low-detail tiles where a close-enough resident exists. |
+| **Coa**  | blue thick border (same colour as Near) | 2 (name) | Best resident passes **Coa** (a bit rougher than Near). Used for flat/low-detail tiles where a close-enough resident exists. Its meter/timeline fill remains green so Near and Coa totals remain distinguishable there. |
 | **Flbk** | red thin border | 2 (name) | **Fallback** (merged Mid+Far). Used when an exact load is unavailable. It remains distinct from the solid-red Miss because it did improve the displayed tile. |
 | **Miss** | red (filled) | 0 | The tile was **not updated**; it still shows whatever was there before. A red-filled hole in the category map. |
-| **Prg** | violet thick border | 34 | An exact cold load funded from saved whole-movie allowance and physically supplied by streamed PrgBuf. |
-| **Wr0** | blue thick border | 2 (name) | An exact cold load using a boot-preloaded WordBuf0 pattern. |
-| **Wr1** | cyan thick border | 2 (name) | An exact cold load using a boot-preloaded WordBuf1 pattern. |
-| **Dic** | amber thin border | 2 (name) | An exact cold load using an entry from persistent DicBuf. |
+| **Prg** | violet/transparent thin dashed border | 34 | An exact cold load funded from saved whole-movie allowance and physically supplied by streamed PrgBuf. |
+| **Wr0** | cyan/transparent thin dashed border | 2 (name) | An exact cold load using a boot-preloaded WordBuf0 pattern. Its legend count is combined into `Wr`. |
+| **Wr1** | cyan/transparent thin dashed border | 2 (name) | An exact cold load using a boot-preloaded WordBuf1 pattern. Its legend count is combined into `Wr`. |
+| **Dic** | amber/transparent thin dashed border | 2 (name) | An exact cold load using an entry from persistent DicBuf. |
 
 ### Selection order (per changed tile, `commit_unified`)
 
@@ -241,7 +244,7 @@ zero. They are saved as `upgrade_reserve_bytes` and
 supply meter. [`BUEFFERING.md`](BUEFFERING.md) describes how both curves
 are constructed and applied.
 
-### Four pattern-supply meters
+### Three pattern-supply meters
 
 Each meter is an independent remaining count in 32-byte patterns:
 
@@ -304,8 +307,10 @@ playhead:
    stacked per frame. `Same` and `Near` are omitted so the interesting load
    remains visible.
 2. **Pattern supply** - `Prg / Wr0 / Wr1` remaining counts stacked per
-   frame. All three use one scale: the sum of their capacities. The persistent
-   DicBuf has no remaining count and is therefore omitted.
+   frame. All three use one scale: the sum of their capacities. Wr0 and Wr1
+   both use the Wr1 cyan display colour; their distinct stack positions and
+   separate numeric meters retain bank identity. The persistent DicBuf has no
+   remaining count and is therefore omitted.
 3. **BODY Band** - useful payload (Raw light grey) plus useful control (dim
    blue-grey) as a fraction of the physical bytes in each delivery slot. Pad
    remains blank and a horizontal line at the top marks CD 1x (150 KiB/sec).
@@ -316,5 +321,6 @@ Raw `(205,205,205)`, Same `(150,150,158)` grey, Near `(95,115,215)` blue,
 Coa `(45,240,70)` green, Flbk and Miss `(220,70,70)` red,
 DMA `(70,190,90)` green,
 DMA-run `(215,165,65)` amber, Band-control `(95,110,122)` blue-grey.
-Physical supply colours: Prg `(165,105,225)`, Wr0 `(80,145,235)`,
-Wr1 `(65,205,195)`, Dic `(235,175,70)`.
+Physical supply colours: Prg `(165,105,225)`, Wr0 and Wr1 both
+`(65,205,195)`, Dic `(235,175,70)`. Dic, Prg, and Wr use these colours only
+on alternating segments of their thin category borders.

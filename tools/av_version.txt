@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e79 : Refine analysis category rendering: combine Wr0/Wr1 as Wr in the
+#        legend, unify their visible colour, use thin colour/transparent dashes
+#        for Dic/Prg/Wr, and distinguish Coa with a thick Near-colour frame.
 #   e78/p70 : Replace the consumptive MainBuf preload with persistent DicBuf.
 #        Select up to 256 whole-movie dictionary entries before allocating the
 #        residual Wr0/Wr1 credits, encode an 8-bit DicBuf index in each existing
@@ -539,5 +542,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
-e=78
+e=79
 p=70
