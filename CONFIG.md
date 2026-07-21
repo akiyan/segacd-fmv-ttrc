@@ -138,6 +138,17 @@ two-VBlank cadence for all 2,713 intervals. The lower cap 175 is being retained
 to add headroom for the mixed shadow-update path; 195 and 200 remain unqualified.
 This value is specific to H40, 30 fps, and the full 1,120-tile raster.
 
+The current Bad Apple H40 full-raster profile combines cap 175 with the
+1,440-tile resident VRAM pool. Its 6,576-frame TTRC v11 stream selected 557
+completed shadow-update lists, saved 3,565,954 modelled Main-CPU cycles, and
+reduced control by 28,126 bytes. Pack verification reconstructed every frame
+exactly with no ring underrun; the minimum PrgBuf occupancy was 59 patterns.
+Two independent full DEBUG recordings kept `S=0`, `D=0`, `R=0`, and `C=0`,
+with all 6,575 timed intervals exactly two VBlanks. Main's Sub-wait counter was
+at most 99 lines and the pattern-transfer timer was at most 539 ticks. The two
+recordings also matched exactly in decoded video frames, PCM samples, packet
+timelines, and stream metadata.
+
 The H40/15 fps/1,040-active-tile value of 400 is full-length-qualified with the
 3,998-frame Machi ED stream. Its 320x204 picture touches 40x26 tile cells after
 being placed at y=10 in the 320x224 raster. The pack had `under=0`, a one-pattern

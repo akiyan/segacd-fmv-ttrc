@@ -203,6 +203,12 @@ payload stream and **dim blue-grey** for the continuous control stream
 descriptors). Future-frame payload is counted in the slot where it is actually
 prefetched, not where the target frame later consumes it.
 
+For TTRC v11, the control contribution includes whichever shadow-update
+representation was selected for that frame: the legacy bitmap plus name
+entries, or the completed offset/entry list. The analysis does not add a
+separate meter for this internal representation; its exact byte cost is already
+included in the dim control portion of `Band`.
+
 The metric excludes rate-match pad sectors, the zero-filled tail of the final
 control/payload sectors, all of `HEADER.DAT`, frame 0 patterns/control, startup
 audio, palettes, routing, and the compatibility `MOVIE.DAT` container. Slot 0
