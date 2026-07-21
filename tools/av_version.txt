@@ -11,6 +11,13 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e71/p67 : Add TTRC v11 mixed shadow updates. The encoder chooses per frame
+#        between the existing bitmap/entry representation and completed
+#        (shadow byte offset, final name-table entry) pairs only when the real
+#        Main-CPU path is faster and the whole-stream PrgBuf/control-readiness
+#        minima do not decrease. The Main player applies the bounded list
+#        directly; the Sub player locates audio from either layout and retains
+#        the authoritative source-aware cold-run suffix.
 #   p66 : Inline the specialized DEBUG HUD conversion through a 256-entry
 #        byte-to-name-table lookup. Each two-digit value is now one indexed
 #        longword read with no formatter call; release builds carry no table.
@@ -499,5 +506,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
-e=70
-p=66
+e=71
+p=67

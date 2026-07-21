@@ -2256,6 +2256,8 @@ def main():
                 "baseline_ready_min": (
                     int(shadow_plan["baseline_schedule"]["ready_min"])
                     if shadow_plan is not None else int(physical_schedule["ready_min"])),
+                "selected_ring_min": int(physical_schedule["ring_min"]),
+                "selected_ready_min": int(physical_schedule["ready_min"]),
             },
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]

@@ -66,7 +66,7 @@ source within what the hardware allows — not fixed project constants:
 - **Audio format:** **ADPCM22** is the default: checkpointed 22.05 kHz mono IMA
   decoded directly by the Sub CPU. **PCM13** (RF5C164), 13.3 kHz mono 8-bit,
   remains supported as the physical-console-qualified fallback. ADPCM22
-  implementation is complete in the current v10 player. H40 Sonic is
+  implementation is complete in the current v11 player. H40 Sonic is
   full-length emulator- and listening-qualified; H40/15 Machi OP (720 active
   tiles) and Machi ED (1,040 active tiles), plus the v10 four-supply H40/30 Bad
   Apple profile (1,120 active tiles), completed their full recording, HUD,

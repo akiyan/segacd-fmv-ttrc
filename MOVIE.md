@@ -17,7 +17,7 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 10              (bump for an incompatible stream interpretation)
+VERSION        = 11              (bump for an incompatible stream interpretation)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = decoded header field (PCM: 888 B at N4 / 444 B at N2;
@@ -63,6 +63,12 @@ same source. A `PSUP` extension in the first header sector gives the actual
 Wr0/Wr1/Main preload sizes and sector counts. Separate boot regions carry
 WordBuf0, WordBuf1, and MainBuf patterns; only Prg-sourced patterns remain in
 the timed payload stream.
+**v11** adds feature bit 4 (`FEATURE_SHADOW_UPDATE_LISTS`) and allows each
+control block to choose its shadow-update representation with the high bit of
+the `n_upd` word. A clear high bit retains the v10 bitmap plus source-coded
+entries. A set high bit replaces those bytes with completed
+`(shadow_byte_offset, final_name_entry)` pairs; the source-aware cold-run suffix
+remains authoritative for physical pattern delivery.
 
 ## File layout
 
@@ -205,7 +211,9 @@ Then:
   audio is a checkpointed IMA chunk and the boot table region is present. Bit
   3 (`FEATURE_PATTERN_SUPPLY`, v10) means update/run source bits are active,
   the `PSUP` extension is present, and the three boot-preload regions follow
-  the optional ADPCM table.
+  the optional ADPCM table. Bit 4 (`FEATURE_SHADOW_UPDATE_LISTS`, v11) means
+  high-bit-tagged completed-list controls may occur; it is valid only together
+  with bit 3 because completed-list entries omit cold/source metadata.
   Unknown bits must not move any legacy field;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
@@ -217,7 +225,7 @@ Then:
 - offset 196: 20-byte `PSUP` extension when feature bit 3 is set (see below);
 - remainder up to 2048 is zero.
 
-The v10 `PSUP` extension is `struct ">4s8H"`:
+The v10+ `PSUP` extension is `struct ">4s8H"`:
 
 | Off | Size | Field | Meaning |
 |---:|---:|---|---|
@@ -321,7 +329,7 @@ movie frame rather than starting during the Mega-CD boot screen.
 
 ## Routing table
 
-In v7 through v10, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
+In v7 through v11, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
 byte has this layout:
 
 | Bits | Field | Meaning |
@@ -387,7 +395,7 @@ including the old 2.5-sector average at 30fps.
 light frames omit padding until that temporary lead is repaid. The complete
 stream converges to the CD 1x display-rate total without overflowing PrgBuf.
 Historical v2/v3 players defaulted `fps_int = 0` to 15, yielding the constant 5
-and reproducing the old fixed-slot behaviour. The current player accepts only v10 and
+and reproducing the old fixed-slot behaviour. The current player accepts only v11 and
 rejects a zero nominal fps before entering this schedule.
 
 The v6-and-later packer first spends that frame's allowance on control, then replaces
@@ -440,19 +448,20 @@ pixels `(hi<<4)|lo`.
 |------|-------------|---------|
 | 2    | total_len   | total block length **including these 2 bytes**; always even |
 | 2    | frame_seq   | frame sequence number (low 16 bits). The player checks this against the frame it expects; a mismatch means the stream desynced (e.g. a dropped CD sector) — the frame's updates are discarded (previous frame held) and the desync counter increments. |
-| 2    | n_upd       | number of cell updates this frame |
+| 2    | n_upd/format | bits 0-14 = number of cell updates; bit 15 = v11 completed-list layout |
 | 1    | pal         | v3: `segment index + 1` = switch CRAM this frame to that entry of the pre-loaded PALTAB; `0` = no change. (v1/v2 used a 0/1 flag followed by a 128-byte in-stream CRAM payload.) |
 | 1    | dbg         | 1 = a debug block follows immediately (see below), else 0 |
 | 22   | debug       | **present only if `dbg==1`**: fixed-length debug block (below) |
-| ceil(cells/8) | bitmap | one bit per cell; 1 = this cell is updated this frame |
-| n_upd x 2 | entries | one big-endian word per update, in cell order (see below) |
+| variable | shadow updates | legacy: `ceil(cells/8)` bitmap then `n_upd x 2` source-coded entries; completed list: `n_upd x 4` offset/final-entry pairs (see below) |
 | PCM: audio_bytes; ADPCM22: 4 + audio_bytes/2 | audio | PCM stores RF5C164 sign-magnitude bytes directly. ADPCM22 stores `s16 predictor, u8 step_index, u8 reserved_zero`, then low-nibble-first IMA codes. Current prefetched streams carry this logical source chunk `audio_preload_sec` frames ahead. |
 | 0/1  | audio pad   | zero byte when needed to align the optional suffix to a word boundary and keep the legacy block end even |
 | 2    | n_runs      | present when header feature bit 0 is set; number of cold-slot runs |
 | n_runs x 4 | cold runs | present when feature bit 0 is set; repeated `u16 slot_start, u16 source_count` pairs in pattern-consumption order |
 
-The suffix repeats information already encoded by the cold entry flag, source,
-and tile index. `source_count` stores source in bits 14-15 and count in bits
+For the legacy representation, the suffix repeats information already encoded
+by the cold entry flag, source, and tile index. For the completed-list
+representation it is the only physical pattern-delivery description.
+`source_count` stores source in bits 14-15 and count in bits
 0-13. Source values are 0=Prg, 1=Wr (frame parity selects Wr0 or Wr1), 2=Main,
 and 3=reserved/invalid. A source change starts a new run even when VRAM slots
 remain consecutive. The sum of all masked counts is the number of cold entries,
@@ -499,6 +508,28 @@ source metadata while preserving palette and tile index. Priority and flip bits
 are unused. This is the core *tile texture reuse*: most cells cost just this
 2-byte entry.
 
+**Completed shadow-list item** (4 bytes each, selected when `n_upd` bit 15 is
+set), in ascending cell order:
+
+- `u16 shadow_byte_offset` = `cell * 2`; it must be even and below
+  `cells * 2` in a valid stream.
+- `u16 final_name_entry` = the display-ready legacy entry masked with
+  `0x67FF`; it contains palette and tile index but no cold/source metadata.
+
+The Main CPU writes each final word directly into its shadow name table. Its
+runtime offset mask confines a corrupt item to an even address inside a padded
+4 KiB shadow allocation. The Sub CPU uses `n_upd * 4` to locate audio and then
+uses the ordinary source-aware run suffix for every physical pattern transfer.
+Frame 0 always uses the legacy representation.
+
+The encoder freezes this choice per frame. It first accepts every list that is
+both faster and no larger, then considers larger lists from highest saved
+Main-CPU cycles per added control byte downward. A threshold group is kept only
+when the complete physical schedule remains feasible and both the minimum
+PrgBuf occupancy and minimum control-readiness margin stay at least as large as
+the all-legacy baseline. The packer recomputes the cycle model and rejects a
+stale or non-improving frozen choice.
+
 **Audio**: PCM streams carry `audio_bytes` per frame of RF5C164 sign-magnitude 8-bit PCM (positive
 = `0..0x7F`, negative = `0x80 | magnitude`, magnitude clamped to `0x7E` so the
 byte `0xFF` — the RF5C164 loop-stop marker — never appears), fed to the PCM chip
@@ -535,8 +566,8 @@ Two forward-compatible ways to extend the format:
 2. **Appending within `total_len`.** Feature bit 0 uses this extension point for
    the cold-run suffix. Because the player advances by `total_len`, trailing
    bytes remain skippable by a player that does not know them. Any future
-   suffix must stay inside `total_len`, preserve the legacy audio position, and
-   keep the complete block even.
+   suffix must stay inside `total_len`, follow the selected update
+   representation, and keep the complete block even.
 
 ## Reconstruction (player)
 

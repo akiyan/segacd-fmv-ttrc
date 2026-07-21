@@ -216,7 +216,9 @@ It then writes four chronological pattern streams:
 
 ## Player path
 
-TTRC v10 carries a source code in each cold update and each run descriptor.
+TTRC v10+ carries a source code in each legacy cold update and each run
+descriptor. In v11 completed-list frames, the run descriptor is authoritative
+because the display-ready shadow item deliberately omits source metadata.
 The source changes where the Main CPU reads the 32-byte pattern; it does not
 change the destination VRAM slot or the displayed name-table value.
 
@@ -328,11 +330,11 @@ routine runs; it no longer applies waveform thresholds.
   validation, and physical stream materialization.
 - `tools/sim.py`: demand construction, final source assignment, diagnostics,
   and decision-log freezing.
-- `tools/pack_stream.py`: v10 serialization and exact schedule verification.
+- `tools/pack_stream.py`: v11 serialization and exact schedule verification.
 - `boot/movieplay_sp.s`: boot loading, Prg consumption, and frame handoff.
 - `boot/movieplay_ip.s`: source-aware run construction and VRAM transfer.
 - `ANALYSIS.md`: the four meters and stacked timeline.
-- `MOVIE.md`: the exact v10 on-disc representation.
+- `MOVIE.md`: the exact v11 on-disc representation.
 
 Changes affect encoder and player output, so they require both build-version
 counters in `tools/av_version.txt` to be reviewed, a clean sim, packed-stream

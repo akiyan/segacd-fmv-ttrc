@@ -11,7 +11,7 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v10): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
+TTRCレイアウト(v11): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
               n_seg×128B, boot時Main-RAM表へ) + [WR0/WR1/Main pattern preloads]
               + startup audio prefetch(1 sector/frame)
               + frame0(control+patterns) + routing(1B/frame: total<<3 | n_ctrl_sec)
@@ -211,21 +211,21 @@ def require_canonical_p0_debug_colours(log):
     """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
     if not seg_pals:
-        raise SystemExit("pack v10: decision log has no segment palettes; re-run sim")
+        raise SystemExit("pack v11: decision log has no segment palettes; re-run sim")
     for seg, pals in enumerate(seg_pals):
         a = np.asarray(pals, np.uint8)
         if a.shape != (4, 15, 3):
             raise SystemExit(
-                f"pack v10: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
+                f"pack v11: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
                 "re-run sim")
         brightness = a.astype(np.int16).sum(axis=2)
         if int(brightness[0, 0]) != int(brightness.min()):
             raise SystemExit(
-                f"pack v10: decision log segment {seg} P0 index1 is not tied for globally "
+                f"pack v11: decision log segment {seg} P0 index1 is not tied for globally "
                 "darkest usable CRAM colour (RGB sum); re-run sim with the current encoder")
         if int(brightness[0, 14]) != int(brightness.max()):
             raise SystemExit(
-                f"pack v10: decision log segment {seg} P0 index15 is not tied for globally "
+                f"pack v11: decision log segment {seg} P0 index15 is not tied for globally "
                 "brightest usable CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
@@ -875,7 +875,7 @@ def _decode_control_chunk(chunk):
 
 
 def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL):
-    """Write the v10 split stream and a combined tooling container.
+    """Write the v11 split stream and a combined tooling container.
 
     HEADER.DAT:
       Header(1sec) | PALTAB | [ADPCM_TABLE] | [WR0] | [WR1] | [MAIN]
@@ -1012,7 +1012,7 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
     fps_int = int(round(FPS))                         # 名目fps。FEATURE_FIXED_N2時はplayerが1001/400を選ぶ
     audio_fd = av_config.rf5c164_fd(AUDIO_PCM, PLAYBACK_FPS)
     if not f0_header:
-        raise SystemExit("pack v10 requires frame0 in HEADER.DAT")
+        raise SystemExit("pack v11 requires frame0 in HEADER.DAT")
     features = FEATURE_COLD_RUNS
     if av_config.uses_fixed_n2_cadence(FPS):
         features |= FEATURE_FIXED_N2
@@ -1152,7 +1152,7 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
           f"{len(supply_plan.wr1_patterns)}/{len(supply_plan.main_patterns)} "
           f"frame0 {f0_ctrl_sec}+{f0_pat_sec} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v10 N={vsync_n}"
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v11 N={vsync_n}"
           f"(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO_KIND} "
           f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B FD=0x{audio_fd:04X}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")

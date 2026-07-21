@@ -44,6 +44,8 @@ class ControlBlock:
     seq: int
     bitmap: bytes
     entries: tuple[int, ...]
+    use_list: bool
+    total_len: int
 
 
 @dataclass(frozen=True)
@@ -181,7 +183,7 @@ def parse_control(raw: bytes, seq: int, cells: int) -> ControlBlock:
     for cell in range(cells, bitmap_len * 8):
         if bitmap[cell >> 3] & (1 << (cell & 7)):
             raise AssertionError(f"frame {seq}: padding bitmap bit {cell} is set")
-    return ControlBlock(seq, bitmap, tuple(entries))
+    return ControlBlock(seq, bitmap, tuple(entries), use_list, total_len)
 
 
 def read_stream(header_path: Path, body_path: Path) -> Stream:

@@ -2,18 +2,18 @@
 
 This document answers one planning question: **what memory and CPU time can a
 new live-playback feature use without consuming an existing safety margin?** It
-describes the current TTRC v10 player in `boot/movieplay_sp.s` and
-`boot/movieplay_ip.s`, audited on 2026-07-20 with checkpointed ADPCM22 and the
+describes the current TTRC v11 player in `boot/movieplay_sp.s` and
+`boot/movieplay_ip.s`, audited on 2026-07-21 with checkpointed ADPCM22 and the
 four-source pattern-supply path enabled.
 
 The short answer is:
 
 | Domain | Safe fixed space, all supported playback | H40 fixed-N2 steady-stream space | Conditional space |
 |---|---:|---:|---:|
-| Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 16 bytes of SP boot-slot growth, not data RAM |
+| Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 48 bytes of SP boot-slot growth, not data RAM |
 | Word RAM bank 0 | 12.14 KiB | 48.70 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
 | Word RAM bank 1 | 12.14 KiB | 48.70 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Main RAM | 19.54 KiB | 21.27 KiB | Boot UI shares the future generated-code area; none counted from palette or stack reservations |
+| Main RAM | 16.74 KiB | 18.47 KiB | Boot UI shares the future generated-code area; none counted from palette or stack reservations |
 | Main CPU | no hard positive guarantee | about 39,930 local cycles (5.21 ms) | qualified H40 reference only; Sub must already be ready |
 | Sub CPU | no hard positive guarantee | ADPCM decoder measured 7.62-8.11 ms in H40/N2 | full Sonic capture passes; BIOS/CD/Word-RAM waits remain outside that stopwatch |
 
@@ -69,8 +69,8 @@ allocation and a build-time overlap check before use.
 | Address | Size | Current owner | Available to a new feature? |
 |---|---:|---|---|
 | `0x00000..0x05FFF` | 24.00 KiB | BIOS / low PRG work area | No |
-| `0x06000..0x06FEF` | 4,080 B | largest current specialized DEBUG Sub boot image (4,072 B text plus link padding, H40/15 ADPCM) | No |
-| `0x06FF0..0x06FFF` | 16 B | remainder of the 4,096-byte SP boot slot | Code growth only |
+| `0x06000..0x06FCF` | 4,048 B | largest current specialized DEBUG Sub boot image | No |
+| `0x06FD0..0x06FFF` | 48 B | remainder of the 4,096-byte SP boot slot | Code growth only |
 | `0x07000..0x07FFF` | 4.00 KiB | boot ISO scratch and BIOS-unsafe streaming range | No |
 | `0x08000..0x097FF` | **6.00 KiB** | unused, previously marker-verified safe | **Yes, fixed PRG feature area** |
 | `0x09800..0x0BFFF` | 10.00 KiB | touched by BIOS during continuous reads | No |
@@ -154,8 +154,8 @@ a separate proof that its maximum output ends at `0xFF6580`.
 
 | Address | Size | Current owner / worst use | Safe headroom |
 |---|---:|---|---:|
-| `0xFF0000..0xFF185F` | 6.094 KiB | permanent Main player text/data, including the preload UI routines but excluding its transient font and strings | 0 |
-| `0xFF1860..0xFF1FFF` | **1.906 KiB** | link gap before generated code | **1.906 KiB** of permanent code/data growth |
+| `0xFF0000..0xFF1B9F` | 6.906 KiB | permanent Main player text/data, including the preload UI routines but excluding its transient font and strings | 0 |
+| `0xFF1BA0..0xFF1FFF` | **1.094 KiB** | link gap before generated code | **1.094 KiB** of permanent code/data growth |
 | `0xFF2000..0xFF657F` | 17.375 KiB | maximum generated bitmap handlers and two H40 blitters | 0 |
 | `0xFF2000..0xFF267F` at boot only | 1.625 KiB | transient SGDK font, preload-screen text, and lookup data; deliberately overwritten by generated code before playback | 0 additional runtime use |
 | `0xFF6580..0xFF65FF` | **128 B** | asserted guard after maximum generated code | **128 B** |
@@ -163,13 +163,13 @@ a separate proof that its maximum output ends at `0xFF6580`.
 | `0xFF8000..0xFF8C7F` | 3.125 KiB | 400 worst-case run records at 8 B each | 0 |
 | `0xFF8C80..0xFFAFFF` | **8.875 KiB** | all-rate RUN_TABLE tail | **8.875 KiB**; H40/N2 has 10.609 KiB |
 | `0xFFB000..0xFFCFFF` | 8.00 KiB | 64-entry resident PALTAB | 0 |
-| `0xFFD000..0xFFD929` | 2,346 B | BSS, including the 2,240-byte name-table shadow and 56-byte prebuilt DEBUG HUD row | 0 |
-| `0xFFD92A..0xFFFAFF` | **8.459 KiB** | unused below the stack guard | **8.459 KiB** |
+| `0xFFD000..0xFFE06B` | 4,204 B | BSS, including the 4,096-byte bounded name-table shadow and 56-byte prebuilt DEBUG HUD row | 0 |
+| `0xFFE06C..0xFFFAFF` | **6.645 KiB** | unused below the stack guard | **6.645 KiB** |
 | `0xFFFB00..0xFFFCFF` | 512 B | conservative stack and interrupt reserve | 0 |
 | `0xFFFD00..0xFFFFFF` | 768 B | above configured stack top / BIOS reserve | 0 |
 
-This yields **19.365 KiB** safe across all supported rates. Restricting the run
-table to H40/N2's 178-cold cap raises it to **21.099 KiB**. The 512-byte stack
+This yields **16.738 KiB** safe across all supported rates. Restricting the run
+table to H40/N2's 178-cold cap raises it to **18.473 KiB**. The 512-byte stack
 reserve is deliberately larger than the approximately 80-byte deepest visible
 player call chain; it leaves room for interrupt/BIOS use that the assembly call
 graph alone cannot prove.
@@ -207,7 +207,7 @@ sequenceDiagram
     and Main consumes frame N
         M->>W: Parse load runs into RUN_TABLE
         Note right of M: M1 10k-cycle planning envelope<br/>remaining 245,937
-        M->>M: Apply bitmap entries to shadow and generate back name table
+        M->>M: Apply selected bitmap or completed list to shadow and generate back name table
         M->>V: Write complete 40 x 28 name table
         Note right of M: M2 at most 55,280 modeled cycles<br/>remaining 190,657
         M->>V: Wait for VBlank; transfer cold runs; repair DMA first words
@@ -324,7 +324,7 @@ profile and does not turn either arithmetic remainder into spendable time.
 
 Use the low-risk spaces in this order:
 
-1. Use Main RAM `0xFFD92A..0xFFFAFF` (8.459 KiB) for Main-only state, retaining
+1. Use Main RAM `0xFFE06C..0xFFFAFF` (6.645 KiB) for Main-only state, retaining
    the 512-byte stack guard.
 2. Put small bank-local state in the 5.5 KiB tail after MainBuf staging or the
    416-byte ADPCM alignment gap, with explicit overlap assertions. Do not use
