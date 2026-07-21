@@ -190,12 +190,12 @@ Raw = col("tx"); Dedup = col("dedup"); Coa = col("coa"); Near = col("near")
 Flbk = col("flbk") + col("mid") + col("far")
 Want = col("want"); Miss = col("miss")
 Buf = col("buf") if "buf" in idx else np.maximum(col("updated") - Raw - Dedup - Coa, 0)
-_source_fields = ("prg", "wr0", "wr1", "main")
+_source_fields = ("prg", "wr0", "wr1", "dic")
 if any(name not in idx for name in _source_fields):
     raise SystemExit(
         "analysis physical-source categories are missing; re-run sim")
-Prg, Wr0, Wr1, Main = (col(name) for name in _source_fields)
-if not np.array_equal(Prg + Wr0 + Wr1 + Main, Buf):
+Prg, Wr0, Wr1, Dic = (col(name) for name in _source_fields)
+if not np.array_equal(Prg + Wr0 + Wr1 + Dic, Buf):
     raise SystemExit(
         "analysis physical-source categories do not sum to legacy Buf; re-run sim")
 if "same" not in idx:
@@ -254,7 +254,7 @@ DMA_RUNS = col("dma_runs") if "dma_runs" in idx else _legacy_dma_runs()
 FULL = {
     "Raw": Raw, "Same": Same, "Near": Near, "Coa": Coa,
     "Flbk": Flbk, "Miss": Miss,
-    "Prg": Prg, "Wr0": Wr0, "Wr1": Wr1, "Dic": Main,
+    "Prg": Prg, "Wr0": Wr0, "Wr1": Wr1, "Dic": Dic,
 }
 _category_sum = sum(FULL.values())
 if not np.array_equal(_category_sum, np.full(NF, C, np.int64)):
@@ -495,7 +495,7 @@ def draw_status_real(data):
     d.line([x + BAND_W, by - 2, x + BAND_W, by + BH + 2], fill=(210, 190, 90))
     L.draw_field(d, x, ly, "Band:", data["band_kbps"], 3, L.f_leg, L.COL_TXT)
     x += BAND_W + GAP
-    # 5) MainBuf is a persistent dictionary and has no remaining meter.
+    # 5) DicBuf is persistent and has no remaining meter.
     supply_widths = {
         "Prg": (PRG_W, 5), "Wr0": (WR0_W, 3),
         "Wr1": (WR1_W, 3),

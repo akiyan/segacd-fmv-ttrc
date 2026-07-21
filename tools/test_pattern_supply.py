@@ -13,19 +13,50 @@ from upgrade_planner import DemandPrediction
 class PatternSupplyEncodingTests(unittest.TestCase):
     def test_entry_source_round_trip_and_name_mask(self):
         base = (3 << 13) | 0x321
-        for source in (supply.SOURCE_PRG, supply.SOURCE_WR, supply.SOURCE_MAIN):
+        for source in (supply.SOURCE_PRG, supply.SOURCE_WR, supply.SOURCE_DIC):
             entry = supply.encode_entry_source(base, source)
             self.assertEqual(supply.decode_entry_source(entry), source)
             self.assertEqual(entry & supply.NAME_ENTRY_MASK, base)
 
     def test_run_count_round_trip(self):
-        for source in (supply.SOURCE_PRG, supply.SOURCE_WR, supply.SOURCE_MAIN):
+        for source in (supply.SOURCE_PRG, supply.SOURCE_WR, supply.SOURCE_DIC):
             encoded = supply.encode_run_count(175, source)
             self.assertEqual(supply.decode_run_count(encoded), (175, source))
 
+    def test_indexed_dic_run_descriptor_round_trip(self):
+        for index, count in ((0, 1), (17, 3), (250, 6)):
+            words = supply.encode_run_descriptor(
+                1119, count, supply.SOURCE_DIC, index)
+            self.assertEqual(
+                supply.decode_run_descriptor(*words),
+                (1119, count, supply.SOURCE_DIC, index),
+            )
+        words = supply.encode_run_descriptor(12, 175, supply.SOURCE_PRG)
+        self.assertEqual(
+            supply.decode_run_descriptor(*words),
+            (12, 175, supply.SOURCE_PRG, 0),
+        )
+
 
 class PatternSupplyPlannerTests(unittest.TestCase):
-    def test_frame_budget_uses_parity_banks_then_global_main(self):
+    def test_dicbuf_is_selected_first_and_hits_persist(self):
+        key_a = bytes([1] * 64)
+        key_b = bytes([2] * 64)
+        prediction = DemandPrediction(
+            exact_bytes=np.array([0, 64, 32, 32]),
+            protected_bytes=np.array([0, 32, 32, 0]),
+            exact_cold=np.array([0, 2, 1, 1]),
+            protected_cold=np.array([0, 1, 1, 0]),
+            cold_keys=((), (key_a, key_b), (key_a,), (key_a,)),
+            protected_keys=((), (key_b,), (key_a,), ()),
+        )
+        budget = supply.plan_frame_budgets(
+            prediction, wr_patterns=0, dic_patterns=1)
+        self.assertEqual(budget.dic_dictionary, (key_a,))
+        np.testing.assert_array_equal(budget.dic, [0, 1, 1, 1])
+        self.assertEqual(budget.dic_patterns, 1)
+
+    def test_frame_budget_uses_parity_banks_then_global_dic(self):
         prediction = DemandPrediction(
             exact_bytes=np.array([0, 200, 100, 50]),
             protected_bytes=np.array([0, 200, 100, 50]),
@@ -33,15 +64,15 @@ class PatternSupplyPlannerTests(unittest.TestCase):
             protected_cold=np.array([0, 4, 4, 4]),
         )
         budget = supply.plan_frame_budgets(
-            prediction, wr_patterns=2, main_patterns=2)
+            prediction, wr_patterns=2, dic_patterns=2)
 
         # Wr0 can serve only frame 2.  Wr1 water-fills the much larger frame 1
         # before frame 3, then flexible Main continues reducing frame 1.
         np.testing.assert_array_equal(budget.wr, [0, 2, 2, 0])
-        np.testing.assert_array_equal(budget.main, [0, 2, 0, 0])
+        np.testing.assert_array_equal(budget.dic, [0, 2, 0, 0])
         self.assertEqual(budget.wr0_patterns, 2)
         self.assertEqual(budget.wr1_patterns, 2)
-        self.assertEqual(budget.main_patterns, 2)
+        self.assertEqual(budget.dic_patterns, 2)
 
     def test_frame_budget_never_exceeds_predicted_cold(self):
         prediction = DemandPrediction(
@@ -51,7 +82,7 @@ class PatternSupplyPlannerTests(unittest.TestCase):
             protected_cold=np.array([0, 1, 0]),
         )
         budget = supply.plan_frame_budgets(
-            prediction, wr_patterns=99, main_patterns=99)
+            prediction, wr_patterns=99, dic_patterns=99)
 
         np.testing.assert_array_less(
             budget.total, prediction.exact_cold + 1)
@@ -70,20 +101,20 @@ class PatternSupplyPlannerTests(unittest.TestCase):
             "stream_schedule": {"ring_occupancy": np.array([99, 1, 2])},
         }
         plan = supply.plan_supply(
-            log, per, patterns, enabled=True, wr_patterns=1, main_patterns=2)
+            log, per, patterns, enabled=True, wr_patterns=1, dic_patterns=2)
 
         self.assertEqual(plan.sources[0], (supply.SOURCE_PRG,))
-        self.assertEqual(plan.sources[1], (supply.SOURCE_MAIN, supply.SOURCE_MAIN))
+        self.assertEqual(plan.sources[1], (supply.SOURCE_DIC, supply.SOURCE_DIC))
         # The first even run fits Wr0; the second remains Prg.
         self.assertEqual(plan.sources[2], (supply.SOURCE_WR, supply.SOURCE_PRG))
         self.assertEqual(plan.prg_patterns, (patterns[0], patterns[4]))
         self.assertEqual(plan.wr0_patterns, (patterns[3],))
         self.assertEqual(plan.wr1_patterns, ())
-        self.assertEqual(plan.main_patterns, (patterns[1], patterns[2]))
+        self.assertEqual(plan.dic_patterns, (patterns[1], patterns[2]))
         np.testing.assert_array_equal(plan.prg_loads, [1, 0, 1])
         np.testing.assert_array_equal(plan.wr0_loads, [0, 0, 1])
         np.testing.assert_array_equal(plan.wr1_loads, [0, 0, 0])
-        np.testing.assert_array_equal(plan.main_loads, [0, 2, 0])
+        np.testing.assert_array_equal(plan.dic_loads, [0, 2, 0])
 
     def test_frozen_sources_are_authoritative_and_may_split_a_run(self):
         per = [
@@ -98,22 +129,22 @@ class PatternSupplyPlannerTests(unittest.TestCase):
                     np.array([supply.SOURCE_PRG], np.uint8),
                     np.array([
                         supply.SOURCE_WR,
-                        supply.SOURCE_MAIN,
+                        supply.SOURCE_DIC,
                         supply.SOURCE_PRG,
                     ], np.uint8),
                 ],
             },
         }
         plan = supply.plan_supply(
-            log, per, patterns, enabled=True, wr_patterns=2, main_patterns=2)
+            log, per, patterns, enabled=True, wr_patterns=2, dic_patterns=2)
 
         self.assertEqual(
             plan.sources[1],
-            (supply.SOURCE_WR, supply.SOURCE_MAIN, supply.SOURCE_PRG),
+            (supply.SOURCE_WR, supply.SOURCE_DIC, supply.SOURCE_PRG),
         )
         self.assertEqual(plan.prg_patterns, (patterns[0], patterns[3]))
         self.assertEqual(plan.wr1_patterns, (patterns[1],))
-        self.assertEqual(plan.main_patterns, (patterns[2],))
+        self.assertEqual(plan.dic_patterns, (patterns[2],))
 
     def test_disabled_plan_keeps_every_pattern_in_prg(self):
         per = [([0], [1], [True]), ([0], [2], [True])]
@@ -122,6 +153,32 @@ class PatternSupplyPlannerTests(unittest.TestCase):
         self.assertFalse(plan.enabled)
         self.assertEqual(plan.prg_patterns, tuple(patterns))
         np.testing.assert_array_equal(plan.prg_loads, [1, 1])
+
+    def test_frozen_dictionary_materializes_indices_without_consumption(self):
+        pattern_a = bytes([0x11]) * 32
+        pattern_b = bytes([0x22]) * 32
+        per = [
+            ([0], [1], [True]),
+            ([0, 1], [1, 2], [True, True]),
+            ([0], [3], [True]),
+        ]
+        patterns = [pattern_b, pattern_a, pattern_b, pattern_a]
+        log = {
+            "pattern_supply": {
+                "schema_version": 2,
+                "dic_dictionary": [pattern_a, pattern_b],
+                "sources": [
+                    [supply.SOURCE_PRG],
+                    [supply.SOURCE_DIC, supply.SOURCE_DIC],
+                    [supply.SOURCE_DIC],
+                ],
+            },
+        }
+        plan = supply.plan_supply(
+            log, per, patterns, enabled=True, wr_patterns=0, dic_patterns=2)
+        self.assertEqual(plan.dic_patterns, (pattern_a, pattern_b))
+        self.assertEqual(plan.dic_indices, ((-1,), (0, 1), (0,)))
+        np.testing.assert_array_equal(plan.dic_loads, [0, 2, 1])
 
 
 if __name__ == "__main__":

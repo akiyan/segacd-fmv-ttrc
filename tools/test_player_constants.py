@@ -28,13 +28,13 @@ def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x3
     )
     sector = bytearray(prefix + bytes(128) + bytes(player_constants.SECTOR - 192))
     if features & ttrc_routing.FEATURE_PATTERN_SUPPLY:
-        wr0, wr1, main = supply_counts
+        wr0, wr1, dic = supply_counts
         player_constants.PATTERN_SUPPLY_STRUCT.pack_into(
             sector, player_constants.PATTERN_SUPPLY_OFFSET,
             player_constants.PATTERN_SUPPLY_MAGIC,
             player_constants.PATTERN_SUPPLY_VERSION, 0,
-            wr0, wr1, main,
-            (wr0 + 63) // 64, (wr1 + 63) // 64, (main + 63) // 64,
+            wr0, wr1, dic,
+            (wr0 + 63) // 64, (wr1 + 63) // 64, (dic + 63) // 64,
         )
     return player_constants.stamp_header_sector(sector)
 
@@ -93,12 +93,12 @@ class PlayerConstantsTest(unittest.TestCase):
             features=(ttrc_routing.FEATURE_COLD_RUNS
                       | ttrc_routing.FEATURE_FIXED_N2
                       | ttrc_routing.FEATURE_PATTERN_SUPPLY),
-            supply_counts=(880, 879, 208),
+            supply_counts=(880, 879, 256),
         ))
         self.assertEqual(values.wr0_patterns, pattern_supply.WORD_BUF_PATTERNS)
         self.assertEqual(values.wr1_patterns, 879)
-        self.assertEqual(values.main_patterns, pattern_supply.MAIN_BUF_PATTERNS)
-        self.assertEqual((values.wr0_sectors, values.wr1_sectors, values.main_sectors),
+        self.assertEqual(values.dic_patterns, pattern_supply.DIC_BUF_PATTERNS)
+        self.assertEqual((values.wr0_sectors, values.wr1_sectors, values.dic_sectors),
                          (14, 14, 4))
 
     def test_generation_is_deterministic_and_preserves_mtime(self):

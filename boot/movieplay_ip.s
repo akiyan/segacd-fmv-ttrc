@@ -41,13 +41,13 @@
 /* 0xFF2000..0xFF65FF is no longer a tile staging buffer: streamed pattern DMA
    reads Word RAM directly and repairs the first destination word on the CPU.
    Keep this range for boot-time Main-CPU code generation, then use the gap up
-   to RUN_TABLE as the immutable MainBuf pattern preload. */
+   to RUN_TABLE as the immutable DicBuf pattern dictionary. */
 .equ MAIN_CODEGEN_BASE,  0x00FF2000
-.equ RUN_TABLE,          0x00FF8000	/* (dst.w,len.w,src.l) cold-run records; 0x3000B capacity */
-.equ MAIN_BUF,           0x00FF6600	/* boot-preloaded patterns; direct Main-RAM VDP DMA */
-.equ MAIN_BUF_END,       RUN_TABLE
-.equ MAIN_BUF_PATTERNS,  208
-.equ MAIN_CODEGEN_LIMIT, MAIN_BUF
+.equ RUN_TABLE,          0x00FF8600	/* (dst.w,len.w,src.l) cold-run records; 0x2A00B capacity */
+.equ DIC_BUF,            0x00FF6600	/* persistent dictionary; direct Main-RAM VDP DMA */
+.equ DIC_BUF_END,        RUN_TABLE
+.equ DIC_BUF_PATTERNS,   256
+.equ MAIN_CODEGEN_LIMIT, DIC_BUF
 .equ MAIN_CODEGEN_TABLE_BYTES, 0x0200	/* 256 signed word offsets */
 .equ MAIN_CODEGEN_HANDLER_MAX, 70	/* mask FF: guarded before writing */
 .equ MAIN_CODEGEN_EXPECTED_END, 0x00FF4900
@@ -55,7 +55,7 @@
 .equ WORD_BUF_OFF,       0x15200		/* same offset in physical Wr0/Wr1 banks */
 .equ WORD_BUF_END,       0x1C000
 .equ WORD_BUF_PATTERNS,  880
-.equ MAIN_STAGE_OFF,     0xD000		/* frame0 Word-RAM handoff staging for MainBuf */
+.equ DIC_STAGE_OFF,      0xD000		/* frame0 Word-RAM handoff staging for DicBuf */
 
 /* Exact 68000 words emitted by init_main_codegen.  Keep synchronized with
    harness/main_codegen/verify_handlers.py. */
@@ -323,15 +323,15 @@ ip_entry:
 	move.w	(a1)+, (a2)+
 	dbra	d1, 1b
 2:
-	/* v10 MainBuf is staged beside PALTAB in the frame0 Word-RAM bank.  Copy it
+	/* v12 DicBuf is staged beside PALTAB in the frame0 Word-RAM bank. Copy it
 	   once into the fixed Main-RAM gap after codegen; Wr0/Wr1 remain in their
 	   physical banks and are read directly after each handoff. */
 .ifdef PLAYER_SPECIALIZED
 .if (PC_FEATURES & 0x0008)
-.if PC_MAIN_PATTERNS > 0
-	lea	(PROBE_BANK+MAIN_STAGE_OFF).l, a1
-	lea	MAIN_BUF, a2
-	move.w	#PC_MAIN_PATTERNS*8-1, d1
+.if PC_DIC_PATTERNS > 0
+	lea	(PROBE_BANK+DIC_STAGE_OFF).l, a1
+	lea	DIC_BUF, a2
+	move.w	#PC_DIC_PATTERNS*8-1, d1
 1:
 	move.l	(a1)+, (a2)+
 	dbra	d1, 1b
@@ -426,7 +426,6 @@ movie_end_md:
 reset_pattern_supply:
 	move.l	#PROBE_BANK+WORD_BUF_OFF, wr_ptr0
 	move.l	#PROBE_BANK+WORD_BUF_OFF, wr_ptr1
-	move.l	#MAIN_BUF, main_ptr
 	rts
 .endif
 .endif
@@ -626,16 +625,26 @@ build_frame:
 	tst.w	d7
 	beq	bf_none
 bf_stage:
-	move.w	(a0)+, d0			/* slot_start */
-	move.w	(a0)+, d6			/* source bits15..14 + count bits13..0 */
+	move.w	(a0)+, d0			/* Dic index high5 + slot_start low11 */
+	move.w	(a0)+, d6			/* source2 + Dic index low3 + count low11 */
+	move.w	d0, d5
+	lsr.w	#8, d5
+	lsr.w	#3, d5				/* Dic index high5 */
+	lsl.w	#3, d5
+	move.w	d6, d1
+	lsr.w	#8, d1
+	lsr.w	#3, d1
+	andi.w	#7, d1				/* Dic index low3 */
+	or.w	d1, d5
 	move.w	d6, d3
-	andi.w	#0xC000, d3			/* 0=Prg inline, 1=Wr current bank, 2=Main */
-	andi.w	#0x3FFF, d6
+	andi.w	#0xC000, d3			/* 0=Prg inline, 1=Wr current bank, 2=Dic */
+	andi.w	#0x07FF, d6
 	beq	bf_stage_done			/* count=0 打切り */
 	cmp.w	d7, d6				/* count>残り 切詰め */
 	bls	1f
 	move.w	d7, d6
 1:
+	andi.w	#0x07FF, d0			/* discard Dic index high bits */
 	addq.w	#1, d0				/* tile index=1+slot */
 	lsl.w	#5, d0				/* dst=(1+slot)*0x20 */
 	move.w	d0, (a2)+			/* 表: dst */
@@ -652,7 +661,7 @@ bf_stage:
 	bra	bf_stage_recorded
 bf_stage_preload:
 	cmpi.w	#0x4000, d3
-	bne	bf_stage_main
+	bne	bf_stage_dic
 	move.w	frame_no, d1			/* Wr0 on even frames, Wr1 on odd frames */
 	andi.w	#1, d1
 	lsl.w	#2, d1
@@ -665,16 +674,17 @@ bf_stage_preload:
 	move.l	a3, (a2)+
 	move.l	d0, (a1,d1.w)
 	bra	bf_stage_recorded
-bf_stage_main:
+bf_stage_dic:
 	cmpi.w	#0x8000, d3
 	bne	bf_stage_done			/* source 3 is reserved */
-	movea.l	main_ptr, a3
+	lsl.w	#5, d5				/* DicBuf index * 32 */
+	lea	DIC_BUF, a3
+	adda.w	d5, a3
 	move.l	a3, d0
 	add.l	d2, d0
-	cmpi.l	#MAIN_BUF_END, d0
+	cmpi.l	#DIC_BUF_END, d0
 	bhi	bf_stage_done
 	move.l	a3, (a2)+
-	move.l	d0, main_ptr
 bf_stage_recorded:
 	addq.w	#1, d4
 	sub.w	d6, d7
@@ -864,7 +874,7 @@ bf_chunk:
 	bls	2f
 	move.w	d7, d6
 2:
-	cmpa.l	#MAIN_BUF, a3			/* MainBuf has normal DMA; Prg/Wr sources are Word RAM */
+	cmpa.l	#DIC_BUF, a3			/* DicBuf has normal DMA; Prg/Wr sources are Word RAM */
 	bcs.s	3f
 	bsr	dma_chunk
 	bra.s	4f
@@ -1631,8 +1641,6 @@ wr_ptr0:
 	.space 4				/* next Wr0 preload address in the currently mapped bank */
 wr_ptr1:
 	.space 4				/* next Wr1 preload address in the currently mapped bank */
-main_ptr:
-	.space 4				/* next MainBuf preload address */
 .ifndef PLAYER_SPECIALIZED
 md_nseg:
 	.space 2				/* PALTAB区間数(表コピー時にクランプ済み) */

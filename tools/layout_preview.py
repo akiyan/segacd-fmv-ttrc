@@ -43,7 +43,7 @@ COL_RUN = (215, 165, 65)         # cold pattern run分断度(amber)
 COL_PRG = (165, 105, 225)        # streamed PrgBuf
 COL_WR0 = (80, 145, 235)         # boot-preloaded WordBuf0
 COL_WR1 = (65, 205, 195)         # boot-preloaded WordBuf1
-COL_DIC = (235, 175, 70)         # persistent MainBuf dictionary
+COL_DIC = (235, 175, 70)         # persistent DicBuf dictionary
 SUPPLY_COLORS = {
     "Prg": COL_PRG,
     "Wr0": COL_WR0,

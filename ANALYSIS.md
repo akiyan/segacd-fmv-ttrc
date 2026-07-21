@@ -142,7 +142,7 @@ find *some* resident rather than leave a hole.
 | **Prg** | violet thick border | 34 | An exact cold load funded from saved whole-movie allowance and physically supplied by streamed PrgBuf. |
 | **Wr0** | blue thick border | 2 (name) | An exact cold load using a boot-preloaded WordBuf0 pattern. |
 | **Wr1** | cyan thick border | 2 (name) | An exact cold load using a boot-preloaded WordBuf1 pattern. |
-| **Dic** | amber thick border | 2 (name) | An exact cold load using an entry from the persistent MainBuf dictionary. |
+| **Dic** | amber thick border | 2 (name) | An exact cold load using an entry from persistent DicBuf. |
 
 ### Selection order (per changed tile, `commit_unified`)
 
@@ -162,7 +162,7 @@ find *some* resident rather than leave a hole.
 
 Notes: `Same/Near/Coa/Flbk` use a resident 32-byte pattern and require at most
 a 2-byte name-table entry. A `Raw` or `Prg` load costs 34 bytes in the
-encoder model. A Wr0/Wr1 boot-preloaded load or MainBuf dictionary hit already owns its pattern
+encoder model. A Wr0/Wr1 boot-preloaded load or DicBuf hit already owns its pattern
 bytes and therefore costs only the 2-byte name entry during playback. A persistent
 approximation (a tile stuck in Near/Coa/Flbk for >= 0.3s) is escalated to
 Miss-priority so it gets an accurate reload when budget allows.
@@ -304,7 +304,7 @@ playhead:
    remains visible.
 2. **Pattern supply** - `Prg / Wr0 / Wr1` remaining counts stacked per
    frame. All three use one scale: the sum of their capacities. The persistent
-   MainBuf dictionary has no remaining count and is therefore omitted.
+   DicBuf has no remaining count and is therefore omitted.
 3. **BODY Band** - useful payload (Raw light grey) plus useful control (dim
    blue-grey) as a fraction of the physical bytes in each delivery slot. Pad
    remains blank and a horizontal line at the top marks CD 1x (150 KiB/sec).

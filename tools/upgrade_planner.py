@@ -27,6 +27,11 @@ class DemandPrediction:
     protected_bytes: np.ndarray
     exact_cold: np.ndarray
     protected_cold: np.ndarray
+    # Exact packed-pattern keys encountered by the predictive allocator.  The
+    # sequence is deterministic; callers that only need byte demand may leave
+    # these empty for compatibility with older tests/logs.
+    cold_keys: tuple[tuple[bytes, ...], ...] = ()
+    protected_keys: tuple[tuple[bytes, ...], ...] = ()
 
 
 def predict_update_demands(
@@ -84,7 +89,8 @@ def predict_update_demand_details(
         raise ValueError("protected frame count differs")
     if n == 0:
         empty = np.zeros(0, np.int64)
-        return DemandPrediction(empty, empty.copy(), empty.copy(), empty.copy())
+        return DemandPrediction(
+            empty, empty.copy(), empty.copy(), empty.copy(), (), ())
     if vram_tiles <= 0:
         raise ValueError("vram_tiles must be positive")
     if name_bytes < 0 or pattern_bytes < 0 or max_cold < 0:
@@ -105,6 +111,8 @@ def predict_update_demand_details(
     protected_demand = np.zeros(n, np.int64)
     exact_cold_demand = np.zeros(n, np.int64)
     protected_cold_demand = np.zeros(n, np.int64)
+    cold_keys_by_frame: list[tuple[bytes, ...]] = []
+    protected_keys_by_frame: list[tuple[bytes, ...]] = []
 
     for frame_idx in range(n):
         patterns = np.asarray(pattern_frames[frame_idx])
@@ -127,14 +135,15 @@ def predict_update_demand_details(
             if protected.shape != (cells,):
                 raise ValueError("each protected frame must have shape (cells,)")
         protected_cells = [cell for cell in changed_cells if protected[cell]]
-        exact_cold_keys = {
+        # Preserve first-cell order while deduplicating same-frame users.  The
+        # allocator needs one physical pattern per key, and the deterministic
+        # order later gives dictionary placement a stable tie-break.
+        exact_cold_keys = tuple(dict.fromkeys(
             keys[cell] for cell in changed_cells
-            if not allocator.is_resident(keys[cell])
-        }
-        protected_cold_keys = {
+            if not allocator.is_resident(keys[cell])))
+        protected_cold_keys = tuple(dict.fromkeys(
             keys[cell] for cell in protected_cells
-            if not allocator.is_resident(keys[cell])
-        }
+            if not allocator.is_resident(keys[cell])))
         allocator.place_frame(
             [(cell, keys[cell]) for cell in changed_cells], frame_idx)
 
@@ -144,6 +153,8 @@ def predict_update_demand_details(
             if max_cold:
                 exact_cold = min(exact_cold, max_cold)
                 protected_cold = min(protected_cold, max_cold)
+                exact_cold_keys = exact_cold_keys[:max_cold]
+                protected_cold_keys = protected_cold_keys[:max_cold]
             exact_demand[frame_idx] = (
                 len(changed_cells) * name_bytes + exact_cold * pattern_bytes)
             protected_demand[frame_idx] = (
@@ -151,6 +162,10 @@ def predict_update_demand_details(
                 + protected_cold * pattern_bytes)
             exact_cold_demand[frame_idx] = exact_cold
             protected_cold_demand[frame_idx] = protected_cold
+
+        cold_keys_by_frame.append(exact_cold_keys if frame_idx > 0 else ())
+        protected_keys_by_frame.append(
+            protected_cold_keys if frame_idx > 0 else ())
 
         for cell in changed_cells:
             previous_keys[cell] = keys[cell]
@@ -161,6 +176,8 @@ def predict_update_demand_details(
         protected_demand,
         exact_cold_demand,
         protected_cold_demand,
+        tuple(cold_keys_by_frame),
+        tuple(protected_keys_by_frame),
     )
 
 

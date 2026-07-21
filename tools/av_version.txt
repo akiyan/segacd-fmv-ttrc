@@ -11,8 +11,13 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e78/p70 : Replace the consumptive MainBuf preload with persistent DicBuf.
+#        Select up to 256 whole-movie dictionary entries before allocating the
+#        residual Wr0/Wr1 credits, encode an 8-bit DicBuf index in each existing
+#        four-byte run descriptor, and address DicBuf directly from Main RAM.
+#        Move RUN_TABLE to 0xFF8600 without changing its record size.
 #   e77 : Replace the analysis-only Buf funding class with mutually-exclusive
-#        Prg/Wr0/Wr1/Main physical-source categories. Resolve Raw/source cells
+#        Prg/Wr0/Wr1/Dic physical-source categories. Resolve Raw/source cells
 #        from the allocator's actual cell-ordered cold transfer, add successful
 #        VRAM prefetch activity, and update the canonical analysis layout.
 #   e76/p69 : Replace the profile preload panel with a four-digit hexadecimal
@@ -534,5 +539,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
-e=77
-p=69
+e=78
+p=70

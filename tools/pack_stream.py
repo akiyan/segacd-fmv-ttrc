@@ -11,8 +11,8 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v11): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
-              n_seg×128B, boot時Main-RAM表へ) + [WR0/WR1/Main pattern preloads]
+TTRCレイアウト(v12): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
+              n_seg×128B, boot時Main-RAM表へ) + [WR0/WR1/Dic pattern preloads]
               + startup audio prefetch(1 sector/frame)
               + frame0(control+patterns) + routing(1B/frame: total<<3 | n_ctrl_sec)
               + prebuffer(payload先頭Bpat)
@@ -96,6 +96,7 @@ FEATURE_ADPCM22 = ttrc_routing.FEATURE_ADPCM22
 FEATURE_PATTERN_SUPPLY = ttrc_routing.FEATURE_PATTERN_SUPPLY
 FEATURE_SHADOW_UPDATE_LISTS = ttrc_routing.FEATURE_SHADOW_UPDATE_LISTS
 FEATURE_VRAM_RAW_PREFETCH = ttrc_routing.FEATURE_VRAM_RAW_PREFETCH
+FEATURE_DICBUF_INDEXED_RUNS = ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS
 ADPCM_TABLE_SECTORS = math.ceil(ima_adpcm.FULL_TABLE_BYTES / SECTOR)
 ROUTING_MAX_FRAMES = ttrc_routing.MAX_FRAMES
 
@@ -311,30 +312,40 @@ def resolve(log, POOL, mode="lru"):
     return per, prefetch_per, n_load, n_upd, pal_w, Plist, alloc.tearing
 
 
-def sourced_cold_runs(entries, colds, sources):
-    """Return ``(slot, count, source)`` runs split on slot or source changes."""
+def sourced_cold_runs(entries, colds, sources, dic_indices=None):
+    """Return indexed runs split on slot, source, or DicBuf index gaps."""
+    if dic_indices is None:
+        dic_indices = (-1,) * len(entries)
     runs = []
-    start = previous = source = None
+    start = previous = source = start_dic = previous_dic = None
     count = 0
-    for entry, cold, item_source in zip(entries, colds, sources):
+    for entry, cold, item_source, item_dic in zip(
+            entries, colds, sources, dic_indices):
         if not cold:
             continue
         slot = (int(entry) & 0x07FF) - BASE
         item_source = int(item_source)
-        if count and (slot != previous + 1 or item_source != source):
-            runs.append((start, count, source))
+        item_dic = int(item_dic)
+        split_dic = (
+            bool(count) and item_source == pattern_supply.SOURCE_DIC
+            and item_dic != previous_dic + 1)
+        if count and (
+                slot != previous + 1 or item_source != source or split_dic):
+            runs.append((start, count, source, start_dic))
             count = 0
         if not count:
             start = slot
             source = item_source
+            start_dic = item_dic if item_source == pattern_supply.SOURCE_DIC else 0
         previous = slot
+        previous_dic = item_dic
         count += 1
     if count:
-        runs.append((start, count, source))
+        runs.append((start, count, source, start_dic))
     return runs
 
 
-def sourced_transfer_runs(entries, colds, sources, prefetch=()):
+def sourced_transfer_runs(entries, colds, sources, prefetch=(), dic_indices=None):
     """Return update cold runs followed by optional Prg prefetch runs."""
     slots = [
         (int(entry) & 0x07FF) - BASE
@@ -347,14 +358,20 @@ def sourced_transfer_runs(entries, colds, sources, prefetch=()):
     slots.extend(int(item[0]) for item in prefetch if bool(item[1]))
     item_sources.extend(
         pattern_supply.SOURCE_PRG for item in prefetch if bool(item[1]))
+    if dic_indices is None:
+        dic_indices = (-1,) * len(entries)
+    run_dic_indices = [
+        int(index) for index, cold in zip(dic_indices, colds) if cold
+    ]
+    run_dic_indices.extend(-1 for item in prefetch if bool(item[1]))
     # Reuse the authoritative source-aware grouping by presenting synthetic
     # entries whose low 11 bits contain the allocated slot.
     synthetic = [BASE + slot for slot in slots]
     return sourced_cold_runs(
-        synthetic, [True] * len(synthetic), item_sources)
+        synthetic, [True] * len(synthetic), item_sources, run_dic_indices)
 
 
-def run_stats(per, sources=None, prefetch_per=None):
+def run_stats(per, sources=None, prefetch_per=None, dic_indices=None):
     """フレーム内cold tile数とplayer cold-run record数を返して表示する。"""
     runs_per_frame = np.zeros(len(per), np.int64)
     colds_per_frame = np.zeros(len(per), np.int64)
@@ -363,22 +380,26 @@ def run_stats(per, sources=None, prefetch_per=None):
                         for _cells, entries, _colds in per)
     if prefetch_per is None:
         prefetch_per = tuple(() for _ in per)
+    if dic_indices is None:
+        dic_indices = tuple(tuple(-1 for _ in entries)
+                            for _cells, entries, _colds in per)
     prg_per_frame = np.zeros(len(per), np.int64)
     wr_per_frame = np.zeros(len(per), np.int64)
-    main_per_frame = np.zeros(len(per), np.int64)
-    for i, ((cells, entries, colds), frame_sources, frame_prefetch) in enumerate(
-            zip(per, sources, prefetch_per)):
+    dic_per_frame = np.zeros(len(per), np.int64)
+    for i, ((cells, entries, colds), frame_sources, frame_prefetch,
+            frame_dic_indices) in enumerate(
+            zip(per, sources, prefetch_per, dic_indices)):
         runs = sourced_transfer_runs(
-            entries, colds, frame_sources, frame_prefetch)
+            entries, colds, frame_sources, frame_prefetch, frame_dic_indices)
         runs_per_frame[i] = len(runs)
-        colds_per_frame[i] = sum(count for _slot, count, _source in runs)
-        for _slot, count, source in runs:
+        colds_per_frame[i] = sum(count for _slot, count, _source, _dic in runs)
+        for _slot, count, source, _dic in runs:
             if source == pattern_supply.SOURCE_PRG:
                 prg_per_frame[i] += count
             elif source == pattern_supply.SOURCE_WR:
                 wr_per_frame[i] += count
-            elif source == pattern_supply.SOURCE_MAIN:
-                main_per_frame[i] += count
+            elif source == pattern_supply.SOURCE_DIC:
+                dic_per_frame[i] += count
     tot_c = int(colds_per_frame.sum())
     tot_r = int(runs_per_frame.sum())
     heavy = colds_per_frame >= 300
@@ -391,8 +412,8 @@ def run_stats(per, sources=None, prefetch_per=None):
     print(msg)
     print(f"  source patterns: Prg={int(prg_per_frame.sum())} "
           f"Wr0={int(wr_per_frame[::2].sum())} Wr1={int(wr_per_frame[1::2].sum())} "
-          f"Main={int(main_per_frame.sum())}")
-    # O_LOADS stores four bytes per run and only Prg patterns inline.  Wr/Main
+          f"Dic={int(dic_per_frame.sum())}")
+    # O_LOADS stores four bytes per run and only Prg patterns inline. Wr/Dic
     # runs point at their persistent preload instead of copying pattern bytes.
     loads_bytes = prg_per_frame * PAT + runs_per_frame * 4
     O_LOADS_CAP = 0x9800 - 0x84
@@ -444,7 +465,7 @@ def verify_sim_pattern_transfers(
             "prg": np.asarray(supply_plan.prg_loads, np.int64),
             "wr0": np.asarray(supply_plan.wr0_loads, np.int64),
             "wr1": np.asarray(supply_plan.wr1_loads, np.int64),
-            "main": np.asarray(supply_plan.main_loads, np.int64),
+            "dic": np.asarray(supply_plan.dic_loads, np.int64),
         })
     for name, actual in expected.items():
         simulated = np.asarray(frozen.get(name, ()), np.int64)
@@ -632,7 +653,7 @@ def build_audio_chunks(audio_path, frame_count):
 
 def build_control(
         log, per, n_upd, pal_w, audio_path, sources=None, update_lists=None,
-        prefetch_per=None):
+        prefetch_per=None, dic_indices=None):
     """Build control blocks and return their reconstructed source PCM chunks."""
     seg_cram = [pals_to_bytes_128(p) for p in log["seg_pals"]]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
@@ -655,6 +676,9 @@ def build_control(
                         for _cells, entries, _colds in per)
     if prefetch_per is None:
         prefetch_per = tuple(() for _ in per)
+    if dic_indices is None:
+        dic_indices = tuple(tuple(-1 for _ in entries)
+                            for _cells, entries, _colds in per)
     if update_lists is None:
         update_lists = np.zeros(len(per), np.bool_)
     update_lists = np.asarray(update_lists, np.bool_)
@@ -691,10 +715,12 @@ def build_control(
         if len(body) & 1:
             body += b"\0"
         runs = sourced_transfer_runs(
-            entries, colds, frame_sources, prefetch_per[i])
+            entries, colds, frame_sources, prefetch_per[i], dic_indices[i])
         body += struct.pack(">H", len(runs))
-        for slot, count, source in runs:
-            body += struct.pack(">HH", slot, pattern_supply.encode_run_count(count, source))
+        for slot, count, source, dic_index in runs:
+            body += struct.pack(
+                ">HH", *pattern_supply.encode_run_descriptor(
+                    slot, count, source, dic_index))
         # total_len は「先頭2Bを含むブロック全長」。実機は apply_cur を total_len で進めるので
         # パディング込みの偶数にする(奇数だと1B/フレームずつ desync する)。
         total = len(body) + 2
@@ -825,7 +851,7 @@ def decode_verify(log, per, blocks, supply_plan, sc, compare_dir=None, sample_di
     f0_ring = deque(prg_patterns[:nl0])
     ring = deque(prg_patterns[nl0:nl0 + B]); pc = nl0 + B; cc = 0
     word = [deque(supply_plan.wr0_patterns), deque(supply_plan.wr1_patterns)]
-    main = deque(supply_plan.main_patterns)
+    dic = tuple(supply_plan.dic_patterns)
     tile = [None] * (POOL + BASE + 2)
     nt_slot = np.zeros(C_CELLS, np.int64); nt_pal = np.zeros(C_CELLS, np.int64)
     diffs = []; ring_peak = len(ring); bad = 0
@@ -869,20 +895,23 @@ def decode_verify(log, per, blocks, supply_plan, sc, compare_dir=None, sample_di
         packed_run_count = struct.unpack_from(">H", blk, runs_pos)[0]
         runs_pos += 2
         for _ in range(packed_run_count):
-            slot, source_count = struct.unpack_from(">HH", blk, runs_pos)
+            word0, word1 = struct.unpack_from(">HH", blk, runs_pos)
             runs_pos += 4
-            count, source = pattern_supply.decode_run_count(source_count)
+            slot, count, source, dic_index = (
+                pattern_supply.decode_run_descriptor(word0, word1))
             if source == pattern_supply.SOURCE_PRG:
                 src = prg_src
             elif source == pattern_supply.SOURCE_WR:
                 src = word[i & 1]
-            elif source == pattern_supply.SOURCE_MAIN:
-                src = main
+            elif source == pattern_supply.SOURCE_DIC:
+                src = dic[dic_index:dic_index + count]
             else:
                 src = ()
             for offset in range(count):
                 if not src or slot + offset >= POOL:
                     bad += 1
+                elif source == pattern_supply.SOURCE_DIC:
+                    tile[slot + offset + BASE] = src[offset]
                 else:
                     tile[slot + offset + BASE] = src.popleft()
 
@@ -919,7 +948,7 @@ def decode_verify(log, per, blocks, supply_plan, sc, compare_dir=None, sample_di
                 diffs.append((i, int(np.abs(fr.astype(np.int32) - ref.astype(np.int32)).max())))
         if (i + 1) % 400 == 0:
             print(f"  decode {i+1}/{len(per)}", flush=True)
-    cache_left = len(word[0]) + len(word[1]) + len(main)
+    cache_left = len(word[0]) + len(word[1])
     if cache_left:
         bad += cache_left
     print(f"decode: ring_peak {ring_peak*PAT/1024:.0f}KB "
@@ -970,10 +999,10 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
     payload = b"".join(supply_plan.prg_patterns)
     wr0_blob = b"".join(supply_plan.wr0_patterns)
     wr1_blob = b"".join(supply_plan.wr1_patterns)
-    main_blob = b"".join(supply_plan.main_patterns)
+    dic_blob = b"".join(supply_plan.dic_patterns)
     wr0_sec = -(-len(wr0_blob) // SECTOR)
     wr1_sec = -(-len(wr1_blob) // SECTOR)
-    main_sec = -(-len(main_blob) // SECTOR)
+    dic_sec = -(-len(dic_blob) // SECTOR)
 
     # Queue the first N reconstructed PCM chunks from HEADER, then make each
     # live control carry the next future PCM or checkpointed ADPCM chunk.
@@ -1078,7 +1107,7 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
     audio_fd = av_config.rf5c164_fd(AUDIO_PCM, PLAYBACK_FPS)
     if not f0_header:
         raise SystemExit("pack v11 requires frame0 in HEADER.DAT")
-    features = FEATURE_COLD_RUNS
+    features = FEATURE_COLD_RUNS | FEATURE_DICBUF_INDEXED_RUNS
     if av_config.uses_fixed_n2_cadence(FPS):
         features |= FEATURE_FIXED_N2
     if AUDIO_KIND == "adpcm22":
@@ -1114,8 +1143,8 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
             player_constants.PATTERN_SUPPLY_VERSION, 0,
             len(supply_plan.wr0_patterns),
             len(supply_plan.wr1_patterns),
-            len(supply_plan.main_patterns),
-            wr0_sec, wr1_sec, main_sec,
+            len(supply_plan.dic_patterns),
+            wr0_sec, wr1_sec, dic_sec,
         )
     header = player_constants.stamp_header_sector(header)
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
@@ -1128,7 +1157,7 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
                    + adpcm_table_blob
                    + wr0_blob.ljust(wr0_sec * SECTOR, b"\0")
                    + wr1_blob.ljust(wr1_sec * SECTOR, b"\0")
-                   + main_blob.ljust(main_sec * SECTOR, b"\0")
+                   + dic_blob.ljust(dic_sec * SECTOR, b"\0")
                    + audio_preload
                    + frame0_blk
                    + routing_blob
@@ -1215,8 +1244,8 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
     print(f"wrote {header_path} {header_sec}sec + {body_path} {frames_stream_sec}sec; "
           f"combined {out_path} {total}sec (mode {mode_name} paltab {paltab_sec} "
           f"startup_audio prefetch {audio_prefetch_frames}f "
-          f"preload Wr0/Wr1/Main={len(supply_plan.wr0_patterns)}/"
-          f"{len(supply_plan.wr1_patterns)}/{len(supply_plan.main_patterns)} "
+          f"preload Wr0/Wr1/Dic={len(supply_plan.wr0_patterns)}/"
+          f"{len(supply_plan.wr1_patterns)}/{len(supply_plan.dic_patterns)} "
           f"frame0 {f0_ctrl_sec}+{f0_pat_sec} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
           f"ring_peak {ring_peak*PAT/1024:.0f}KB  v11 N={vsync_n}"
@@ -1315,7 +1344,7 @@ def main():
           f"Prg={len(supply_plan.prg_patterns)} "
           f"Wr0={len(supply_plan.wr0_patterns)}/{pattern_supply.WORD_BUF_PATTERNS} "
           f"Wr1={len(supply_plan.wr1_patterns)}/{pattern_supply.WORD_BUF_PATTERNS} "
-          f"Main={len(supply_plan.main_patterns)}/{pattern_supply.MAIN_BUF_PATTERNS}")
+          f"Dic={len(supply_plan.dic_patterns)}/{pattern_supply.DIC_BUF_PATTERNS}")
     # 不変条件(単一真実源 av_config): 実配信(pack)の1コマ cold が drop-safe 上限を超えたら失敗。
     # sim のモデル cap が pack の連続スロット割当に対して高すぎる兆候(=解析は合うが実機で滑る)。
     # frame0(完全ロードのヘッダ)は除外。
@@ -1338,7 +1367,7 @@ def main():
           f"active tiles cap {cold_ceiling} (measured at "
           f"{cold_qualification.active_tiles} tiles, 共有割り当て)")
     packed_tiles, packed_runs = run_stats(
-        per, supply_plan.sources, prefetch_per)
+        per, supply_plan.sources, prefetch_per, supply_plan.dic_indices)
     if not np.array_equal(packed_tiles, n_load):
         frame = int(np.flatnonzero(packed_tiles != n_load)[0])
         raise SystemExit(
@@ -1372,7 +1401,7 @@ def main():
         raise SystemExit(f"pack: selected shadow list is not faster at frame {frame}")
     blocks, source_pcm_chunks = build_control(
         log, per, n_upd, pal_w, audio_path, supply_plan.sources, update_lists,
-        prefetch_per)
+        prefetch_per, supply_plan.dic_indices)
     print(
         f"  shadow updates: list={int(update_lists.sum())}/{len(update_lists)} "
         f"Main saved={int(((recomputed_legacy - recomputed_list) * update_lists).sum())} cycles "

@@ -29,7 +29,7 @@ HEADER_SIGNATURE_OFFSET = FIXED_HEADER_BYTES + SEG0_BYTES
 HEADER_STRUCT = struct.Struct(">4s9H4LBB3L6H")
 PATTERN_SUPPLY_OFFSET = HEADER_SIGNATURE_OFFSET + 4
 PATTERN_SUPPLY_MAGIC = b"PSUP"
-PATTERN_SUPPLY_VERSION = 1
+PATTERN_SUPPLY_VERSION = 2
 PATTERN_SUPPLY_STRUCT = struct.Struct(">4s8H")
 
 MODE_SPECS = {
@@ -101,10 +101,10 @@ class PlayerConstants:
     sec_rem: int
     wr0_patterns: int
     wr1_patterns: int
-    main_patterns: int
+    dic_patterns: int
     wr0_sectors: int
     wr1_sectors: int
-    main_sectors: int
+    dic_sectors: int
 
 
 def parse_header_sector(sector: bytes) -> PlayerConstants:
@@ -182,8 +182,8 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
     supply_values = PATTERN_SUPPLY_STRUCT.unpack_from(sector, PATTERN_SUPPLY_OFFSET)
     (
         supply_magic, supply_version, supply_reserved,
-        wr0_patterns, wr1_patterns, main_patterns,
-        wr0_sectors, wr1_sectors, main_sectors,
+        wr0_patterns, wr1_patterns, dic_patterns,
+        wr0_sectors, wr1_sectors, dic_sectors,
     ) = supply_values
     if pattern_supply_enabled:
         if supply_magic != PATTERN_SUPPLY_MAGIC:
@@ -195,7 +195,7 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
         capacities = (
             ("Wr0", wr0_patterns, pattern_supply.WORD_BUF_PATTERNS, wr0_sectors),
             ("Wr1", wr1_patterns, pattern_supply.WORD_BUF_PATTERNS, wr1_sectors),
-            ("Main", main_patterns, pattern_supply.MAIN_BUF_PATTERNS, main_sectors),
+            ("Dic", dic_patterns, pattern_supply.DIC_BUF_PATTERNS, dic_sectors),
         )
         for name, count, capacity, sectors in capacities:
             if not 0 <= count <= capacity:
@@ -210,8 +210,8 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
     else:
         if supply_magic != b"\0\0\0\0" or any(supply_values[1:]):
             raise ValueError("pattern-supply extension is present while feature bit 3 is clear")
-        wr0_patterns = wr1_patterns = main_patterns = 0
-        wr0_sectors = wr1_sectors = main_sectors = 0
+        wr0_patterns = wr1_patterns = dic_patterns = 0
+        wr0_sectors = wr1_sectors = dic_sectors = 0
 
     return PlayerConstants(
         signature=signature,
@@ -256,10 +256,10 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
         sec_rem=sec_rem,
         wr0_patterns=wr0_patterns,
         wr1_patterns=wr1_patterns,
-        main_patterns=main_patterns,
+        dic_patterns=dic_patterns,
         wr0_sectors=wr0_sectors,
         wr1_sectors=wr1_sectors,
-        main_sectors=main_sectors,
+        dic_sectors=dic_sectors,
     )
 
 
@@ -272,8 +272,8 @@ INCLUDE_ORDER = (
     "audio_control_bytes", "adpcm_table_sectors", "fps_int",
     "audio_fd", "audio_preload_sec", "features", "pump_mask",
     "wave_pump_mask", "sec_num", "sec_mod", "sec_base", "sec_rem",
-    "wr0_patterns", "wr1_patterns", "main_patterns",
-    "wr0_sectors", "wr1_sectors", "main_sectors",
+    "wr0_patterns", "wr1_patterns", "dic_patterns",
+    "wr0_sectors", "wr1_sectors", "dic_sectors",
 )
 
 

@@ -151,7 +151,7 @@ CAT_FLBK = CAT_MISS            # Flbk = resident fallback (red, thin frame)
 CAT_PRG = (165, 105, 225)     # old Buf exact load, physically supplied by PrgBuf
 CAT_WR0 = (80, 145, 235)      # old Buf exact load, supplied by WordBuf0
 CAT_WR1 = (65, 205, 195)      # old Buf exact load, supplied by WordBuf1
-CAT_MAIN = (235, 175, 70)     # old Buf exact load, supplied by MainBuf
+CAT_DIC = (235, 175, 70)      # exact load supplied by persistent DicBuf
 # 粗い近似dedup(env CBRSIM_COA=1): 平坦なコールドタイルを、見た目(2×2低周波)が近い常駐パターンで
 # 流用(ネームテーブルだけ=0転送)。ディザの点々差は無視。構造崩れを避けるため detail が低い平坦タイル限定。
 COA_ON = os.environ.get("CBRSIM_COA", "1") != "0"          # 既定ON(全機能ON)。OFFは CBRSIM_COA=0
@@ -1372,7 +1372,7 @@ def main():
     prg_loads_log = []         # physical PrgBuf pattern consumption
     wr0_loads_log = []         # physical boot-preload consumption by source
     wr1_loads_log = []
-    main_loads_log = []
+    dic_loads_log = []
     prefetch_requests_log = []  # successful (pattern key, deadline) requests
     prefetch_cold_log = []      # physical PrgBuf loads without a name update
     quality_budget = QUALITY_BUDGET_BYTES if QUALITY_BUDGET_ON else 0
@@ -1462,6 +1462,10 @@ def main():
     )
     supply_budget = pattern_supply.plan_frame_budgets(
         demand_prediction, enabled=PATTERN_SUPPLY_ON)
+    dic_dictionary_keys = set(supply_budget.dic_dictionary)
+    dic_dictionary_index = {
+        key: index for index, key in enumerate(supply_budget.dic_dictionary)
+    }
     preload_credit_bytes = supply_budget.total * PATTERN_BYTES
     protected_credit_bytes = (
         np.minimum(supply_budget.total, demand_prediction.protected_cold)
@@ -1507,7 +1511,8 @@ def main():
         f"enabled={int(PATTERN_SUPPLY_ON)} "
         f"Wr0={supply_budget.wr0_patterns}/{pattern_supply.WORD_BUF_PATTERNS} "
         f"Wr1={supply_budget.wr1_patterns}/{pattern_supply.WORD_BUF_PATTERNS} "
-        f"Main={supply_budget.main_patterns}/{pattern_supply.MAIN_BUF_PATTERNS} "
+        f"Dic={supply_budget.dic_patterns}/{pattern_supply.DIC_BUF_PATTERNS} "
+        f"hits={int(supply_budget.dic.sum())} "
         f"frames={int(np.count_nonzero(supply_budget.total))}",
         flush=True,
     )
@@ -1684,9 +1689,27 @@ def main():
         coa_hits = 0
         spent_tiles = 0
         cold_spent = 0             # このコマのcold数(Raw+Buf=実機のパターンDMA数)
-        frame_preload_budget = int(supply_budget.total[i])
-        preload_used = 0
-        preloaded_keys = set()
+        frame_wr_budget = int(supply_budget.wr[i])
+        wr_used = 0
+        dic_used = 0
+        preload_sources = {}
+
+        def preload_source(key):
+            if key in dic_dictionary_keys:
+                return pattern_supply.SOURCE_DIC
+            if wr_used < frame_wr_budget:
+                return pattern_supply.SOURCE_WR
+            return pattern_supply.SOURCE_PRG
+
+        def commit_preload(key, source):
+            nonlocal wr_used, dic_used
+            if source == pattern_supply.SOURCE_DIC:
+                dic_used += 1
+            elif source == pattern_supply.SOURCE_WR:
+                wr_used += 1
+            else:
+                raise AssertionError("Prg is not a preload source")
+            preload_sources[key] = source
         # Candidate eligibility is shared by every cell in one mean-colour
         # bucket until this frame loads/revalidates a pattern in that bucket.
         # Cache both the exact legacy key order and its contiguous descriptors.
@@ -1770,16 +1793,17 @@ def main():
         def commit_plain(c):
             # メインパス: まず安く全部埋める。cold平坦タイルは Coa(NAMEのみ) を優先=飢餓を出さない。
             # (タンク満杯時の余りCDでの Raw 格上げは後段の格上げパスで行う)
-            nonlocal tile_recs, name_recs, dedup_saved, l3_hits, prg_hits, coa_hits, spent_tiles, cold_spent, preload_used
+            nonlocal tile_recs, name_recs, dedup_saved, l3_hits, prg_hits, coa_hits, spent_tiles, cold_spent
             key = plain_keys[c]
             in_vram = alloc.is_resident(key) or key in loaded_keys      # L1/L2: VRAM常駐(転送ゼロ)
             approx_key = find_approx(c) if (COA_ON and not in_vram) else None
             in_prg = (not in_vram) and (approx_key is None) and key in frame_patch
             in_l3 = (not in_vram) and (approx_key is None) and (not in_prg) and L3_TILES > 0 and key in l3
             free = in_vram or in_l3 or (approx_key is not None)   # パターン転送不要(ネームのみ)
-            preload = (
-                not in_prg and not free
-                and preload_used < frame_preload_budget)
+            source = (preload_source(key)
+                      if not in_prg and not free
+                      else pattern_supply.SOURCE_PRG)
+            preload = source != pattern_supply.SOURCE_PRG
             cost = 0 if in_prg else (
                 NAME_BYTES + (0 if free or preload else PATTERN_BYTES))
             if spent_tiles + cost > tile_budget:
@@ -1805,7 +1829,7 @@ def main():
                 cold_spent += 1
                 loaded_keys.add(key)
                 if preload:
-                    preload_used += 1; preloaded_keys.add(key)
+                    commit_preload(key, source)
                     prg_hits += 1; prg_mask[c] = True
                 elif QUALITY_BUDGET_ON and spent_tiles >= frame_cd:
                     prg_hits += 1; prg_mask[c] = True
@@ -1899,7 +1923,7 @@ def main():
                 return -1
 
             def commit_unified(c):
-                nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, flbk_hits, spent_tiles, cold_spent, preload_used
+                nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, flbk_hits, spent_tiles, cold_spent
                 key = plain_keys[c]
                 # 1. 現在表示がほぼ同一 → Near維持(0B, 更新なし・Missでもない)=帯域優先
                 if near_keep[c]:
@@ -1926,13 +1950,14 @@ def main():
                     return
                 # 3. 中途半端(flbk/none) → まず正確ロード(Raw / saved-or-preload-funded Buf)。
                 #    cold上限到達時はロードせず 4.のFlbk近似へ(Missより良い穴埋め)
-                preload = preload_used < frame_preload_budget
+                source = preload_source(key)
+                preload = source != pattern_supply.SOURCE_PRG
                 cost = NAME_BYTES + (0 if preload else PATTERN_BYTES)
                 if spent_tiles + cost <= tile_budget and not (frame_max_cold and cold_spent >= frame_max_cold):
                     cold_spent += 1
                     loaded_keys.add(key)
                     if preload:
-                        preload_used += 1; preloaded_keys.add(key)
+                        commit_preload(key, source)
                         prg_hits += 1; prg_mask[c] = True
                     elif QUALITY_BUDGET_ON and spent_tiles >= frame_cd:
                         prg_hits += 1; prg_mask[c] = True
@@ -1991,7 +2016,7 @@ def main():
             )
             if spent_tiles < upgrade_limit:
                 def raw_upgrade(c, lim):
-                    nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, spent_tiles, upgraded, cold_spent, preload_used
+                    nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, spent_tiles, upgraded, cold_spent
                     key = plain_keys[c]
                     in_vram = alloc.is_resident(key) or key in loaded_keys
                     # A same-frame Near/Coa/Flbk decision already owns one
@@ -1999,8 +2024,9 @@ def main():
                     # final key; it does not append a second two-byte entry.
                     # A carried approximation or Near keep has no entry yet.
                     entry_cost = 0 if updated[c] else NAME_BYTES
-                    preload = (
-                        not in_vram and preload_used < frame_preload_budget)
+                    source = (preload_source(key) if not in_vram
+                              else pattern_supply.SOURCE_PRG)
+                    preload = source != pattern_supply.SOURCE_PRG
                     cost = entry_cost if in_vram else (
                         entry_cost + (0 if preload else PATTERN_BYTES))
                     if spent_tiles + cost > lim:
@@ -2017,7 +2043,7 @@ def main():
                         cold_spent += 1
                         loaded_keys.add(key)
                         if preload:
-                            preload_used += 1; preloaded_keys.add(key)
+                            commit_preload(key, source)
                             prg_hits += 1; prg_mask[c] = True
                         else:
                             tile_recs += 1; raw_mask[c] = True
@@ -2055,20 +2081,17 @@ def main():
             update_index
             for update_index, ((_, key), (_, cold))
             in enumerate(zip(upd_ck, placements))
-            if cold and key in preloaded_keys
+            if cold and key in preload_sources
         ]
-        if len(preload_updates) != preload_used:
+        if len(preload_updates) != wr_used + dic_used:
             raise AssertionError(
-                f"frame {i}: preload decisions={preload_used} but allocator "
+                f"frame {i}: preload decisions={wr_used + dic_used} but allocator "
                 f"realized {len(preload_updates)} cold preload patterns")
-        wr_used = min(int(supply_budget.wr[i]), preload_used)
-        main_used = preload_used - wr_used
-        if main_used > int(supply_budget.main[i]):
-            raise AssertionError(f"frame {i}: preload source budget underflow")
-        for ordinal, update_index in enumerate(preload_updates):
-            frame_sources[update_index] = (
-                pattern_supply.SOURCE_WR if ordinal < wr_used
-                else pattern_supply.SOURCE_MAIN)
+        if wr_used > int(supply_budget.wr[i]):
+            raise AssertionError(f"frame {i}: WordBuf source budget underflow")
+        for update_index in preload_updates:
+            key = upd_ck[update_index][1]
+            frame_sources[update_index] = preload_sources[key]
 
         # Resolve display categories from the allocator's actual cold update,
         # not from decision order. Decisions are priority-ordered but the
@@ -2080,7 +2103,7 @@ def main():
         prg_source_mask = np.zeros(C_CELLS, bool)
         wr0_source_mask = np.zeros(C_CELLS, bool)
         wr1_source_mask = np.zeros(C_CELLS, bool)
-        main_source_mask = np.zeros(C_CELLS, bool)
+        dic_source_mask = np.zeros(C_CELLS, bool)
         raw_keys = {cur_key[int(cell)] for cell in np.where(raw_mask)[0]}
         buf_keys = {cur_key[int(cell)] for cell in np.where(prg_mask)[0]}
         if raw_keys & buf_keys:
@@ -2100,8 +2123,8 @@ def main():
                 prg_source_mask[cell] = True
             elif source == pattern_supply.SOURCE_WR:
                 (wr0_source_mask if i % 2 == 0 else wr1_source_mask)[cell] = True
-            elif source == pattern_supply.SOURCE_MAIN:
-                main_source_mask[cell] = True
+            elif source == pattern_supply.SOURCE_DIC:
+                dic_source_mask[cell] = True
             else:
                 raise AssertionError(
                     f"frame {i}: unknown pattern source {source}")
@@ -2110,7 +2133,7 @@ def main():
                 f"frame {i}: allocator Raw split does not match funded loads")
         if sum(mask.sum() for mask in (
                 prg_source_mask, wr0_source_mask, wr1_source_mask,
-                main_source_mask)) != int(prg_mask.sum()):
+                dic_source_mask)) != int(prg_mask.sum()):
             raise AssertionError(
                 f"frame {i}: physical source split does not cover Buf loads")
 
@@ -2176,13 +2199,22 @@ def main():
             source for source, (_, cold) in zip(frame_sources, placements) if cold]
         dma_sources.extend(
             [pattern_supply.SOURCE_PRG] * len(prefetch_cold_slots))
+        dma_dic_indices = [
+            dic_dictionary_index[key]
+            if source == pattern_supply.SOURCE_DIC else -1
+            for source, (_slot, cold), (_cell, key)
+            in zip(frame_sources, placements, upd_ck)
+            if cold
+        ]
+        dma_dic_indices.extend([-1] * len(prefetch_cold_slots))
         dma_tiles = len(dma_slots)                 # 実際にVRAMへ送る32Bパターンタイル数
         if not L3_TILES and dma_tiles != cold_spent:
             raise AssertionError(
                 f"frame {i}: encoder cold={cold_spent} allocator cold={dma_tiles}")
         # MainのHUD Nと同じlogical run数。p45では1-2 tile runはCPU直書き、長runは
         # VBlank境界で複数DMAに割れるため、物理VDP DMA発行回数とは意図的に異なる。
-        dma_runs = pattern_supply.count_source_runs(dma_slots, dma_sources)
+        dma_runs = pattern_supply.count_source_runs(
+            dma_slots, dma_sources, dma_dic_indices)
         if dma_runs > cold_spent:
             raise AssertionError(
                 f"frame {i}: source-aware runs={dma_runs} exceed "
@@ -2199,7 +2231,7 @@ def main():
             wr_used if i % 2 == 0 else 0)
         wr1_loads_log.append(
             wr_used if i % 2 == 1 else 0)
-        main_loads_log.append(main_used)
+        dic_loads_log.append(dic_used)
         ensure_capacity(i)
         if _loop_profile:
             _lp_t = _lp_mark("allocate_route", _lp_t, _lp_frame)
@@ -2286,7 +2318,7 @@ def main():
         raw_count = int(raw_display_mask.sum())
         source_count = sum(int(mask.sum()) for mask in (
             prg_source_mask, wr0_source_mask, wr1_source_mask,
-            main_source_mask))
+            dic_source_mask))
         near_count = int(near_eff.sum())
         coa_count = int(coa_mask.sum())
         flbk_count = int(flbk_mask.sum())
@@ -2319,7 +2351,7 @@ def main():
             i, f_fixed, want, upd, miss, C_CELLS - want, dedup_saved, tile_recs, carry, age_max,
             want / C_CELLS, int(near_eff.sum()), coa_hits, flbk_hits, prg_hits,
             int(prg_source_mask.sum()), int(wr0_source_mask.sum()),
-            int(wr1_source_mask.sum()), int(main_source_mask.sum()),
+            int(wr1_source_mask.sum()), int(dic_source_mask.sum()),
             same_count,
             len(u_same), len(u_near), len(u_coa), len(u_flbk), dma_tiles, dma_runs,
             len(prefetch_cold_slots)))
@@ -2371,7 +2403,7 @@ def main():
             border(cat, prg_source_mask, CAT_PRG, 3)
             border(cat, wr0_source_mask, CAT_WR0, 3)
             border(cat, wr1_source_mask, CAT_WR1, 3)
-            border(cat, main_source_mask, CAT_MAIN, 3)
+            border(cat, dic_source_mask, CAT_DIC, 3)
             _save_png(cells_to_image(cat.clip(0, 255).astype(np.uint8)), catmap_dir / f"{i:05d}.png")
 
             # Miss/Carry マップ: Miss/Carryタイルだけ内容表示+縁取り(fresh=赤/繰越=amber)。他は黒。
@@ -2454,7 +2486,7 @@ def main():
     prg_loads = np.asarray(prg_loads_log, np.int64)
     wr0_loads = np.asarray(wr0_loads_log, np.int64)
     wr1_loads = np.asarray(wr1_loads_log, np.int64)
-    main_loads = np.asarray(main_loads_log, np.int64)
+    dic_loads = np.asarray(dic_loads_log, np.int64)
 
     # The encoder's whole-movie budget above is a quality-allocation model, not the
     # physical PRG-RAM PrgBuf. Re-run the packer's exact sector schedule
@@ -2545,7 +2577,10 @@ def main():
 
     wr0_remaining = preload_remaining(wr0_loads)
     wr1_remaining = preload_remaining(wr1_loads)
-    main_remaining = preload_remaining(main_loads)
+    # DicBuf is persistent: hits never consume dictionary entries. Keep the
+    # schema field for readers while reporting a constant installed count.
+    dic_remaining = np.full(
+        len(dic_loads), supply_budget.dic_patterns, np.int64)
     body_payload_bytes = np.asarray(
         physical_schedule["body_useful_payload_bytes"], np.int64)
     body_control_bytes = np.asarray(
@@ -2576,7 +2611,8 @@ def main():
         f"cache_evictions={alloc.prefetch_cache_evictions} "
         f"pin_evictions={alloc.prefetch_evictions}",
         f"boot_preload_patterns=Wr0:{int(wr0_loads.sum())} "
-        f"Wr1:{int(wr1_loads.sum())} Main:{int(main_loads.sum())}",
+        f"Wr1:{int(wr1_loads.sum())} "
+        f"Dic:{supply_budget.dic_patterns} hits:{int(dic_loads.sum())}",
         f"avg_L2_dedup_hit_per_frame={ded.mean():.1f} (VRAM常駐で0転送)",
         f"avg_Coa_hit_per_frame={np.array(coa_hits_log).mean():.1f} (粗い近似dedupで0転送流用, COA={COA_ON})",
         f"avg_L3_hit_per_frame={l3h.mean():.1f} (再登場をRAMから0CDで供給)",
@@ -2657,18 +2693,18 @@ def main():
             prg_remaining=prg_remaining,
             wr0_remaining=wr0_remaining,
             wr1_remaining=wr1_remaining,
-            main_remaining=main_remaining,
+            dic_remaining=dic_remaining,
             prg_capacity=av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES,
             wr0_capacity=pattern_supply.WORD_BUF_PATTERNS,
             wr1_capacity=pattern_supply.WORD_BUF_PATTERNS,
-            main_capacity=pattern_supply.MAIN_BUF_PATTERNS,
+            dic_capacity=pattern_supply.DIC_BUF_PATTERNS,
             prg_loads=prg_loads,
             wr0_loads=wr0_loads,
             wr1_loads=wr1_loads,
-            main_loads=main_loads,
+            dic_loads=dic_loads,
             wr0_preloaded=np.int64(wr0_loads.sum()),
             wr1_preloaded=np.int64(wr1_loads.sum()),
-            main_preloaded=np.int64(main_loads.sum()),
+            dic_preloaded=np.int64(supply_budget.dic_patterns),
             quality_budget_remaining=quality_budget_remaining,
             exact_demand_bytes=demand_prediction.exact_bytes,
             protected_demand_bytes=demand_prediction.protected_bytes,
@@ -2769,19 +2805,21 @@ def main():
             "frame_seg": np.asarray(frame_seg, np.int32),
             "frames": dec_frames,                                     # [[(cell,pal,key),...], ...]
             "pattern_supply": {
-                "schema_version": 1,
+                "schema_version": 2,
                 "enabled": bool(PATTERN_SUPPLY_ON),
                 "sources": supply_sources_log,
                 "planned_wr": np.asarray(supply_budget.wr, np.uint16),
-                "planned_main": np.asarray(supply_budget.main, np.uint16),
+                "planned_dic": np.asarray(supply_budget.dic, np.uint16),
+                "dic_dictionary": list(
+                    supply_budget.dic_dictionary_packed),
                 "prg_loads": prg_loads.astype(np.uint16),
                 "wr0_loads": wr0_loads.astype(np.uint16),
                 "wr1_loads": wr1_loads.astype(np.uint16),
-                "main_loads": main_loads.astype(np.uint16),
+                "dic_loads": dic_loads.astype(np.uint16),
                 "capacities": {
                     "wr0": pattern_supply.WORD_BUF_PATTERNS,
                     "wr1": pattern_supply.WORD_BUF_PATTERNS,
-                    "main": pattern_supply.MAIN_BUF_PATTERNS,
+                    "dic": pattern_supply.DIC_BUF_PATTERNS,
                 },
             },
             "raw_prefetch": {
@@ -2808,7 +2846,7 @@ def main():
                 "prg": prg_loads.astype(np.uint16),
                 "wr0": wr0_loads.astype(np.uint16),
                 "wr1": wr1_loads.astype(np.uint16),
-                "main": main_loads.astype(np.uint16),
+                "dic": dic_loads.astype(np.uint16),
             },
             # Analysis and pack must show the same physical PrgBuf trace.
             # The packer compares this frozen trace with its built control data.

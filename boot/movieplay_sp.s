@@ -93,7 +93,7 @@
 .equ SUB_BANK_1M, 0x000C0000
 
 /* --- TTRC v11 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
-.equ ROUTING_VERSION,       11
+.equ ROUTING_VERSION,       12
 .equ ROUTING_BYTES,         16384
 .equ ROUTING_MAX_FRAMES,    16384
 .equ ROUTING_SECTOR_BYTES,  2048
@@ -108,6 +108,7 @@
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
 .equ FEATURE_SHADOW_UPDATE_LISTS_BIT, 4
 .equ FEATURE_VRAM_RAW_PREFETCH_BIT, 5
+.equ FEATURE_DICBUF_INDEXED_RUNS_BIT, 6
 .equ SHADOW_UPDATE_LIST_BIT, 15
 .equ SHADOW_UPDATE_COUNT_MASK, 0x7FFF
 .equ ROUTING_COPY_LONGS,    4096
@@ -171,8 +172,8 @@
                                        0xB000..0x10000(CTRL_SCR手前)=20KB=160区間が物理上限。
                                        ip.s の PALTAB_OFF と一致必須(check_player_ring.pyが検証) */
 .equ O_PALTAB, SUB_BANK_1M+PALTAB_OFF
-.equ MAIN_STAGE, SUB_BANK_1M+0xD000 /* frame0 bank: MainBuf boot handoff, max 208 patterns */
-.equ MAIN_STAGE_PATTERNS, 208
+.equ DIC_STAGE, SUB_BANK_1M+0xD000 /* frame0 bank: DicBuf boot handoff, max 256 patterns */
+.equ DIC_STAGE_PATTERNS, 256
 
 /* --- RF5C164 PCM output (PCM13 direct or ADPCM22 reconstructed) --- */
 .equ AUDIO_BYTES, 887
@@ -374,7 +375,7 @@ pm_set:
 	tst.w	d1
 	beq	bad_header
 	move.w	d1, h_audio_fd
-	move.w	62(a0), h_features		/* bits0..5: runs, N2, ADPCM, supply, shadow lists, raw prefetch */
+	move.w	62(a0), h_features		/* bits0..6: includes indexed DicBuf runs */
 	move.w	h_features, d1
 	andi.w	#0x0010, d1
 	beq.s	1f
@@ -452,8 +453,8 @@ adpcm_table_copy:
 	dbra	d1, adpcm_table_bank
 adpcm_table_done:
 .endif
-	/* v10 pattern supply follows the optional ADPCM table.  Wr0 is the
-	   physical frame-0 bank, Wr1 is the other bank, and MainBuf is staged in
+	/* v12 pattern supply follows the optional ADPCM table. Wr0 is the
+	   physical frame-0 bank, Wr1 is the other bank, and DicBuf is staged in
 	   Wr0 for the Main CPU to copy once after the first handoff.  The two
 	   toggles restore the original frame-0 bank phase. */
 .ifdef INCLUDE_PATTERN_SUPPLY
@@ -467,8 +468,8 @@ adpcm_table_done:
 	bsr	drain_lin_staged
 	bchg	#0, (MEMMODE+1).l
 	bsr	swap_settle
-	move.w	#PC_MAIN_SECTORS, d0
-	lea	MAIN_STAGE, a0
+	move.w	#PC_DIC_SECTORS, d0
+	lea	DIC_STAGE, a0
 	bsr	drain_lin_staged
 .endif
 	/* v5 STARTUP_AUDIO follows PALTAB. Each sector starts with exactly one
@@ -1471,8 +1472,8 @@ ef_runs_setup:
 	beq	ef_runs_polled
 	subq.w	#1, d7
 ef_run:
-	move.w	(a0)+, d2			/* zero-based slot_start */
-	move.w	(a0)+, d3			/* source in bits15..14, pattern count in bits13..0 */
+	move.w	(a0)+, d2			/* Dic index high5 + zero-based slot low11 */
+	move.w	(a0)+, d3			/* source2 + Dic index low3 + count low11 */
 	move.w	d5, d1
 	PC_MOVE_W h_features, PC_FEATURES, d0
 	btst	#FEATURE_VRAM_RAW_PREFETCH_BIT, d0
@@ -1481,12 +1482,13 @@ ef_run:
 2:
 	move.w	d3, d0
 	andi.w	#0xC000, d0			/* preserve source for O_LOADS and the copy decision */
-	andi.w	#0x3FFF, d3
+	andi.w	#0x07FF, d3
 	sub.w	d4, d1				/* remaining cold count cannot exceed stream limit */
 	cmp.w	d1, d3
 	bls	1f
 	move.w	d1, d3
 1:
+	andi.w	#0x07FF, d2			/* discard Dic index high bits for bounds proof */
 	PC_MOVE_W h_pool, PC_POOL, d1
 	sub.w	d2, d1				/* slots available from slot_start */
 	bls	ef_run_next			/* corrupt slot outside the pool */
@@ -1496,13 +1498,14 @@ ef_run:
 1:
 	tst.w	d3
 	beq	ef_run_next
-	move.w	d2, (a1)+
-	move.w	d0, d1
+	move.w	-4(a0), (a1)+			/* preserve packed Dic index high bits */
+	move.w	-2(a0), d1
+	andi.w	#0xF800, d1			/* preserve source + Dic index low bits */
 	or.w	d3, d1
-	move.w	d1, (a1)+			/* source-coded count; cached runs carry no inline bytes */
+	move.w	d1, (a1)+			/* indexed source/count; cached runs carry no inline bytes */
 	add.w	d3, d4
 	tst.w	d0
-	bne	ef_run_next			/* Wr/Main: Main DMA reads the persistent preload directly */
+	bne	ef_run_next			/* Wr/Dic: Main DMA reads the persistent preload directly */
 	subq.w	#1, d3
 ef_run_pattern:
 	/* Do not include postincrement base a4 in the MOVEM register list.  On

@@ -50,7 +50,7 @@ Other fixed defaults:
 - Audio = `adpcm22`. Use `pcm13` only when explicitly requested or when a
   physical-console-qualified fallback is required.
 - PrgBuf and offline quality-budget ceilings come from `tools/av_config.py`.
-  WordBuf0, WordBuf1, and MainBuf capacities come from
+  WordBuf0, WordBuf1, and DicBuf capacities come from
   `tools/pattern_supply.py`; none are normal per-source overrides.
 - BODY supply follows SEGA-CD 1x's exact integer sector cadence. Fixed control
   data is reserved first; update entries, run descriptors, and Prg pattern

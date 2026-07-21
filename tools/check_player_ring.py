@@ -203,16 +203,16 @@ print(
     f"{routing_tmp:#x}..{routing_tmp + route_bytes:#x}, Word routing "
     f"{routing:#x}..{routing + route_bytes:#x}, PRG ring end {ring_end:#x}")
 
-# --- v10 boot-only pattern supply map ---
+# --- v12 boot-only pattern supply map ---
 word_buf = _equ(text, "WORD_BUF", SP)
 word_buf_patterns = _equ(text, "WORD_BUF_PATTERNS", SP)
 ip_word_buf_off = _equ(ip_text, "WORD_BUF_OFF", IP)
 ip_word_buf_end = _equ(ip_text, "WORD_BUF_END", IP)
 ip_word_buf_patterns = _equ(ip_text, "WORD_BUF_PATTERNS", IP)
-main_stage_off = _equ(ip_text, "MAIN_STAGE_OFF", IP)
-main_stage_patterns = _equ(text, "MAIN_STAGE_PATTERNS", SP)
-main_buf = _equ(ip_text, "MAIN_BUF", IP)
-main_buf_patterns = _equ(ip_text, "MAIN_BUF_PATTERNS", IP)
+dic_stage_off = _equ(ip_text, "DIC_STAGE_OFF", IP)
+dic_stage_patterns = _equ(text, "DIC_STAGE_PATTERNS", SP)
+dic_buf = _equ(ip_text, "DIC_BUF", IP)
+dic_buf_patterns = _equ(ip_text, "DIC_BUF_PATTERNS", IP)
 run_table = _equ(ip_text, "RUN_TABLE", IP)
 
 if word_buf != sub_bank + pattern_supply.WORD_BUF_OFFSET:
@@ -236,33 +236,33 @@ if pcm_dec_buf + 1536 != word_buf or word_buf + word_buf_patterns * 32 != routin
         f"PCM_DEC_BUF and ROUTING: pcm_end={pcm_dec_buf + 1536:#x}, "
         f"WordBuf={word_buf:#x}..{word_buf + word_buf_patterns * 32:#x}, "
         f"routing={routing:#x}")
-if main_stage_off != pattern_supply.MAIN_STAGE_OFFSET:
+if dic_stage_off != pattern_supply.DIC_STAGE_OFFSET:
     sys.exit(
-        f"check_player_ring: MAIN_STAGE_OFF={main_stage_off:#x} != "
-        f"Python {pattern_supply.MAIN_STAGE_OFFSET:#x}")
-if main_stage_patterns != pattern_supply.MAIN_BUF_PATTERNS:
+        f"check_player_ring: DIC_STAGE_OFF={dic_stage_off:#x} != "
+        f"Python {pattern_supply.DIC_STAGE_OFFSET:#x}")
+if dic_stage_patterns != pattern_supply.DIC_BUF_PATTERNS:
     sys.exit(
-        f"check_player_ring: MAIN_STAGE_PATTERNS={main_stage_patterns} != "
-        f"Python MainBuf capacity {pattern_supply.MAIN_BUF_PATTERNS}")
+        f"check_player_ring: DIC_STAGE_PATTERNS={dic_stage_patterns} != "
+        f"Python DicBuf capacity {pattern_supply.DIC_BUF_PATTERNS}")
 if not re.search(
-        r"^\.equ\s+MAIN_STAGE,\s*SUB_BANK_1M\+0xD000\b", text, re.M):
-    sys.exit("check_player_ring: SP MAIN_STAGE must use the shared +0xD000 offset")
-if main_stage_off + main_stage_patterns * 32 > 0x10000:
-    sys.exit("check_player_ring: MainBuf Word-RAM staging overlaps CTRL at +0x10000")
-if (main_buf, run_table, main_buf_patterns) != (
-        pattern_supply.MAIN_BUF_BASE,
-        pattern_supply.MAIN_BUF_END,
-        pattern_supply.MAIN_BUF_PATTERNS):
+        r"^\.equ\s+DIC_STAGE,\s*SUB_BANK_1M\+0xD000\b", text, re.M):
+    sys.exit("check_player_ring: SP DIC_STAGE must use the shared +0xD000 offset")
+if dic_stage_off + dic_stage_patterns * 32 > 0x10000:
+    sys.exit("check_player_ring: DicBuf Word-RAM staging overlaps CTRL at +0x10000")
+if (dic_buf, run_table, dic_buf_patterns) != (
+        pattern_supply.DIC_BUF_BASE,
+        pattern_supply.DIC_BUF_END,
+        pattern_supply.DIC_BUF_PATTERNS):
     sys.exit(
-        "check_player_ring: MainBuf layout does not match pattern_supply.py: "
-        f"{main_buf:#x}..{run_table:#x}, {main_buf_patterns} patterns")
+        "check_player_ring: DicBuf layout does not match pattern_supply.py: "
+        f"{dic_buf:#x}..{run_table:#x}, {dic_buf_patterns} patterns")
 if not re.search(
-        r"^\.equ\s+MAIN_CODEGEN_LIMIT,\s*MAIN_BUF\s*$", ip_text, re.M):
-    sys.exit("check_player_ring: Main code generation must stop at MAIN_BUF")
+        r"^\.equ\s+MAIN_CODEGEN_LIMIT,\s*DIC_BUF\s*$", ip_text, re.M):
+    sys.exit("check_player_ring: Main code generation must stop at DIC_BUF")
 print(
     "check_player_ring: OK  pattern supply "
     f"Wr0/Wr1 each {word_buf_patterns} patterns at bank+{ip_word_buf_off:#x}, "
-    f"Main {main_buf_patterns} patterns at {main_buf:#x}..{run_table:#x}")
+    f"Dic {dic_buf_patterns} patterns at {dic_buf:#x}..{run_table:#x}")
 
 # --- CRAM pre-load (PALTAB) consistency ---
 # The pack sizes the PALTAB to av_config.PALTAB_MAX_SEG; the Main player copies it

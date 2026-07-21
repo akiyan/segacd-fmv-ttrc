@@ -11,6 +11,20 @@ import pack_stream as pack
 
 
 class PatternTransferTests(unittest.TestCase):
+    def test_dic_runs_split_when_dictionary_indices_are_not_consecutive(self) -> None:
+        entries = [pack.BASE + 10, pack.BASE + 11, pack.BASE + 12]
+        runs = pack.sourced_cold_runs(
+            entries,
+            [True, True, True],
+            [pack.pattern_supply.SOURCE_DIC] * 3,
+            [4, 9, 10],
+        )
+        self.assertEqual(
+            runs,
+            [(10, 1, pack.pattern_supply.SOURCE_DIC, 4),
+             (11, 2, pack.pattern_supply.SOURCE_DIC, 9)],
+        )
+
     def test_packer_omits_reuse_without_splitting_a_run(self) -> None:
         entries = [pack.BASE + 10, pack.BASE + 99, pack.BASE + 11]
         self.assertEqual(pack.cold_runs(entries, [True, False, True]), [(10, 2)])
@@ -56,14 +70,14 @@ class PatternTransferTests(unittest.TestCase):
                 "prg": values,
                 "wr0": np.array([0, 1, 0], np.uint16),
                 "wr1": np.array([0, 0, 1], np.uint16),
-                "main": np.array([0, 1, 1], np.uint16),
+                "dic": np.array([0, 1, 1], np.uint16),
             }
         }
         supply = SimpleNamespace(
             prg_loads=values,
             wr0_loads=np.array([0, 1, 0]),
             wr1_loads=np.array([0, 0, 1]),
-            main_loads=np.array([0, 1, 1]),
+            dic_loads=np.array([0, 1, 1]),
         )
         self.assertTrue(pack.verify_sim_pattern_transfers(
             log, np.array([0, 3, 4]), np.array([0, 2, 3]), supply))
