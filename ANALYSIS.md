@@ -235,16 +235,20 @@ their useful fractions; all pad remains blank. A thin yellow line at the right
 edge marks CD 1x.
 
 Before making these per-frame choices, the encoder dry-runs the complete
-quantized movie through the shared VRAM allocator. A backwards pass builds two
-offline reserve curves: complete exact-update demand limits optional exact-load
-upgrades, while changes beyond the Coa bound form the narrower reserve that
-protects normal updates from future Flbk/Miss bursts. Both curves finish at
-zero. They are saved as `upgrade_reserve_bytes` and
-`main_risk_reserve_bytes` in `buffer_remaining.npz`; neither is a physical
-supply meter. [`BUEFFERING.md`](BUEFFERING.md) describes how both curves
-are constructed and applied.
+quantized movie through the shared VRAM allocator. When a continuous burst
+exceeds the complete quality-budget capacity, its unavoidable shortfall is
+distributed proportionally from the burst start through its peak instead of
+being concentrated in the first frame. A backwards pass over that feasible
+demand builds two offline reserve curves: complete exact-update demand limits
+optional exact-load upgrades, while changes beyond the Coa bound form the
+narrower reserve that protects normal updates from future Flbk/Miss bursts.
+Both curves finish at zero. The original demand, balanced planned demand,
+unavoidable shortfall, and reserve are saved as separate byte traces in
+`buffer_remaining.npz`; none is a physical supply meter.
+[`BUEFFERING.md`](BUEFFERING.md) describes how both curves are constructed and
+applied.
 
-### Three pattern-supply meters
+### Four pattern-supply meters
 
 Each meter is an independent remaining count in 32-byte patterns:
 

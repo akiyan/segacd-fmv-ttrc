@@ -274,22 +274,29 @@ After quantization, the encoder dry-runs the exact target through the shared
 VRAM allocator and predicts each frame's name-table and cold-pattern demand.
 It first selects the persistent DicBuf from whole-movie reuse, removes those
 hits from provisional Prg demand, and water-fills the finite WordBuf0/WordBuf1
-credits across the remaining risky bursts. A backwards pass then derives the minimum offline quality
-reserve needed after every frame. This is the only quality-budget allocation
-path.
+credits across the remaining risky bursts. If a continuous burst needs more
+than the complete quality-budget capacity, that shortage cannot be prevented.
+The planner applies one common served fraction from the burst start through its
+peak so the first frame does not absorb the entire unavoidable loss. A
+backwards pass over this capacity-feasible demand then derives the minimum
+offline quality reserve needed after every frame. This is the only
+quality-budget allocation path.
 
 Optional Raw/Buf upgrades protect against the complete exact-demand trace.
 Normal exact updates use a narrower Miss-risk trace: source changes that fit
 the existing Coa visual bound are excluded because they can degrade gracefully
-to resident reuse, while changes beyond Coa reserve quality allowance against future Flbk
-and Miss bursts. The risk trace is independent from optional quality spending.
+to resident reuse, while changes beyond Coa reserve quality allowance against
+future Flbk and Miss bursts. The risk trace is independent from optional
+quality spending.
 Both curves end at zero by definition, so the useful tail naturally releases
-the quality budget without a separate end-of-movie rule. The physical PrgBuf
+the quality budget without a separate end-of-movie rule. The original demand,
+balanced planned demand, unavoidable shortfall, and final reserve are stored as
+separate byte traces in `buffer_remaining.npz`. The physical PrgBuf
 sector schedule remains a separate exact proof in `stream_schedule.py`. See
 [`BUEFFERING.md`](BUEFFERING.md) for the complete planning flow and validation.
 
-Schema-4 `buffer_remaining.npz` records `prg_remaining`, `wr0_remaining`,
-`wr1_remaining`, and `main_remaining` plus the matching capacities and
+Schema-5 `buffer_remaining.npz` records `prg_remaining`, `wr0_remaining`,
+`wr1_remaining`, and `dic_remaining` plus the matching capacities and
 per-frame loads. `quality_budget_remaining` is diagnostic only and is not one
 of the four analysis meters.
 

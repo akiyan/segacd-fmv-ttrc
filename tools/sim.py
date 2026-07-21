@@ -1491,19 +1491,23 @@ def main():
         demand_prediction.exact_bytes - preload_credit_bytes, 0)
     main_demand = np.maximum(
         demand_prediction.protected_bytes - protected_credit_bytes, 0)
-    upgrade_reserve = upgrade_planner.build_reserve_curve(
+    upgrade_reserve_plan = upgrade_planner.build_balanced_reserve_plan(
         upgrade_demand, upgrade_supply, QUALITY_BUDGET_BYTES)
-    main_reserve = upgrade_planner.build_reserve_curve(
+    main_reserve_plan = upgrade_planner.build_balanced_reserve_plan(
         main_demand, upgrade_supply, QUALITY_BUDGET_BYTES)
+    upgrade_reserve = upgrade_reserve_plan.reserve
+    main_reserve = main_reserve_plan.reserve
     print(
         "quality plan: upgrade exact reserve "
         f"start={upgrade_reserve[0] // 1024 if n else 0}KB "
         f"peak={upgrade_reserve.max() // 1024 if n else 0}KB "
-        f"end={upgrade_reserve[-1] // 1024 if n else 0}KB; "
+        f"end={upgrade_reserve[-1] // 1024 if n else 0}KB "
+        f"balanced_shortfall={upgrade_reserve_plan.shortfall.sum() // 1024}KB; "
         "main Miss-risk reserve "
         f"start={main_reserve[0] // 1024 if n else 0}KB "
         f"peak={main_reserve.max() // 1024 if n else 0}KB "
-        f"end={main_reserve[-1] // 1024 if n else 0}KB",
+        f"end={main_reserve[-1] // 1024 if n else 0}KB "
+        f"balanced_shortfall={main_reserve_plan.shortfall.sum() // 1024}KB",
         flush=True,
     )
     print(
@@ -2726,8 +2730,16 @@ def main():
             protected_demand_bytes=demand_prediction.protected_bytes,
             preload_credit_bytes=preload_credit_bytes,
             upgrade_demand_bytes=upgrade_demand,
+            upgrade_planned_demand_bytes=(
+                upgrade_reserve_plan.planned_demand),
+            upgrade_unavoidable_shortfall_bytes=(
+                upgrade_reserve_plan.shortfall),
             upgrade_reserve_bytes=upgrade_reserve,
             main_risk_demand_bytes=main_demand,
+            main_risk_planned_demand_bytes=(
+                main_reserve_plan.planned_demand),
+            main_risk_unavoidable_shortfall_bytes=(
+                main_reserve_plan.shortfall),
             main_risk_reserve_bytes=main_reserve,
             block_lengths=control_lengths,
             shadow_update_lists=shadow_list_flags,

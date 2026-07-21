@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e80 : Balance demand that exceeds the complete whole-movie quality-budget
+#        capacity across each continuous burst. Build the backwards reserve
+#        from the feasible demand so unavoidable loss is no longer concentrated
+#        at the burst's first frame, and expose planned demand and shortfall
+#        traces for both main-risk work and optional upgrades.
 #   e79 : Refine analysis category rendering: combine Wr0/Wr1 as Wr in the
 #        legend, unify their visible colour, use thin colour/transparent dashes
 #        for Dic/Prg/Wr, and distinguish Coa with a thick Near-colour frame.
@@ -542,5 +547,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
-e=79
+e=80
 p=70
