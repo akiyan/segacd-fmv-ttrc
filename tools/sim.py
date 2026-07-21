@@ -1495,8 +1495,12 @@ def main():
         upgrade_demand, upgrade_supply, QUALITY_BUDGET_BYTES)
     main_reserve_plan = upgrade_planner.build_balanced_reserve_plan(
         main_demand, upgrade_supply, QUALITY_BUDGET_BYTES)
-    upgrade_reserve = upgrade_reserve_plan.reserve
     main_reserve = main_reserve_plan.reserve
+    # Optional improvements must never spend bytes protected by the narrower
+    # Miss-risk plan.  Balancing the two predicted demand traces independently
+    # can otherwise make the larger all-exact trace locally less restrictive.
+    upgrade_reserve = np.maximum(
+        upgrade_reserve_plan.reserve, main_reserve)
     print(
         "quality plan: upgrade exact reserve "
         f"start={upgrade_reserve[0] // 1024 if n else 0}KB "
@@ -1662,7 +1666,7 @@ def main():
         # quality budgetは満量のままframe1へ渡す。実機の崩壊はframe0の大バーストが
         # リングを削っていたのが原因で、ヘッダ化で根絶する。
         if i == 0:
-            tile_budget = 1 << 30
+            decision_budget = 1 << 30
         elif QUALITY_BUDGET_ON:
             funded_limit = upgrade_planner.planned_spend_limit(
                 budget_before=quality_budget,
@@ -1670,9 +1674,9 @@ def main():
                 reserve_after=int(main_reserve[i]),
                 already_spent=0,
             )
-            tile_budget = max(0, funded_limit - MAX_RUN_CONTROL_BYTES)
+            decision_budget = funded_limit
         else:
-            tile_budget = max(0, frame_cd - MAX_RUN_CONTROL_BYTES)
+            decision_budget = frame_cd
         frame_patch = (frozenset() if QUALITY_BUDGET_ON
                        else prg_patch.get(i, frozenset()))
 
@@ -1697,6 +1701,27 @@ def main():
         wr_used = 0
         dic_used = 0
         preload_sources = {}
+
+        def reserved_variable_spend(
+            decision_spent=0,
+            cold_tiles=0,
+        ):
+            """Upper-bound BODY work before actual source runs are known."""
+
+            return (
+                decision_spent
+                + cold_tiles * stream_schedule.RUN_DESCRIPTOR_BYTES)
+
+        def decision_fits(cost, *, extra_cold=0, limit=None):
+            if limit is None:
+                limit = decision_budget
+            return reserved_variable_spend(
+                spent_tiles + cost,
+                cold_spent + extra_cold,
+            ) <= limit
+
+        def current_reserved_spend():
+            return reserved_variable_spend(spent_tiles, cold_spent)
 
         def preload_source(key):
             if i == 0:
@@ -1812,7 +1837,7 @@ def main():
             preload = source != pattern_supply.SOURCE_PRG
             cost = 0 if in_prg else (
                 NAME_BYTES + (0 if free or preload else PATTERN_BYTES))
-            if spent_tiles + cost > tile_budget:
+            if not decision_fits(cost, extra_cold=int(not free)):
                 return False
             rep_key = key; rep_pal = int(assign[c]); rep_rgb = plain_rgb[c]
             if in_vram:
@@ -1837,7 +1862,7 @@ def main():
                 if preload:
                     commit_preload(key, source)
                     prg_hits += 1; prg_mask[c] = True
-                elif QUALITY_BUDGET_ON and spent_tiles >= frame_cd:
+                elif QUALITY_BUDGET_ON and current_reserved_spend() >= frame_cd:
                     prg_hits += 1; prg_mask[c] = True
                 else:
                     tile_recs += 1; raw_mask[c] = True
@@ -1942,7 +1967,8 @@ def main():
                     bk, dYm, dYp, dCm = best_resident(c)
                     tier = tier_of(dYm, dYp, dCm) if bk is not None else -1
                 # 2. 良い流用(Same=exact / Near=tier0 / Coa=tier1) → 常駐を指す(2B)
-                if bk is not None and 0 <= tier <= 1 and spent_tiles + NAME_BYTES <= tile_budget:
+                if (bk is not None and 0 <= tier <= 1
+                        and decision_fits(NAME_BYTES)):
                     if exact:
                         dedup_saved += 1; dedup_mask[c] = True                # Same(完全一致流用=Sameへ畳む)
                         rk, rp, rr = key, int(assign[c]), plain_rgb[c]
@@ -1959,13 +1985,14 @@ def main():
                 source = preload_source(key)
                 preload = source != pattern_supply.SOURCE_PRG
                 cost = NAME_BYTES + (0 if preload else PATTERN_BYTES)
-                if spent_tiles + cost <= tile_budget and not (frame_max_cold and cold_spent >= frame_max_cold):
+                if (decision_fits(cost, extra_cold=1)
+                        and not (frame_max_cold and cold_spent >= frame_max_cold)):
                     cold_spent += 1
                     loaded_keys.add(key)
                     if preload:
                         commit_preload(key, source)
                         prg_hits += 1; prg_mask[c] = True
-                    elif QUALITY_BUDGET_ON and spent_tiles >= frame_cd:
+                    elif QUALITY_BUDGET_ON and current_reserved_spend() >= frame_cd:
                         prg_hits += 1; prg_mask[c] = True
                     else:
                         tile_recs += 1; raw_mask[c] = True
@@ -1978,7 +2005,8 @@ def main():
                 # 4. ロード不可(画質予算尽き) → Flbk 近似流用(2B)で穴埋め(Missのフォールバック)。
                 #    改善モード(既定): 絶対しきいに縛らず、現在表示より少しでも target に近づく候補なら採る。
                 #    絶対モード(CBRSIM_FLBK_IMPROVE_ONLY=0): flbk tier(絶対しきい)内の候補のみ。
-                if bk is not None and not exact and spent_tiles + NAME_BYTES <= tile_budget:
+                if (bk is not None and not exact
+                        and decision_fits(NAME_BYTES)):
                     if FLBK_IMPROVE_ONLY:
                         cur = cur_rgb[c].astype(np.float64)
                         tgt = plain_rgb[c].astype(np.float64)
@@ -2014,13 +2042,13 @@ def main():
                 budget_before=quality_budget,
                 frame_supply=frame_cd,
                 reserve_after=int(upgrade_reserve[i]),
-                already_spent=spent_tiles,
+                already_spent=current_reserved_spend(),
             )
             upgrade_limit = max(
-                spent_tiles,
-                upgrade_funded_limit - MAX_RUN_CONTROL_BYTES,
+                current_reserved_spend(),
+                upgrade_funded_limit,
             )
-            if spent_tiles < upgrade_limit:
+            if current_reserved_spend() < upgrade_limit:
                 def raw_upgrade(c, lim):
                     nonlocal tile_recs, name_recs, dedup_saved, prg_hits, coa_hits, spent_tiles, upgraded, cold_spent
                     key = plain_keys[c]
@@ -2035,7 +2063,10 @@ def main():
                     preload = source != pattern_supply.SOURCE_PRG
                     cost = entry_cost if in_vram else (
                         entry_cost + (0 if preload else PATTERN_BYTES))
-                    if spent_tiles + cost > lim:
+                    if not decision_fits(
+                            cost,
+                            extra_cold=int(not in_vram),
+                            limit=lim):
                         return
                     if (not in_vram) and frame_max_cold and cold_spent >= frame_max_cold:
                         return                                   # cold上限: 格上げ見送り(近似のまま)
@@ -2151,10 +2182,10 @@ def main():
         prefetch_cold_slots = []
         if RAW_PREFETCH_ON and i > 0:
             prefetch_spend_limit = min(
-                tile_budget,
+                decision_budget,
                 max(
-                    spent_tiles,
-                    quality_budget + frame_cd - MAX_RUN_CONTROL_BYTES
+                    current_reserved_spend(),
+                    quality_budget + frame_cd
                     - RAW_PREFETCH_BUDGET_FLOOR_PATTERNS * PATTERN_BYTES,
                 ),
             )
@@ -2166,7 +2197,10 @@ def main():
                 frame_max_cold - cold_spent
                 if frame_max_cold else RAW_PREFETCH_MAX_REQUESTS_PER_FRAME)
             body_room = max(
-                0, (prefetch_spend_limit - spent_tiles) // PATTERN_BYTES)
+                0,
+                (prefetch_spend_limit - current_reserved_spend())
+                // (PATTERN_BYTES + stream_schedule.RUN_DESCRIPTOR_BYTES),
+            )
             capacity = min(
                 RAW_PREFETCH_MAX_REQUESTS_PER_FRAME,
                 request_room,
@@ -2250,6 +2284,11 @@ def main():
             name_recs * NAME_BYTES
             + dma_runs * stream_schedule.RUN_DESCRIPTOR_BYTES
             + prg_used * PATTERN_BYTES)
+        reserved_body_spent = current_reserved_spend()
+        if variable_body_spent > reserved_body_spent:
+            raise AssertionError(
+                f"frame {i}: exact BODY variable work {variable_body_spent}B "
+                f"exceeds incremental run reservation {reserved_body_spent}B")
         if QUALITY_BUDGET_ON and i > 0:
             decision_spent = name_recs * NAME_BYTES + prg_used * PATTERN_BYTES
             if spent_tiles != decision_spent:
@@ -2349,10 +2388,11 @@ def main():
         # MissCarryバー用: stale タイルの繰越年齢(=wait+1)分布
         ages = np.clip(wait[stale] + 1, 1, NBINS)
         wait_hist_rows.append(np.bincount(ages, minlength=NBINS + 1)[1:NBINS + 1])
-        # F = fresh supplyから最大run制御量を仮予約した後の最低保証更新数。
-        # 実際のrun数確定後は上のexact chargeで未使用予約を即座にquality budgetへ戻す。
-        f_fixed = max(0, budget - MAX_RUN_CONTROL_BYTES) // (
-            PATTERN_BYTES + NAME_BYTES)
+        # F = every cold tile forming its own runでもfresh supplyで払える
+        # 最低保証Raw更新数。実runが連結すれば差分はquality budgetへ戻る。
+        f_fixed = budget // (
+            PATTERN_BYTES + NAME_BYTES
+            + stream_schedule.RUN_DESCRIPTOR_BYTES)
         stat_rows.append((
             i, f_fixed, want, upd, miss, C_CELLS - want, dedup_saved, tile_recs, carry, age_max,
             want / C_CELLS, int(near_eff.sum()), coa_hits, flbk_hits, prg_hits,
@@ -2620,8 +2660,9 @@ def main():
         f"body_fixed_control_bytes_per_frame={body_fixed_control_bytes[1:].mean():.1f}",
         f"body_variable_supply_bytes_per_frame={body_variable_supply_bytes[1:].mean():.1f} "
         f"(updates + runs + Prg payload)",
-        f"temporary_run_control_reservation={MAX_RUN_CONTROL_BYTES}B max; "
-        f"unused bytes refunded after exact {stream_schedule.RUN_DESCRIPTOR_BYTES}B/run charge",
+        f"incremental_run_control_reservation="
+        f"{stream_schedule.RUN_DESCRIPTOR_BYTES}B/cold "
+        f"({MAX_RUN_CONTROL_BYTES}B cap); unused bytes refunded after exact run charge",
         f"avg_codec_work_bytes_per_frame={fb.mean():.1f}",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
         f"avg_PrgBuf_loads_per_frame={prg_loads.mean():.1f}",

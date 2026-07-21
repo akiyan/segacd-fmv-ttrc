@@ -15,7 +15,9 @@
 #        capacity across each continuous burst. Build the backwards reserve
 #        from the feasible demand so unavoidable loss is no longer concentrated
 #        at the burst's first frame, and expose planned demand and shortfall
-#        traces for both main-risk work and optional upgrades.
+#        traces for both main-risk work and optional upgrades. Reserve run
+#        control incrementally per selected cold tile instead of withholding
+#        the complete cold-cap worst case before the frame makes any choice.
 #   e79 : Refine analysis category rendering: combine Wr0/Wr1 as Wr in the
 #        legend, unify their visible colour, use thin colour/transparent dashes
 #        for Dic/Prg/Wr, and distinguish Coa with a thick Near-colour frame.

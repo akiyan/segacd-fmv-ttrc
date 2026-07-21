@@ -232,7 +232,7 @@ continuously.
 | `CD_BYTES_PER_SECOND` | 153600 B/s | cfg / sim / pack | SEGA-CD 1x physical delivery ceiling. It is a hardware constant, not a profile setting. |
 | BODY gross supply | exact `rate_deltas * 2048` | sim / pack | Physical BODY allowance follows the player's integer sector cadence (for fixed-N2, the repeating 2/3-sector sequence), not an averaged bytes-per-frame setting. Frame 0 has no BODY allowance. |
 | fixed BODY control | control header + bitmap + audio + optional DEBUG block | sim / pack | Reserved before any image decision. The remaining bytes fund update entries, run descriptors, and Prg pattern payload together. |
-| temporary run-control reservation | at most `cold cap * 4` bytes | sim | Run fragmentation is known only after tile/source allocation. The decision pass temporarily protects the worst case of one four-byte descriptor per cold tile, then charges the exact run count and immediately returns every unused byte to the whole-movie quality budget. This is not a permanent bandwidth reduction. |
+| incremental run-control reservation | 4 bytes per selected cold tile, at most `cold cap * 4` bytes | sim | Run fragmentation is known only after tile/source allocation. As each cold tile is selected, the decision pass protects its worst case of one four-byte descriptor. It no longer withholds the complete cold-cap maximum before seeing any work. After allocation it charges the exact run count and immediately returns the difference to the whole-movie quality budget. |
 | `SECTOR` / `PAT` / `PAT_PER_SEC` | 2048 / 32 / 64 | pack | Sector = 2 KB, one tile pattern = 32 B, so 64 tiles per sector. |
 
 ## G. Encoder quality knobs
