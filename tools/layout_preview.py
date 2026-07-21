@@ -32,6 +32,7 @@ CAT_DEDUP = (0, 190, 175)     # Dedup(旧・表示では Same に畳む。互換
 CAT_COA   = (45, 240, 70)     # Coa   粗い近似dedup            ※判別しやすい鮮やかな緑
 CAT_BUF   = (175, 120, 235)   # Buf   saved-budget / boot-preload funding class
 CAT_MISS  = (220, 70, 70)     # Miss  取りこぼし(赤・塗りつぶし)
+CAT_PREFETCH = (85, 175, 225) # future raw loaded into VRAM before first display use
 
 # カテゴリマップ/凡例での描き方: fill=枠なし内容塗り, thick=太枠(px), 他=細枠(1px)
 CAT_FILL = {"Raw", "Same", "Miss"}          # 塗り(▓)で表現(Missは赤塗り)
@@ -221,6 +222,7 @@ def dummy_data():
                 supply_capacities=supply_capacities,
                 supply_remaining={name: values[126] for name, values in supply_series.items()},
                 cold=counts["Raw"] + counts["Buf"], cold_raw=counts["Raw"], cold_buf=counts["Buf"],
+                cold_prefetch=0,
                 cold_cap=av_config.cold_cap_for_fps(fps, "H32", 896),
                 dma_tiles=dma_tiles, dma_runs=23,
                 tl=tl, supply_series=supply_series, tln=tln,
@@ -408,9 +410,10 @@ def draw_status(w, h, data):
     xr = draw_field(d, xq + 10, ly, "Raw:", data["counts"]["Raw"], 3, f_leg, COL_DIM)
     draw_field(d, xr + 8, ly, "Comp:", data["comp"], 3, f_leg, COL_DIM)
     x += REQ_W + GAP
-    # 1.5) Cold = このコマの新規タイル(Raw+Buf)。フルスケール=計測済みcold cap。
+    # 1.5) Cold = このコマの新規タイル(Raw+Buf+future prefetch)。
     #      これまで苦しんだcold値を視覚化。Req↔Bandの空間に配置。
-    stacked([(data["cold_raw"], CAT_RAW), (data["cold_buf"], CAT_BUF)], data["cold_cap"], COLD_W)
+    stacked([(data["cold_raw"], CAT_RAW), (data["cold_buf"], CAT_BUF),
+             (data["cold_prefetch"], CAT_PREFETCH)], data["cold_cap"], COLD_W)
     draw_field(d, x, ly, "Cold:", data["cold"], 3, f_leg, COL_TXT)
     x += COLD_W + GAP
     # 2) Band = この物理配送slotのBODY useful payload + control。pad/Headerは除外。

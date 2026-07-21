@@ -180,9 +180,10 @@ yellow vertical **budget line** marking the per-frame update budget. Labels:
 `Comp:NNN` (tiles satisfied by resident reuse = `Same+Near+Coa+Flbk`).
 
 ### Cold meter
-`Cold:NNN` = this frame's **new tile loads** (`Raw + Buf`, i.e. every 32-byte
-pattern newly written to VRAM from any of the four supplies). The bar stacks a
-Raw-coloured and a Buf-coloured segment; full-scale = `cold_cap_for_fps`
+`Cold:NNN` = this frame's **new tile loads** (`Raw + Buf + future raw
+prefetch`, i.e. every 32-byte pattern newly written to VRAM from any physical
+supply). The bar stacks Raw-, Buf-, and blue prefetch-coloured segments;
+full-scale = `cold_cap_for_fps`
 (`av_config.py`, selected only when mode/fps/active tiles exactly match a
 measured tuple; an unmeasured tuple is rejected before encoding).
 This visualises the value the hardware slip investigations were fought over.

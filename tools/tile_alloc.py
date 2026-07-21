@@ -68,6 +68,13 @@ class TileAllocator:
         self.prev_slot = np.full(self.C_CELLS, -1, np.int64) # cell -> slot last frame (protect)
         self._prev_protect = np.zeros(self.POOL, bool)
         self._tfp = None                                     # this-frame reuse-tile protection
+        # A raw-prefetched pattern has no cell reference yet.  Keep its slot
+        # until the first planned use so the ordinary clock hand does not
+        # immediately recycle it.  The feature is inert when every value is -1.
+        self.slot_pin_until = np.full(self.POOL, -1, np.int64)
+        self.pinned_count = 0
+        self.prefetch_evictions = 0
+        self.prefetch_cache_evictions = 0
 
     # ---- residency query (used by the sim for cold/reuse + near/coa reuse) ----
     def is_resident(self, key):
@@ -75,6 +82,11 @@ class TileAllocator:
 
     def resident_keys(self):
         return self.key_slot.keys()
+
+    def is_pinned(self, key, deadline):
+        """Return whether ``key`` is protected through ``deadline``."""
+        slot = self.key_slot.get(key)
+        return slot is not None and self.slot_pin_until[slot] >= int(deadline)
 
     # ---- per-frame ----
     def begin_frame(self):
@@ -88,12 +100,26 @@ class TileAllocator:
         if k is not None:
             self.key_slot.pop(k, None)
             self.slot_key[s] = None
+        if self.slot_pin_until[s] >= 0:
+            self.pinned_count -= 1
+        self.slot_pin_until[s] = -1
 
-    def _alloc_slot_contig(self):
-        # clock hand: first free/unprotected slot with no live reference; else past
-        # protection (tearing), else the least-recently-used.
+    def _alloc_slot_contig(self, frame_idx):
+        # Clock hand: free slot first. A visible update then reclaims a
+        # speculative prefetch before evicting any ordinary resident cache
+        # entry, so speculation cannot make the baseline cache smaller.
         if self.free:
             return self.free.pop()
+        if self.pinned_count:
+            for _ in range(self.POOL):
+                s = self.hand
+                self.hand = (self.hand + 1) % self.POOL
+                if self.slot_refs[s] == 0 and not self._prev_protect[s] and \
+                   (self._tfp is None or not self._tfp[s]) and \
+                   self.slot_pin_until[s] >= frame_idx:
+                    self.prefetch_evictions += 1
+                    self._evict(s)
+                    return s
         for _ in range(self.POOL):
             s = self.hand
             self.hand = (self.hand + 1) % self.POOL
@@ -117,11 +143,16 @@ class TileAllocator:
         Returns ``(slot, cold)`` where cold=True means a fresh pattern load."""
         cold = key not in self.key_slot
         if cold:
-            slot = self._alloc_slot_contig()
+            slot = self._alloc_slot_contig(frame_idx)
             self.key_slot[key] = slot
             self.slot_key[slot] = key
         else:
             slot = self.key_slot[key]
+            # The prefetched pattern has reached a real display use.  Ordinary
+            # current/previous-frame reference protection takes over now.
+            if self.slot_pin_until[slot] >= 0:
+                self.pinned_count -= 1
+            self.slot_pin_until[slot] = -1
         oldc = self.cur_slot[cell]
         if oldc >= 0:
             self.slot_refs[oldc] -= 1
@@ -129,6 +160,71 @@ class TileAllocator:
         self.slot_lastuse[slot] = frame_idx
         self.cur_slot[cell] = slot
         return int(slot), bool(cold)
+
+    def prefetch(
+            self, key, frame_idx, deadline, forced_slot=None, avoid_keys=()):
+        """Place one future pattern without changing any displayed cell.
+
+        Returns ``(slot, cold)``.  ``cold`` is true only when a 32-byte VRAM
+        write is required.  ``None`` means no safely evictable unreferenced
+        slot exists; speculative work is skipped rather than tearing display.
+        """
+        frame_idx = int(frame_idx)
+        deadline = int(deadline)
+        if deadline <= frame_idx:
+            raise ValueError("prefetch deadline must be after the load frame")
+        resident = self.key_slot.get(key)
+        if resident is not None:
+            # Already-resident data needs no speculative transfer. Do not pin
+            # an ordinary cache entry: changing its eviction priority can make
+            # a baseline frame worse without moving any work earlier.
+            return int(resident), False
+
+        avoid_keys = set(avoid_keys)
+        if forced_slot is not None:
+            slot = int(forced_slot)
+            if not 0 <= slot < self.POOL:
+                raise ValueError("forced prefetch slot is outside the pool")
+            if slot in self.free:
+                self.free.remove(slot)
+            else:
+                if self.slot_refs[slot] != 0 or self._prev_protect[slot] or \
+                   (self._tfp is not None and self._tfp[slot]):
+                    return None
+                self._evict(slot)
+                self.hand = (slot + 1) % self.POOL
+        elif self.free:
+            slot = self.free.pop()
+        else:
+            # A full resident cache may still have a safe speculative victim:
+            # it must be unreferenced now and in the previous display, must
+            # not be another pending prefetch, and must not be needed by the
+            # target frame.  This deliberately gives up only cache history;
+            # no displayed pattern is overwritten.
+            slot = None
+            for _ in range(self.POOL):
+                candidate = self.hand
+                self.hand = (self.hand + 1) % self.POOL
+                candidate_key = self.slot_key[candidate]
+                if self.slot_refs[candidate] != 0 or self._prev_protect[candidate]:
+                    continue
+                if self.slot_pin_until[candidate] >= frame_idx:
+                    continue
+                if candidate_key in avoid_keys:
+                    continue
+                slot = candidate
+                self._evict(slot)
+                self.prefetch_cache_evictions += 1
+                break
+            if slot is None:
+                return None
+
+        self.key_slot[key] = slot
+        self.slot_key[slot] = key
+        self.slot_lastuse[slot] = frame_idx
+        self.slot_pin_until[slot] = deadline
+        self.pinned_count += 1
+        return int(slot), True
 
     def end_frame(self):
         self.prev_slot[:] = self.cur_slot

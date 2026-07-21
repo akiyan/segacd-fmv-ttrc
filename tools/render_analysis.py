@@ -197,6 +197,7 @@ Same = np.maximum(C - Want, 0) + Dedup          # Dedup(完全一致流用)を S
 Same_u = col("same_u"); Near_u = col("near_u"); Coa_u = col("coa_u")
 Flbk_u = col("flbk_u") + col("mid_u") + col("far_u")
 DMA_TILES = col("dma_tiles") if "dma_tiles" in idx else Raw + Buf
+PREFETCH = col("prefetch")
 
 
 def _legacy_dma_runs():
@@ -460,8 +461,9 @@ def draw_status_real(data):
     xr = L.draw_field(d, xq + 10, ly, "Raw:", cn["Raw"], 3, L.f_leg, L.COL_DIM)
     L.draw_field(d, xr + 8, ly, "Comp:", data["comp"], 3, L.f_leg, L.COL_DIM)
     x += REQ_W + GAP
-    # 1.5) Cold = このコマの新規タイル(Raw+Buf)。フルスケール=計測済みcold cap
-    stacked([(data["cold_raw"], L.CAT_RAW), (data["cold_buf"], L.CAT_BUF)], data["cold_cap"], COLD_W)
+    # 1.5) Cold = this frame's new patterns, including future raw prefetch.
+    stacked([(data["cold_raw"], L.CAT_RAW), (data["cold_buf"], L.CAT_BUF),
+             (data["cold_prefetch"], L.CAT_PREFETCH)], data["cold_cap"], COLD_W)
     L.draw_field(d, x, ly, "Cold:", data["cold"], 3, L.f_leg, L.COL_TXT)
     x += COLD_W + GAP
     # 2) Band = この物理配送slotのBODY useful payload + control。pad/Headerは除外。
@@ -547,7 +549,9 @@ def frame_data(i):
                 body_control_bytes=int(BODY_CONTROL_BYTES[i]),
                 body_physical_bytes=int(BODY_PHYSICAL_BYTES[i]),
                 band_kbps=int(BAND[i]),
-                cold=cn["Raw"] + cn["Buf"], cold_raw=cn["Raw"], cold_buf=cn["Buf"],
+                cold=cn["Raw"] + cn["Buf"] + int(PREFETCH[i]),
+                cold_raw=cn["Raw"], cold_buf=cn["Buf"],
+                cold_prefetch=int(PREFETCH[i]),
                 cold_cap=COLD_CAP,
                 pl_info=frame_plinfo(i),
                 frame=i, total_frames=NF, time_s=i / FPS, palettes=frame_palettes(i),

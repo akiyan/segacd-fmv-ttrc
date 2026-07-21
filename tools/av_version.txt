@@ -11,6 +11,14 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e75/p68 : Add optional one-frame raw-pattern VRAM prefetch. The encoder
+#        targets only protected cold demand above the measured cap, uses exact
+#        spare per-frame BODY/cold capacity after visible work, requires a
+#        four-pattern minimum batch, and freezes every request for exact pack
+#        replay. TTRC v11 feature bit 5 permits Prg cold runs
+#        without same-frame name updates; the Sub player retains bounded run
+#        validation against the full cell count. Bad Apple H40 enables it while
+#        every other profile defaults off.
 #   e74 : Make ADPCM22 and the qualified 1440-pattern resident VRAM pool the
 #        standard across every checked-in profile and direct sim defaults.
 #        Cache palette frame features, resident colour-distance data, and
@@ -517,5 +525,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
-e=74
-p=67
+e=75
+p=68
