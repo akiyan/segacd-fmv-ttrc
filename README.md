@@ -94,9 +94,9 @@ Sega CD-specific compression is the "Encode" step.
 4. **Quantize** each 8x8 tile to the chosen Genesis palettes (position-fixed
    Bayer dithering).
 5. **Plan and encode (the codec):** dry-run the exact target to predict
-   name-table and cold-pattern demand, spread any capacity-unavoidable burst
-   shortage across that burst, and build backwards reserve curves that end at
-   zero; then maintain the resident VRAM tile pool and reuse exact /
+   name-table and cold-pattern demand, spread any capacity-unavoidable
+   Miss-risk shortage across that burst, and build backwards reserve curves
+   that end at zero; then maintain the resident VRAM tile pool and reuse exact /
    near / coarse / fallback residents where possible and spend only the
    whole-movie quality allowance not reserved for a harder future burst. Exact
    cold loads are then assigned to Prg, Wr0, Wr1, or Dic.

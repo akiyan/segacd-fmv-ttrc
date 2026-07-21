@@ -235,14 +235,15 @@ their useful fractions; all pad remains blank. A thin yellow line at the right
 edge marks CD 1x.
 
 Before making these per-frame choices, the encoder dry-runs the complete
-quantized movie through the shared VRAM allocator. When a continuous burst
-exceeds the complete quality-budget capacity, its unavoidable shortfall is
-distributed proportionally from the burst start through its peak instead of
+quantized movie through the shared VRAM allocator. When a continuous Main-risk
+burst exceeds the complete quality-budget capacity, its unavoidable shortfall
+is distributed proportionally from the burst start through its peak instead of
 being concentrated in the first frame. A backwards pass over that feasible
-demand builds two offline reserve curves: complete exact-update demand limits
-optional exact-load upgrades, while changes beyond the Coa bound form the
-narrower reserve that protects normal updates from future Flbk/Miss bursts.
-Both curves finish at zero. The original demand, balanced planned demand,
+risk demand builds the reserve that protects normal updates from future
+Flbk/Miss bursts. Optional exact-load upgrades use a separate strict reserve
+from complete exact-update demand; their deliberately infeasible all-exact
+shortage is not allowed to consume protection for live Main work. Both curves
+finish at zero. The Main-risk original demand, balanced planned demand,
 unavoidable shortfall, and reserve are saved as separate byte traces in
 `buffer_remaining.npz`; none is a physical supply meter.
 [`BUEFFERING.md`](BUEFFERING.md) describes how both curves are constructed and

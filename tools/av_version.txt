@@ -11,11 +11,12 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
-#   e80 : Balance demand that exceeds the complete whole-movie quality-budget
-#        capacity across each continuous burst. Build the backwards reserve
-#        from the feasible demand so unavoidable loss is no longer concentrated
-#        at the burst's first frame, and expose planned demand and shortfall
-#        traces for both main-risk work and optional upgrades. Reserve run
+#   e80 : Balance Main-risk demand that exceeds the complete whole-movie
+#        quality-budget capacity across each continuous burst. Build its
+#        backwards reserve from feasible demand so unavoidable loss is no
+#        longer concentrated at the burst's first frame, while optional exact
+#        upgrades retain their strict complete-demand reserve. Expose planned
+#        Main-risk demand and shortfall traces. Reserve run
 #        control incrementally per selected cold tile instead of withholding
 #        the complete cold-cap worst case before the frame makes any choice.
 #   e79 : Refine analysis category rendering: combine Wr0/Wr1 as Wr in the
