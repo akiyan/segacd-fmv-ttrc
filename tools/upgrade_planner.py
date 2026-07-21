@@ -34,6 +34,15 @@ class DemandPrediction:
     protected_keys: tuple[tuple[bytes, ...], ...] = ()
 
 
+@dataclass(frozen=True)
+class ReservePlan:
+    """Capacity-feasible demand and the reserve needed to serve it."""
+
+    reserve: np.ndarray
+    planned_demand: np.ndarray
+    shortfall: np.ndarray
+
+
 def predict_update_demands(
     pattern_frames: Sequence[np.ndarray],
     palette_frames: Sequence[np.ndarray],
@@ -221,6 +230,136 @@ def build_reserve_curve(
         )
         reserve[frame_idx] = min(capacity, max(0, needed))
     return reserve
+
+
+def _peak_buffer_draw(
+    demand: np.ndarray,
+    supply: np.ndarray,
+) -> int:
+    """Return the largest cumulative draw since the last full refill."""
+
+    draw = 0
+    peak = 0
+    for frame_demand, frame_supply in zip(demand, supply):
+        draw = max(0, draw + int(frame_demand) - int(frame_supply))
+        peak = max(peak, draw)
+    return peak
+
+
+def _first_overloaded_busy_period(
+    demand: np.ndarray,
+    supply: np.ndarray,
+    capacity: int,
+) -> tuple[int, int] | None:
+    """Return the start and peak frame of the first over-capacity burst."""
+
+    draw = 0
+    busy_start = 0
+    frame_idx = 0
+    while frame_idx < len(demand):
+        draw = max(
+            0,
+            draw + int(demand[frame_idx]) - int(supply[frame_idx]),
+        )
+        if draw == 0:
+            busy_start = frame_idx + 1
+            frame_idx += 1
+            continue
+        if draw <= capacity:
+            frame_idx += 1
+            continue
+
+        peak_draw = draw
+        peak_frame = frame_idx
+        scan_draw = draw
+        scan_idx = frame_idx + 1
+        while scan_idx < len(demand):
+            scan_draw = max(
+                0,
+                scan_draw
+                + int(demand[scan_idx])
+                - int(supply[scan_idx]),
+            )
+            if scan_draw > peak_draw:
+                peak_draw = scan_draw
+                peak_frame = scan_idx
+            if scan_draw == 0:
+                break
+            scan_idx += 1
+        return busy_start, peak_frame
+    return None
+
+
+def build_balanced_reserve_plan(
+    demand: Sequence[int] | np.ndarray,
+    supply: int | Sequence[int] | np.ndarray,
+    capacity: int,
+) -> ReservePlan:
+    """Balance unavoidable shortage across each over-capacity burst.
+
+    The ordinary clipped backwards curve preserves a full buffer for later
+    frames when a burst needs more than the buffer can ever hold.  That makes
+    the first frame of the burst absorb all unavoidable quality loss.  This
+    planner instead applies one common served fraction to the predicted demand
+    from the burst's start through its peak.  The resulting demand is feasible
+    with ``capacity`` and therefore produces a reserve curve without clipped
+    overflow.
+    """
+
+    demand_arr = np.asarray(demand, dtype=np.int64)
+    if demand_arr.ndim != 1:
+        raise ValueError("demand must be one-dimensional")
+    if capacity < 0:
+        raise ValueError("capacity must be non-negative")
+    if np.any(demand_arr < 0):
+        raise ValueError("demand must be non-negative")
+
+    if np.isscalar(supply):
+        supply_arr = np.full(len(demand_arr), int(supply), np.int64)
+    else:
+        supply_arr = np.asarray(supply, dtype=np.int64)
+        if supply_arr.shape != demand_arr.shape:
+            raise ValueError("supply must be scalar or match demand")
+    if np.any(supply_arr < 0):
+        raise ValueError("supply must be non-negative")
+
+    planned = demand_arr.copy()
+    max_passes = max(1, len(planned) * 2)
+    for _pass in range(max_passes):
+        overloaded = _first_overloaded_busy_period(
+            planned, supply_arr, capacity)
+        if overloaded is None:
+            break
+        start, peak = overloaded
+        window_demand = planned[start:peak + 1]
+        window_supply = supply_arr[start:peak + 1]
+
+        low = 0.0
+        high = 1.0
+        for _ in range(60):
+            fraction = (low + high) * 0.5
+            candidate = np.floor(
+                window_demand.astype(np.float64) * fraction).astype(np.int64)
+            if _peak_buffer_draw(candidate, window_supply) <= capacity:
+                low = fraction
+            else:
+                high = fraction
+        candidate = np.floor(
+            window_demand.astype(np.float64) * low).astype(np.int64)
+        if np.array_equal(candidate, window_demand):
+            # Integer rounding should already make progress.  Keep a strict
+            # fallback so malformed inputs cannot turn this into an endless
+            # planner loop.
+            candidate[-1] = max(0, int(candidate[-1]) - 1)
+        planned[start:peak + 1] = candidate
+    else:
+        raise RuntimeError("balanced reserve planning did not converge")
+
+    if _peak_buffer_draw(planned, supply_arr) > capacity:
+        raise AssertionError("balanced demand still exceeds buffer capacity")
+    reserve = build_reserve_curve(planned, supply_arr, capacity)
+    shortfall = demand_arr - planned
+    return ReservePlan(reserve, planned, shortfall)
 
 
 def planned_spend_limit(

@@ -120,6 +120,46 @@ class ReserveCurveTests(unittest.TestCase):
             90,
         )
 
+    def test_balanced_plan_spreads_an_unavoidable_two_frame_shortfall(self) -> None:
+        plan = upgrade_planner.build_balanced_reserve_plan(
+            demand=[0, 120, 120],
+            supply=50,
+            capacity=100,
+        )
+
+        np.testing.assert_array_equal(plan.planned_demand, [0, 100, 100])
+        np.testing.assert_array_equal(plan.shortfall, [0, 20, 20])
+        np.testing.assert_array_equal(plan.reserve, [100, 50, 0])
+
+    def test_balanced_plan_leaves_a_feasible_burst_unchanged(self) -> None:
+        demand = np.array([0, 20, 20, 140, 20], np.int64)
+        plan = upgrade_planner.build_balanced_reserve_plan(
+            demand=demand,
+            supply=50,
+            capacity=100,
+        )
+
+        np.testing.assert_array_equal(plan.planned_demand, demand)
+        np.testing.assert_array_equal(plan.shortfall, np.zeros_like(demand))
+        np.testing.assert_array_equal(plan.reserve, [30, 60, 90, 0, 0])
+
+    def test_balanced_plan_handles_separate_overloaded_bursts(self) -> None:
+        plan = upgrade_planner.build_balanced_reserve_plan(
+            demand=[0, 120, 120, 0, 0, 120, 120],
+            supply=50,
+            capacity=100,
+        )
+
+        self.assertLessEqual(
+            upgrade_planner._peak_buffer_draw(
+                plan.planned_demand,
+                np.full(7, 50, np.int64),
+            ),
+            100,
+        )
+        self.assertGreater(int(plan.shortfall[1:3].sum()), 0)
+        self.assertGreater(int(plan.shortfall[5:7].sum()), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
