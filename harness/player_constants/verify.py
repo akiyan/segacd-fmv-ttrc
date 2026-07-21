@@ -162,14 +162,14 @@ def verify_flip_control_flow(objdump: Path, obj: Path) -> None:
     hv_read = re.search(r"\bmovew\s+(?:00)?c00008 <VDP_HV>,%d0", guard)
     tail_check = re.search(r"\bcmpiw\s+#-1024,%d0", guard)
     fresh_wait = re.search(r"\bbsr\w*\s+[^\n]*<wait_vb_start>", guard)
-    paired_write = re.search(
-        r"\bmovel\s+%d5,(?:00)?c00004 <VDP_CTRL>", guard)
+    plane_write = re.search(
+        r"\bmovew\s+%d5,(?:00)?c00004 <VDP_CTRL>", guard)
     if (len(status_reads) != 2 or hv_read is None or tail_check is None or
-            fresh_wait is None or paired_write is None):
+            fresh_wait is None or plane_write is None):
         raise AssertionError(f"{obj}: incomplete final VBlank guard")
     positions = (
         status_reads[0].start(), hv_read.start(), tail_check.start(),
-        status_reads[1].start(), fresh_wait.start(), paired_write.start(),
+        status_reads[1].start(), fresh_wait.start(), plane_write.start(),
     )
     if positions != tuple(sorted(positions)):
         raise AssertionError(f"{obj}: final VBlank guard is out of order")

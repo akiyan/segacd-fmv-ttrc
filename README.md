@@ -144,7 +144,8 @@ category.
   `MOVIE.DAT` compatibility file for analysis and regression tools.
 - `tools/render_analysis.py` + `tools/layout_preview.py`: the analysis overlay.
 - `boot/`: the Sub/Main CPU playback runtime for real hardware. DEBUG builds
-  keep a values-only hexadecimal HUD on the top-row VDP Window plane. The
+  keep a values-only hexadecimal HUD in the top row of the inactive VDP Plane A
+  movie table. The
   internal order is `F/P/S/D/R/L/C/W/M/A`; H40 appends `U/N` for Main
   pattern-transfer stopwatch ticks and the source-aware cold-run count's low
   byte. Only the occupied 22/28 cells are opaque, so unused H40 width remains

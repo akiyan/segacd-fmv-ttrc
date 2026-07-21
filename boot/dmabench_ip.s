@@ -17,7 +17,7 @@
 .equ DMA_DST, 0x2000			/* フォント/NTを壊さない測定用VRAM先 */
 .equ DBGFONT_VTILE, 1
 .equ DBGFONT_VADDR, 1*32
-.equ DBGFONT_N, 27
+.equ DBGFONT_N, 16
 .equ NT, 0xC000				/* nametable */
 .equ HI0, 9000				/* 二分探索上限(mode4理論値も超える値) */
 
@@ -131,19 +131,17 @@ bs_done:
 	dbra	d0, 1b
 	/* 結果表示: d4 = 最大語/vblank。行間はプレーン64幅=128バイト。 */
 	move.w	d4, d7				/* W */
-	/* 行2: W xxxx = 語/vblank */
+	/* Row 2: maximum words per VBlank, four hexadecimal digits. */
 	move.l	#NT+2*128+2*2, d0
-	move.w	#17, d3				/* 'W' */
 	move.w	d7, d4
 	bsr	put_row
-	/* 行4: F xxxx = タイル/コマ ≈ (W/16)*3 (3vblank/コマ換算) */
+	/* Row 4: tiles per frame at three VBlanks, four hexadecimal digits. */
 	move.l	#NT+4*128+2*2, d0
 	move.w	d7, d4
 	lsr.w	#4, d4				/* /16 = タイル/vblank */
 	move.w	d4, d1
 	add.w	d1, d1
 	add.w	d1, d4				/* *3 */
-	move.w	#15, d3				/* 'F' */
 	bsr	put_row
 	/* DMA_DST tile preview: a white block here proves the DMA path wrote VRAM. */
 	move.l	#NT+6*128+2*2, d0
@@ -232,12 +230,9 @@ dma_words:
 	bne	1b
 	rts
 
-/* d0=NTアドレス, d3=ラベルglyph, d4=値(hex4). trashes d0,d1,d2 */
+/* d0=NT address, d4=hex4 value. trashes d0,d1,d2 */
 put_row:
 	bsr	set_vram_write
-	move.w	d3, d1
-	add.w	#DBGFONT_VTILE, d1
-	move.w	d1, (VDP_DATA).l
 	moveq	#3, d2
 1:
 	rol.w	#4, d4

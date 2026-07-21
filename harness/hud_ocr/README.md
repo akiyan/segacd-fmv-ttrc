@@ -1,8 +1,7 @@
 # DEBUG HUD OCR proof
 
-The movie player writes values only in a contiguous row on the VDP Window
-plane. The keys below describe the fixed interpretation; their letters are not
-drawn:
+The movie player writes hexadecimal values only in a contiguous top row. The
+keys below describe the fixed interpretation; their letters are not drawn:
 
 ```text
 H32: xxxx xx xx xx xx xx xx xx xx xx
@@ -16,12 +15,15 @@ is no H32/H40-specific pitch; H40 uses its eight additional cells for `U/N`.
 `N` is the low byte of the packed cold-run descriptor count (wrapping at 256).
 The player formats these values into a 28-word Main-RAM row before display
 pacing, then publishes only the first 22 H32 or all 28 H40 words with fixed
-longword writes to the inactive one of two Window name tables. The final
-control-port longword switches the picture and Window tables together. Its
+longword writes over the first cells of the inactive movie Plane A table. The
+final control-port word switches to that complete picture-and-HUD table. Its
 VBlank guard rejects terminal V-counter lines `0xFC..0xFF`, keeping the HUD and
 picture aligned without extending a 30 fps frame to a third scanout.
 
-Run the in-memory synthetic-image proof with:
+Each of the 16 8x8 patterns contains a two-pixel-wide four-bit barcode in its
+top row and a compact 6x7 hexadecimal glyph below it. The reader decodes the
+barcode directly and uses the lower glyph only as a confidence check. Run the
+in-memory synthetic-image proof with:
 
 ```sh
 tools/python.sh harness/hud_ocr/verify.py
@@ -32,5 +34,6 @@ all visible fields and their widths, covers `00`/`FF` byte values, and confirms 
 the older `read_frameno()` API still reads an isolated `Fxxxx` field without
 requiring the rest of the HUD. The synthetic source is deliberately bright and
 noisy; the proof models opaque font cells only across the 22-cell H32 or
-28-cell H40 HUD and verifies that the unused H40 width remains
-transparent/movie-visible.
+28-cell H40 HUD and verifies that the unused H40 width remains the original
+movie content. This matches the player: no Window transparency or alternate
+Plane B is involved.

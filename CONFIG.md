@@ -49,11 +49,11 @@ can schedule.
 | Prg prebuffer | up to `PRG_BUF_CAP_KB` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both usable Prg capacity and the clip's future Prg load total. |
 | frame-0 boot staging | 36 KB max in the 40 KB jitter tail | sp | Frame 0 is temporarily stored at the usable-Prg end and expanded before BODY streaming reuses those PRG-RAM bytes. |
 
-DEBUG uses the Window name table for one HUD row. Only its 22 H32 or 28 H40
-value cells are opaque; unused width uses transparent tile 0 so the movie stays
-visible at the right. The player still updates every video row behind the
-Window, so diagnostic playback has the same video-name-table work as a release
-build. The encoder only reorders existing CRAM colours to keep palette 0 index
+DEBUG overwrites only the first 22 H32 or 28 H40 cells of the inactive movie
+Plane A name table with one HUD row. The unused width remains the exact movie
+table, avoiding Window transparency exposing an unrelated Plane B frame.
+Diagnostic playback still performs the same full video-name-table work as a
+release build. The encoder only reorders existing CRAM colours to keep palette 0 index
 1 globally darkest (HUD background) and index 15 globally brightest (HUD text);
 it does not alter either colour value.
 
@@ -378,10 +378,10 @@ tuple exactly matches the requested mode, fps, and active-tile count.
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 
 Not settings, but the live readouts of the throttles above — a single top row
-on the VDP Window plane (`prepare_dbg` / `publish_dbg` in ip, read back by
-`tools/read_frameno.py: read_hud`). Keeping the HUD on Window separates it from
-the two alternating video name tables, so a video-plane flip cannot make the
-text disappear for one frame.
+embedded in the inactive VDP Plane A movie table (`prepare_dbg` / `publish_dbg`
+in ip, read back by `tools/read_frameno.py: read_hud`). The table is not visible
+until the same reg2 flip that publishes the movie, so text and picture stay on
+the same frame.
 
 The player draws values only, with no category letters or separators. H32 uses
 22 cells: `xxxx xx xx xx xx xx xx xx xx xx`. H40 keeps that prefix and appends
@@ -390,23 +390,24 @@ The player draws values only, with no category letters or separators. H32 uses
 hexadecimal digits; `L` shows the high byte of the lead, and the other fields
 show their low byte. Two-digit fields wrap naturally from `FF` to `00`.
 
-The shared font asset uses source index 0 for its background and source index 1
-for set pixels. The movie player expands them once to P0/index1 and P0/index15
-while uploading the font to VRAM. The result is an opaque darkest-colour HUD
-background with brightest-colour text in every palette segment, with no
-per-frame font scan, recolour, DMA, or additional VBlank wait.
+The shared font asset contains exactly 16 patterns (`0` through `F`). Each 8x8
+pattern has a two-pixel-wide four-bit barcode in its top row and a compact 6x7
+human-readable hexadecimal glyph below it. Source index 0 is the background and
+source index 1 marks set pixels. The movie player expands them once to
+P0/index1 and P0/index15 while uploading the font to VRAM. The result is an
+opaque darkest-colour HUD background with brightest-colour text in every
+palette segment, with no per-frame font scan, recolour, DMA, or additional
+VBlank wait.
 
-The occupied value cells cover the video visually, but a DEBUG build still
-updates the hidden video name-table row and all other rows exactly as a release
-build. The complete Window row is initialized to transparent tile 0; only the
-22 H32 or 28 H40 value cells are overwritten with opaque font tiles each
-frame. Thus H40's unused right-hand 12 cells show the movie instead of black.
-The values are formatted into a Main-RAM row before the display deadline, then
-published with 11 H32 or 14 H40 longword writes to the inactive one of two
-Window name tables at VRAM `0xD000` and `0xF000`. The final control-port
-longword switches the picture name table and Window name table together. A
+The occupied value cells cover the video visually, but a DEBUG build first
+updates the complete video name table exactly as a release build, then replaces
+only its first 22 H32 or 28 H40 cells with opaque font entries. Thus H40's
+unused right-hand 12 cells remain the exact same movie frame. The values are
+formatted into a Main-RAM row before the display deadline, then published with
+11 H32 or 14 H40 longword writes to the inactive movie table at VRAM `0xC000`
+or `0xE000`. The final control-port word selects that table. A
 terminal-VBlank guard rejects V-counter lines `0xFC..0xFF` and waits for a fresh
-blank before that paired write, closing the end-of-blank race without adding a
+blank before that write, closing the end-of-blank race without adding a
 third scanout. This adds no DMA and does not branch on whether the video starts
 at row 0. In DEBUG builds,
 the old slip-triggered CRAM0 red border is disabled; slips remain

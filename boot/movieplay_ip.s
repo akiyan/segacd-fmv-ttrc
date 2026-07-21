@@ -36,8 +36,6 @@
 .equ STAT_END,   0x8004			/* SPからの映画終端通知(15秒待って再ループ) */
 
 .equ NT0, 0xC000
-.equ WIN_NT0, 0xD000			/* DEBUG Window front at boot */
-.equ WIN_NT1, 0xF000			/* DEBUG Window back for the first movie frame */
 .equ NT1, 0xE000
 
 /* 0xFF2000..0xFF65FF is no longer a tile staging buffer: streamed pattern DMA
@@ -74,8 +72,8 @@
 .equ CG_OP_MOVE_L_A1_ABS,      0x23D9	/* move.l (a1)+,(VDP_DATA).l */
 .equ CG_OP_MOVE_W_A1_ABS,      0x33D9	/* move.w (a1)+,(VDP_DATA).l */
 .equ CG_OP_RTS,                0x4E75
-/* デバッグオーバーレイ: フォントは予約VRAM(プール1360の直上 tile1361)。 */
-.equ DBGFONT_N, 28			/* dbgfont.bin のタイル数 */
+/* DEBUG HUD: only hexadecimal glyphs, directly above the resident pool. */
+.equ DBGFONT_N, 16
 /* フォントVRAM位置はヘッダの base+pool 直上を実行時に計算(md_font_vtile/md_font_addr) */
 /* リリースビルドが既定。make movieplay DEBUG=1 でオーバーレイ一式を有効化
    (ストリーム側は CBRSIM_PACK_DEBUG=1 でデバッグ欄ありを生成) */
@@ -151,7 +149,7 @@ ip_entry:
 	lea	STACK, sp
 
 	jsr	BIOS_LOAD_DEFAULT_VDP_REGS
-	jsr	BIOS_CLEAR_VRAM			/* WIN_NT0/1もここで一度zero初期化 */
+	jsr	BIOS_CLEAR_VRAM
 	jsr	BIOS_CLEAR_COMM
 
 	/* VDP: H32, autoinc=2, plane 64x32, VSRAM=0, HScroll/Sprite を安全域へ */
@@ -180,12 +178,18 @@ ip_entry:
 	move.w	#0x8174, (VDP_CTRL).l		/* reg1: 表示on+vint+DMA許可(M1)+mode5 */
 
 	clr.w	dbg_seg
+	clr.w	display_blank			/* .bss is not cleared by the BIOS */
 
 	clr.w	back_idx			/* 裏=NT0(0) から構築, 表示=NT1 */
 
 	move.w	#CMD_STREAM, d0
 .ifdef PLAYER_SPECIALIZED
 	bsr	cmd_wait_startup
+	/* The SGDK startup font and the movie HUD share the transient font range.
+	   Hide all initialization that replaces it, then reveal frame 0 only after
+	   its complete Plane A table has been selected in do_flip. */
+	move.w	#0x8134, (VDP_CTRL).l		/* display off; keep VInt, DMA and mode 5 */
+	move.w	#1, display_blank
 	bsr	load_movie_palette		/* replace temporary UI colours before frame 0 */
 .else
 	bsr	cmd_wait_ready
@@ -245,14 +249,12 @@ ip_entry:
 	.error "unsupported generated player mode"
 .endif
 .endif
-	/* DEBUG HUDはPlane Aと独立した二つのWindow name tableを使う。reg3=0x34は
-	   D000/0x400。D000/F000はH40の4KB境界とH32の2KB境界の両方を満す。
-	   reg17=left,pos0で横Windowを空にし、reg18=top,pos1で上1タイル行だけ
-	   Windowにする。映画のreg2 flipと同時にreg3も裏Windowへ切り替える。 */
+	/* DEBUG HUD is embedded into the inactive Plane A table after its full movie
+	   blit. Disable the Window region explicitly: a Window's transparent pixels
+	   expose Plane B, not Plane A, and previously showed stale/wrong-parity data. */
 .ifdef DEBUG
-	move.w	#0x8334, (VDP_CTRL).l		/* reg3: Window NT = 0xD000 */
 	move.w	#0x9100, (VDP_CTRL).l		/* reg17: left of column-pair 0 = no side strip */
-	move.w	#0x9201, (VDP_CTRL).l		/* reg18: rows above 1 = top row only */
+	move.w	#0x9200, (VDP_CTRL).l		/* reg18: rows above 0 = no top strip */
 .endif
 .ifndef PLAYER_SPECIALIZED
 	move.w	d3, md_vbudget
@@ -304,10 +306,8 @@ ip_entry:
 	bsr	reset_pattern_supply
 .endif
 .endif
-	/* デバッグフォントをフォントVRAM位置へ一度だけCPUロード。
-	   dbgfont.binの画素index 1をP0/index15(最明色)、背景index 0を
-	   P0/index1(最暗色)へ展開する。Windowは動画の上に不透明に重なるが、
-	   背後の動画NTはDEBUGでも全行を通常どおり更新する。 */
+	/* Upload the 16-glyph DEBUG font once. Expand source index 1 to P0/index15
+	   (brightest) and source index 0 to P0/index1 (darkest). */
 .ifdef DEBUG
 	PC_MOVE_L md_font_addr, PC_FONT_ADDR, d0
 	bsr	set_vram_write
@@ -325,22 +325,6 @@ ip_entry:
 	ori.w	#0x1111, d0			/* 0 -> 0x1; 0xF remains 0xF */
 	move.w	d0, (VDP_DATA).l
 	dbra	d1, 1b
-	/* Keep the unused Window width transparent in both tables.  Per-frame code
-	   overwrites only the 22 H32 / 28 H40 value cells with opaque font tiles;
-	   name entry zero selects cleared tile 0 (colour index 0), so the movie
-	   remains visible to the right without any per-frame clearing cost. */
-	moveq	#1, d2
-	move.l	#WIN_NT0, d3
-2:
-	move.l	d3, d0
-	bsr	set_vram_write
-	moveq	#0, d0
-	move.w	#64-1, d1
-1:
-	move.w	d0, (VDP_DATA).l
-	dbra	d1, 1b
-	addi.l	#WIN_NT1-WIN_NT0, d3
-	dbra	d2, 2b
 .endif
 
 	clr.w	frame_no
@@ -882,24 +866,16 @@ bf_flip:
 1:
 	move.w	vsync_acc, frame_vblank_waits	/* exclude display pacing from workload HUD M */
 .endif
-	/* Precompute the complete display-register write before the cadence wait.
+	/* Precompute the display-register write before the cadence wait.
 	   do_flip performs only a final VBlank check followed by this command, so
 	   the check-to-reg2 race is a few bus cycles instead of an address/branch
 	   calculation at the end of VBlank. */
-.ifdef DEBUG
-	move.l	#0x82388334, d5			/* NT1 + WIN_NT0 when back_idx=1 */
-	tst.w	back_idx
-	bne.s	1f
-	move.l	#0x8230833C, d5			/* NT0 + WIN_NT1 when back_idx=0 */
-1:
-.else
 	move.l	d5, d0
 	lsr.l	#8, d0
 	lsr.l	#2, d0				/* back_base>>10 */
 	andi.w	#0xFF, d0
 	ori.w	#0x8200, d0
 	move.w	d0, d5				/* prebuilt reg2 word */
-.endif
 	/* パレット区間切替: CRAM総入替(64語≈0.1ms)→flip を新しいvblank頭で連続実行=
 	   同一VBLANK内で原子的。DEBUGフォントはP0/index15固定なので切替時作業はない。
 	   v3: pal = 区間番号+1。CRAM本体はboot時に積んだMain-RAMのPALTAB表から引く
@@ -941,11 +917,11 @@ bf_flip:
 	bra	bf_after_flip
 bf_doflip:
 	/* Pattern DMA normally leaves us inside VBlank, but reuse-only frames and
-	   the DEBUG Window write can reach here during active display.  A reg2
+	   the DEBUG Plane A HUD write can reach here during active display.  A reg2
 	   switch there horizontally splices the old and new name tables at the
 	   current scanline.  Build the HUD row in Main RAM and copy it into the
-	   inactive Window table before the cadence wait.  The target VBlank then
-	   switches reg2 and reg3 together, so the fixed 11/14-MOVE.L Window copy is
+	   inactive video name table before the cadence wait.  The target VBlank then
+	   switches reg2, so the fixed 11/14-MOVE.L HUD copy is
 	   off the display deadline and cannot lead or defer the picture.  Re-check
 	   immediately before the atomic flip; count a newly waited VBlank through
 	   wait_vb_start just like a split DMA. */
@@ -1046,8 +1022,7 @@ wait_fixed_palette_flip:
 	bsr	wait_vb_start
 	rts
 
-/* Final display flip. d5 is precomputed at bf_flip: DEBUG carries reg2+reg3
-   as one longword; release carries reg2 in its low word.  Re-check VBlank here,
+/* Final display flip. d5 is the precomputed reg2 word. Re-check VBlank here,
    immediately next to the control-port write, so an end-of-blank race cannot
    defer an otherwise on-time frame.  trashes d0. */
 do_flip:
@@ -1068,11 +1043,14 @@ do_flip:
 2:
 	bsr	wait_vb_start
 1:
-.ifdef DEBUG
-	move.l	d5, (VDP_CTRL).l		/* reg2 then paired reg3, back-to-back */
-.else
 	move.w	d5, (VDP_CTRL).l
-.endif
+	/* The specialized startup path keeps the display blank while the SGDK font
+	   is replaced and frame 0 is built. Enable only after selecting that table. */
+	tst.w	display_blank
+	beq.s	3f
+	move.w	#0x8174, (VDP_CTRL).l		/* display on + VInt + DMA + mode 5 */
+	clr.w	display_blank
+3:
 	eori.w	#1, back_idx			/* 裏を反転 */
 .ifdef PLAYER_SPECIALIZED
 .if (PC_FEATURES & 0x0002) != 0
@@ -1524,8 +1502,8 @@ wait_vblank:
 	rts
 
 /* Build the values-only HUD row in Main RAM before the display deadline.
-   Publishing the finished row into the inactive Window table is a short fixed
-   copy; reg3 selects it atomically with the picture flip.
+   Publishing the finished row into the inactive Plane A table is a short fixed
+   copy; reg2 selects the completed picture and HUD atomically.
    Category glyphs are omitted to reserve cells for future supply metrics.
    H32: xxxx xx xx xx xx xx xx xx xx xx = 22 words.
    H40: the same 22 words followed by xxxx xx = 28 words.
@@ -1566,7 +1544,7 @@ prepare_dbg:
 	move.w	(PROBE_BANK+0xAF1C).l, d4
 	lsr.w	#2, d4
 	bsr	dbg_put2
-	/* H40 has exactly eight additional visible Window cells.  Keep the shared
+	/* H40 has exactly eight additional visible HUD cells. Keep the shared
 	   H32 prefix stable and use the tail for direct Main/DMA correlation. */
 .ifdef PLAYER_SPECIALIZED
 .if PC_MODE == 1
@@ -1587,16 +1565,17 @@ prepare_dbg:
 	movem.l	(sp)+, d0-d4/a0
 	rts
 
-/* Publish a prebuilt row into the Window table paired with the current video
-   back buffer.  It is not displayed yet, so the copy is safe in active display
-   and stays off the target-VBlank critical path. */
+/* Publish a prebuilt row over the first cells of the inactive Plane A movie
+   table. It is not displayed yet, so the copy is safe during active display.
+   Cells to the right remain the exact same movie table; no Window/Plane B
+   transparency or stale alternate frame is involved. */
 publish_dbg:
 	movem.l	d0-d1/a0, -(sp)
-	move.l	#WIN_NT0, d0			/* back_idx 1 -> WIN_NT0 */
-	tst.w	back_idx
-	bne.s	1f
-	move.l	#WIN_NT1, d0			/* back_idx 0 -> WIN_NT1 */
-1:
+	moveq	#0, d0
+	move.w	back_idx, d0
+	lsl.l	#8, d0
+	lsl.l	#5, d0				/* back_idx*0x2000 */
+	add.l	#NT0, d0
 	bsr	set_vram_write
 	lea	dbg_row, a0
 .ifdef PLAYER_SPECIALIZED
@@ -1696,6 +1675,8 @@ md_font_addr:
 .endif
 back_idx:
 	.space 2
+display_blank:
+	.space 2				/* startup-to-frame0 VDP blanking latch */
 frame_no:
 	.space 2
 started:

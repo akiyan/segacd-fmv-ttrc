@@ -10,8 +10,8 @@ usable CRAM colour to palette line 0, index 15 without changing the picture:
 3. leave transparent index 0 fixed at zero in all four rows.
 
 The player can therefore upload the HUD font once as P0/index15. The top-row
-HUD lives on the Window plane, independently of the alternating video name
-tables, and palette switches need no font scan, rewrite, DMA, or VBlank wait.
+HUD entries are written into the inactive alternating video name table, and
+palette switches need no font scan, rewrite, DMA, or VBlank wait.
 
 ## Run the focused proof
 

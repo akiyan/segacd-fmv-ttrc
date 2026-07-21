@@ -14,7 +14,7 @@ For every case it requires:
   `0xBAD1` mismatch diagnostic;
 - Main's specialized flip branches stay inside their local regions, and the
   final guard performs status, V-counter tail, second-status, fresh-wait, then
-  paired reg2/reg3 write in that order;
+  the Plane A reg2 write in that order;
 - the specialized 15 fps ADPCM decoder services the CDC during its long decode,
   while the 30 fps decoder contains no such call or counter overhead;
 - all ten geometry/timing/audio/supply combinations assemble and link

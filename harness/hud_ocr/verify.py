@@ -17,10 +17,6 @@ import read_frameno  # noqa: E402
 
 
 GLYPHS = {format(i, "X"): rows for i, rows in enumerate(gen_debugfont.ORDER[:16])}
-GLYPHS.update({
-    char: gen_debugfont.ORDER[16 + i]
-    for i, char in enumerate(("R", "W", "M", "P", "U", "L", "I", "S", " ", "+", "-", "N"))
-})
 
 
 def _draw_cell(dst, x, y, rows):
@@ -34,8 +30,8 @@ def make_hud(width, values, origin=(5, 4), complete=True, black_backing=False):
     height = 32
     yy, xx = np.mgrid[:height, :width]
     # Deliberately bright/noisy movie pixels surround the opaque value cells.
-    # Hardware keeps only those cells backed by the font tile; unused H40
-    # Window width is transparent and continues to show the movie.
+    # Hardware overwrites only the HUD cells in the inactive movie Plane A;
+    # the unused H40 width remains the original movie name-table content.
     image = (150 + (7 * xx + 11 * yy) % 91).astype(np.uint8)
     x, y = origin
     layout = read_frameno.hud_layout_for_width(width)
@@ -71,6 +67,13 @@ def check_case(width, values, origin):
 
 
 def main():
+    if len(gen_debugfont.ORDER) != 16:
+        raise SystemExit(f"DEBUG font has {len(gen_debugfont.ORDER)} glyphs, expected 16")
+    for value, rows in enumerate(gen_debugfont.ORDER):
+        expected = "".join("##" if value & (1 << bit) else ".."
+                           for bit in range(3, -1, -1))
+        if rows[0] != expected:
+            raise SystemExit(f"glyph {value:X} barcode {rows[0]!r}, expected {expected!r}")
     if read_frameno.HUD_CELLS != 22:
         raise SystemExit(f"H32 HUD is {read_frameno.HUD_CELLS} cells, expected 22")
     if read_frameno.HUD_H40_CELLS != 28:
@@ -90,7 +93,7 @@ def main():
               "M": 0x00, "A": 0x00, "U": 0x0000, "N": 0x00},
         origin=(0, 3), black_backing=True))
     if np.all(h40[3:11, read_frameno.HUD_H40_CELLS * 8:] == 0):
-        raise SystemExit("H40 HUD unused width must remain transparent/movie-visible")
+        raise SystemExit("H40 HUD unused width must remain movie-visible")
 
     # The longstanding single-purpose API must not depend on later HUD fields.
     only_f = make_hud(
@@ -102,7 +105,7 @@ def main():
             f"standalone F API: got {frame:04X}/{confidence:.3f}, expected CAFE")
 
     print("HUD OCR proof: OK (values only, H32 22 cells, H40 28 cells, "
-          "unused H40 width transparent, standalone F compatible)")
+          "unused H40 width movie-visible, standalone F compatible)")
 
 
 if __name__ == "__main__":

@@ -8,8 +8,9 @@ HUD はカテゴリ文字を描かず、boot/movieplay_ip.s の固定順で値�
 音声リードの上位byte（256B単位）、P/S/D/R/C/W/M/A/N はlow byteの
 16進2桁、U は16進4桁。U はMain pattern転送時間（Mega-CD stopwatchの
 30.72 us tick）、N はcold-run数の下位byte。
-8x8セルをテンプレート(gen_debugfont.py と同じ字形)と正規化相互相関(NCC)で照合。
-背景映像に強いよう NCC(明暗オフセット不変) + 先頭4桁で原点自動較正。
+各8x8セルの上段バーコードを直接4-bitとして読み、下段の小型hex字形とのNCCで
+信頼度を確認する。ネイティブ録画の原点(0,0)は即時判定し、位置がずれた画像だけ
+先頭4桁で原点を探索する。
 
 このモジュールの HUD_LAYOUT/HUD_H40_LAYOUT は boot/movieplay_ip.s の
 prepare_dbg と一致させること(HUDレイアウトを変えたら両方直す)。
@@ -21,30 +22,18 @@ prepare_dbg と一致させること(HUDレイアウトを変えたら両方直�
 """
 import numpy as np
 
-# gen_debugfont.py と同じ 0-F 字形("#"=点灯)
-_HEX = {
-    0x0: ["..####..", ".##..##.", ".##..##.", ".##..##.", ".##..##.", ".##..##.", "..####..", "........"],
-    0x1: ["...##...", "..###...", "...##...", "...##...", "...##...", "...##...", ".######.", "........"],
-    0x2: [".#####..", "##...##.", "....##..", "...##...", "..##....", ".##.....", "#######.", "........"],
-    0x3: ["#####...", "....##..", "...###..", "....##..", "....##..", "##..##..", ".####...", "........"],
-    0x4: ["...###..", "..####..", ".##.##..", "##..##..", "#######.", "....##..", "....##..", "........"],
-    0x5: ["#######.", "##......", "######..", ".....##.", ".....##.", "##...##.", ".#####..", "........"],
-    0x6: ["..####..", ".##.....", "##......", "######..", "##...##.", "##...##.", ".#####..", "........"],
-    0x7: ["#######.", "....##..", "...##...", "..##....", "..##....", "..##....", "..##....", "........"],
-    0x8: [".#####..", "##...##.", "##...##.", ".#####..", "##...##.", "##...##.", ".#####..", "........"],
-    0x9: [".#####..", "##...##.", "##...##.", ".######.", ".....##.", "....##..", ".####...", "........"],
-    0xA: ["..###...", ".##.##..", "##...##.", "##...##.", "#######.", "##...##.", "##...##.", "........"],
-    0xB: ["######..", "##...##.", "##...##.", "######..", "##...##.", "##...##.", "######..", "........"],
-    0xC: ["..####..", ".##..##.", "##......", "##......", "##......", ".##..##.", "..####..", "........"],
-    0xD: ["#####...", "##..##..", "##...##.", "##...##.", "##...##.", "##..##..", "#####...", "........"],
-    0xE: ["#######.", "##......", "##......", "#####...", "##......", "##......", "#######.", "........"],
-    0xF: ["#######.", "##......", "##......", "#####...", "##......", "##......", "##......", "........"],
+import gen_debugfont
+
+
+_T = {
+    value: np.array([[1.0 if c == "#" else 0.0 for c in row]
+                     for row in rows])
+    for value, rows in enumerate(gen_debugfont.ORDER)
 }
-_T = {v: np.array([[1.0 if c == "#" else 0.0 for c in r] for r in rows]) for v, rows in _HEX.items()}
 
 # --- HUDレイアウト(boot/movieplay_ip.s の prepare_dbg と一致させる) ---
 CELL = 8                 # 1 HUDセル = 8px
-HUD_ROW = 0              # Window planeの最上段
+HUD_ROW = 0              # inactive Plane A movie table's top row
 HUD_FIELD_DIGITS = (     # 値のみ。field間の空けはない
     ("F", 4),
     ("P", 2),
@@ -92,6 +81,29 @@ def _ncc(a, b):
     return float((a * b).sum() / d) if d > 1e-6 else -1.0
 
 
+def _read_barcode(cell):
+    """Decode the four two-pixel bars in row 0 and return value/confidence."""
+    cell = cell.astype(float)
+    low = float(np.percentile(cell, 10))
+    high = float(np.percentile(cell, 90))
+    span = high - low
+    if span < 1.0:
+        return 0, -1.0
+    threshold = (low + high) * 0.5
+    groups = cell[0, :8].reshape(4, 2).mean(axis=1)
+    value = 0
+    for group in groups:
+        value = (value << 1) | int(group > threshold)
+    margin = float(np.min(np.abs(groups - threshold)) / (span * 0.5))
+    return value, min(1.0, margin)
+
+
+def _read_cell(cell):
+    value, barcode_conf = _read_barcode(cell)
+    glyph_conf = _ncc(cell.astype(float), _T[value])
+    return value, min(barcode_conf, glyph_conf)
+
+
 def _gray(img):
     if hasattr(img, "convert"):
         return np.asarray(img.convert("L"))
@@ -110,7 +122,8 @@ def _calib_origin(gray, required_width=4 * CELL):
             scores = []
             for digit in range(4):
                 cell = gray[y:y + 8, x + digit * CELL:x + (digit + 1) * CELL].astype(float)
-                scores.append(max(_ncc(cell, template) for template in _T.values()))
+                _value, score = _read_cell(cell)
+                scores.append(score)
             s = min(scores)
             if s > best:
                 best, bx, by = s, x, y
@@ -123,20 +136,25 @@ def _read_hex(gray, x0, y, digits=4):
     for j in range(digits):
         x = x0 + j * CELL
         cell = gray[y:y + 8, x:x + 8].astype(float)
-        best, bv = -2.0, 0
-        for v, t in _T.items():
-            s = _ncc(cell, t)
-            if s > best:
-                best, bv = s, v
+        bv, best = _read_cell(cell)
         val = val * 16 + bv
         minsc = min(minsc, best)
     return val, minsc
 
 
+def _find_origin(gray, required_width):
+    """Use the native (0,0) HUD directly; fall back to the movable-image scan."""
+    if gray.shape[0] >= CELL and gray.shape[1] >= required_width:
+        _value, score = _read_hex(gray, 0, 0, 4)
+        if score >= 0.80:
+            return 0, 0, score
+    return _calib_origin(gray, required_width)
+
+
 def read_frameno(img):
     """PIL Image または grayscale ndarray -> (frame_no, confidence)。F(先頭値)のみ。"""
     gray = _gray(img)
-    x0, y, fconf = _calib_origin(gray)
+    x0, y, fconf = _find_origin(gray, 4 * CELL)
     val, minsc = _read_hex(gray, x0, y)
     return val, min(fconf, minsc)
 
@@ -152,7 +170,7 @@ def read_hud(img, layout=None):
     if layout is None:
         layout = hud_layout_for_width(gray.shape[1])
     cells = max(col + digits for _name, col, digits in layout)
-    x0, y, fconf = _calib_origin(gray, cells * CELL)
+    x0, y, fconf = _find_origin(gray, cells * CELL)
     out = {}
     for name, col, digits in layout:
         gx = x0 + col * CELL

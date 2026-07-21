@@ -390,7 +390,7 @@ ffmpeg -i videos/<stem>_emu_lossless.mkv \
   list. Never montage a shared check directory with `*.png`; loose stills from
   an older recording or transcode can silently contaminate the result.
 - Do not verify playback by replacing audio with an offline source.
-- Real/emulator recordings use a `DEBUG=1` disc by default, including the Window HUD. Build
+- Real/emulator recordings use a `DEBUG=1` disc by default, including the Plane A HUD. Build
   release only when the user explicitly requests it. `tools/record_movie.sh` enforces this;
   its `--release-build` option is the explicit release override.
 - Prefer:
