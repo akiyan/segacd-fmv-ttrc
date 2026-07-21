@@ -326,6 +326,23 @@ ip_entry:
 	move.w	d0, (VDP_DATA).l
 	dbra	d1, 1b
 .endif
+	/* With display disabled, some VDP implementations keep the VBlank status
+	   asserted and the first frame's VBlank waits cannot advance. After every
+	   startup-font replacement is complete, erase the old startup table while
+	   still hidden, then re-enable a clean black front plane. Frame 0 is built
+	   into NT0 and replaces this black transition at its normal atomic flip. */
+	tst.w	display_blank
+	beq.s	2f
+	move.l	#NT1, d0
+	bsr	set_vram_write
+	moveq	#0, d0
+	move.w	#64*32-1, d1
+1:
+	move.w	d0, (VDP_DATA).l
+	dbra	d1, 1b
+	move.w	#0x8174, (VDP_CTRL).l		/* display on + VInt + DMA + mode 5 */
+	clr.w	display_blank
+2:
 
 	clr.w	frame_no
 	clr.w	started
@@ -1044,13 +1061,6 @@ do_flip:
 	bsr	wait_vb_start
 1:
 	move.w	d5, (VDP_CTRL).l
-	/* The specialized startup path keeps the display blank while the SGDK font
-	   is replaced and frame 0 is built. Enable only after selecting that table. */
-	tst.w	display_blank
-	beq.s	3f
-	move.w	#0x8174, (VDP_CTRL).l		/* display on + VInt + DMA + mode 5 */
-	clr.w	display_blank
-3:
 	eori.w	#1, back_idx			/* 裏を反転 */
 .ifdef PLAYER_SPECIALIZED
 .if (PC_FEATURES & 0x0002) != 0

@@ -11,11 +11,15 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p64 : Re-enable VDP timing on a cleared black front name table after the
+#        hidden startup-font replacement. A disabled display can keep VBlank
+#        status asserted and stall frame-0 construction; the black transition
+#        preserves clean startup-to-playback visuals while VBlank advances.
 #   p63 : Replace the playback HUD with 16 dual-readable hexadecimal glyphs:
 #        a four-bit barcode row plus a compact 6x7 human glyph. Embed only the
 #        occupied HUD cells into the inactive Plane A movie table so the right
 #        side cannot expose stale Plane B data. Blank the VDP while replacing
-#        the SGDK startup font and reveal only the completed first movie frame.
+#        the SGDK startup font so its replacement is never visible.
 #   e70 : Raise the H40 Sonic resident VRAM pool from 1400 to the exact safe
 #        1440-tile limit. Profile and HEADER validation reserve the temporary
 #        95-tile SGDK startup font below the first movie name table.
@@ -490,4 +494,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
 e=70
-p=63
+p=64
