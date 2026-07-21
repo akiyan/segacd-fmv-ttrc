@@ -103,7 +103,7 @@ and no per-source environment override.
 | H40 | 15 | 720 | 400 |
 | H40 | 15 | 1,040 | 400 |
 | H40 | 24 | 1,120 | 200 |
-| H40 | 30 | 1,120 | 178 |
+| H40 | 30 | 1,120 | 175 |
 
 For example, H40/15 at 720 or 1,040 active tiles uses its respective measured
 cap of 400. H40/15 at 900 or 1,120 tiles has no exact measurement and is
@@ -124,7 +124,8 @@ decoded exactly; the DEBUG recording kept `S=0`, `D=0`, and `R=0`, with at most
 two Main-CPU VBlank waits. This result applies only to exactly 720 active tiles;
 the separate 1,040-tile measurement below applies only to exactly 1,040.
 
-The H40/30 fps/1,120-active-tile value of 178 is full-length-qualified with the
+The H40/30 fps/1,120-active-tile value of 175 is the conservative current cap.
+It is below the full-length-qualified value of 178 measured with the
 2,714-frame Sonic Jam OP stream. The pack had `under=0`, exact reconstruction,
 and a 17-pattern minimum ready payload. The DEBUG recording kept `S=0`, `D=0`,
 `R=0`, and `C=0`; every one of the 2,713 timed frame intervals was exactly two
@@ -133,7 +134,8 @@ VBlanks. Current-player full-length cap-195 and cap-200 retries also kept
 frames `0x0565` and `0x0A3C` after three VBlanks, while cap 200 did so at
 `0x0A3E`. A repeated cap-195 recording was byte-for-byte equivalent at the
 decoded video and PCM levels. The matching cap-178 recording retained exact
-two-VBlank cadence for all 2,713 intervals, so 195 and 200 remain unqualified.
+two-VBlank cadence for all 2,713 intervals. The lower cap 175 is being retained
+to add headroom for the mixed shadow-update path; 195 and 200 remain unqualified.
 This value is specific to H40, 30 fps, and the full 1,120-tile raster.
 
 The H40/15 fps/1,040-active-tile value of 400 is full-length-qualified with the

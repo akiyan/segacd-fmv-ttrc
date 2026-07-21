@@ -86,7 +86,7 @@ class ColdCapTests(unittest.TestCase):
 
     def test_full_h40_measurements_require_exact_active_tiles(self) -> None:
         self.assertEqual(av_config.cold_cap_for_fps(24, "H40", 1120), 200)
-        self.assertEqual(av_config.cold_cap_for_fps(30, "H40", 1120), 178)
+        self.assertEqual(av_config.cold_cap_for_fps(30, "H40", 1120), 175)
 
     def test_nonexact_tuple_requires_measurement(self) -> None:
         cases = (
@@ -123,7 +123,7 @@ class ColdCapTests(unittest.TestCase):
         self.assertEqual(
             av_config.cold_realized_ceiling_for_fps(24, "H40", 1120), 200)
         self.assertEqual(
-            av_config.cold_realized_ceiling_for_fps(30, "H40", 1120), 178)
+            av_config.cold_realized_ceiling_for_fps(30, "H40", 1120), 175)
 
     def test_nonpositive_active_tile_count_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
