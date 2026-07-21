@@ -95,6 +95,7 @@ FEATURE_FIXED_N2 = ttrc_routing.FEATURE_FIXED_N2
 FEATURE_ADPCM22 = ttrc_routing.FEATURE_ADPCM22
 FEATURE_PATTERN_SUPPLY = ttrc_routing.FEATURE_PATTERN_SUPPLY
 FEATURE_SHADOW_UPDATE_LISTS = ttrc_routing.FEATURE_SHADOW_UPDATE_LISTS
+FEATURE_VRAM_RAW_PREFETCH = ttrc_routing.FEATURE_VRAM_RAW_PREFETCH
 ADPCM_TABLE_SECTORS = math.ceil(ima_adpcm.FULL_TABLE_BYTES / SECTOR)
 ROUTING_MAX_FRAMES = ttrc_routing.MAX_FRAMES
 
@@ -254,6 +255,12 @@ def resolve(log, POOL, mode="lru"):
     n_upd = np.zeros(nfr, np.int64)
     pal_w = np.zeros(nfr, np.int64)
     Plist = []
+    raw_prefetch = log.get("raw_prefetch") or {}
+    prefetch_enabled = bool(raw_prefetch.get("enabled", False))
+    raw_requests = raw_prefetch.get("requests", ())
+    if prefetch_enabled and len(raw_requests) != nfr:
+        raise SystemExit("pack: raw-prefetch frame count differs from decisions")
+    prefetch_per = []
 
     for i in range(nfr):
         fr = sorted(frames[i], key=lambda t: t[0])
@@ -268,10 +275,40 @@ def resolve(log, POOL, mode="lru"):
             entries.append((int(pal) << 13) | (BASE + slot))
             colds.append(cold)
             n_upd[i] += 1
+        frame_prefetch = []
+        if prefetch_enabled:
+            for request in raw_requests[i]:
+                if len(request) == 2:
+                    key, deadline = request
+                    forced_slot = None
+                elif len(request) == 3:
+                    key, deadline, forced_slot = request
+                else:
+                    raise SystemExit(
+                        f"pack: malformed raw-prefetch request at frame {i}")
+                result = alloc.prefetch(
+                    key, i, int(deadline), forced_slot=forced_slot)
+                if result is None:
+                    raise SystemExit(
+                        f"pack: raw-prefetch allocation diverged at frame {i}")
+                slot, cold = result
+                if cold:
+                    Plist.append(pack_key(key))
+                    n_load[i] += 1
+                frame_prefetch.append((int(slot), bool(cold), key, int(deadline)))
+        prefetch_per.append(frame_prefetch)
         per.append((cells, entries, colds))
         if (i + 1) % 400 == 0:
             print(f"  resolve {i+1}/{nfr}", flush=True)
-    return per, n_load, n_upd, pal_w, Plist, alloc.tearing
+    frozen_cold = np.asarray(raw_prefetch.get("cold", ()), np.int64)
+    if prefetch_enabled:
+        actual_cold = np.asarray([
+            sum(bool(item[1]) for item in frame) for frame in prefetch_per
+        ], np.int64)
+        if frozen_cold.shape != actual_cold.shape or not np.array_equal(
+                frozen_cold, actual_cold):
+            raise SystemExit("pack: raw-prefetch cold trace differs from simulation")
+    return per, prefetch_per, n_load, n_upd, pal_w, Plist, alloc.tearing
 
 
 def sourced_cold_runs(entries, colds, sources):
@@ -297,18 +334,42 @@ def sourced_cold_runs(entries, colds, sources):
     return runs
 
 
-def run_stats(per, sources=None):
+def sourced_transfer_runs(entries, colds, sources, prefetch=()):
+    """Return update cold runs followed by optional Prg prefetch runs."""
+    slots = [
+        (int(entry) & 0x07FF) - BASE
+        for entry, cold in zip(entries, colds) if cold
+    ]
+    item_sources = [
+        int(source)
+        for source, cold in zip(sources, colds) if cold
+    ]
+    slots.extend(int(item[0]) for item in prefetch if bool(item[1]))
+    item_sources.extend(
+        pattern_supply.SOURCE_PRG for item in prefetch if bool(item[1]))
+    # Reuse the authoritative source-aware grouping by presenting synthetic
+    # entries whose low 11 bits contain the allocated slot.
+    synthetic = [BASE + slot for slot in slots]
+    return sourced_cold_runs(
+        synthetic, [True] * len(synthetic), item_sources)
+
+
+def run_stats(per, sources=None, prefetch_per=None):
     """フレーム内cold tile数とplayer cold-run record数を返して表示する。"""
     runs_per_frame = np.zeros(len(per), np.int64)
     colds_per_frame = np.zeros(len(per), np.int64)
     if sources is None:
         sources = tuple(tuple(pattern_supply.SOURCE_PRG for _ in entries)
                         for _cells, entries, _colds in per)
+    if prefetch_per is None:
+        prefetch_per = tuple(() for _ in per)
     prg_per_frame = np.zeros(len(per), np.int64)
     wr_per_frame = np.zeros(len(per), np.int64)
     main_per_frame = np.zeros(len(per), np.int64)
-    for i, ((cells, entries, colds), frame_sources) in enumerate(zip(per, sources)):
-        runs = sourced_cold_runs(entries, colds, frame_sources)
+    for i, ((cells, entries, colds), frame_sources, frame_prefetch) in enumerate(
+            zip(per, sources, prefetch_per)):
+        runs = sourced_transfer_runs(
+            entries, colds, frame_sources, frame_prefetch)
         runs_per_frame[i] = len(runs)
         colds_per_frame[i] = sum(count for _slot, count, _source in runs)
         for _slot, count, source in runs:
@@ -570,7 +631,8 @@ def build_audio_chunks(audio_path, frame_count):
 
 
 def build_control(
-        log, per, n_upd, pal_w, audio_path, sources=None, update_lists=None):
+        log, per, n_upd, pal_w, audio_path, sources=None, update_lists=None,
+        prefetch_per=None):
     """Build control blocks and return their reconstructed source PCM chunks."""
     seg_cram = [pals_to_bytes_128(p) for p in log["seg_pals"]]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
@@ -591,6 +653,8 @@ def build_control(
     if sources is None:
         sources = tuple(tuple(pattern_supply.SOURCE_PRG for _ in entries)
                         for _cells, entries, _colds in per)
+    if prefetch_per is None:
+        prefetch_per = tuple(() for _ in per)
     if update_lists is None:
         update_lists = np.zeros(len(per), np.bool_)
     update_lists = np.asarray(update_lists, np.bool_)
@@ -626,7 +690,8 @@ def build_control(
         # 68000 can read its words directly; old players simply ignore it.
         if len(body) & 1:
             body += b"\0"
-        runs = sourced_cold_runs(entries, colds, frame_sources)
+        runs = sourced_transfer_runs(
+            entries, colds, frame_sources, prefetch_per[i])
         body += struct.pack(">H", len(runs))
         for slot, count, source in runs:
             body += struct.pack(">HH", slot, pattern_supply.encode_run_count(count, source))
@@ -1023,6 +1088,8 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
     if any(struct.unpack_from(">H", block, 4)[0] & shadow_updates.LIST_TAG
            for block in blocks):
         features |= FEATURE_SHADOW_UPDATE_LISTS
+    if bool((log.get("raw_prefetch") or {}).get("enabled", False)):
+        features |= FEATURE_VRAM_RAW_PREFETCH
     header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
@@ -1235,13 +1302,15 @@ def main():
         audio_path = str(candidate)
     compare = args.compare or str(dec_log.parent / "preview")
     POOL = args.pool_slots or int(log["vram_tiles"])
-    per, n_load, n_upd, pal_w, Plist, tearing = resolve(log, POOL, mode=args.alloc)
+    per, prefetch_per, n_load, n_upd, pal_w, Plist, tearing = resolve(
+        log, POOL, mode=args.alloc)
     print(f"resolve[{args.alloc}]: tearing={tearing} M(payload)={len(Plist)} frames={len(per)}")
     supply_enabled = bool(args.pattern_supply and FPS >= 24.0)
     if args.pattern_supply and not supply_enabled:
         print("  pattern supply: disabled below 24fps until the dense-poll player path is qualified")
     supply_plan = pattern_supply.plan_supply(
-        log, per, Plist, enabled=supply_enabled)
+        log, per, Plist, prefetch_per=prefetch_per,
+        enabled=supply_enabled)
     print(f"  pattern supply: enabled={int(supply_plan.enabled)} "
           f"Prg={len(supply_plan.prg_patterns)} "
           f"Wr0={len(supply_plan.wr0_patterns)}/{pattern_supply.WORD_BUF_PATTERNS} "
@@ -1268,7 +1337,8 @@ def main():
     print(f"  realized cold: max={realized_max} <= {stream_mode}/{stream_active_tiles} "
           f"active tiles cap {cold_ceiling} (measured at "
           f"{cold_qualification.active_tiles} tiles, 共有割り当て)")
-    packed_tiles, packed_runs = run_stats(per, supply_plan.sources)
+    packed_tiles, packed_runs = run_stats(
+        per, supply_plan.sources, prefetch_per)
     if not np.array_equal(packed_tiles, n_load):
         frame = int(np.flatnonzero(packed_tiles != n_load)[0])
         raise SystemExit(
@@ -1301,7 +1371,8 @@ def main():
         frame = int(np.flatnonzero(update_lists & (recomputed_list >= recomputed_legacy))[0])
         raise SystemExit(f"pack: selected shadow list is not faster at frame {frame}")
     blocks, source_pcm_chunks = build_control(
-        log, per, n_upd, pal_w, audio_path, supply_plan.sources, update_lists)
+        log, per, n_upd, pal_w, audio_path, supply_plan.sources, update_lists,
+        prefetch_per)
     print(
         f"  shadow updates: list={int(update_lists.sum())}/{len(update_lists)} "
         f"Main saved={int(((recomputed_legacy - recomputed_list) * update_lists).sum())} cycles "

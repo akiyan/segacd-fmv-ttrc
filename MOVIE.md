@@ -69,6 +69,10 @@ the `n_upd` word. A clear high bit retains the v10 bitmap plus source-coded
 entries. A set high bit replaces those bytes with completed
 `(shadow_byte_offset, final_name_entry)` pairs; the source-aware cold-run suffix
 remains authoritative for physical pattern delivery.
+The optional feature bit 5 (`FEATURE_VRAM_RAW_PREFETCH`) keeps the same v11
+run-suffix syntax but allows additional Prg runs that have no same-frame name
+update. They load exact future patterns into unreferenced VRAM slots; a later
+name update reuses the resident slot without another pattern transfer.
 
 ## File layout
 
@@ -214,6 +218,8 @@ Then:
   the optional ADPCM table. Bit 4 (`FEATURE_SHADOW_UPDATE_LISTS`, v11) means
   high-bit-tagged completed-list controls may occur; it is valid only together
   with bit 3 because completed-list entries omit cold/source metadata.
+  Bit 5 (`FEATURE_VRAM_RAW_PREFETCH`, v11) allows the cold-run suffix to carry
+  additional Prg patterns that are not represented by same-frame updates.
   Unknown bits must not move any legacy field;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
@@ -464,8 +470,10 @@ representation it is the only physical pattern-delivery description.
 `source_count` stores source in bits 14-15 and count in bits
 0-13. Source values are 0=Prg, 1=Wr (frame parity selects Wr0 or Wr1), 2=Main,
 and 3=reserved/invalid. A source change starts a new run even when VRAM slots
-remain consecutive. The sum of all masked counts is the number of cold entries,
-and each run stays within the header's `pool` slots. The Main CPU can therefore
+remain consecutive. Without feature bit 5, the sum of all masked counts is the
+number of cold update entries. With bit 5, it is the number of physical pattern
+loads and may additionally include Prg raw prefetch loads. Each run stays
+within the header's `pool` slots. The Main CPU can therefore
 build its source-aware transfer table without walking all update entries a
 second time.
 

@@ -107,6 +107,7 @@
 .equ FEATURE_ADPCM22_BIT,   2
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
 .equ FEATURE_SHADOW_UPDATE_LISTS_BIT, 4
+.equ FEATURE_VRAM_RAW_PREFETCH_BIT, 5
 .equ SHADOW_UPDATE_LIST_BIT, 15
 .equ SHADOW_UPDATE_COUNT_MASK, 0x7FFF
 .equ ROUTING_COPY_LONGS,    4096
@@ -373,7 +374,7 @@ pm_set:
 	tst.w	d1
 	beq	bad_header
 	move.w	d1, h_audio_fd
-	move.w	62(a0), h_features		/* bits0..4: runs, N2, ADPCM, supply, shadow lists */
+	move.w	62(a0), h_features		/* bits0..5: runs, N2, ADPCM, supply, shadow lists, raw prefetch */
 	move.w	h_features, d1
 	andi.w	#0x0010, d1
 	beq.s	1f
@@ -1456,9 +1457,15 @@ ef_runs_setup:
 	addq.l	#1, a0
 1:
 	move.w	(a0)+, d7			/* n_runs */
-	cmp.w	d5, d7				/* no valid frame can have more runs than updates */
+	move.w	d5, d1				/* ordinary streams: runs/cold cannot exceed updates */
+	PC_MOVE_W h_features, PC_FEATURES, d0
+	btst	#FEATURE_VRAM_RAW_PREFETCH_BIT, d0
+	beq.s	2f
+	PC_MOVE_W h_cells, PC_CELLS, d1		/* prefetch runs have no corresponding name update */
+2:
+	cmp.w	d1, d7
 	bls	1f
-	move.w	d5, d7				/* corrupt-count clamp */
+	move.w	d1, d7				/* corrupt-count clamp */
 1:
 	tst.w	d7
 	beq	ef_runs_polled
@@ -1466,11 +1473,16 @@ ef_runs_setup:
 ef_run:
 	move.w	(a0)+, d2			/* zero-based slot_start */
 	move.w	(a0)+, d3			/* source in bits15..14, pattern count in bits13..0 */
+	move.w	d5, d1
+	PC_MOVE_W h_features, PC_FEATURES, d0
+	btst	#FEATURE_VRAM_RAW_PREFETCH_BIT, d0
+	beq.s	2f
+	PC_MOVE_W h_cells, PC_CELLS, d1
+2:
 	move.w	d3, d0
 	andi.w	#0xC000, d0			/* preserve source for O_LOADS and the copy decision */
 	andi.w	#0x3FFF, d3
-	move.w	d5, d1
-	sub.w	d4, d1				/* remaining cold count cannot exceed n_upd */
+	sub.w	d4, d1				/* remaining cold count cannot exceed stream limit */
 	cmp.w	d1, d3
 	bls	1f
 	move.w	d1, d3

@@ -46,6 +46,7 @@ CONFIG_PROFILE = consume_config_arg(sys.argv)
 import av_config  # noqa: E402
 import ima_adpcm  # noqa: E402
 import pattern_supply  # noqa: E402
+import raw_prefetch  # noqa: E402
 import stream_schedule  # noqa: E402
 import shadow_updates  # noqa: E402
 import ttrc_routing  # noqa: E402
@@ -251,6 +252,14 @@ COLD_CAP_QUALIFICATION = av_config.cold_cap_qualification(
 MAX_COLD = COLD_CAP_QUALIFICATION.cap
 MAX_RUN_CONTROL_BYTES = stream_schedule.max_run_control_reservation(
     MAX_COLD, ACTIVE_TILES)
+# Optional VRAM raw prefetch. It is profile-gated and off by default.  The
+# forecast requests only the exact cold excess of the next frame; only spare
+# cold/BODY capacity may load it, and visible work always wins.
+RAW_PREFETCH_ON = os.environ.get("CBRSIM_RAW_PREFETCH", "0") != "0"
+RAW_PREFETCH_LOOKAHEAD = 1
+RAW_PREFETCH_MAX_REQUESTS_PER_FRAME = 32
+RAW_PREFETCH_MIN_BATCH = 4
+RAW_PREFETCH_BUDGET_FLOOR_PATTERNS = 256
 # The current boot-preload player path is qualified for dense 24/30 fps
 # streams.  Lower-rate ADPCM still uses its separate periodic CDC service path;
 # keep its quality decisions on Prg-only supply until that combination is
@@ -1361,6 +1370,8 @@ def main():
     wr0_loads_log = []         # physical boot-preload consumption by source
     wr1_loads_log = []
     main_loads_log = []
+    prefetch_requests_log = []  # successful (pattern key, deadline) requests
+    prefetch_cold_log = []      # physical PrgBuf loads without a name update
     quality_budget = QUALITY_BUDGET_BYTES if QUALITY_BUDGET_ON else 0
     quality_budget_log = []
 
@@ -1452,6 +1463,20 @@ def main():
     protected_credit_bytes = (
         np.minimum(supply_budget.total, demand_prediction.protected_cold)
         * PATTERN_BYTES)
+    if RAW_PREFETCH_ON:
+        prefetch_forecast = raw_prefetch.forecast_requests(
+            Q_pidx,
+            Q_assign,
+            main_protected,
+            vram_tiles=VRAM_TILES,
+            max_cold=MAX_COLD,
+        )
+    else:
+        prefetch_forecast = raw_prefetch.PrefetchForecast(
+            requests=tuple(() for _ in range(n)),
+            protected_cold=np.zeros(n, np.int64),
+            requested_patterns=np.zeros(n, np.int64),
+        )
     # A boot-preloaded cold pattern still needs its two-byte name entry but no
     # BODY payload.  Remove only that 32-byte payload from the future reserve
     # traces; the live encoder below applies the same charge to actual work.
@@ -1481,6 +1506,16 @@ def main():
         f"Wr1={supply_budget.wr1_patterns}/{pattern_supply.WORD_BUF_PATTERNS} "
         f"Main={supply_budget.main_patterns}/{pattern_supply.MAIN_BUF_PATTERNS} "
         f"frames={int(np.count_nonzero(supply_budget.total))}",
+        flush=True,
+    )
+    print(
+        "raw VRAM prefetch: "
+        f"enabled={int(RAW_PREFETCH_ON)} lookahead={RAW_PREFETCH_LOOKAHEAD} "
+        f"max_requests/frame={RAW_PREFETCH_MAX_REQUESTS_PER_FRAME} "
+        f"min_batch={RAW_PREFETCH_MIN_BATCH} "
+        f"budget_floor={RAW_PREFETCH_BUDGET_FLOOR_PATTERNS}patterns "
+        f"request_frames={int(np.count_nonzero(prefetch_forecast.requested_patterns))} "
+        f"requested_patterns={int(prefetch_forecast.requested_patterns.sum())}",
         flush=True,
     )
     _t = _mark("格上げ残量計画", _t)
@@ -1693,6 +1728,17 @@ def main():
                 for affected in pat_buckets.get(key, ()):
                     resident_bucket_cache.pop(affected, None)
 
+        def activate_exact_pattern(key, cell):
+            """Publish a prefetched exact pattern to approximation metadata."""
+            if key not in pat_colors:
+                cache_pattern(
+                    key, plain_rgb[cell], sig2[cell], assign[cell], cur_seg)
+                append_coa_bucket(
+                    key,
+                    (int(mbk[cell, 0]), int(mbk[cell, 1]), int(mbk[cell, 2])))
+            else:
+                revalidate_pattern_segment(key)
+
         # frame0はDAT冒頭ヘッダで別ロード(リング非消費)なので常にcold上限を免除=全面フルロード。
         frame_max_cold = MAX_COLD if i > 0 else 0
 
@@ -1737,7 +1783,8 @@ def main():
                 return False
             rep_key = key; rep_pal = int(assign[c]); rep_rgb = plain_rgb[c]
             if in_vram:
-                dedup_saved += 1; dedup_mask[c] = True; pat_seg[key] = cur_seg
+                dedup_saved += 1; dedup_mask[c] = True
+                activate_exact_pattern(key, c)
             elif approx_key is not None:                          # 粗い近似dedup: 常駐の見た目を流用
                 coa_hits += 1; coa_mask[c] = True
                 rep_key = approx_key; rep_pal = pat_pal[approx_key]; rep_rgb = pat_rgb[approx_key]
@@ -1866,7 +1913,7 @@ def main():
                     if exact:
                         dedup_saved += 1; dedup_mask[c] = True                # Same(完全一致流用=Sameへ畳む)
                         rk, rp, rr = key, int(assign[c]), plain_rgb[c]
-                        revalidate_pattern_segment(key)                       # fresh keyは現区間の量子化=有効化
+                        activate_exact_pattern(key, c)                        # fresh/prefetched keyを有効化
                     elif tier == 0:
                         near_mask[c] = True; rk, rp, rr = bk, pat_pal[bk], pat_rgb[bk]
                     else:
@@ -1962,6 +2009,7 @@ def main():
                     near_mask[c] = False; flbk_mask[c] = False   # 近似を取消
                     if in_vram:
                         dedup_saved += 1; dedup_mask[c] = True
+                        activate_exact_pattern(key, c)
                     else:
                         cold_spent += 1
                         loaded_keys.add(key)
@@ -2019,9 +2067,68 @@ def main():
                 pattern_supply.SOURCE_WR if ordinal < wr_used
                 else pattern_supply.SOURCE_MAIN)
 
-        dma_slots = [slot for slot, cold in placements if cold]
+        # Greedy raw prefetch runs only after visible updates and upgrades have
+        # been decided.  It may consume spare BODY bytes/cold slots for the
+        # next frame's predicted cold excess.  A speculative request is simply
+        # skipped when no unreferenced VRAM slot is safe.
+        frame_prefetch_requests = []
+        prefetch_cold_slots = []
+        if RAW_PREFETCH_ON and i > 0:
+            prefetch_spend_limit = min(
+                tile_budget,
+                max(
+                    spent_tiles,
+                    quality_budget + frame_cd - MAX_RUN_CONTROL_BYTES
+                    - RAW_PREFETCH_BUDGET_FLOOR_PATTERNS * PATTERN_BYTES,
+                ),
+            )
+            last_deadline = min(n, i + RAW_PREFETCH_LOOKAHEAD + 1)
+            request_room = sum(
+                len(prefetch_forecast.requests[deadline])
+                for deadline in range(i + 1, last_deadline))
+            cold_room = (
+                frame_max_cold - cold_spent
+                if frame_max_cold else RAW_PREFETCH_MAX_REQUESTS_PER_FRAME)
+            body_room = max(
+                0, (prefetch_spend_limit - spent_tiles) // PATTERN_BYTES)
+            capacity = min(
+                RAW_PREFETCH_MAX_REQUESTS_PER_FRAME,
+                request_room,
+                cold_room,
+                body_room,
+            )
+            if capacity >= RAW_PREFETCH_MIN_BATCH:
+                for deadline in range(i + 1, last_deadline):
+                    deadline_keys = {
+                        Q_pidx[deadline][cell].tobytes()
+                        for cell in range(C_CELLS)
+                    }
+                    for key in prefetch_forecast.requests[deadline]:
+                        if len(frame_prefetch_requests) >= capacity:
+                            break
+                        if alloc.is_pinned(key, deadline):
+                            continue
+                        resident = alloc.is_resident(key)
+                        if resident:
+                            continue
+                        result = alloc.prefetch(
+                            key, i, deadline, avoid_keys=deadline_keys)
+                        if result is None:
+                            continue
+                        slot, cold = result
+                        frame_prefetch_requests.append((key, deadline, slot))
+                        if cold:
+                            cold_spent += 1
+                            spent_tiles += PATTERN_BYTES
+                            prefetch_cold_slots.append(slot)
+                    if len(frame_prefetch_requests) >= capacity:
+                        break
+
+        dma_slots = [slot for slot, cold in placements if cold] + prefetch_cold_slots
         dma_sources = [
             source for source, (_, cold) in zip(frame_sources, placements) if cold]
+        dma_sources.extend(
+            [pattern_supply.SOURCE_PRG] * len(prefetch_cold_slots))
         dma_tiles = len(dma_slots)                 # 実際にVRAMへ送る32Bパターンタイル数
         if not L3_TILES and dma_tiles != cold_spent:
             raise AssertionError(
@@ -2036,6 +2143,8 @@ def main():
         transfer_tiles_log.append(dma_tiles)
         transfer_runs_log.append(dma_runs)
         supply_sources_log.append(np.asarray(frame_sources, np.uint8))
+        prefetch_requests_log.append(frame_prefetch_requests)
+        prefetch_cold_log.append(len(prefetch_cold_slots))
         prg_used = sum(
             source == pattern_supply.SOURCE_PRG for source in dma_sources)
         prg_loads_log.append(prg_used)
@@ -2151,7 +2260,8 @@ def main():
         stat_rows.append((
             i, f_fixed, want, upd, miss, C_CELLS - want, dedup_saved, tile_recs, carry, age_max,
             want / C_CELLS, int(near_eff.sum()), coa_hits, flbk_hits, prg_hits,
-            len(u_same), len(u_near), len(u_coa), len(u_flbk), dma_tiles, dma_runs))
+            len(u_same), len(u_near), len(u_coa), len(u_flbk), dma_tiles, dma_runs,
+            len(prefetch_cold_slots)))
 
         # エージングの待ちカウンタ更新: 未更新のdirtyは+1、更新済み/変化なしは0へ
         wait = np.where(changed & ~updated & ~near_eff, wait + 1, 0)   # Nearは滞留させない
@@ -2380,6 +2490,11 @@ def main():
         f"avg_codec_work_bytes_per_frame={fb.mean():.1f}",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
         f"avg_PrgBuf_loads_per_frame={prg_loads.mean():.1f}",
+        f"raw_vram_prefetch={int(RAW_PREFETCH_ON)} "
+        f"loads={int(np.sum(prefetch_cold_log))} "
+        f"request_events={sum(len(items) for items in prefetch_requests_log)} "
+        f"cache_evictions={alloc.prefetch_cache_evictions} "
+        f"pin_evictions={alloc.prefetch_evictions}",
         f"boot_preload_patterns=Wr0:{int(wr0_loads.sum())} "
         f"Wr1:{int(wr1_loads.sum())} Main:{int(main_loads.sum())}",
         f"avg_L2_dedup_hit_per_frame={ded.mean():.1f} (VRAM常駐で0転送)",
@@ -2426,13 +2541,14 @@ def main():
 
     # status line 用の per-frame 実測を保存
     cols = ("frame ffix want updated miss delta dedup tx carry age want_frac near coa flbk buf"
-            " same_u near_u coa_u flbk_u dma_tiles dma_runs")
+            " same_u near_u coa_u flbk_u dma_tiles dma_runs prefetch")
     budget_tiles = int(np.median(stats[:, 1]))   # ffix中央値 = 固定予算タイル数(fps依存)
     # 全編ユニーク(cattotals併記用): same/near/coa/flbk の別タイル総数
     cat_uniq = np.array([len(guniq["same"]), len(guniq["near"]), len(guniq["coa"]),
                          len(guniq["flbk"])], np.int64)
     np.savez(OUT / "stats.npz", stats=stats, cols=cols, fps=FPS, cells=C_CELLS,
              active_tiles=ACTIVE_TILES, max_cold=MAX_COLD,
+             raw_prefetch=np.asarray(prefetch_cold_log, np.int64),
              cd1x=CD_RATE,
              body_gross_bytes=body_gross_bytes,
              body_fixed_control_bytes=body_fixed_control_bytes,
@@ -2546,6 +2662,15 @@ def main():
                 "quality_budget_kb": int(QUALITY_BUDGET_KB),
                 "max_cold": int(MAX_COLD),
             },
+            "encoder": {
+                "raw_prefetch": bool(RAW_PREFETCH_ON),
+                "raw_prefetch_lookahead": int(RAW_PREFETCH_LOOKAHEAD),
+                "raw_prefetch_max_requests_per_frame": int(
+                    RAW_PREFETCH_MAX_REQUESTS_PER_FRAME),
+                "raw_prefetch_min_batch": int(RAW_PREFETCH_MIN_BATCH),
+                "raw_prefetch_budget_floor_patterns": int(
+                    RAW_PREFETCH_BUDGET_FLOOR_PATTERNS),
+            },
             "palette": {
                 "algorithm": PAL_ALGO, "seam_weight": float(PAL_SEAM_WEIGHT),
                 "seam_iterations": int(PAL_SEAM_ITERATIONS),
@@ -2577,6 +2702,22 @@ def main():
                     "wr1": pattern_supply.WORD_BUF_PATTERNS,
                     "main": pattern_supply.MAIN_BUF_PATTERNS,
                 },
+            },
+            "raw_prefetch": {
+                "schema_version": 1,
+                "enabled": bool(RAW_PREFETCH_ON),
+                "lookahead": int(RAW_PREFETCH_LOOKAHEAD),
+                "max_requests_per_frame": int(
+                    RAW_PREFETCH_MAX_REQUESTS_PER_FRAME),
+                "min_batch": int(RAW_PREFETCH_MIN_BATCH),
+                "budget_floor_patterns": int(
+                    RAW_PREFETCH_BUDGET_FLOOR_PATTERNS),
+                "requests": prefetch_requests_log,
+                "cold": np.asarray(prefetch_cold_log, np.uint16),
+                "forecast_protected_cold": np.asarray(
+                    prefetch_forecast.protected_cold, np.uint16),
+                "forecast_requested": np.asarray(
+                    prefetch_forecast.requested_patterns, np.uint16),
             },
             # simが決めた値をpackで全frame再計算し、descriptor/HUD Nとのズレを即時検出する。
             "pattern_transfers": {

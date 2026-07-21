@@ -337,6 +337,7 @@ def plan_supply(
     per: Sequence[tuple[Sequence[int], Sequence[int], Sequence[bool]]],
     patterns: Sequence[bytes],
     *,
+    prefetch_per: Sequence[Sequence[tuple]] | None = None,
     enabled: bool = True,
     wr_patterns: int = WORD_BUF_PATTERNS,
     main_patterns: int = MAIN_BUF_PATTERNS,
@@ -349,10 +350,17 @@ def plan_supply(
     always emitted in chronological consumption order.
     """
     frame_count = len(per)
+    if prefetch_per is None:
+        prefetch_per = tuple(() for _ in per)
+    if len(prefetch_per) != frame_count:
+        raise ValueError("prefetch frame count differs from decisions")
     sources = [[SOURCE_PRG] * len(entries) for _cells, entries, _colds in per]
     run_map = [_cold_runs(entries, colds) for _cells, entries, colds in per]
 
-    expected_patterns = sum(sum(bool(cold) for cold in colds) for _c, _e, colds in per)
+    expected_patterns = (
+        sum(sum(bool(cold) for cold in colds) for _c, _e, colds in per)
+        + sum(sum(bool(item[1]) for item in frame) for frame in prefetch_per)
+    )
     if expected_patterns != len(patterns):
         raise ValueError(
             f"cold pattern stream mismatch: updates={expected_patterns} patterns={len(patterns)}")
@@ -397,25 +405,34 @@ def plan_supply(
     wr1_loads = np.zeros(frame_count, np.int64)
     main_loads = np.zeros(frame_count, np.int64)
     pattern_index = 0
-    for frame, ((_cells, _entries, colds), frame_sources) in enumerate(zip(per, sources)):
+    def consume_pattern(frame: int, source: int) -> None:
+        nonlocal pattern_index
+        pattern = bytes(patterns[pattern_index])
+        pattern_index += 1
+        if len(pattern) != PATTERN_BYTES:
+            raise ValueError(
+                f"pattern is {len(pattern)} bytes, expected {PATTERN_BYTES}")
+        if frame == 0 or source == SOURCE_PRG:
+            prg.append(pattern)
+            prg_loads[frame] += 1
+        elif source == SOURCE_WR:
+            (wr1 if frame & 1 else wr0).append(pattern)
+            (wr1_loads if frame & 1 else wr0_loads)[frame] += 1
+        elif source == SOURCE_MAIN:
+            main.append(pattern)
+            main_loads[frame] += 1
+        else:  # pragma: no cover - guarded by construction
+            raise AssertionError(source)
+
+    for frame, ((_cells, _entries, colds), frame_sources, frame_prefetch) in enumerate(
+            zip(per, sources, prefetch_per)):
         for cold, source in zip(colds, frame_sources):
             if not cold:
                 continue
-            pattern = bytes(patterns[pattern_index])
-            pattern_index += 1
-            if len(pattern) != PATTERN_BYTES:
-                raise ValueError(f"pattern is {len(pattern)} bytes, expected {PATTERN_BYTES}")
-            if frame == 0 or source == SOURCE_PRG:
-                prg.append(pattern)
-                prg_loads[frame] += 1
-            elif source == SOURCE_WR:
-                (wr1 if frame & 1 else wr0).append(pattern)
-                (wr1_loads if frame & 1 else wr0_loads)[frame] += 1
-            elif source == SOURCE_MAIN:
-                main.append(pattern)
-                main_loads[frame] += 1
-            else:  # pragma: no cover - guarded by construction
-                raise AssertionError(source)
+            consume_pattern(frame, source)
+        for item in frame_prefetch:
+            if bool(item[1]):
+                consume_pattern(frame, SOURCE_PRG)
 
     if len(wr0) > wr_patterns or len(wr1) > wr_patterns or len(main) > main_patterns:
         raise AssertionError("pattern supply planner exceeded a physical preload capacity")

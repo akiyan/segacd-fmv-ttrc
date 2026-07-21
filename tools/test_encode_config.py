@@ -74,6 +74,7 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
         self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "1120")
         self.assertEqual(env["CBRSIM_AUDIO"], "adpcm22")
+        self.assertEqual(env["CBRSIM_RAW_PREFETCH"], "1")
         self.assertTrue(
             env["CBRSIM_OUT"].endswith(
                 "videos/BadApple_H40_320x224_adpcm22/tmp"))
@@ -124,6 +125,7 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN"], "256")
         self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "lanczos")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "1")
+        self.assertEqual(env["CBRSIM_RAW_PREFETCH"], "0")
 
     def test_endpoint_snap_limits_must_be_ordered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
