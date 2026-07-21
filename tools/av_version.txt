@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p66 : Inline the specialized DEBUG HUD conversion through a 256-entry
+#        byte-to-name-table lookup. Each two-digit value is now one indexed
+#        longword read with no formatter call; release builds carry no table.
 #   p65 : Center the fixed 32-column preload status panel in H40 by applying a
 #        four-tile offset to every startup line and live progress/status target.
 #        H32 retains its existing zero-offset layout.
@@ -497,4 +500,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
 e=70
-p=65
+p=66

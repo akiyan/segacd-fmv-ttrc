@@ -92,6 +92,12 @@
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
 .equ PACE_N2_ARM_TICKS, 800	/* 24.576ms: safely between VBlank 1 and 2 */
 
+.ifdef DEBUG
+.ifdef PLAYER_SPECIALIZED
+.equ HUD_HEX_TABLE, 1
+.endif
+.endif
+
 .ifdef PLAYER_SPECIALIZED
 	.include "player_constants.inc"
 .endif
@@ -133,6 +139,32 @@
 	adda.w	#\constant, \dest
 .else
 	adda.w	\runtime, \dest
+.endif
+.endm
+
+/* The specialized DEBUG player knows the HUD font tile base at assembly time.
+   Map one byte directly to its two name-table words, avoiding two nibble
+   conversions and all formatter calls in the per-frame deadline. */
+.macro DBG_PUT2
+.ifdef HUD_HEX_TABLE
+	andi.w	#0x00FF, d4
+	add.w	d4, d4			/* *4: two ADDs beat LSL.W #2 by 2 clocks */
+	add.w	d4, d4
+	move.l	(a1,d4.w), (a0)+
+.else
+	bsr	dbg_put2
+.endif
+.endm
+
+.macro DBG_PUT4
+.ifdef HUD_HEX_TABLE
+	move.w	d4, d3
+	lsr.w	#8, d4
+	DBG_PUT2
+	move.w	d3, d4
+	DBG_PUT2
+.else
+	bsr	dbg_put4
 .endif
 .endm
 
@@ -1519,60 +1551,69 @@ wait_vblank:
    H40: the same 22 words followed by xxxx xx = 28 words.
 	frame/Main-timeは16-bit、leadはhigh byte、他はlow byteの2桁。leadは256B単位。 */
 prepare_dbg:
+.ifdef HUD_HEX_TABLE
+	movem.l	d0-d4/a0-a1, -(sp)
+	lea	dbg_hex_pairs, a1
+.else
 	movem.l	d0-d4/a0, -(sp)
+.endif
 	lea	dbg_row, a0
 	/* frame number, 4 digits */
 	move.w	frame_no, d4
-	bsr	dbg_put4
+	DBG_PUT4
 	/* palette segment, low byte */
 	move.w	dbg_seg, d4
-	bsr	dbg_put2
+	DBG_PUT2
 	/* slip/reseek count, low byte */
 	move.w	(PROBE_BANK+0xAF00).l, d4
-	bsr	dbg_put2
+	DBG_PUT2
 	/* desync count, low byte */
 	move.w	(PROBE_BANK+0xAF7E).l, d4
-	bsr	dbg_put2
+	DBG_PUT2
 	/* audio re-sync count, low byte */
 	move.w	(PROBE_BANK+0xAF20).l, d4
-	bsr	dbg_put2
+	DBG_PUT2
 	/* current audio lead high byte (256-byte units) */
 	move.w	(PROBE_BANK+0xAF22).l, d4
 	lsr.w	#8, d4
-	bsr	dbg_put2
+	DBG_PUT2
 	/* total blocking CD pumps (current control + older BODY slot) */
 	move.w	(PROBE_BANK+0xAF18).l, d4
 	add.w	(PROBE_BANK+0xAF1A).l, d4
-	bsr	dbg_put2
+	DBG_PUT2
 	/* Main's CMD_SWAP wait for Sub completion, in approximate scanlines */
 	move.w	sub_wait_lines, d4
-	bsr	dbg_put2
+	DBG_PUT2
 	/* VBlank starts waited by this frame's Main-side pattern path */
 	move.w	frame_vblank_waits, d4
-	bsr	dbg_put2
+	DBG_PUT2
 	/* Sub ADPCM decode time in 4*30.72us units (zero for PCM builds). */
 	move.w	(PROBE_BANK+0xAF1C).l, d4
 	lsr.w	#2, d4
-	bsr	dbg_put2
+	DBG_PUT2
 	/* H40 has exactly eight additional visible HUD cells. Keep the shared
 	   H32 prefix stable and use the tail for direct Main/DMA correlation. */
 .ifdef PLAYER_SPECIALIZED
 .if PC_MODE == 1
 	move.w	dma_elapsed_ticks, d4
-	bsr	dbg_put4
+	DBG_PUT4
 	move.w	n_runs, d4
-	bsr	dbg_put2
+	DBG_PUT2
 .endif
 .else
 	cmpi.w	#1, md_mode
 	bne.s	1f
 	move.w	dma_elapsed_ticks, d4
-	bsr	dbg_put4
+	DBG_PUT4
 	move.w	n_runs, d4
-	bsr	dbg_put2
+	DBG_PUT2
 1:
 .endif
+.ifdef HUD_HEX_TABLE
+	movem.l	(sp)+, d0-d4/a0-a1
+.else
 	movem.l	(sp)+, d0-d4/a0
+.endif
 	rts
 
 /* Publish a prebuilt row over the first cells of the inactive Plane A movie
@@ -1639,6 +1680,18 @@ palettes:
 	.incbin "palettes.bin"
 dbgfont:
 	.incbin "dbgfont.bin"
+.ifdef HUD_HEX_TABLE
+/* Longword order matches two consecutive VDP name-table writes.  This table
+   remains in the permanent IP image; it does not consume MainBuf capacity. */
+	.align 2
+dbg_hex_pairs:
+	.set dbg_hex_byte, 0
+	.rept 256
+	.word PC_FONT_VTILE + ((dbg_hex_byte >> 4) & 0x0F)
+	.word PC_FONT_VTILE + (dbg_hex_byte & 0x0F)
+	.set dbg_hex_byte, dbg_hex_byte + 1
+	.endr
+.endif
 .ifdef PLAYER_SPECIALIZED
 	.section .startup,"a"
 	.include "startup_screen.inc"
