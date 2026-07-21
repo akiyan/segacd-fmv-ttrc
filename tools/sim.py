@@ -1368,7 +1368,7 @@ def main():
     dec_cats = []              # per-frame カテゴリ数[raw,same,near,coa,flbk,buf,miss](デバッグ欄用)
     transfer_tiles_log = []    # pack/player照合用: cold pattern tile数
     transfer_runs_log = []     # pack/player照合用: packed cold-run record数
-    supply_sources_log = []    # per-frame update-aligned Prg/Wr/Main source codes
+    supply_sources_log = []    # per-frame update-aligned Prg/Wr/Dic source codes
     prg_loads_log = []         # physical PrgBuf pattern consumption
     wr0_loads_log = []         # physical boot-preload consumption by source
     wr1_loads_log = []
@@ -1695,6 +1695,8 @@ def main():
         preload_sources = {}
 
         def preload_source(key):
+            if i == 0:
+                return pattern_supply.SOURCE_PRG
             if key in dic_dictionary_keys:
                 return pattern_supply.SOURCE_DIC
             if wr_used < frame_wr_budget:
@@ -2393,8 +2395,9 @@ def main():
                     base_rgb[ii, p, TILE - 1, :] = a
 
             # Category map: Raw=thin dashed frame; Same=no frame;
-            # Near/Coa/Flbk=thin frame; old Buf exact loads use a thick
-            # physical-source frame. Miss becomes a red fill in the renderer.
+            # Near/Coa/Flbk and Dic use thin frames; streamed/preloaded
+            # Prg/Wr exact loads use thick physical-source frames.
+            # Miss becomes a red fill in the renderer.
             cat = cur_rgb.astype(np.float64)
             cat[stale] = 0
             dashed_raw_border(cat, raw_display_mask)
@@ -2403,7 +2406,7 @@ def main():
             border(cat, prg_source_mask, CAT_PRG, 3)
             border(cat, wr0_source_mask, CAT_WR0, 3)
             border(cat, wr1_source_mask, CAT_WR1, 3)
-            border(cat, dic_source_mask, CAT_DIC, 3)
+            border(cat, dic_source_mask, CAT_DIC, 1)
             _save_png(cells_to_image(cat.clip(0, 255).astype(np.uint8)), catmap_dir / f"{i:05d}.png")
 
             # Miss/Carry マップ: Miss/Carryタイルだけ内容表示+縁取り(fresh=赤/繰越=amber)。他は黒。
@@ -2657,7 +2660,7 @@ def main():
 
     # status line 用の per-frame 実測を保存
     cols = ("frame ffix want updated miss delta dedup tx carry age want_frac near coa flbk buf"
-            " prg wr0 wr1 main same same_u near_u coa_u flbk_u dma_tiles dma_runs prefetch")
+            " prg wr0 wr1 dic same same_u near_u coa_u flbk_u dma_tiles dma_runs prefetch")
     budget_tiles = int(np.median(stats[:, 1]))   # ffix中央値 = 固定予算タイル数(fps依存)
     # 全編ユニーク(cattotals併記用): same/near/coa/flbk の別タイル総数
     cat_uniq = np.array([len(guniq["same"]), len(guniq["near"]), len(guniq["coa"]),
@@ -2685,8 +2688,8 @@ def main():
         # silently drive any of the four hardware meters.
         np.savez(
             OUT / "buffer_remaining.npz",
-            schema_version=np.int64(4),
-            remaining_kind=np.array("four_source_pattern_supply"),
+            schema_version=np.int64(5),
+            remaining_kind=np.array("three_consumptive_plus_dicbuf"),
             # Compatibility aliases for offline readers predating schema 4.
             remaining=prg_remaining,
             total=av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES,

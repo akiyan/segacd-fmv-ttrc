@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independently replay the current Prg/Wr0/Wr1/Main pattern supply format.
+"""Independently replay the current Prg/Wr0/Wr1/Dic pattern supply format.
 
 This verifier deliberately does not import the production packer, scheduler,
 or pattern-supply planner.  It walks the real HEADER.DAT and BODY.DAT, consumes
@@ -21,18 +21,20 @@ from pathlib import Path
 SECTOR = 2048
 PATTERN_BYTES = 32
 DEBUG_BYTES = 22
-VERSION = 11
+VERSION = 12
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
 FEATURE_SHADOW_UPDATE_LISTS = 0x0010
+FEATURE_VRAM_RAW_PREFETCH = 0x0020
+FEATURE_DICBUF_INDEXED_RUNS = 0x0040
 SOURCE_PRG = 0
 SOURCE_WR = 1
-SOURCE_MAIN = 2
+SOURCE_DIC = 2
 SOURCE_MASK = 0x1800
 SOURCE_SHIFT = 11
-RUN_COUNT_MASK = 0x3FFF
+RUN_COUNT_MASK = 0x07FF
 RUN_SOURCE_SHIFT = 14
 ENTRY_DISPLAY_MASK = 0x67FF
 SHADOW_UPDATE_LIST_TAG = 0x8000
@@ -44,7 +46,7 @@ class Control:
     seq: int
     bitmap: bytes
     entries: tuple[int, ...]
-    runs: tuple[tuple[int, int, int], ...]
+    runs: tuple[tuple[int, int, int, int], ...]
     use_list: bool
 
 
@@ -117,13 +119,17 @@ def parse_control(raw: bytes, seq: int, cells: int, audio_bytes: int) -> Control
             f"frame {seq}: descriptor suffix ends at {suffix_end}, total={len(raw)}")
     runs = []
     for index in range(n_runs):
-        slot, encoded = struct.unpack_from(">HH", raw, suffix_start + 2 + index * 4)
+        word0, encoded = struct.unpack_from(">HH", raw, suffix_start + 2 + index * 4)
+        slot = word0 & 0x07FF
         count = encoded & RUN_COUNT_MASK
         source = encoded >> RUN_SOURCE_SHIFT
-        if not count or source > SOURCE_MAIN:
+        dic_index = ((word0 >> 11) << 3) | ((encoded >> 11) & 7)
+        if not count or source > SOURCE_DIC:
             raise AssertionError(
                 f"frame {seq}: invalid run {index}: slot={slot} count={count} source={source}")
-        runs.append((slot, count, source))
+        if source != SOURCE_DIC and dic_index:
+            raise AssertionError(f"frame {seq}: non-Dic run carries index {dic_index}")
+        runs.append((slot, count, source, dic_index))
     return Control(seq, bitmap, entries, tuple(runs), use_list)
 
 
@@ -226,10 +232,11 @@ def main() -> None:
     vsync_n, decoded_audio, fps, _audio_fd, audio_preload, features = struct.unpack_from(
         ">6H", header, 52)
     required_supply_features = (
-        FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_PATTERN_SUPPLY)
+        FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_PATTERN_SUPPLY
+        | FEATURE_DICBUF_INDEXED_RUNS)
     if features & required_supply_features != required_supply_features:
         raise SystemExit(
-            f"expected v11 cold-run/fixed-N2/pattern-supply features, "
+            f"expected v12 cold-run/fixed-N2/pattern-supply features, "
             f"got 0x{features:04X}")
     if features & FEATURE_SHADOW_UPDATE_LISTS and not features & FEATURE_PATTERN_SUPPLY:
         raise SystemExit("shadow update lists require pattern supply")
@@ -244,13 +251,13 @@ def main() -> None:
 
     supply = struct.unpack_from(">4s8H", header, 196)
     magic_supply, supply_version, reserved = supply[:3]
-    wr0_count, wr1_count, main_count, wr0_sec, wr1_sec, main_sec = supply[3:]
-    if magic_supply != b"PSUP" or supply_version != 1 or reserved:
+    wr0_count, wr1_count, dic_count, wr0_sec, wr1_sec, dic_sec = supply[3:]
+    if magic_supply != b"PSUP" or supply_version != 2 or reserved:
         raise AssertionError(f"invalid pattern-supply extension: {supply!r}")
     for label, count, sectors, capacity in (
         ("Wr0", wr0_count, wr0_sec, 880),
         ("Wr1", wr1_count, wr1_sec, 880),
-        ("Main", main_count, main_sec, 208),
+        ("Dic", dic_count, dic_sec, 256),
     ):
         if count > capacity or sectors != (count + 63) // 64:
             raise AssertionError(
@@ -263,8 +270,8 @@ def main() -> None:
     cursor += adpcm_sectors * SECTOR
     wr0, cursor = take_region(header, cursor, wr0_sec, wr0_count * 32, "Wr0")
     wr1, cursor = take_region(header, cursor, wr1_sec, wr1_count * 32, "Wr1")
-    main_blob, cursor = take_region(
-        header, cursor, main_sec, main_count * 32, "Main")
+    dic_blob, cursor = take_region(
+        header, cursor, dic_sec, dic_count * 32, "Dic")
     cursor += audio_preload * SECTOR
 
     f0_region = header[cursor:cursor + f0_ctrl_sectors * SECTOR]
@@ -323,7 +330,7 @@ def main() -> None:
 
     prg_count = sum(
         count for frame, control in enumerate(controls) if frame
-        for _slot, count, source in control.runs if source == SOURCE_PRG)
+        for _slot, count, source, _dic in control.runs if source == SOURCE_PRG)
     streamed_prg = prebuffer + body_payload
     useful_prg_bytes = prg_count * 32
     if len(streamed_prg) < useful_prg_bytes or any(streamed_prg[useful_prg_bytes:]):
@@ -336,8 +343,8 @@ def main() -> None:
             streamed_prg[pos:pos + 32] for pos in range(0, useful_prg_bytes, 32)),
         "Wr0": deque(wr0[pos:pos + 32] for pos in range(0, len(wr0), 32)),
         "Wr1": deque(wr1[pos:pos + 32] for pos in range(0, len(wr1), 32)),
-        "Main": deque(
-            main_blob[pos:pos + 32] for pos in range(0, len(main_blob), 32)),
+        "Dic": tuple(
+            dic_blob[pos:pos + 32] for pos in range(0, len(dic_blob), 32)),
     }
     consumed = {name: 0 for name in sources}
     vram: dict[int, bytes] = {}
@@ -351,8 +358,18 @@ def main() -> None:
             raise AssertionError(f"frame {frame}: bitmap cells differ from decisions")
         if len(ordered) != len(control.entries):
             raise AssertionError(f"frame {frame}: decision/update count differs")
-        if not control.use_list and control.runs != expected_runs(control.entries, base):
-            raise AssertionError(f"frame {frame}: source-coded cold runs differ from entries")
+        if not control.use_list:
+            expected_slots = tuple(
+                ((entry & 0x07FF) - base,
+                 (entry & SOURCE_MASK) >> SOURCE_SHIFT)
+                for entry in control.entries if entry & 0x8000)
+            actual_slots = tuple(
+                (slot, source)
+                for start, count, source, _dic in control.runs
+                for slot in range(start, start + count))
+            if actual_slots != expected_slots:
+                raise AssertionError(
+                    f"frame {frame}: source-coded cold runs differ from entries")
 
         expected_by_slot = {}
         for item, entry in zip(ordered, control.entries, strict=True):
@@ -360,11 +377,11 @@ def main() -> None:
 
         if frame:
             armed_slots = set()
-            for run_slot, run_count, source_id in control.runs:
+            for run_slot, run_count, source_id, dic_index in control.runs:
                 source_name = (
                     "Prg" if source_id == SOURCE_PRG else
                     ("Wr1" if frame & 1 else "Wr0") if source_id == SOURCE_WR else
-                    "Main" if source_id == SOURCE_MAIN else "reserved"
+                    "Dic" if source_id == SOURCE_DIC else "reserved"
                 )
                 for slot in range(run_slot, run_slot + run_count):
                     if slot in armed_slots or slot not in expected_by_slot:
@@ -373,7 +390,14 @@ def main() -> None:
                     if source_name not in sources or not sources[source_name]:
                         raise AssertionError(
                             f"frame {frame}: {source_name} is empty before slot {slot}")
-                    actual = sources[source_name].popleft()
+                    if source_name == "Dic":
+                        index = dic_index + (slot - run_slot)
+                        if index >= len(sources["Dic"]):
+                            raise AssertionError(
+                                f"frame {frame}: Dic index {index} is out of range")
+                        actual = sources["Dic"][index]
+                    else:
+                        actual = sources[source_name].popleft()
                     consumed[source_name] += 1
                     if actual != expected_by_slot[slot]:
                         raise AssertionError(
@@ -408,14 +432,17 @@ def main() -> None:
                     f"frame {frame}: resident/reused pattern differs at slot {slot}")
             total_updates += 1
 
-    leftovers = {name: len(queue) for name, queue in sources.items() if queue}
+    leftovers = {
+        name: len(queue) for name, queue in sources.items()
+        if name != "Dic" and queue
+    }
     if leftovers:
         raise AssertionError(f"unconsumed pattern supplies: {leftovers}")
     print(
         "pattern supply replay: OK "
         f"({frames} frames, {total_updates} updates, {total_cold} cold; "
         f"F0={consumed['F0']} Prg={consumed['Prg']} Wr0={consumed['Wr0']} "
-        f"Wr1={consumed['Wr1']} Main={consumed['Main']})")
+        f"Wr1={consumed['Wr1']} Dic hits={consumed['Dic']})")
     print("VRAM resident/reuse equivalence: OK (every updated cell, every frame)")
 
 

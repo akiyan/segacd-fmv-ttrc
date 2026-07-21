@@ -64,7 +64,7 @@ QUALITY_CATS = [
 SOURCE_CATS = [(name, SUPPLY_COLORS[name]) for name in DISPLAY_SOURCE_ORDER]
 CATS = QUALITY_CATS + SOURCE_CATS
 CAT_FILL = {"Miss"}
-CAT_THICK = {name: 3 for name in DISPLAY_SOURCE_ORDER}
+CAT_THICK = {"Prg": 3, "Wr0": 3, "Wr1": 3}
 DISP = {name: name for name, _ in CATS}
 REQ_TIMELINE_CATS = (
     "Raw", "Prg", "Wr0", "Wr1", "Dic", "Coa", "Flbk", "Miss")

@@ -14,7 +14,7 @@ Use these names for physical pattern storage:
 | `PrgBuf` | `Prg` | Sub-CPU PRG-RAM | 12,416 patterns / 388 KiB usable | Streamed circular buffer; refilled from `BODY.DAT`. |
 | `WordBuf0` | `Wr0` | physical 1M Word-RAM bank 0 | 880 patterns / 27.5 KiB | Loaded once from `HEADER.DAT`, then drained by eligible even frames. |
 | `WordBuf1` | `Wr1` | physical 1M Word-RAM bank 1 | 880 patterns / 27.5 KiB | Loaded once from `HEADER.DAT`, then drained by eligible odd frames. |
-| `MainBuf` | `Main` | Main RAM | 208 patterns / 6.5 KiB | Staged through Word RAM at boot, copied once to Main RAM, then drained by either parity. |
+| `DicBuf` | `Dic` | Main RAM | 256 patterns / 8 KiB | Staged through Word RAM at boot, copied once to Main RAM, then reused by 8-bit index. |
 
 `PrgBuf` is physically implemented as a ring buffer, which is why the player
 still has internal assembly constants such as `RING_BASE` and `RING_SIZE`.
@@ -35,7 +35,7 @@ The design has one offline planning layer and four physical supplies:
 | Layer | Exists where | Purpose |
 |---|---|---|
 | whole-movie quality budget | encoder only | Moves permission to spend bytes from light frames to demanding frames. |
-| `PrgBuf` / `WordBuf0` / `WordBuf1` / `MainBuf` | player memory | Hold the exact pattern bytes that the chosen updates consume. |
+| `PrgBuf` / `WordBuf0` / `WordBuf1` / `DicBuf` | player memory | Hold the exact pattern bytes that the chosen updates use. |
 
 The quality budget is accounting, not a fifth player buffer. Its trace is kept
 for diagnostics but is not shown as a physical-supply meter. Its 388 KiB
@@ -66,8 +66,9 @@ per-frame decisions:
    the final encode.
 4. Record, per frame, complete exact bytes/cold patterns and protected
    Miss-risk bytes/cold patterns.
-5. Allocate the finite `WordBuf0`, `WordBuf1`, and `MainBuf` boot credits to
-   predicted bursts.
+5. Select `DicBuf` from whole-movie reuse first, remove its hits from provisional
+   Prg demand, then allocate finite `WordBuf0` and `WordBuf1` credits to the
+   remaining risky bursts.
 6. Subtract only the saved 32-byte pattern payload from the future demand. A
    preloaded exact tile still needs its 2-byte name-table entry.
 7. Walk the adjusted demand backwards to build the complete-exact and
@@ -132,8 +133,9 @@ Word RAM is allocated first because it is parity-constrained:
 - `WordBuf1` can serve odd timed frames;
 - frame 0 is excluded because it already has its own boot block.
 
-`MainBuf` is allocated afterwards and can fill the largest residual demand on
-either parity. No frame receives more preload credits than its predicted exact
+`DicBuf` is selected before Word RAM. Entries are ranked by whole-movie exact
+reuse, with protected/Miss-risk reuse as the first tie-break. Its hits do not
+consume entries. No frame receives more WordBuf credits than its residual exact
 cold count, and no physical capacity may be exceeded.
 
 The two Word-RAM buffers are not duplicate caches. They hold different pattern
@@ -199,20 +201,20 @@ The final encoder may select fewer cold loads than prediction, or select them
 in a different priority order. It therefore assigns sources to realized cold
 updates, not merely to predicted frame totals.
 
-For each frame, realized preload loads consume that frame's planned Word credit
-first, then its Main credit. Remaining cold loads use `Prg`. Non-cold resident
+For each frame, a realized cold key uses `Dic` when it is in DicBuf. Remaining
+loads consume that frame's planned Word credit, then use `Prg`. Non-cold resident
 repoints always carry source `Prg` as a neutral value because no pattern source
 is consumed.
 
 The decision log stores the source array aligned with the update array. The
 packer validates update counts, cold flags, frame-0 restrictions, all three
 preload capacities, per-frame source totals, and the source-aware run count.
-It then writes four chronological pattern streams:
+It then writes three chronological streams and one indexed dictionary:
 
 - the continuously delivered Prg stream;
 - the boot-only Wr0 stream;
 - the boot-only Wr1 stream;
-- the boot-only Main stream.
+- the boot-only DicBuf dictionary.
 
 ## Player path
 
@@ -227,10 +229,10 @@ change the destination VRAM slot or the displayed name-table value.
 - `Wr0` / `Wr1`: Main reads directly from the immutable preload region in the
   physical Word-RAM bank handed over for that frame. One source code is enough;
   frame parity selects the physical bank.
-- `Main`: boot stages the bytes through frame-0 Word RAM and Main copies them
-  once to `MainBuf`. Later pattern transfers read Main RAM directly.
+- `Dic`: boot stages the dictionary through frame-0 Word RAM and Main copies it
+  once to `DicBuf`. Later pattern transfers address Main RAM by 8-bit index.
 
-Word-RAM sources use the measured VDP DMA first-word correction. `MainBuf` DMA
+Word-RAM sources use the measured VDP DMA first-word correction. `DicBuf` DMA
 does not need that correction. One- and two-tile runs retain the direct-CPU
 fast path; longer runs use bounded VBlank DMA. Source changes split runs even
 when VRAM slots are consecutive.
@@ -253,33 +255,34 @@ headroom, not a fifth supply and not free feature memory.
 
 ## Analysis display
 
-The old Tank and Buf gauges are replaced by four independent remaining-pattern
-meters:
+The old Tank and Buf gauges are replaced by three independent remaining-pattern
+meters plus the `Dic:XXX` category legend:
 
 - `Prg` can rise when `BODY.DAT` prefetches future payload and fall when a
   frame consumes Prg patterns;
-- `Wr0`, `Wr1`, and `Main` begin at their actual boot-loaded totals and only
-  fall as their patterns are consumed;
+- `Wr0` and `Wr1` begin at their actual boot-loaded totals and only fall as
+  their patterns are consumed;
+- DicBuf has no remaining meter because its installed entries are reusable;
 - an unused preload capacity is not drawn as if bytes were loaded;
-- the middle timeline row stacks the four remaining amounts with distinct
+- the middle timeline row stacks the three consumptive remaining amounts with distinct
   colours against the sum of their fixed capacities.
 
 The offline quality-budget trace remains available in the data file but has no
-meter. This keeps the picture faithful to the four real supplies.
+meter. This keeps the picture faithful to the physical supplies.
 
 ## Diagnostics
 
-Schema 4 `buffer_remaining.npz` contains:
+Schema 5 `buffer_remaining.npz` contains:
 
 | Array | Unit | Meaning |
 |---|---:|---|
 | `prg_remaining` | patterns | End-of-frame physical `PrgBuf` occupancy. |
 | `wr0_remaining` | patterns | Unconsumed boot patterns in `WordBuf0`. |
 | `wr1_remaining` | patterns | Unconsumed boot patterns in `WordBuf1`. |
-| `main_remaining` | patterns | Unconsumed boot patterns in `MainBuf`. |
-| `prg_capacity`, `wr0_capacity`, `wr1_capacity`, `main_capacity` | patterns | Fixed capacities used to scale the meters. |
-| `prg_loads`, `wr0_loads`, `wr1_loads`, `main_loads` | patterns/frame | Realized source consumption. |
-| `wr0_preloaded`, `wr1_preloaded`, `main_preloaded` | patterns | Actual boot-loaded totals. |
+| `dic_remaining` | patterns | Installed DicBuf entry count; constant because hits do not consume entries. |
+| `prg_capacity`, `wr0_capacity`, `wr1_capacity`, `dic_capacity` | patterns | Fixed capacities used to scale the physical supplies. |
+| `prg_loads`, `wr0_loads`, `wr1_loads`, `dic_loads` | patterns/frame | Realized source use. |
+| `wr0_preloaded`, `wr1_preloaded`, `dic_preloaded` | patterns | Actual boot-loaded totals. |
 | `quality_budget_remaining` | 32-byte pattern slots | Offline quality-budget level after each frame; diagnostic only. |
 | `exact_demand_bytes`, `protected_demand_bytes` | bytes | Predicted demand before boot-preload credits. |
 | `preload_credit_bytes` | bytes | Predicted payload bytes removed by boot assignment. |
@@ -304,14 +307,10 @@ Every change to this path must pass all of these gates:
 6. a full DEBUG ADPCM22 recording for the target profile, including HUD,
    audio, and visual verification.
 
-The full H40/30 ADPCM22 Bad Apple profile covers 6,576 frames at 320x224,
-1,120 active tiles, and cold cap 178. It consumed all 880 Wr0, 880 Wr1, and 208
-Main boot patterns. Of the 764,830 total cold loads, frame 0 contributed one
-HEADER pattern and timed Prg supplied 762,861; the analysis `prg_loads` trace
-includes frame 0 and therefore sums to 762,862. Prg never fell below 19 ready
-patterns and the physical schedule had no under-run.
-Packing matched every frozen source and run; the independent replay matched
-every frame and every reconstructed VRAM state.
+The older consumptive-preload qualification numbers do not describe v12
+DicBuf and must not be reused as its proof. A current qualification must report
+the 256 installed dictionary entries, realized Dic hits, residual Wr0/Wr1/Prg
+loads, indexed-run equality, and the ordinary full-stream/recording checks.
 
 The corresponding full DEBUG recording kept all 6,575 timed frame intervals at
 exactly two 60 Hz scanouts. HUD `S`, `D`, `R`, and `C` stayed zero, Main VBlank

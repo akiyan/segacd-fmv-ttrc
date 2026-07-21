@@ -4,10 +4,10 @@
 The feature-bit-0 control suffix is appended after the existing audio and an
 absolute-address alignment pad:
 
-    n_runs:u16, repeated (slot_start:u16, count:u16)
+    n_runs:u16, repeated v12 indexed four-byte descriptors
 
 This checker does not import the packer.  It independently reads the real split
-TTRC v6-v11 files, reconstructs every current control and payload byte, and compares
+TTRC v12 files, reconstructs every current control and payload byte, and compares
 two consumers:
 
 * the legacy/fallback Sub path scans all update entries, selects cold entries, builds
@@ -37,6 +37,8 @@ FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
 FEATURE_SHADOW_UPDATE_LISTS = 0x0010
+FEATURE_VRAM_RAW_PREFETCH = 0x0020
+FEATURE_DICBUF_INDEXED_RUNS = 0x0040
 ADPCM_TABLE_SECTORS = 5
 ROUTING_TOTAL_MAX = 5
 PATTERN_SUPPLY_OFFSET = 196
@@ -44,10 +46,10 @@ SOURCE_SHIFT = 11
 SOURCE_MASK = 0x1800
 SOURCE_PRG = 0
 SOURCE_WR = 1
-SOURCE_MAIN = 2
+SOURCE_DIC = 2
 NAME_ENTRY_MASK = 0x67FF
 RUN_SOURCE_SHIFT = 14
-RUN_COUNT_MASK = 0x3FFF
+RUN_COUNT_MASK = 0x07FF
 SHADOW_UPDATE_LIST_TAG = 0x8000
 SHADOW_UPDATE_COUNT_MASK = 0x7FFF
 DEFAULT_DECISIONS = Path(
@@ -246,8 +248,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, pool, base = struct.unpack_from(
         ">4sHHHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10, 11):
-        raise AssertionError(f"expected split TTRC v6-v11, got {magic!r} v{version}")
+    if magic != b"TTRC" or version != 12:
+        raise AssertionError(f"expected split TTRC v12, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -264,7 +266,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     features = struct.unpack_from(">H", header, 62)[0]
     unknown_features = features & ~(
         FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_ADPCM22
-        | FEATURE_PATTERN_SUPPLY | FEATURE_SHADOW_UPDATE_LISTS)
+        | FEATURE_PATTERN_SUPPLY | FEATURE_SHADOW_UPDATE_LISTS
+        | FEATURE_VRAM_RAW_PREFETCH | FEATURE_DICBUF_INDEXED_RUNS)
     if unknown_features:
         raise AssertionError(f"unsupported header feature bits 0x{unknown_features:04X}")
     if features & FEATURE_SHADOW_UPDATE_LISTS and not features & FEATURE_PATTERN_SUPPLY:
@@ -276,27 +279,27 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     )
 
     table_sectors = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
-    wr0_patterns = wr1_patterns = main_patterns = 0
-    wr0_sectors = wr1_sectors = main_sectors = 0
+    wr0_patterns = wr1_patterns = dic_patterns = 0
+    wr0_sectors = wr1_sectors = dic_sectors = 0
     if features & FEATURE_PATTERN_SUPPLY:
         supply = struct.unpack_from(">4s8H", header, PATTERN_SUPPLY_OFFSET)
         supply_magic, supply_version, supply_reserved = supply[:3]
-        if supply_magic != b"PSUP" or supply_version != 1 or supply_reserved:
+        if supply_magic != b"PSUP" or supply_version != 2 or supply_reserved:
             raise AssertionError(f"invalid pattern-supply extension: {supply!r}")
         (
-            wr0_patterns, wr1_patterns, main_patterns,
-            wr0_sectors, wr1_sectors, main_sectors,
+            wr0_patterns, wr1_patterns, dic_patterns,
+            wr0_sectors, wr1_sectors, dic_sectors,
         ) = supply[3:]
 
     cursor = (1 + palette_sectors + table_sectors) * SECTOR
-    wr0_payload = wr1_payload = main_payload = b""
+    wr0_payload = wr1_payload = dic_payload = b""
     if features & FEATURE_PATTERN_SUPPLY:
         wr0_payload, cursor = take_pattern_region(
             header, cursor, wr0_sectors, wr0_patterns, "Wr0")
         wr1_payload, cursor = take_pattern_region(
             header, cursor, wr1_sectors, wr1_patterns, "Wr1")
-        main_payload, cursor = take_pattern_region(
-            header, cursor, main_sectors, main_patterns, "Main")
+        dic_payload, cursor = take_pattern_region(
+            header, cursor, dic_sectors, dic_patterns, "Dic")
     cursor += audio_preload_sectors * SECTOR
     frame0_offset = cursor
     frame0_len = struct.unpack_from(">H", header, frame0_offset)[0]
@@ -385,7 +388,7 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
         control_pos = block_end
 
     source_aware = bool(features & FEATURE_PATTERN_SUPPLY)
-    def control_runs(control: Control) -> tuple[tuple[int, int, int], ...]:
+    def control_runs(control: Control) -> tuple[tuple[int, int, int, int], ...]:
         if control.use_list:
             if control.descriptor_suffix is None:
                 raise AssertionError(
@@ -394,9 +397,11 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
         return old_sub_runs(control.entries, base, source_aware)
 
     total_cold = sum(
-        count for control in controls for _slot, count, _source in control_runs(control))
+        count for control in controls
+        for _slot, count, _source, _dic in control_runs(control))
     timed_prg_cold = sum(
-        count for control in controls[1:] for _slot, count, source in control_runs(control)
+        count for control in controls[1:]
+        for _slot, count, source, _dic in control_runs(control)
         if not source_aware or source == SOURCE_PRG)
     streamed_pattern_bytes = timed_prg_cold * PATTERN_BYTES
     streamed_payload = bytes(prebuffer_payload + body_payload)
@@ -408,7 +413,7 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     prg_payload = streamed_payload[:streamed_pattern_bytes]
     if source_aware:
         source_payloads = (
-            frame0_payload, prg_payload, wr0_payload, wr1_payload, main_payload)
+            frame0_payload, prg_payload, wr0_payload, wr1_payload, dic_payload)
         payload = b"".join(source_payloads)
     else:
         source_payloads = None
@@ -452,62 +457,73 @@ def pack_pattern(key: bytes) -> bytes:
 
 def old_sub_runs(
     entries: tuple[int, ...], base: int, source_aware: bool,
-) -> tuple[tuple[int, int, int], ...]:
+) -> tuple[tuple[int, int, int, int], ...]:
     """Model the entry scan and source-aware open-run accumulator."""
-    result: list[tuple[int, int, int]] = []
+    result: list[tuple[int, int, int, int]] = []
     for entry in entries:
         if not entry & 0x8000:
             continue
         slot = (entry & 0x07FF) - base
         source = (entry & SOURCE_MASK) >> SOURCE_SHIFT if source_aware else 0
         if (result and result[-1][0] + result[-1][1] == slot
-                and result[-1][2] == source):
-            start, count, _source = result[-1]
-            result[-1] = start, count + 1, source
+                and result[-1][2] == source
+                and source != SOURCE_DIC):
+            start, count, _source, _dic = result[-1]
+            result[-1] = start, count + 1, source, 0
         else:
-            result.append((slot, 1, source))
+            # Entry metadata has no DicBuf index. Dic runs cannot be rebuilt
+            # from entries alone in v12, so keep each Dic update separate.
+            result.append((slot, 1, source, 0))
     return tuple(result)
 
 
 def per_run_descriptors(
     entries: tuple[int, ...], colds: tuple[bool, ...], sources: tuple[int, ...],
-    base: int,
-) -> tuple[tuple[int, int, int], ...]:
+    dic_indices: tuple[int, ...], base: int,
+) -> tuple[tuple[int, int, int, int], ...]:
     """Build the proposed descriptor list from packer's logical per tuple."""
-    result: list[tuple[int, int, int]] = []
-    for entry, cold, source in zip(entries, colds, sources, strict=True):
+    result: list[tuple[int, int, int, int]] = []
+    for entry, cold, source, dic_index in zip(
+            entries, colds, sources, dic_indices, strict=True):
         if not cold:
             continue
         slot = (entry & 0x07FF) - base
         if (result and result[-1][0] + result[-1][1] == slot
-                and result[-1][2] == source):
-            start, count, _source = result[-1]
-            result[-1] = start, count + 1, source
+                and result[-1][2] == source
+                and (source != SOURCE_DIC
+                     or result[-1][3] + result[-1][1] == dic_index)):
+            start, count, _source, start_dic = result[-1]
+            result[-1] = start, count + 1, source, start_dic
         else:
-            result.append((slot, 1, source))
+            result.append((slot, 1, source, dic_index if source == SOURCE_DIC else 0))
     return tuple(result)
 
 
 def encode_descriptors(
-    runs: tuple[tuple[int, int, int], ...], source_aware: bool,
+    runs: tuple[tuple[int, int, int, int], ...], source_aware: bool,
 ) -> bytes:
     if len(runs) > 0xFFFF:
         raise AssertionError("descriptor count does not fit u16")
     raw = bytearray(struct.pack(">H", len(runs)))
-    for slot_start, count, source in runs:
+    for slot_start, count, source, dic_index in runs:
         count_limit = RUN_COUNT_MASK if source_aware else 0xFFFF
         if not 0 <= slot_start <= 0xFFFF or not 1 <= count <= count_limit:
             raise AssertionError(f"invalid run ({slot_start}, {count}, {source})")
-        if source_aware and source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN):
+        if source_aware and source not in (SOURCE_PRG, SOURCE_WR, SOURCE_DIC):
             raise AssertionError(f"invalid run source {source}")
-        source_count = count | (source << RUN_SOURCE_SHIFT) if source_aware else count
-        raw += struct.pack(">HH", slot_start, source_count)
+        if source != SOURCE_DIC and dic_index:
+            raise AssertionError("non-Dic run carries a dictionary index")
+        word0 = slot_start | ((dic_index >> 3) << 11)
+        source_count = (
+            count | (source << RUN_SOURCE_SHIFT) | ((dic_index & 7) << 11)
+            if source_aware else count)
+        raw += struct.pack(">HH", word0, source_count)
     return bytes(raw)
 
 
 def decode_descriptors(
     raw: bytes, source_aware: bool,
-) -> tuple[tuple[int, int, int], ...]:
+) -> tuple[tuple[int, int, int, int], ...]:
     if len(raw) < 2:
         raise AssertionError("descriptor suffix is truncated")
     n_runs = struct.unpack_from(">H", raw)[0]
@@ -517,25 +533,27 @@ def decode_descriptors(
         )
     result = []
     for index in range(n_runs):
-        slot, source_count = struct.unpack_from(">HH", raw, 2 + 4 * index)
+        word0, source_count = struct.unpack_from(">HH", raw, 2 + 4 * index)
+        slot = word0 & 0x07FF
         if source_aware:
             count = source_count & RUN_COUNT_MASK
             source = source_count >> RUN_SOURCE_SHIFT
-            if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN) or not count:
+            dic_index = ((word0 >> 11) << 3) | ((source_count >> 11) & 7)
+            if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_DIC) or not count:
                 raise AssertionError(
                     f"invalid source-aware run ({slot}, 0x{source_count:04X})")
         else:
-            count, source = source_count, SOURCE_PRG
-        result.append((slot, count, source))
+            count, source, dic_index = source_count, SOURCE_PRG, 0
+        result.append((slot, count, source, dic_index))
     return tuple(result)
 
 
 def expanded_slots(
-    runs: tuple[tuple[int, int, int], ...],
+    runs: tuple[tuple[int, int, int, int], ...],
 ) -> tuple[tuple[int, int], ...]:
     return tuple(
         (slot, source)
-        for slot_start, count, source in runs
+        for slot_start, count, source, _dic in runs
         for slot in range(slot_start, slot_start + count)
     )
 
@@ -613,6 +631,11 @@ def main() -> None:
     run_counts: list[int] = []
     source_aware = bool(stream.features & FEATURE_PATTERN_SUPPLY)
     source_positions = [0] * 5
+    dic_payload = stream.source_payloads[4] if stream.source_payloads else b""
+    dic_index_by_pattern = {
+        dic_payload[pos:pos + PATTERN_BYTES]: pos // PATTERN_BYTES
+        for pos in range(0, len(dic_payload), PATTERN_BYTES)
+    }
 
     for seq, (decision_frame, control) in enumerate(
         zip(decision_frames, stream.controls, strict=True)
@@ -654,13 +677,21 @@ def main() -> None:
             sources = tuple(
                 (entry & SOURCE_MASK) >> SOURCE_SHIFT if cold and source_aware else 0
                 for entry, cold in zip(control.entries, colds, strict=True))
+        ordered_patterns = tuple(pack_pattern(bytes(item[2])) for item in ordered)
+        dic_indices = tuple(
+            dic_index_by_pattern[pattern]
+            if cold and source == SOURCE_DIC else 0
+            for pattern, cold, source in zip(
+                ordered_patterns, colds, sources, strict=True))
         old_runs = (
             decoded_packed_runs if control.use_list
-            else old_sub_runs(control.entries, stream.base, source_aware))
+            else per_run_descriptors(
+                tuple(entry & NAME_ENTRY_MASK for entry in control.entries),
+                colds, sources, dic_indices, stream.base))
         entry_mask = NAME_ENTRY_MASK if source_aware else 0x7FFF
         logical_entries = tuple(entry & entry_mask for entry in control.entries)
         proposed_runs = per_run_descriptors(
-            logical_entries, colds, sources, stream.base)
+            logical_entries, colds, sources, dic_indices, stream.base)
         expected_suffix = encode_descriptors(proposed_runs, source_aware)
         suffix = packed_suffix or expected_suffix
         if packed_suffix is not None and suffix != expected_suffix:
@@ -673,8 +704,8 @@ def main() -> None:
 
         cold_count = sum(colds)
         decision_patterns = [
-            pack_pattern(bytes(item[2]))
-            for item, cold in zip(ordered, colds, strict=True)
+            pattern
+            for pattern, cold in zip(ordered_patterns, colds, strict=True)
             if cold
         ]
         expected_frame_payload = b"".join(decision_patterns)
@@ -690,12 +721,9 @@ def main() -> None:
                 raise AssertionError(
                     f"frame {seq}: physical payload order differs from decisions.pkl")
         else:
-            cold_index = 0
-            cold_sources = [
-                source for source, cold in zip(sources, colds, strict=True)
-                if cold]
-            for source in cold_sources:
-                if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_MAIN):
+            physical_patterns = []
+            for _slot, count, source, run_dic_index in decoded_runs:
+                if source not in (SOURCE_PRG, SOURCE_WR, SOURCE_DIC):
                     raise AssertionError(f"frame {seq}: invalid source {source}")
                 if seq == 0:
                     payload_index = 0
@@ -706,19 +734,20 @@ def main() -> None:
                 else:
                     payload_index = 4
                 physical = stream.source_payloads[payload_index]
-                pos = source_positions[payload_index]
-                pattern = physical[pos:pos + PATTERN_BYTES]
-                if len(pattern) != PATTERN_BYTES:
-                    raise AssertionError(
-                        f"frame {seq}: source {payload_index} is exhausted")
-                if pattern != decision_patterns[cold_index]:
-                    raise AssertionError(
-                        f"frame {seq}: source {payload_index} payload differs")
-                source_positions[payload_index] += PATTERN_BYTES
-                cold_index += 1
-            if cold_index != len(decision_patterns):
+                for offset in range(count):
+                    pos = ((run_dic_index + offset) * PATTERN_BYTES
+                           if source == SOURCE_DIC
+                           else source_positions[payload_index])
+                    pattern = physical[pos:pos + PATTERN_BYTES]
+                    if len(pattern) != PATTERN_BYTES:
+                        raise AssertionError(
+                            f"frame {seq}: source {payload_index} is exhausted")
+                    physical_patterns.append(pattern)
+                    if source != SOURCE_DIC:
+                        source_positions[payload_index] += PATTERN_BYTES
+            if physical_patterns != decision_patterns:
                 raise AssertionError(
-                    f"frame {seq}: consumed {cold_index}/{len(decision_patterns)} patterns")
+                    f"frame {seq}: physical source patterns differ from decisions")
 
         old_slots = tuple(
             ((entry & 0x07FF) - stream.base, source)
@@ -749,6 +778,8 @@ def main() -> None:
     else:
         for index, (position, payload) in enumerate(
                 zip(source_positions, stream.source_payloads, strict=True)):
+            if index == 4:
+                continue
             if position != len(payload):
                 raise AssertionError(
                     f"source {index}: consumed {position}/{len(payload)} bytes")

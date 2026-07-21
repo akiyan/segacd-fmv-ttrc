@@ -169,6 +169,7 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
     fixed_n2 = bool(features & ttrc_routing.FEATURE_FIXED_N2)
     adpcm22 = bool(features & ttrc_routing.FEATURE_ADPCM22)
     pattern_supply_enabled = bool(features & ttrc_routing.FEATURE_PATTERN_SUPPLY)
+    indexed_dicbuf = bool(features & ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS)
     if adpcm22 and audio_bytes & 1:
         raise ValueError(f"ADPCM decoded audio_bytes must be even, got {audio_bytes}")
     audio_control_bytes = (
@@ -186,6 +187,8 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
         wr0_sectors, wr1_sectors, dic_sectors,
     ) = supply_values
     if pattern_supply_enabled:
+        if not indexed_dicbuf:
+            raise ValueError("v12 pattern supply requires indexed DicBuf runs")
         if supply_magic != PATTERN_SUPPLY_MAGIC:
             raise ValueError(f"bad pattern-supply magic: {supply_magic!r}")
         if supply_version != PATTERN_SUPPLY_VERSION or supply_reserved != 0:

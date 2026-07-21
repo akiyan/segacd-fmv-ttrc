@@ -294,7 +294,7 @@ def main() -> None:
     if len(h40_image) != 7296 or CODEGEN_START + len(h40_image) != 0x00FF6580:
         raise AssertionError("unexpected maximum H40 generated size")
     if CODEGEN_LIMIT - (CODEGEN_START + len(h40_image)) != 128:
-        raise AssertionError("unexpected MainBuf guard margin after maximum H40 codegen")
+        raise AssertionError("unexpected DicBuf guard margin after maximum H40 codegen")
     print(f"assembly emitter constants: OK ({PLAYER_SOURCE})")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

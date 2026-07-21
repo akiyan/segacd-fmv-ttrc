@@ -26,8 +26,8 @@ Where a value lives: **sp** = `boot/movieplay_sp.s` (Sub CPU), **ip** =
 ## A. Pattern supplies and offline quality budget
 
 The player exposes four physical pattern supplies: streamed `PrgBuf`,
-boot-preloaded `WordBuf0`, `WordBuf1`, and `MainBuf`. The short analysis labels
-are Prg, Wr0, Wr1, and Main. The old Tank name is retired.
+boot-preloaded `WordBuf0`, `WordBuf1`, and persistent `DicBuf`. The short analysis labels
+are Prg, Wr0, Wr1, and Dic. The old Tank name is retired.
 
 The encoder also keeps an offline whole-movie quality budget. It decides when
 the encode may spend bytes, but it is not another player buffer and is not
@@ -42,9 +42,9 @@ can schedule.
 | `PRG_BUF_CAP_KB` | 388 KB (derived) | cfg -> sim / pack | Public usable `PrgBuf` schedule/prefetch ceiling = `RING_SIZE_KB - RING_JITTER_MARGIN_KB`. `RING_CAP_KB` remains an internal compatibility alias. |
 | `QUALITY_BUDGET_KB` | 388 KB (derived) | cfg -> sim | Capacity of offline quality accounting. It matches the usable Prg ceiling but has an independent trace and no physical meter. Configured runs overwrite inherited `CBRSIM_QUALITY_BUDGET_KB`. |
 | `WordBuf0` / `WordBuf1` | 880 patterns each (27.5 KB each) | sp / ip / sim / pack | Different boot-preloaded sequences in the two physical Word-RAM banks at offset `+0x15200..+0x1C000`. Wr0 serves even timed frames and Wr1 odd timed frames; they are not duplicated copies. |
-| `MainBuf` | 208 patterns (6.5 KB) | ip / sim / pack | Boot-staged at Word-RAM `+0xD000`, then copied once to Main RAM `0xFF6600..0xFF8000`. Either frame parity may consume it. |
+| `DicBuf` | 256 patterns (8 KB) | ip / sim / pack | Persistent dictionary boot-staged at Word-RAM `+0xD000`, then copied once to Main RAM `0xFF6600..0xFF8600`. Either frame parity may reuse entries by 8-bit index without consuming them. |
 | `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. The Prg schedule ceiling must stay below it. |
-| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v11 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
+| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v12 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | Prg prebuffer | up to `PRG_BUF_CAP_KB` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both usable Prg capacity and the clip's future Prg load total. |
 | frame-0 boot staging | 36 KB max in the 40 KB jitter tail | sp | Frame 0 is temporarily stored at the usable-Prg end and expanded before BODY streaming reuses those PRG-RAM bytes. |
@@ -209,7 +209,7 @@ continuously.
 | ring-full skip | occ >= 424 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
 | `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. With `FEATURE_FIXED_N2`, 400 frames receive exactly 1001 sectors: 199 two-sector and 201 three-sector allowances. Feature-clear 24fps and 15fps retain the delivery-paced 75/fps schedule (3.125 and 5 sectors/frame). In v6+ each `BODY.DAT` slot is control / future payload / pad; v7+ packs the control and total counts into one routing byte. |
-| `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, optional ADPCM tables, the v10 WordBuf0 / WordBuf1 / MainBuf boot-pattern regions, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
+| `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; PALTAB, optional ADPCM tables, the v12 WordBuf0 / WordBuf1 / DicBuf boot-pattern regions, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
 | `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. At 24fps or above, the Sub copies eligible blocks by these runs instead of scanning every update entry again. Old streams use the entry fallback; old players ignore the suffix via `total_len`. |
 | `FEATURE_FIXED_N2` | header bit 1 at offset 62 (v8) | pack / sp / ip | Authoritative fixed-cadence contract. Main forces one flip every two VBlanks and Sub selects the matching 1001/400 sector accumulator. The packer sets it only when `uses_fixed_n2_cadence(fps)` is true; 24fps leaves it clear despite its N=2 hint. |
 | `FEATURE_ADPCM22` | header bit 2 at offset 62 (v9) | pack / sp | Live controls use checkpointed IMA ADPCM, the full-table boot region is present, and `audio_bytes` means decoded samples. |
@@ -222,7 +222,7 @@ continuously.
 | `VB_WORDS_H40` | 3400 words/VBlank | ip | H40 per-VBlank DMA word budget (conservative vs. ~3895 theoretical). |
 | `VB_WORDS_H32` | 2800 words/VBlank | ip | H32 per-VBlank DMA word budget. |
 | fixed N2 cadence | `FEATURE_FIXED_N2` (v8) | pack / sp / ip | Main flips every exactly two VBlanks. The paired Sub schedule is 1001/400 sectors/frame, so CD delivery does not run ahead of the fixed display clock. This feature bit is authoritative; `vsync_n` alone never enables the path. Current 24fps and 15fps streams leave it clear and remain delivery-paced. |
-| `MAIN_CODEGEN_BASE..LIMIT` | 17.5 KB (`0xFF2000..0xFF65FF`) | ip | Reserved for Main-CPU code generated once after header setup. The H40 maximum currently ends at `0xFF6580`; `MainBuf` begins at `0xFF6600`, leaving a 128-byte guard. |
+| `MAIN_CODEGEN_BASE..LIMIT` | 17.5 KB (`0xFF2000..0xFF65FF`) | ip | Reserved for Main-CPU code generated once after header setup. The H40 maximum currently ends at `0xFF6580`; `DicBuf` begins at `0xFF6600`, leaving a 128-byte guard. |
 | `RUN_TABLE` | 1536 records by address range; current cold cap is much lower | ip | `(dst, len, src)` table of contiguous cold-slot runs. Each record is counted by H40 HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. |
 
 ## F. Physical CD delivery and encoder allowance
@@ -240,7 +240,7 @@ continuously.
 Per-cell the sim picks: Raw (accurate load charged to the current-frame
 allowance), Same, Near/Coa/Flbk (reuse a resident tile), Buf (accurate load
 funded by saved whole-movie allowance or a boot-preload credit), or Miss. Raw
-and Buf are quality-funding classes; Prg/Wr0/Wr1/Main independently records the
+and Buf are quality-funding classes; Prg/Wr0/Wr1/Dic independently records the
 physical source. These thresholds steer the choice.
 Frequently changed profile values use their TOML names below. The remaining
 `CBRSIM_*` variables are advanced shared experiments; do not put per-movie
@@ -272,8 +272,9 @@ encoder without analysis PNG time.
 
 After quantization, the encoder dry-runs the exact target through the shared
 VRAM allocator and predicts each frame's name-table and cold-pattern demand.
-It first water-fills the finite WordBuf0/WordBuf1/MainBuf boot credits across
-predicted bursts, then a backwards pass derives the minimum offline quality
+It first selects the persistent DicBuf from whole-movie reuse, removes those
+hits from provisional Prg demand, and water-fills the finite WordBuf0/WordBuf1
+credits across the remaining risky bursts. A backwards pass then derives the minimum offline quality
 reserve needed after every frame. This is the only quality-budget allocation
 path.
 
@@ -342,7 +343,7 @@ that generated fast path. Linker assertions keep permanent text/data below
 `0xFF2000`, place the preload UI's transient font and strings at the future
 generated-code base, and place BSS above PALTAB at `0xFFD000`. Code generation
 overwrites the transient UI assets before playback without taking capacity from
-MainBuf or any streamed buffer.
+DicBuf or any streamed buffer.
 
 `sim.py` resolves the profile once and stores the exact geometry, timing, audio,
 stream, hardware, palette, and pack settings plus the TOML SHA-256 in

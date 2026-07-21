@@ -213,21 +213,21 @@ def require_canonical_p0_debug_colours(log):
     """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
     if not seg_pals:
-        raise SystemExit("pack v11: decision log has no segment palettes; re-run sim")
+        raise SystemExit("pack v12: decision log has no segment palettes; re-run sim")
     for seg, pals in enumerate(seg_pals):
         a = np.asarray(pals, np.uint8)
         if a.shape != (4, 15, 3):
             raise SystemExit(
-                f"pack v11: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
+                f"pack v12: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
                 "re-run sim")
         brightness = a.astype(np.int16).sum(axis=2)
         if int(brightness[0, 0]) != int(brightness.min()):
             raise SystemExit(
-                f"pack v11: decision log segment {seg} P0 index1 is not tied for globally "
+                f"pack v12: decision log segment {seg} P0 index1 is not tied for globally "
                 "darkest usable CRAM colour (RGB sum); re-run sim with the current encoder")
         if int(brightness[0, 14]) != int(brightness.max()):
             raise SystemExit(
-                f"pack v11: decision log segment {seg} P0 index15 is not tied for globally "
+                f"pack v12: decision log segment {seg} P0 index15 is not tied for globally "
                 "brightest usable CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
@@ -969,7 +969,7 @@ def _decode_control_chunk(chunk):
 
 
 def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL):
-    """Write the v11 split stream and a combined tooling container.
+    """Write the v12 split stream and a combined tooling container.
 
     HEADER.DAT:
       Header(1sec) | PALTAB | [ADPCM_TABLE] | [WR0] | [WR1] | [MAIN]
@@ -1106,7 +1106,7 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
     fps_int = int(round(FPS))                         # 名目fps。FEATURE_FIXED_N2時はplayerが1001/400を選ぶ
     audio_fd = av_config.rf5c164_fd(AUDIO_PCM, PLAYBACK_FPS)
     if not f0_header:
-        raise SystemExit("pack v11 requires frame0 in HEADER.DAT")
+        raise SystemExit("pack v12 requires frame0 in HEADER.DAT")
     features = FEATURE_COLD_RUNS | FEATURE_DICBUF_INDEXED_RUNS
     if av_config.uses_fixed_n2_cadence(FPS):
         features |= FEATURE_FIXED_N2
@@ -1248,7 +1248,7 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
           f"{len(supply_plan.wr1_patterns)}/{len(supply_plan.dic_patterns)} "
           f"frame0 {f0_ctrl_sec}+{f0_pat_sec} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v11 N={vsync_n}"
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v12 N={vsync_n}"
           f"(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO_KIND} "
           f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B FD=0x{audio_fd:04X}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
@@ -1276,7 +1276,7 @@ def main():
     ap.add_argument("--startup-audio-frames", type=int, default=None,
                     help="override the frozen startup prefetch depth")
     ap.add_argument("--pattern-supply", action=argparse.BooleanOptionalAction, default=True,
-                    help="move selected existing cold runs to Wr0/Wr1/Main boot preloads")
+                    help="assign cold patterns to Prg/Wr0/Wr1/Dic physical supplies")
     ap.add_argument("--no-write", action="store_true")
     args = ap.parse_args()
 
@@ -1340,6 +1340,10 @@ def main():
     supply_plan = pattern_supply.plan_supply(
         log, per, Plist, prefetch_per=prefetch_per,
         enabled=supply_enabled)
+    if supply_enabled and int((log.get("pattern_supply") or {}).get(
+            "schema_version", 0)) != 2:
+        raise SystemExit(
+            "pack v12 requires a current DicBuf decision log; re-run sim")
     print(f"  pattern supply: enabled={int(supply_plan.enabled)} "
           f"Prg={len(supply_plan.prg_patterns)} "
           f"Wr0={len(supply_plan.wr0_patterns)}/{pattern_supply.WORD_BUF_PATTERNS} "

@@ -12,8 +12,8 @@ The reserved Main RAM layout is:
 0xFF2200  generated bitmap handlers
 0xFF4900  expected Phase 1 end
 0xFF6580  maximum H40 NT blitter end
-0xFF6600  hard code-generation limit and MainBuf start
-0xFF8000  MainBuf end and existing RUN_TABLE
+0xFF6600  hard code-generation limit and DicBuf start
+0xFF8600  DicBuf end and RUN_TABLE start
 ```
 
 Each set bit emits exactly one entry read, register-mask cold/source-bit strip, and shadow write.
@@ -23,7 +23,7 @@ during playback.
 
 The dispatch keeps the existing `00` skip and uses four masked longword writes
 for `FF`; only partial masks enter the generated jump table. The shared
-`0x67FF67FF` register mask strips the cold bit and the two Prg/Wr/Main
+`0x67FF67FF` register mask strips the cold bit and the two Prg/Wr/Dic
 source bits while keeping the palette and tile index intact.
 
 Run the full proof:
@@ -34,7 +34,7 @@ tools/python.sh harness/main_codegen/verify_handlers.py
 
 The proof covers all 256 masks with deterministic entry/shadow data, parses
 every emitted opcode, verifies every table offset and branch target, checks the
-MainBuf boundary, and asks the project 68000 objdump to decode representative
+DicBuf boundary, and asks the project 68000 objdump to decode representative
 handlers. To retain the complete generated image for manual disassembly:
 
 ```sh
@@ -61,7 +61,7 @@ tools/python.sh harness/main_codegen/verify_blitters.py
 ```
 
 The maximum H40 pair occupies 7,296 bytes (`0xFF4900..0xFF657F`), leaving a
-128-byte guard before `MainBuf` at `0xFF6600`. Invalid or oversized geometry is
+128-byte guard before `DicBuf` at `0xFF6600`. Invalid or oversized geometry is
 rejected so the player can retain the existing generic blitter as fallback.
 
 Measure the per-frame instruction cost against a real packed stream with:

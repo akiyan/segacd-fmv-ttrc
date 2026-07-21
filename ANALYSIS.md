@@ -70,12 +70,13 @@ Low-resolution grids therefore appear at their true on-screen size.
   fill behind the digits. All zero-padded digits use the normal text colour.
   Swatch styles mirror the map except that borderless `Same` uses the original
   light/dark checker swatch in the legend. `Raw` = black/white dashed frame, `Miss` = red
-  fill, `Near/Coa/Flbk` = thin frame, and
-  `Prg/Wr0/Wr1/Dic` = thick physical-source frame.
+  fill, `Near/Coa/Flbk/Dic` = thin frame, and
+  `Prg/Wr0/Wr1` = thick physical-source frame. Dic remains distinguishable by
+  its amber colour.
 - **Category map** (middle): the tile grid. Each 8x8 tile shows its
   **reconstructed content**; the category (see Tile Categories) is indicated by
   the border: `Raw` = thin black/white dashed frame, `Same` = no border,
-  `Near/Coa/Flbk` = thin 1px border, and `Prg/Wr0/Wr1/Dic` = thick 3px
+  `Near/Coa/Flbk/Dic` = thin 1px border, and `Prg/Wr0/Wr1` = thick 3px
   border. A `Miss` tile is
   drawn as a **red-filled hole** (its content is not updated this frame).
 - **Category totals** (directly below the category map, `CATTOT_XY`): a thin
@@ -142,7 +143,7 @@ find *some* resident rather than leave a hole.
 | **Prg** | violet thick border | 34 | An exact cold load funded from saved whole-movie allowance and physically supplied by streamed PrgBuf. |
 | **Wr0** | blue thick border | 2 (name) | An exact cold load using a boot-preloaded WordBuf0 pattern. |
 | **Wr1** | cyan thick border | 2 (name) | An exact cold load using a boot-preloaded WordBuf1 pattern. |
-| **Dic** | amber thick border | 2 (name) | An exact cold load using an entry from persistent DicBuf. |
+| **Dic** | amber thin border | 2 (name) | An exact cold load using an entry from persistent DicBuf. |
 
 ### Selection order (per changed tile, `commit_unified`)
 

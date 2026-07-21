@@ -339,6 +339,7 @@ bad_header:
 	move.w	d1, h_routing_sec
 	move.w	14(a0), h_pool			/* tile pool slots; validates run-descriptor bounds */
 	move.w	12(a0), d0			/* cells */
+	move.w	d0, h_cells
 	addq.w	#7, d0
 	lsr.w	#3, d0
 	move.w	d0, h_bmbytes			/* ceil(cells/8) */
@@ -2100,6 +2101,8 @@ h_frames:
 	.space 2
 h_pool:
 	.space 2				/* header pool slots; descriptor destination bound */
+h_cells:
+	.space 2				/* header cell count; raw-prefetch run bound */
 h_bmbytes:
 	.space 2
 h_routing_sec:

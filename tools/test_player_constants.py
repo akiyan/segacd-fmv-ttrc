@@ -92,7 +92,8 @@ class PlayerConstantsTest(unittest.TestCase):
         values = player_constants.parse_header_sector(make_header(
             features=(ttrc_routing.FEATURE_COLD_RUNS
                       | ttrc_routing.FEATURE_FIXED_N2
-                      | ttrc_routing.FEATURE_PATTERN_SUPPLY),
+                      | ttrc_routing.FEATURE_PATTERN_SUPPLY
+                      | ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS),
             supply_counts=(880, 879, 256),
         ))
         self.assertEqual(values.wr0_patterns, pattern_supply.WORD_BUF_PATTERNS)
@@ -100,6 +101,15 @@ class PlayerConstantsTest(unittest.TestCase):
         self.assertEqual(values.dic_patterns, pattern_supply.DIC_BUF_PATTERNS)
         self.assertEqual((values.wr0_sectors, values.wr1_sectors, values.dic_sectors),
                          (14, 14, 4))
+
+    def test_pattern_supply_requires_indexed_dicbuf_feature(self):
+        with self.assertRaisesRegex(ValueError, "indexed DicBuf"):
+            player_constants.parse_header_sector(make_header(
+                features=(ttrc_routing.FEATURE_COLD_RUNS
+                          | ttrc_routing.FEATURE_FIXED_N2
+                          | ttrc_routing.FEATURE_PATTERN_SUPPLY),
+                supply_counts=(1, 1, 1),
+            ))
 
     def test_generation_is_deterministic_and_preserves_mtime(self):
         with tempfile.TemporaryDirectory() as td:

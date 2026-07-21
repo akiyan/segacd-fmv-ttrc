@@ -730,7 +730,7 @@ bf_ubit:
 	lsr.b	#1, d0
 	bcc	1f
 	move.w	(a0)+, d3
-	andi.w	#0x67FF, d3			/* strip cold and Prg/Wr/Main source bits */
+	andi.w	#0x67FF, d3			/* strip cold and Prg/Wr/Dic source bits */
 	move.w	d3, (a1)
 1:
 	addq.l	#2, a1
@@ -1565,7 +1565,7 @@ dbgfont:
 	.incbin "dbgfont.bin"
 .ifdef HUD_HEX_TABLE
 /* Longword order matches two consecutive VDP name-table writes.  This table
-   remains in the permanent IP image; it does not consume MainBuf capacity. */
+   remains in the permanent IP image; it does not consume DicBuf capacity. */
 	.align 2
 dbg_hex_pairs:
 	.set dbg_hex_byte, 0

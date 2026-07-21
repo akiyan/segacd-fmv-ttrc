@@ -1,6 +1,6 @@
 # Pattern supply replay
 
-This harness independently verifies the v10 boot-preloaded pattern supplies.
+This harness independently verifies the v12 boot-preloaded pattern supplies.
 It does not import the production packer, scheduler, or planner.
 
 The player has four pattern sources:
@@ -9,10 +9,11 @@ The player has four pattern sources:
 - `WordBuf0`: immutable patterns in the physical Word-RAM bank handed to Main
   for even movie frames.
 - `WordBuf1`: the corresponding bank for odd movie frames.
-- `MainBuf`: immutable boot-preloaded patterns copied once into Main RAM.
+- `DicBuf`: a persistent 256-entry dictionary copied once into Main RAM.
 
 On-disc cold entries use the otherwise unused name-table flip bits to identify
-`Prg`, `Wr`, or `Main`. Cold-run descriptor count words carry the same source.
+`Prg`, `Wr`, or `Dic`. Cold-run descriptors carry the source and an 8-bit
+DicBuf start index.
 `Wr` resolves to `Wr0` or `Wr1` from movie-frame parity.
 
 Run the independent whole-stream proof against an already packed profile:
@@ -27,10 +28,8 @@ tools/python.sh harness/pattern_supply/verify.py \
 The verifier parses every HEADER and BODY sector, reproduces rate-slot
 boundaries, validates source-coded runs, consumes each physical source in exact
 player order, and checks every cold and reused VRAM pattern against the decision
-log. It also requires every preload and every useful Prg pattern to be consumed
-exactly once with only zero sector padding left.
+log. It also requires every consumptive preload and every useful Prg pattern to
+be consumed exactly once, while DicBuf entries may be reused by index.
 
-The full 6,576-frame Bad Apple H40/30 ADPCM22 proof consumed one frame-0 HEADER
-pattern, all 880 Wr0, 880 Wr1, and 208 Main patterns, then 762,861 timed Prg
-patterns without an under-run. It matched every source-coded transfer and every
-reconstructed VRAM cell against the decision log.
+Run this proof again after a current v12 full encode; older consumptive-preload
+counts are not evidence for indexed DicBuf.

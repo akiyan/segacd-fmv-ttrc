@@ -39,8 +39,8 @@ Everything else is shaped by Sega CD hardware, not by video theory:
   a hole). Accuracy is traded for zero pattern transfer.
 - **Whole-movie quality budget + four pattern supplies.** The encoder first
   dry-runs the quantized movie through the same VRAM allocator used for the
-  final encode. It assigns the boot-only WordBuf0, WordBuf1, and MainBuf space
-  to predicted bursts, then a backwards pass reserves only the offline quality
+  final encode. It selects the boot-only 256-entry DicBuf from whole-movie reuse,
+  assigns WordBuf0 and WordBuf1 to the remaining risky bursts, then a backwards pass reserves only the offline quality
   allowance needed by future updates. Remaining patterns arrive through the
   streamed PRG-RAM PrgBuf. Quality funding and physical source are frozen
   independently for every update.

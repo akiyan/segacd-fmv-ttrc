@@ -95,7 +95,7 @@ copy visible to both CPUs.
 
 The address map applies to both physical banks. The `+0x15200` contents differ:
 WordBuf0 and WordBuf1 are independent chronological preload streams, not
-duplicated caches. The frame-0 bank also carries the temporary MainBuf stage at
+duplicated caches. The frame-0 bank also carries the temporary DicBuf stage at
 boot, so fixed-headroom accounting conservatively reserves that range in either
 physical bank.
 
@@ -107,8 +107,8 @@ physical bank.
 | `+0x09802..+0x0AEFF` | `0xC9802..0xCAEFF` | 5.75 KiB | obsolete normal-path `O_UPDS`; still used by dump diagnostics | Conditional 5.75 KiB |
 | `+0x0AF00..+0x0AFFF` | `0xCAF00..0xCAFFF` | 256 B | DEBUG counters and copied header | 156 B in three fixed holes |
 | `+0x0B000..+0x0CFFF` | `0xCB000..0xCCFFF` | 8.00 KiB | maximum 64-entry PALTAB staging | 0 |
-| `+0x0D000..+0x0E9FF` | `0xCD000..0xCE9FF` | 6.50 KiB | MainBuf boot staging in the physical frame-0 bank | 0 for fixed all-playback allocation |
-| `+0x0EA00..+0x0FFFF` | `0xCEA00..0xCFFFF` | **5.50 KiB** | tail after maximum MainBuf stage | **5.50 KiB** |
+| `+0x0D000..+0x0EFFF` | `0xCD000..0xCEFFF` | 8.00 KiB | DicBuf boot staging in the physical frame-0 bank | 0 for fixed all-playback allocation |
+| `+0x0F000..+0x0FFFF` | `0xCF000..0xCFFFF` | **4.00 KiB** | tail after maximum DicBuf stage | **4.00 KiB** |
 | `+0x10000..+0x11FFF` | `0xD0000..0xD1FFF` | 8.00 KiB | linear control scratch | 3.21 KiB after the all-rate 4,900-byte maximum; 4.53 KiB for H40/N2 |
 | `+0x12000..+0x127FF` | `0xD2000..0xD27FF` | 2.00 KiB | one CD-sector stage / pad discard | 0 |
 | `+0x12800..+0x14A5F` | `0xD2800..0xD4A5F` | 8,800 B | full ADPCM next-index, signed-delta, and output tables | 0 |
@@ -122,11 +122,11 @@ The fixed all-playback total in one bank is:
 ```text
 2.867 KiB  load tail that survives frame 0
 0.152 KiB  fixed status/header holes
-5.500 KiB  tail after MainBuf boot staging
+4.000 KiB  tail after DicBuf boot staging
 3.215 KiB  control-scratch tail at the all-rate maximum
 0.406 KiB  ADPCM alignment gap
 -----------
-12.140 KiB safe fixed space per physical bank
+10.640 KiB safe fixed space per physical bank
 ```
 
 The H40/N2 steady-stream total substitutes a 6,408-byte worst load block
@@ -159,17 +159,18 @@ a separate proof that its maximum output ends at `0xFF6580`.
 | `0xFF2000..0xFF657F` | 17.375 KiB | maximum generated bitmap handlers and two H40 blitters | 0 |
 | `0xFF2000..0xFF267F` at boot only | 1.625 KiB | transient SGDK font, preload-screen text, and lookup data; deliberately overwritten by generated code before playback | 0 additional runtime use |
 | `0xFF6580..0xFF65FF` | **128 B** | asserted guard after maximum generated code | **128 B** |
-| `0xFF6600..0xFF7FFF` | 6.50 KiB | immutable MainBuf, 208 patterns | 0 |
-| `0xFF8000..0xFF8C7F` | 3.125 KiB | 400 worst-case run records at 8 B each | 0 |
-| `0xFF8C80..0xFFAFFF` | **8.875 KiB** | all-rate RUN_TABLE tail | **8.875 KiB**; H40/N2 has 10.609 KiB |
+| `0xFF6600..0xFF85FF` | 8.00 KiB | persistent DicBuf, 256 patterns | 0 |
+| `0xFF8600..0xFFA8FF` | 8.75 KiB | theoretical H40-full maximum of 1,120 run records at 8 B each | 0 |
+| `0xFFA900..0xFFAFFF` | **1.75 KiB** | RUN_TABLE tail after the theoretical maximum | **1.75 KiB** |
 | `0xFFB000..0xFFCFFF` | 8.00 KiB | 64-entry resident PALTAB | 0 |
 | `0xFFD000..0xFFE06B` | 4,204 B | BSS, including the 4,096-byte bounded name-table shadow and 56-byte prebuilt DEBUG HUD row | 0 |
 | `0xFFE06C..0xFFFAFF` | **6.645 KiB** | unused below the stack guard | **6.645 KiB** |
 | `0xFFFB00..0xFFFCFF` | 512 B | conservative stack and interrupt reserve | 0 |
 | `0xFFFD00..0xFFFFFF` | 768 B | above configured stack top / BIOS reserve | 0 |
 
-This yields **16.738 KiB** safe across all supported rates. Restricting the run
-table to H40/N2's 178-cold cap raises it to **18.473 KiB**. The 512-byte stack
+This yields **9.614 KiB** safe even if every H40 cell becomes a separate run.
+Profile-specific cold caps usually leave more RUN_TABLE tail, but that extra is
+not counted as general-purpose memory. The 512-byte stack
 reserve is deliberately larger than the approximately 80-byte deepest visible
 player call chain; it leaves room for interrupt/BIOS use that the assembly call
 graph alone cannot prove.
@@ -326,7 +327,7 @@ Use the low-risk spaces in this order:
 
 1. Use Main RAM `0xFFE06C..0xFFFAFF` (6.645 KiB) for Main-only state, retaining
    the 512-byte stack guard.
-2. Put small bank-local state in the 5.5 KiB tail after MainBuf staging or the
+2. Put small bank-local state in the 4 KiB tail after DicBuf staging or the
    416-byte ADPCM alignment gap, with explicit overlap assertions. Do not use
    the WordBuf region; its two banks intentionally hold different preloads.
 3. Use the 128-byte Main code-generation guard and RUN_TABLE tail only with

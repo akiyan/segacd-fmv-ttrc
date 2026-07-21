@@ -41,8 +41,9 @@ Keep these distinctions explicit:
 - **WordBuf0 / WordBuf1** (`Wr0` / `Wr1`): distinct boot-preloaded pattern
   sequences in the two physical 1M Word-RAM banks, selected by frame parity;
   they are not duplicate caches.
-- **MainBuf** (`Main`): boot-preloaded patterns copied once to Main RAM and
-  transferred directly from there.
+- **DicBuf** (`Dic`): a 256-entry boot-preloaded pattern dictionary copied once
+  to Main RAM. Entries are addressed by index and may be reused without being
+  consumed.
 - **APPLY ring**: the PRG-RAM circular queue holding continuous control blocks.
 - **resident pattern**: currently a pattern retained in the VRAM tile pool. A
   boot-preloaded WordBuf pattern is a physical source, not another VRAM-resident
@@ -93,12 +94,12 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 - **Description structure** (in both languages, in this order):
   1. Overview — one or two lines on what the video is.
   2. Output and source specs — the SEGA-CD output (mode, grid WxH, tile count,
-     fps, audio, Prg/Wr0/Wr1/Main capacities) and the Source
+     fps, audio, Prg/Wr0/Wr1/Dic capacities) and the Source
      (resolution, fps, audio).
   3. How to read the analysis layout — what each panel, meter, and timeline
      shows and how to interpret it (left = SEGA-CD sim output; right = Source /
      category map / audio waveform; bottom status = Req / Cold / Band /
-     Prg / Wr0 / Wr1 / Main / DMA / Run plus the stacked timelines). Define Band as useful
+     Prg / Wr0 / Wr1 / DMA / Run plus the stacked timelines, and Dic in the category legend). Define Band as useful
      `BODY.DAT` payload + control bytes in the physical delivery slot, excluding
      all pad, `HEADER.DAT`, and frame 0, divided by that slot's actual physical
      CD read time. Its range is 0 to CD 1x (150 KiB/s); pad is unused bandwidth.

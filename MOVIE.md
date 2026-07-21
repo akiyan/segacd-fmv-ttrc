@@ -17,7 +17,7 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 11              (bump for an incompatible stream interpretation)
+VERSION        = 12              (bump for an incompatible stream interpretation)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = decoded header field (PCM: 888 B at N4 / 444 B at N2;
@@ -60,8 +60,8 @@ the table region is required whenever its feature bit is set.
 **v10** adds feature bit 3 (`FEATURE_PATTERN_SUPPLY`). Cold update entries use
 bits 11-12 for the physical source, and cold-run counts use bits 14-15 for the
 same source. A `PSUP` extension in the first header sector gives the actual
-Wr0/Wr1/Main preload sizes and sector counts. Separate boot regions carry
-WordBuf0, WordBuf1, and MainBuf patterns; only Prg-sourced patterns remain in
+three preload sizes and sector counts. Separate boot regions carried
+WordBuf0, WordBuf1, and the former Main-RAM preload; only Prg-sourced patterns remained in
 the timed payload stream.
 **v11** adds feature bit 4 (`FEATURE_SHADOW_UPDATE_LISTS`) and allows each
 control block to choose its shadow-update representation with the high bit of
@@ -73,6 +73,11 @@ The optional feature bit 5 (`FEATURE_VRAM_RAW_PREFETCH`) keeps the same v11
 run-suffix syntax but allows additional Prg runs that have no same-frame name
 update. They load exact future patterns into unreferenced VRAM slots; a later
 name update reuses the resident slot without another pattern transfer.
+**v12** renames the Main-RAM pattern source to persistent `DicBuf`, expands it
+from 208 to 256 entries, and adds feature bit 6
+(`FEATURE_DICBUF_INDEXED_RUNS`). The existing four-byte run descriptor now
+carries an 8-bit DicBuf start index; Dic entries are reusable and are no longer
+consumed in chronological order. The `PSUP` extension version is 2.
 
 ## File layout
 
@@ -89,7 +94,7 @@ HEADER.DAT
 +--------------------------------------------------+
 | WR1_PRELOAD (wr1_sec sectors when bit 3 set)     |  WordBuf1 patterns
 +--------------------------------------------------+
-| MAIN_PRELOAD (main_sec sectors when bit 3 set)   |  MainBuf boot staging
+| DIC_PRELOAD (dic_sec sectors when bit 3 set)     |  DicBuf dictionary staging
 +--------------------------------------------------+
 | STARTUP_AUDIO (audio_preload_sec sectors)        |  one PCM chunk per sector
 +--------------------------------------------------+
@@ -231,19 +236,19 @@ Then:
 - offset 196: 20-byte `PSUP` extension when feature bit 3 is set (see below);
 - remainder up to 2048 is zero.
 
-The v10+ `PSUP` extension is `struct ">4s8H"`:
+The v12 `PSUP` extension is `struct ">4s8H"`:
 
 | Off | Size | Field | Meaning |
 |---:|---:|---|---|
 | 196 | 4 | magic | `"PSUP"`. |
-| 200 | 2 | version | Pattern-supply extension version, currently 1. |
+| 200 | 2 | version | Pattern-supply extension version, currently 2. |
 | 202 | 2 | reserved | Must be zero. |
 | 204 | 2 | wr0_patterns | Actual WordBuf0 preload count, at most 880. |
 | 206 | 2 | wr1_patterns | Actual WordBuf1 preload count, at most 880. |
-| 208 | 2 | main_patterns | Actual MainBuf preload count, at most 208. |
+| 208 | 2 | dic_patterns | Actual DicBuf entry count, at most 256. |
 | 210 | 2 | wr0_sectors | Sector-rounded WR0_PRELOAD size. |
 | 212 | 2 | wr1_sectors | Sector-rounded WR1_PRELOAD size. |
-| 214 | 2 | main_sectors | Sector-rounded MAIN_PRELOAD size. |
+| 214 | 2 | dic_sectors | Sector-rounded DIC_PRELOAD size. |
 
 For each preload, the sector count must equal the ceiling of
 `patterns * 32 / 2048`. The generated player constants freeze all six values;
@@ -300,23 +305,25 @@ At boot the Sub CPU stages this image in PRG-RAM and copies exactly 2,200 longs
 to Word-RAM offset `+0x12800` in each physical 1M bank. The table is absent when
 feature bit 2 is clear.
 
-## Pattern preload regions (v10, feature bit 3)
+## Pattern preload regions (v12, feature bit 3)
 
 The three `PSUP` regions follow the optional ADPCM table in this fixed order:
-WR0_PRELOAD, WR1_PRELOAD, MAIN_PRELOAD. Each is a chronological stream of
+WR0_PRELOAD, WR1_PRELOAD, DIC_PRELOAD. Each contains
 32-byte packed tile patterns, zero-padded to its declared sector boundary.
 Actual pattern and sector counts come from the `PSUP` extension.
 
 WordBuf0 and WordBuf1 each have a fixed capacity of 880 patterns at physical
 bank offset `+0x15200`. They hold different sequences. The one source code
 `Wr` in control data selects the bank by timed-frame parity: even frames consume
-Wr0, odd frames consume Wr1. MainBuf has a fixed capacity of 208 patterns. Its
-region is first staged at Word-RAM `+0xD000`, then copied once to Main RAM.
+Wr0, odd frames consume Wr1. DicBuf has a fixed capacity of 256 patterns. Its
+dictionary is first staged at Word-RAM `+0xD000`, then copied once to Main RAM
+at `0xFF6600..0xFF8600`.
 
-All three streams are consumed monotonically and are never refilled. A stream
-may contain fewer patterns than its capacity. Source order is frozen by the
-sim decision log and verified against the control entries and source-aware run
-suffix before packing.
+WordBuf0 and WordBuf1 are consumed monotonically and are never refilled.
+DicBuf entries are addressed by an 8-bit index and may be reused any number of
+times. Any region may contain fewer patterns than its capacity. Source and
+DicBuf index order are frozen by the sim decision log and verified against the
+source-aware run suffix before packing.
 
 ## STARTUP_AUDIO (v5)
 
@@ -335,7 +342,7 @@ movie frame rather than starting during the Mega-CD boot screen.
 
 ## Routing table
 
-In v7 through v11, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
+In v7 and later, `routing_sec` sectors in `HEADER.DAT` hold **one byte per frame**. Each
 byte has this layout:
 
 | Bits | Field | Meaning |
@@ -373,7 +380,7 @@ guarantees both of these before writing v6+:
   sector already carried that block;
 - before frame `i`'s control prefix is read, PREBUFFER plus payload sectors from
   earlier frame slots already contain every Prg-sourced cold pattern frame `i`
-  consumes. Wr0/Wr1/Main patterns are already resident from boot.
+  consumes. Wr0/Wr1/Dic patterns are already resident from boot.
 
 The table covers all `nfr` frames. In the historical v6 layout, frame 0's entry
 was the two-byte pair `(0, 0)`; in v7+ it is the single zero byte described
@@ -401,7 +408,7 @@ including the old 2.5-sector average at 30fps.
 light frames omit padding until that temporary lead is repaid. The complete
 stream converges to the CD 1x display-rate total without overflowing PrgBuf.
 Historical v2/v3 players defaulted `fps_int = 0` to 15, yielding the constant 5
-and reproducing the old fixed-slot behaviour. The current player accepts only v11 and
+and reproducing the old fixed-slot behaviour. The current player accepts only v12 and
 rejects a zero nominal fps before entering this schedule.
 
 The v6-and-later packer first spends that frame's allowance on control, then replaces
@@ -444,7 +451,7 @@ merely the first control sector.
 The Sub consumes it from PrgBuf and copies the selected patterns into the
 current frame's Word-RAM output. These sectors replenish later frames; Prg
 patterns for the current frame were armed by PREBUFFER or earlier BODY slots.
-Wr0/Wr1/Main cold loads have no BODY payload because their bytes were loaded at
+Wr0/Wr1/Dic cold loads have no BODY payload because their bytes were loaded at
 boot. A pattern is `pack_key`-encoded: 8 rows x 4 bytes, each byte = two 4bpp
 pixels `(hi<<4)|lo`.
 
@@ -462,15 +469,18 @@ pixels `(hi<<4)|lo`.
 | PCM: audio_bytes; ADPCM22: 4 + audio_bytes/2 | audio | PCM stores RF5C164 sign-magnitude bytes directly. ADPCM22 stores `s16 predictor, u8 step_index, u8 reserved_zero`, then low-nibble-first IMA codes. Current prefetched streams carry this logical source chunk `audio_preload_sec` frames ahead. |
 | 0/1  | audio pad   | zero byte when needed to align the optional suffix to a word boundary and keep the legacy block end even |
 | 2    | n_runs      | present when header feature bit 0 is set; number of cold-slot runs |
-| n_runs x 4 | cold runs | present when feature bit 0 is set; repeated `u16 slot_start, u16 source_count` pairs in pattern-consumption order |
+| n_runs x 4 | cold runs | present when feature bit 0 is set; repeated v12 indexed descriptor pairs in pattern-consumption order |
 
 For the legacy representation, the suffix repeats information already encoded
 by the cold entry flag, source, and tile index. For the completed-list
 representation it is the only physical pattern-delivery description.
-`source_count` stores source in bits 14-15 and count in bits
-0-13. Source values are 0=Prg, 1=Wr (frame parity selects Wr0 or Wr1), 2=Main,
-and 3=reserved/invalid. A source change starts a new run even when VRAM slots
-remain consecutive. Without feature bit 5, the sum of all masked counts is the
+The first word stores the zero-based VRAM slot in bits 0-10 and DicBuf index
+bits 3-7 in bits 11-15. The second word stores count in bits 0-10, DicBuf index
+bits 0-2 in bits 11-13, and source in bits 14-15. Source values are 0=Prg,
+1=Wr (frame parity selects Wr0 or Wr1), 2=Dic, and 3=reserved/invalid. Non-Dic
+runs require all index bits to be zero. A source change starts a new run even
+when VRAM slots remain consecutive; a Dic run also splits unless both VRAM
+slots and dictionary indices remain consecutive. Without feature bit 5, the sum of all masked counts is the
 number of cold update entries. With bit 5, it is the number of physical pattern
 loads and may additionally include Prg raw prefetch loads. Each run stays
 within the header's `pool` slots. The Main CPU can therefore
@@ -507,7 +517,7 @@ cell order:
   name-table entry to a pattern already resident and source must be zero.
 - bits 13..14 = the palette line (0..3).
 - bits 11..12 = source: 0=Prg, 1=Wr (Wr0 on even timed frames, Wr1 on odd),
-  2=Main, 3=reserved/invalid.
+  2=Dic, 3=reserved/invalid.
 - bits 0..10 = the VDP tile index = `base + slot` (the player recovers the VRAM
   slot as `(entry & 0x07FF) - base`).
 

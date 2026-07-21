@@ -223,7 +223,7 @@ cold runs reports `0000`.
 
 `N` is the low byte of the source-aware cold-run descriptor count constructed
 for the frame. A run groups consecutive VRAM slots from the same physical
-pattern source. Prg, the parity-selected WordBuf, and MainBuf boundaries split
+pattern source. Prg, the parity-selected WordBuf, and DicBuf boundaries split
 runs even when the destination slots are consecutive.
 
 `N` is not the cold-tile count and is not the number of physical VDP DMA

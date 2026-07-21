@@ -279,9 +279,10 @@ widths 1--40 with the scalar word copy.
 
 e26 feature bit 0 appends the already-known cold slot runs to each control block
 after its audio and absolute-address alignment pad. The suffix is one big-endian
-`n_runs` word followed by `slot_start,count` word pairs. TTRC v10 retains this
-layout but uses the count word's high two bits for Prg/Wr/Main and splits a run
-when its physical source changes. The optimized player consumes these runs
+`n_runs` word followed by four-byte run descriptors. TTRC v12 keeps the record
+size, stores Prg/Wr/Dic in the high source bits, and stores an 8-bit DicBuf index
+across the remaining high bits. A run splits when its physical source changes,
+or when DicBuf indices stop being consecutive. The optimized player consumes these runs
 instead of scanning every update entry and rebuilding them. Run the independent
 proof against the real split stream and its decision log:
 
@@ -296,8 +297,8 @@ When header feature bit 0 is set, it parses the actual aligned descriptor suffix
 every control; feature-zero legacy streams remain supported by constructing the same
 suffix hypothetically. Across the complete supplied profile it compares the
 entry scan with the descriptor path, including slot order, run grouping and 32-byte payload
-consumption. For v10 it independently walks frame-0, Prg, Wr0, Wr1, and Main
-payloads and proves every physical source is consumed exactly. It also matches
+consumption. For v12 it independently walks frame-0, Prg, Wr0, Wr1, and indexed
+Dic payloads and proves every physical source is reproduced exactly. It also matches
 bitmap cells, entry palettes and every physical cold pattern to `decisions.pkl`.
 The report gives the exact added control bytes/sectors,
 startup frames 1--42 statistics, and decimal frame 2019 statistics.

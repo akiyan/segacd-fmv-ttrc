@@ -4,7 +4,7 @@
 > commands, and v8-era layout used when the result was obtained. The current
 > v10 path uses split `HEADER.DAT` + `BODY.DAT`, calls the streamed physical
 > pattern ring `PrgBuf`, assigns boot patterns through `WordBuf0`, `WordBuf1`,
-> and `MainBuf`, and has no Tank meter. Use [`README.md`](../README.md),
+> and `DicBuf`, and has no Tank meter. Use [`README.md`](../README.md),
 > [`MOVIE.md`](../MOVIE.md), [`CONFIG.md`](../CONFIG.md), and
 > [`BUEFFERING.md`](../BUEFFERING.md) for current instructions.
 

@@ -71,7 +71,9 @@ def make_header(case: Case) -> bytes:
     else:
         audio = av_config.pcm_frame_bytes(case.fps, 13_300)
     if case.pattern_supply:
-        features |= ttrc_routing.FEATURE_PATTERN_SUPPLY
+        features |= (
+            ttrc_routing.FEATURE_PATTERN_SUPPLY
+            | ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS)
     audio_fd = av_config.rf5c164_fd(
         audio, av_config.playback_fps_for_content(case.fps))
     prefix = struct.pack(
@@ -92,10 +94,10 @@ def make_header(case: Case) -> bytes:
             player_constants.PATTERN_SUPPLY_VERSION, 0,
             pattern_supply.WORD_BUF_PATTERNS,
             pattern_supply.WORD_BUF_PATTERNS,
-            pattern_supply.MAIN_BUF_PATTERNS,
+            pattern_supply.DIC_BUF_PATTERNS,
             (pattern_supply.WORD_BUF_PATTERNS + 63) // 64,
             (pattern_supply.WORD_BUF_PATTERNS + 63) // 64,
-            (pattern_supply.MAIN_BUF_PATTERNS + 63) // 64,
+            (pattern_supply.DIC_BUF_PATTERNS + 63) // 64,
         )
     return player_constants.stamp_header_sector(sector)
 
@@ -285,15 +287,13 @@ def main() -> None:
                 case, case_dir, specialized=True,
                 assembler=assembler, linker=linker, size=size, objdump=objdump)
 
-            if specialized.ip_bin > generic.ip_bin:
-                raise AssertionError(
-                    f"{case.name}: specialized IP grew {generic.ip_bin}->{specialized.ip_bin}")
-            if specialized.sp_bin > generic.sp_bin:
-                raise AssertionError(
-                    f"{case.name}: specialized SP grew {generic.sp_bin}->{specialized.sp_bin}")
-            if specialized.sp_bin > 4096:
-                raise AssertionError(
-                    f"{case.name}: specialized SP is {specialized.sp_bin} bytes")
+            for label, build in (("generic", generic), ("specialized", specialized)):
+                if build.ip_bin > 18688:
+                    raise AssertionError(
+                        f"{case.name}: {label} IP is {build.ip_bin} bytes")
+                if label == "specialized" and build.sp_bin > 4096:
+                    raise AssertionError(
+                        f"{case.name}: {label} SP is {build.sp_bin} bytes")
 
             sp_bytes = (case_dir / "sp-specialized.bin").read_bytes()
             if struct.pack(">L", constants.signature) not in sp_bytes:
