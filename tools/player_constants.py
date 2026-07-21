@@ -19,6 +19,7 @@ from pathlib import Path
 import ttrc_routing
 import ima_adpcm
 import pattern_supply
+import encode_config
 
 
 SECTOR = 2048
@@ -137,6 +138,12 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
     if tcols > screen_cols or trows > screen_rows:
         raise ValueError(
             f"tile grid {tcols}x{trows} exceeds {screen_cols}x{screen_rows} display")
+    if base + pool + encode_config.STARTUP_FONT_TILES > \
+            encode_config.VRAM_FIRST_MOVIE_NT_TILE:
+        raise ValueError(
+            f"resident pool base {base} + {pool} tiles + "
+            f"{encode_config.STARTUP_FONT_TILES} startup-font tiles overlaps "
+            f"movie name-table tile {encode_config.VRAM_FIRST_MOVIE_NT_TILE}")
     expected_routing_sec = ttrc_routing.routing_sector_count(frames)
     if routing_sec != expected_routing_sec:
         raise ValueError(

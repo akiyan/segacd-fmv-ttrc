@@ -1632,6 +1632,9 @@ dbgfont:
 .ifdef PLAYER_SPECIALIZED
 	.section .startup,"a"
 	.include "startup_screen.inc"
+.if PC_FONT_VTILE + DBGFONT_N > NT0/32
+	.error "DEBUG font overlaps the movie name table"
+.endif
 .if PC_FONT_VTILE + STARTUP_FONT_N > NT0/32
 	.error "startup font overlaps the movie name table"
 .endif

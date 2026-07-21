@@ -11,6 +11,14 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p63 : Replace the playback HUD with 16 dual-readable hexadecimal glyphs:
+#        a four-bit barcode row plus a compact 6x7 human glyph. Embed only the
+#        occupied HUD cells into the inactive Plane A movie table so the right
+#        side cannot expose stale Plane B data. Blank the VDP while replacing
+#        the SGDK startup font and reveal only the completed first movie frame.
+#   e70 : Raise the H40 Sonic resident VRAM pool from 1400 to the exact safe
+#        1440-tile limit. Profile and HEADER validation reserve the temporary
+#        95-tile SGDK startup font below the first movie name table.
 #   p62 : Prioritize an already-arrived or already-cleared Main CMD_SWAP before
 #        opportunistic CD pumping on the Sub CPU. This removes a deterministic
 #        extra sector pump from the frame handoff deadline while preserving
@@ -480,6 +488,6 @@
 #   e17: Raise requested startup PCM arming from 32 to 45 frames. The pack
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
-date=20260720
-e=69
-p=62
+date=20260721
+e=70
+p=63

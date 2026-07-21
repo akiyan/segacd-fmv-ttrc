@@ -231,7 +231,7 @@ values in this document.
 
 | Name | Default | Meaning |
 |---|---|---|
-| `encoder.vram_tiles` | 1400 | Resident tile pool size (LRU). |
+| `encoder.vram_tiles` | 1400 | Resident tile pool size (LRU). Maximum 1440: tile 1 plus 1440 resident patterns and the temporary 95-tile SGDK startup font end exactly where the first movie name table begins. The 16-tile playback HUD reuses the bottom of that transient font range. |
 | `CBRSIM_COA_DETAIL` / `_MEAN` / `_MAX` / `_K` | 0.7 / 4 / 8 / 24 | Coa = reuse a resident tile whose low-frequency look matches a flat cold tile (detail below DETAIL; 2x2 mean color diff within MEAN/MAX; check K newest candidates). |
 | `CBRSIM_NEAR_YM` / `_YP` / `_C` | 10 / 28 / 24 | Near = reuse an almost-identical resident tile (mean/max luma diff, mean chroma diff). |
 | `CBRSIM_FLBK_IMPROVE_ONLY` / `_MIN_IMPROVE` | 1 / 0 | Flbk = fill a Miss with a resident tile only if it improves the picture. |

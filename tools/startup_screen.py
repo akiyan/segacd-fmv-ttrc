@@ -15,6 +15,10 @@ import player_constants
 
 GLYPHS = "".join(chr(value) for value in range(32, 127))
 GLYPH_INDEX = {char: index for index, char in enumerate(GLYPHS)}
+if len(GLYPHS) != encode_config.STARTUP_FONT_TILES:
+    raise RuntimeError(
+        f"startup font has {len(GLYPHS)} glyphs, expected "
+        f"{encode_config.STARTUP_FONT_TILES}")
 MAX_COLS = 32
 MAX_ROWS = 28
 

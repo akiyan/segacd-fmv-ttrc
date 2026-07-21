@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import av_config
-from encode_config import apply_profile_env, load_profile
+from encode_config import MAX_RESIDENT_VRAM_TILES, apply_profile_env, load_profile
 
 
 PROFILE = """\
@@ -159,6 +159,21 @@ class EncodeProfileArtifactTests(unittest.TestCase):
                 'fit = "pad"', 'fit = "pad"\nactive_tiles = 897'))
             with self.assertRaisesRegex(ValueError, "video.active_tiles"):
                 load_profile(path)
+
+    def test_vram_pool_must_leave_room_for_startup_font(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            valid = Path(tmp) / "valid-vram.toml"
+            valid.write_text(PROFILE.replace(
+                "[palette]",
+                f"[encoder]\nvram_tiles = {MAX_RESIDENT_VRAM_TILES}\n\n[palette]"))
+            load_profile(valid)
+
+            invalid = Path(tmp) / "invalid-vram.toml"
+            invalid.write_text(PROFILE.replace(
+                "[palette]",
+                f"[encoder]\nvram_tiles = {MAX_RESIDENT_VRAM_TILES + 1}\n\n[palette]"))
+            with self.assertRaisesRegex(ValueError, "startup font"):
+                load_profile(invalid)
 
     def test_profile_without_measured_cold_cap_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
