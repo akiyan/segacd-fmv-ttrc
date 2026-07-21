@@ -402,6 +402,9 @@ tuple exactly matches the requested mode, fps, and active-tile count.
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 
+[`HUD.md`](HUD.md) is the complete layout, field, timing-unit, diagnosis, and
+OCR reference. The table below is the compact configuration-oriented summary.
+
 Not settings, but the live readouts of the throttles above — a single top row
 embedded in the inactive VDP Plane A movie table (`prepare_dbg` / `publish_dbg`
 in ip, read back by `tools/read_frameno.py: read_hud`). The table is not visible

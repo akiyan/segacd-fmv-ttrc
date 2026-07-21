@@ -150,6 +150,10 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
     budget, encoder knobs, per-source env). Keep in
     sync with `tools/av_config.py`, `tools/sim.py`, `tools/pack_stream.py` and the
     `boot/movieplay_*.s` player.
+  - [`HUD.md`](HUD.md) - the on-hardware values-only DEBUG HUD reference. Keep
+    its field order, widths, timing units, rendering path, and OCR workflow in
+    sync with `boot/movieplay_ip.s`, `tools/read_frameno.py`, and the HUD
+    harnesses.
 - Claude skill files under `.claude/skills/**/SKILL.md` are allowed and should
   remain in place.
 - Do not reintroduce game-specific extraction notes or copyrighted sample

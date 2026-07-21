@@ -118,6 +118,8 @@ category.
   targets, and repository layout.
 - [ANALYSIS.md](ANALYSIS.md): the analysis-overlay reference, covering every
   panel, meter, timeline, and tile category drawn by `tools/render_analysis.py`.
+- [HUD.md](HUD.md): the on-hardware values-only DEBUG HUD, including field
+  meanings, timing units, layout, cross-field diagnosis, and OCR workflow.
 - [BUEFFERING.md](BUEFFERING.md): the four physical pattern supplies, the
   separate whole-movie quality planner, diagnostics, and validation.
 - [MOVIE.md](MOVIE.md): the exact `HEADER.DAT` / `BODY.DAT` on-disc stream
@@ -148,9 +150,9 @@ category.
   movie table. The
   internal order is `F/P/S/D/R/L/C/W/M/A`; H40 appends `U/N` for Main
   pattern-transfer stopwatch ticks and the source-aware cold-run count's low
-  byte. Only the occupied 22/28 cells are opaque, so unused H40 width remains
-  transparent. The fixed P0/index15 font is uploaded once, so video-plane flips
-  and palette switches do not recolour or blink the text.
+  byte. Only the occupied 22/28 cells are replaced; the unused right-hand cells
+  retain the current movie frame. The fixed P0/index15 font is uploaded once,
+  so video-plane flips and palette switches do not recolour or blink the text.
 
 ## Build Targets
 
