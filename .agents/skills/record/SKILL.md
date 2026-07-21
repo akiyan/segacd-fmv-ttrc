@@ -56,7 +56,7 @@ Defaults and rules:
 - Pass the same `--config configs/PROFILE.toml` used by sim and pack. The
   harness derives `out/PROFILE.cue` from the TOML filename.
 - Use an explicit `--disc CUE --no-build` only for a previously verified image.
-- Build with `DEBUG=1` by default. The Window HUD is part of the normal recording artifact.
+- Build with `DEBUG=1` by default. The Plane A HUD is part of the normal recording artifact.
 - Use `--release-build` only when the user explicitly asks for a release build. It changes the
   harness build to `make disc CONFIG=configs/PROFILE.toml DEBUG=0`.
 - Keep the startup sequence. The default is `--trim 0`; omitting `--trim` has the same result.
@@ -193,7 +193,7 @@ Check the raw MKV and reports before trusting a capture:
    sample-jump, clipping, or RMS threshold gate: legitimate source transients
    and lossy preview encoding made those tests content-dependent.
 5. Inspect frames from the MKV and confirm that the Mega-CD startup appears first, playback
-   begins later, the DEBUG Window HUD is visible, and the movie advances. Do not use the HUD
+   begins later, the DEBUG Plane A HUD is visible, and the movie advances. Do not use the HUD
    to seek the movie start. Extract these stills with
    `tools/extract_verification_frames.sh`; give it a `videos/<stem>/record_check` base and
    named `LABEL=SECONDS` samples. It creates a never-reused source-specific directory,
@@ -225,7 +225,7 @@ OUTDIR="$PWD/videos" tools/run_headless.sh out/PROFILE.cue \
   --shots 68 --interval 2 --display :NNN
 ```
 
-Confirm the contiguous Window-plane HUD is visible before a long OCR scan. H32
+Confirm the contiguous top-row Plane A HUD is visible before a long OCR scan. H32
 uses `xxxx xx xx xx xx xx xx xx xx xx`; H40 appends `xxxx xx`. The first value
 (`F`) and the H40 penultimate value (`U`) contain four hexadecimal digits; every
 other value contains two. Read the requested counters over the complete loop.

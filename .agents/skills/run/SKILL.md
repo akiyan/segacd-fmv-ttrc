@@ -161,7 +161,7 @@ do not waive a failed proof.
 
 ## Stage 4: Record and Verify Playback
 
-Use `record` with the same profile. Build DEBUG by default, keep the Window HUD,
+Use `record` with the same profile. Build DEBUG by default, keep the Plane A HUD,
 and retain the full Mega-CD startup. Choose a launch-to-tail duration long
 enough for startup, the complete source, and a short ending margin. `record`
 uses the qualified fixed-Replay offline FFV1/FLAC path by default. Use:
