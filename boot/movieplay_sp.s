@@ -92,8 +92,8 @@
 
 .equ SUB_BANK_1M, 0x000C0000
 
-/* --- TTRC v10 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
-.equ ROUTING_VERSION,       10
+/* --- TTRC v11 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
+.equ ROUTING_VERSION,       11
 .equ ROUTING_BYTES,         16384
 .equ ROUTING_MAX_FRAMES,    16384
 .equ ROUTING_SECTOR_BYTES,  2048
@@ -106,6 +106,9 @@
 .equ FEATURE_FIXED_N2_BIT,  1
 .equ FEATURE_ADPCM22_BIT,   2
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
+.equ FEATURE_SHADOW_UPDATE_LISTS_BIT, 4
+.equ SHADOW_UPDATE_LIST_BIT, 15
+.equ SHADOW_UPDATE_COUNT_MASK, 0x7FFF
 .equ ROUTING_COPY_LONGS,    4096
 .equ ROUTING_BANK_COPIES,   2
 
@@ -370,9 +373,15 @@ pm_set:
 	tst.w	d1
 	beq	bad_header
 	move.w	d1, h_audio_fd
-	move.w	62(a0), h_features		/* bit0 runs, bit1 fixed N2, bit2 ADPCM, bit3 pattern supply */
+	move.w	62(a0), h_features		/* bits0..4: runs, N2, ADPCM, supply, shadow lists */
+	move.w	h_features, d1
+	andi.w	#0x0010, d1
+	beq.s	1f
+	btst	#FEATURE_PATTERN_SUPPLY_BIT, h_features+1
+	beq	bad_header			/* list controls require authoritative run suffixes */
+1:
 	btst	#FEATURE_PATTERN_SUPPLY_BIT, 63(a0)
-	bne	bad_header			/* v10 supply needs generated preload counts/addresses */
+	bne	bad_header			/* supply needs generated preload counts/addresses */
 	move.w	d0, d1
 	btst	#FEATURE_ADPCM22_BIT, 63(a0)
 	beq	1f
@@ -1297,7 +1306,9 @@ fc_copy_even:
 expand_frame:
 	lea	CTRL_SCR, a0
 	addq.l	#4, a0				/* skip total_len(2) + frame_seq(2) */
-	move.w	(a0)+, d5			/* n_upd (forward validated value to O_NUPD) */
+	move.w	(a0)+, d5			/* bit15=list format, low15=n_upd */
+	move.w	d5, d7			/* preserve format tag */
+	andi.w	#SHADOW_UPDATE_COUNT_MASK, d5
 	PC_MOVE_W h_bmbytes, PC_BMBYTES, d1	/* corrupt-count guard: never walk past this mode's cells */
 	lsl.w	#3, d1
 	cmp.w	d1, d5
@@ -1328,6 +1339,8 @@ ef_pal:
 	move.w	d4, (O_PALW).l
 ef_bm:
 .equ ISO_DUMP_OFF, 0
+	btst	#SHADOW_UPDATE_LIST_BIT, d7
+	bne.s	ef_list_audio
 	PC_MOVE_W h_bmbytes, PC_BMBYTES, d0
 	adda.w	d0, a0				/* entries */
 	/* Feed this frame's PCM before the variable-cost bitmap/cold expansion.
@@ -1339,6 +1352,13 @@ ef_bm:
 	move.w	d5, d0				/* n_upd */
 	add.w	d0, d0				/* two bytes per entry */
 	adda.w	d0, a5				/* audio start */
+	bra.s	ef_audio_positioned
+ef_list_audio:
+	movea.l	a0, a5				/* completed offset/entry pairs */
+	move.w	d5, d0
+	lsl.w	#2, d0				/* four bytes per list item */
+	adda.w	d0, a5				/* audio start */
+ef_audio_positioned:
 	movea.l	a0, a6				/* preserve entries cursor across audio */
 .ifdef PLAYER_SPECIALIZED
 .if (PC_FEATURES & 0x0004)

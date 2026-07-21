@@ -9,10 +9,40 @@ from pathlib import Path
 import numpy as np
 
 import pack_stream as pack
+import shadow_updates
 import stream_schedule as schedule
 
 
 class ControlLengthTests(unittest.TestCase):
+    def test_lengths_mix_bitmap_and_shadow_lists(self) -> None:
+        lengths = schedule.control_block_lengths(
+            np.array([3, 3]), np.array([0, 0]), cells=1120,
+            audio_frame_bytes=372, debug=True,
+            update_lists=np.array([False, True]))
+        # The list replaces a 140-byte bitmap plus six entry bytes with 12B.
+        self.assertEqual(int(lengths[0] - lengths[1]), 134)
+
+    def test_shadow_update_count_tag_roundtrip(self) -> None:
+        raw = shadow_updates.encode_count(1120, True)
+        self.assertEqual(shadow_updates.decode_count(raw), (1120, True))
+        self.assertEqual(
+            shadow_updates.decode_count(shadow_updates.encode_count(1120, False)),
+            (1120, False))
+
+    def test_shadow_list_selection_preserves_schedule_margins(self) -> None:
+        cells = [[], [0], list(range(64)), [1119], list(range(256))]
+        plan = schedule.select_shadow_update_lists(
+            cells, np.zeros(5, np.int64), np.zeros(5, np.int64),
+            cells=1120, fps=30, ring_capacity_patterns=64,
+            frame_sectors=3, audio_frame_bytes=16, debug=False, fill=True)
+        self.assertFalse(bool(plan["selected"][0]))
+        self.assertGreaterEqual(
+            int(plan["schedule"]["ring_min"]),
+            int(plan["baseline_schedule"]["ring_min"]))
+        self.assertGreaterEqual(
+            int(plan["schedule"]["ready_min"]),
+            int(plan["baseline_schedule"]["ready_min"]))
+
     def test_lengths_match_the_packed_layout_formula(self) -> None:
         lengths = schedule.control_block_lengths(
             [0, 17], [0, 3], cells=1120, audio_frame_bytes=888, debug=False)

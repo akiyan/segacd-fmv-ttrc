@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 import av_config
+import shadow_updates
 
 
 SECTOR_BYTES = av_config.CD_SECTOR_BYTES
@@ -61,7 +62,7 @@ def average_body_delivery_rate_bps(useful_bytes, physical_bytes):
 
 def control_block_lengths(
         updates, runs, *, cells, audio_frame_bytes, debug=False,
-        debug_bytes=DEBUG_BLOCK_BYTES):
+        debug_bytes=DEBUG_BLOCK_BYTES, update_lists=None):
     """Return the exact packed control length for every frame.
 
     This mirrors ``pack_stream.build_control`` without constructing audio or
@@ -75,11 +76,22 @@ def control_block_lengths(
     if (n_upd < 0).any() or (n_runs < 0).any():
         raise ValueError("updates and runs must be non-negative")
     bitmap_bytes = (int(cells) + 7) // 8
+    if update_lists is None:
+        use_lists = np.zeros(n_upd.shape, np.bool_)
+    else:
+        use_lists = np.asarray(update_lists, np.bool_)
+        if use_lists.shape != n_upd.shape:
+            raise ValueError("update-list flags must match update counts")
+    update_bytes = np.where(
+        use_lists,
+        n_upd * shadow_updates.LIST_ITEM_BYTES,
+        bitmap_bytes + n_upd * shadow_updates.SHADOW_ENTRY_BYTES,
+    )
     # body prefix: frame_seq, n_upd, pal and dbg = 6 bytes.  Entry words and
     # the run suffix are even-sized; only the pre-suffix body may need a byte.
     pre_suffix = (
-        6 + (int(debug_bytes) if debug else 0) + bitmap_bytes
-        + n_upd * 2 + int(audio_frame_bytes)
+        6 + (int(debug_bytes) if debug else 0) + update_bytes
+        + int(audio_frame_bytes)
     )
     pre_suffix += pre_suffix & 1
     # total_len word + aligned body + n_runs word + four bytes per run.
@@ -140,7 +152,7 @@ def max_run_control_reservation(max_cold, active_tiles):
 
 def body_funded_work_bytes(
         pattern_loads, updates, runs, *, cells, audio_frame_bytes,
-        debug=False, debug_bytes=DEBUG_BLOCK_BYTES):
+        debug=False, debug_bytes=DEBUG_BLOCK_BYTES, update_lists=None):
     """Return exact control plus Prg-pattern work attributed to each frame.
 
     This is encoder funding demand, not the physical BODY delivery trace: the
@@ -161,11 +173,104 @@ def body_funded_work_bytes(
         audio_frame_bytes=audio_frame_bytes,
         debug=debug,
         debug_bytes=debug_bytes,
+        update_lists=update_lists,
     )
     useful = control + n_load * PATTERN_BYTES
     if len(useful):
         useful[0] = 0
     return useful
+
+
+def select_shadow_update_lists(
+        cell_lists, runs, pattern_loads, *, cells, fps, ring_capacity_patterns,
+        frame_sectors, audio_frame_bytes, debug=False, fill=True,
+        max_control_bytes=0x2000):
+    """Select the lowest whole-movie cycle/byte threshold preserving margins."""
+    frames = tuple(tuple(int(cell) for cell in frame) for frame in cell_lists)
+    n_upd = np.asarray([len(frame) for frame in frames], np.int64)
+    n_runs = np.asarray(runs, np.int64)
+    loads = np.asarray(pattern_loads, np.int64)
+    if n_runs.shape != n_upd.shape or loads.shape != n_upd.shape:
+        raise ValueError("shadow cells, runs and pattern loads must have equal lengths")
+
+    costs = tuple(shadow_updates.frame_cost(frame, cells) for frame in frames)
+    legacy_lengths = control_block_lengths(
+        n_upd, n_runs, cells=cells, audio_frame_bytes=audio_frame_bytes,
+        debug=debug)
+    all_list_lengths = control_block_lengths(
+        n_upd, n_runs, cells=cells, audio_frame_bytes=audio_frame_bytes,
+        debug=debug, update_lists=np.ones(n_upd.shape, np.bool_))
+    eligible = np.asarray([
+        index > 0 and cost.saved_cycles > 0
+        and int(all_list_lengths[index]) <= int(max_control_bytes)
+        for index, cost in enumerate(costs)
+    ], np.bool_)
+
+    def run_schedule(flags):
+        lengths = control_block_lengths(
+            n_upd, n_runs, cells=cells, audio_frame_bytes=audio_frame_bytes,
+            debug=debug, update_lists=flags)
+        scheduled = schedule_payload_ring(
+            loads, lengths, fps=fps,
+            ring_capacity_patterns=ring_capacity_patterns,
+            frame_sectors=frame_sectors, fill=fill)
+        return lengths, scheduled
+
+    baseline_lengths, baseline = run_schedule(np.zeros(n_upd.shape, np.bool_))
+    if not baseline["feasible"]:
+        raise ScheduleError("baseline schedule is infeasible before shadow-list selection")
+    target_ring = int(baseline["ring_min"])
+    target_ready = int(baseline["ready_min"])
+
+    selected = np.asarray([
+        bool(eligible[index] and cost.added_bytes <= 0)
+        for index, cost in enumerate(costs)
+    ], np.bool_)
+    lengths, chosen_schedule = run_schedule(selected)
+    if (not chosen_schedule["feasible"]
+            or int(chosen_schedule["ring_min"]) < target_ring
+            or int(chosen_schedule["ready_min"]) < target_ready):
+        raise AssertionError("zero-cost shadow lists unexpectedly reduced schedule margins")
+
+    from fractions import Fraction
+    groups = {}
+    for index, cost in enumerate(costs):
+        if eligible[index] and cost.added_bytes > 0:
+            ratio = Fraction(cost.saved_cycles, cost.added_bytes)
+            groups.setdefault(ratio, []).append(index)
+
+    cutoff = None
+    rejected_ratio = None
+    for ratio in sorted(groups, reverse=True):
+        trial = selected.copy()
+        trial[groups[ratio]] = True
+        trial_lengths, trial_schedule = run_schedule(trial)
+        if (trial_schedule["feasible"]
+                and int(trial_schedule["ring_min"]) >= target_ring
+                and int(trial_schedule["ready_min"]) >= target_ready):
+            selected = trial
+            lengths = trial_lengths
+            chosen_schedule = trial_schedule
+            cutoff = ratio
+        else:
+            rejected_ratio = ratio
+            break
+
+    return {
+        "schema_version": 1,
+        "selected": selected,
+        "costs": costs,
+        "block_lengths": lengths,
+        "legacy_block_lengths": baseline_lengths,
+        "baseline_schedule": baseline,
+        "schedule": chosen_schedule,
+        "cutoff_numerator": int(cutoff.numerator) if cutoff is not None else 0,
+        "cutoff_denominator": int(cutoff.denominator) if cutoff is not None else 1,
+        "rejected_numerator": (
+            int(rejected_ratio.numerator) if rejected_ratio is not None else 0),
+        "rejected_denominator": (
+            int(rejected_ratio.denominator) if rejected_ratio is not None else 1),
+    }
 
 
 def rate_deltas(frame_count, fps):

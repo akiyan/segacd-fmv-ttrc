@@ -47,6 +47,7 @@ import av_config  # noqa: E402
 import ima_adpcm  # noqa: E402
 import pattern_supply  # noqa: E402
 import stream_schedule  # noqa: E402
+import shadow_updates  # noqa: E402
 import ttrc_routing  # noqa: E402
 import upgrade_planner  # noqa: E402
 
@@ -1889,7 +1890,7 @@ def main():
     _phases.append(("差分ループ:描画+PNG保存", _t_render))
     _t = time.perf_counter()
 
-    fb = np.array(frame_bytes_log, np.float64)
+    fb_baseline = np.array(frame_bytes_log, np.float64)
     tr = np.array(tile_records_log, np.float64)       # encoder Raw funding class
     ded = np.array(dedup_saved_log, np.float64)        # L1/L2 VRAM常駐ヒット
     l3h = np.array(l3_hits_log, np.float64)            # L3(PRG-RAM)ヒット
@@ -1904,12 +1905,35 @@ def main():
     # physical PRG-RAM PrgBuf. Re-run the packer's exact sector schedule
     # from the frozen update/run counts so the analysis curve shows hardware
     # occupancy, including prebuffering and final-sector padding.
-    control_lengths = stream_schedule.control_block_lengths(
-        stats[:, 3].astype(np.int64),
+    shadow_cells = [[int(item[0]) for item in frame] for frame in dec_frames]
+    shadow_costs = tuple(
+        shadow_updates.frame_cost(cells, C_CELLS) for cells in shadow_cells)
+    shadow_plan = stream_schedule.select_shadow_update_lists(
+        shadow_cells,
         np.asarray(transfer_runs_log, np.int64),
+        prg_loads,
         cells=C_CELLS,
+        fps=FPS,
+        ring_capacity_patterns=(
+            av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
+        frame_sectors=ttrc_routing.FRAME_SECTORS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
         debug=bool(pack_config.get("debug", False)),
+        fill=bool(pack_config.get("fill", True)),
+    ) if PATTERN_SUPPLY_ON else None
+    shadow_list_flags = (
+        np.asarray(shadow_plan["selected"], np.bool_)
+        if shadow_plan is not None else np.zeros(len(dec_frames), np.bool_)
+    )
+    control_lengths = (
+        np.asarray(shadow_plan["block_lengths"], np.int64)
+        if shadow_plan is not None else stream_schedule.control_block_lengths(
+            stats[:, 3].astype(np.int64),
+            np.asarray(transfer_runs_log, np.int64),
+            cells=C_CELLS,
+            audio_frame_bytes=AUDIO_CONTROL_BYTES,
+            debug=bool(pack_config.get("debug", False)),
+        )
     )
     exact_body_work = stream_schedule.body_funded_work_bytes(
         prg_loads,
@@ -1918,21 +1942,33 @@ def main():
         cells=C_CELLS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
         debug=bool(pack_config.get("debug", False)),
+        update_lists=shadow_list_flags,
     )
+    legacy_lengths = stream_schedule.control_block_lengths(
+        stats[:, 3].astype(np.int64),
+        np.asarray(transfer_runs_log, np.int64),
+        cells=C_CELLS,
+        audio_frame_bytes=AUDIO_CONTROL_BYTES,
+        debug=bool(pack_config.get("debug", False)),
+    )
+    fb = fb_baseline + control_lengths - legacy_lengths
     if not np.array_equal(fb.astype(np.int64), exact_body_work):
         bad = int(np.flatnonzero(fb.astype(np.int64) != exact_body_work)[0])
         raise AssertionError(
             f"frame {bad}: encoder BODY accounting {int(fb[bad])}B != "
             f"exact useful demand {int(exact_body_work[bad])}B")
     try:
-        physical_schedule = stream_schedule.schedule_payload_ring(
-            np.asarray(prg_loads_log, np.int64),
-            control_lengths,
-            fps=FPS,
-            ring_capacity_patterns=(
-                av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
-            frame_sectors=ttrc_routing.FRAME_SECTORS,
-            fill=bool(pack_config.get("fill", True)),
+        physical_schedule = (
+            shadow_plan["schedule"] if shadow_plan is not None
+            else stream_schedule.schedule_payload_ring(
+                np.asarray(prg_loads_log, np.int64),
+                control_lengths,
+                fps=FPS,
+                ring_capacity_patterns=(
+                    av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
+                frame_sectors=ttrc_routing.FRAME_SECTORS,
+                fill=bool(pack_config.get("fill", True)),
+            )
         )
     except (ValueError, stream_schedule.ScheduleError) as exc:
         raise SystemExit(
@@ -2001,6 +2037,15 @@ def main():
         f"body_useful_bps={body_useful_bps:.0f} "
         f"(useful BODY / physical CD read time; HEADER/frame0/pad excluded; "
         f"CD1x={CD_RATE})",
+        (f"shadow_update_lists={int(shadow_list_flags.sum())}/{len(shadow_list_flags)} "
+         f"main_saved_avg="
+         f"{sum(cost.saved_cycles for cost, chosen in zip(shadow_plan['costs'], shadow_list_flags) if chosen) / max(1, len(shadow_list_flags)):.1f}cycles/frame "
+         f"control_delta={int((control_lengths - legacy_lengths).sum())}B "
+         f"threshold={shadow_plan['cutoff_numerator']}/{shadow_plan['cutoff_denominator']} "
+         f"baseline/selected ring_min="
+         f"{shadow_plan['baseline_schedule']['ring_min']}/{physical_schedule['ring_min']} "
+         f"ready_min={shadow_plan['baseline_schedule']['ready_min']}/{physical_schedule['ready_min']}"
+         if shadow_plan is not None else "shadow_update_lists=0 (pattern supply disabled)"),
         (f"upgrade(格上げ): 余剰でRaw化 avg {np.mean([u for u, _ in upgrade_log]):.1f}/コマ, "
          f"まだ近似のセル avg {np.mean([a for _, a in upgrade_log]):.1f}; "
          f"upgrade reserve start/peak/end="
@@ -2070,6 +2115,7 @@ def main():
             main_risk_demand_bytes=main_demand,
             main_risk_reserve_bytes=main_reserve,
             block_lengths=control_lengths,
+            shadow_update_lists=shadow_list_flags,
             payload_sectors=np.asarray(
                 physical_schedule["n_pay_sec"], np.int64),
             control_sectors=np.asarray(
@@ -2190,6 +2236,26 @@ def main():
                 "body_useful_control_bytes": body_control_bytes,
                 "body_pad_bytes": body_pad_bytes,
                 "body_physical_bytes": body_physical_bytes,
+            },
+            "shadow_updates": {
+                "schema_version": 1,
+                "selected": shadow_list_flags,
+                "legacy_cycles": np.asarray(
+                    [cost.legacy_cycles for cost in shadow_costs], np.int64),
+                "list_cycles": np.asarray(
+                    [cost.list_cycles for cost in shadow_costs], np.int64),
+                "added_bytes": np.asarray(
+                    [cost.added_bytes for cost in shadow_costs], np.int64),
+                "cutoff_numerator": (
+                    int(shadow_plan["cutoff_numerator"]) if shadow_plan is not None else 0),
+                "cutoff_denominator": (
+                    int(shadow_plan["cutoff_denominator"]) if shadow_plan is not None else 1),
+                "baseline_ring_min": (
+                    int(shadow_plan["baseline_schedule"]["ring_min"])
+                    if shadow_plan is not None else int(physical_schedule["ring_min"])),
+                "baseline_ready_min": (
+                    int(shadow_plan["baseline_schedule"]["ready_min"])
+                    if shadow_plan is not None else int(physical_schedule["ready_min"])),
             },
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)
             "cats": dec_cats,                                         # per-frame [raw,same,near,coa,flbk,buf,miss]

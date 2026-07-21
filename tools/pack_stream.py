@@ -41,6 +41,7 @@ import av_config
 import ima_adpcm
 import player_constants
 import pattern_supply
+import shadow_updates
 import stream_schedule
 import ttrc_routing
 from encode_config import load_profile
@@ -93,6 +94,7 @@ FEATURE_COLD_RUNS = ttrc_routing.FEATURE_COLD_RUNS
 FEATURE_FIXED_N2 = ttrc_routing.FEATURE_FIXED_N2
 FEATURE_ADPCM22 = ttrc_routing.FEATURE_ADPCM22
 FEATURE_PATTERN_SUPPLY = ttrc_routing.FEATURE_PATTERN_SUPPLY
+FEATURE_SHADOW_UPDATE_LISTS = ttrc_routing.FEATURE_SHADOW_UPDATE_LISTS
 ADPCM_TABLE_SECTORS = math.ceil(ima_adpcm.FULL_TABLE_BYTES / SECTOR)
 ROUTING_MAX_FRAMES = ttrc_routing.MAX_FRAMES
 
@@ -234,10 +236,7 @@ def pals_to_bytes_128(pal_4x15):
 
 
 def build_bitmap(cells):
-    bm = bytearray((C_CELLS + 7) // 8)
-    for c in cells:
-        bm[c >> 3] |= 1 << (c & 7)
-    return bytes(bm)
+    return shadow_updates.build_bitmap(cells, C_CELLS)
 
 
 def resolve(log, POOL, mode="lru"):
@@ -570,7 +569,8 @@ def build_audio_chunks(audio_path, frame_count):
     return control_chunks, pcm_chunks
 
 
-def build_control(log, per, n_upd, pal_w, audio_path, sources=None):
+def build_control(
+        log, per, n_upd, pal_w, audio_path, sources=None, update_lists=None):
     """Build control blocks and return their reconstructed source PCM chunks."""
     seg_cram = [pals_to_bytes_128(p) for p in log["seg_pals"]]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
@@ -591,6 +591,11 @@ def build_control(log, per, n_upd, pal_w, audio_path, sources=None):
     if sources is None:
         sources = tuple(tuple(pattern_supply.SOURCE_PRG for _ in entries)
                         for _cells, entries, _colds in per)
+    if update_lists is None:
+        update_lists = np.zeros(len(per), np.bool_)
+    update_lists = np.asarray(update_lists, np.bool_)
+    if update_lists.shape != (len(per),):
+        raise ValueError("shadow update-list flags must match frame count")
     blocks = []
     for i in range(len(per)):
         cells, entries, colds = per[i]
@@ -599,16 +604,23 @@ def build_control(log, per, n_upd, pal_w, audio_path, sources=None):
         # 同期マーカー: frame_seq(下位16bit)。実機は control 読み出し時に期待フレーム番号と
         # 照合し、ズレたら desync 検知(CDCセクタ落ち等)して復帰できる。total_len に含む。
         body += struct.pack(">H", i & 0xFFFF)
-        body += struct.pack(">H", int(n_upd[i]))
+        use_list = bool(update_lists[i])
+        body += struct.pack(">H", shadow_updates.encode_count(n_upd[i], use_list))
         pal_ref = (int(frame_seg[i]) + 1) if pal_w[i] else 0
         body += struct.pack(">BB", pal_ref, 1 if dbg_on else 0)
         if dbg_on:
             body += debug_block(cats_list[i])       # 固定長DEBUGブロック(Miss含む7カテゴリ+予約)
-        body += build_bitmap(cells)
+        sourced_entries = []
         for e, cold, source in zip(entries, colds, frame_sources):
             sourced_entry = pattern_supply.encode_entry_source(
                 e, source if cold else pattern_supply.SOURCE_PRG)
-            body += struct.pack(">H", (0x8000 if cold else 0) | sourced_entry)
+            sourced_entries.append((0x8000 if cold else 0) | sourced_entry)
+        if use_list:
+            body += shadow_updates.build_update_list(cells, sourced_entries, C_CELLS)
+        else:
+            body += build_bitmap(cells)
+            for sourced_entry in sourced_entries:
+                body += struct.pack(">H", sourced_entry)
         body += audio_chunks[i]
         # Keep the legacy audio offset unchanged.  The suffix is aligned so the
         # 68000 can read its words directly; old players simply ignore it.
@@ -630,9 +642,13 @@ def build_control(log, per, n_upd, pal_w, audio_path, sources=None):
 
 def control_audio_bounds(block):
     """Return the fixed-size on-disc audio slice in one control block."""
-    n_upd = struct.unpack_from(">H", block, 4)[0]
+    n_upd, use_list = shadow_updates.decode_count(
+        struct.unpack_from(">H", block, 4)[0])
     dbg = block[7]
-    pos = 8 + (DBG_LEN if dbg else 0) + ((C_CELLS + 7) // 8) + n_upd * 2
+    update_bytes = (
+        n_upd * shadow_updates.LIST_ITEM_BYTES if use_list
+        else ((C_CELLS + 7) // 8) + n_upd * shadow_updates.SHADOW_ENTRY_BYTES)
+    pos = 8 + (DBG_LEN if dbg else 0) + update_bytes
     return pos, pos + AUDIO_CONTROL
 
 
@@ -754,7 +770,8 @@ def decode_verify(log, per, blocks, supply_plan, sc, compare_dir=None, sample_di
         blk = ctrl[cc:cc + int(blk_len[i])]; cc += int(blk_len[i])
         p = 2                                         # skip total_len
         p += 2                                        # skip frame_seq(同期マーカー)
-        nupd = struct.unpack(">H", blk[p:p + 2])[0]; p += 2
+        nupd, use_list = shadow_updates.decode_count(
+            struct.unpack(">H", blk[p:p + 2])[0]); p += 2
         palw = blk[p]; dbg = blk[p + 1]; p += 2
         if dbg:
             p += DBG_LEN                              # skip debug block
@@ -762,29 +779,51 @@ def decode_verify(log, per, blocks, supply_plan, sc, compare_dir=None, sample_di
         if palw and (palw - 1) != int(frame_seg[i]):
             print(f"  !! palref mismatch frame {i}: pal={palw - 1} != seg={int(frame_seg[i])}")
             bad += 1
-        bmbytes = (C_CELLS + 7) // 8                   # bitmap = ceil(cells/8)(H32=72, H40full=140)
-        bm = blk[p:p + bmbytes]; p += bmbytes
-        cells = [c for c in range(C_CELLS) if bm[c >> 3] & (1 << (c & 7))]
-        for c in cells:
-            e = struct.unpack(">H", blk[p:p + 2])[0]; p += 2
-            cold = e >> 15
-            source = pattern_supply.decode_entry_source(e)
-            ent = e & pattern_supply.NAME_ENTRY_MASK
-            nt_pal[c] = (ent >> 13) & 3
-            nt_slot[c] = (ent & 0x07FF) - BASE
-            if cold:
-                if source == pattern_supply.SOURCE_PRG:
-                    src = prg_src
-                elif source == pattern_supply.SOURCE_WR:
-                    src = word[i & 1]
-                elif source == pattern_supply.SOURCE_MAIN:
-                    src = main
-                else:
-                    src = ()
-                if not src:
+        if use_list:
+            update_items = []
+            for _ in range(nupd):
+                offset, ent = struct.unpack_from(">HH", blk, p); p += 4
+                if offset & 1 or offset >= C_CELLS * 2:
+                    raise ValueError(f"invalid shadow offset {offset} in frame {i}")
+                update_items.append((offset // 2, ent))
+        else:
+            bmbytes = (C_CELLS + 7) // 8
+            bm = blk[p:p + bmbytes]; p += bmbytes
+            cells = [c for c in range(C_CELLS) if bm[c >> 3] & (1 << (c & 7))]
+            update_items = []
+            for c in cells:
+                e = struct.unpack_from(">H", blk, p)[0]; p += 2
+                update_items.append((c, e & pattern_supply.NAME_ENTRY_MASK))
+
+        # The source-aware run suffix is authoritative for physical pattern
+        # delivery in both update formats. The list intentionally contains only
+        # completed name-table values and therefore carries no cold/source bits.
+        runs_pos = p + AUDIO_CONTROL
+        if runs_pos & 1:
+            runs_pos += 1
+        packed_run_count = struct.unpack_from(">H", blk, runs_pos)[0]
+        runs_pos += 2
+        for _ in range(packed_run_count):
+            slot, source_count = struct.unpack_from(">HH", blk, runs_pos)
+            runs_pos += 4
+            count, source = pattern_supply.decode_run_count(source_count)
+            if source == pattern_supply.SOURCE_PRG:
+                src = prg_src
+            elif source == pattern_supply.SOURCE_WR:
+                src = word[i & 1]
+            elif source == pattern_supply.SOURCE_MAIN:
+                src = main
+            else:
+                src = ()
+            for offset in range(count):
+                if not src or slot + offset >= POOL:
                     bad += 1
                 else:
-                    tile[int(nt_slot[c]) + BASE] = src.popleft()
+                    tile[slot + offset + BASE] = src.popleft()
+
+        for c, ent in update_items:
+            nt_pal[c] = (ent >> 13) & 3
+            nt_slot[c] = (ent & 0x07FF) - BASE
         # BODY payload follows control and arms later frames.  Append it only
         # after the current block has consumed every cold entry.
         for k in range(pc, min(pc + add, len(prg_patterns))):
@@ -981,6 +1020,9 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
         features |= FEATURE_ADPCM22
     if supply_plan.enabled:
         features |= FEATURE_PATTERN_SUPPLY
+    if any(struct.unpack_from(">H", block, 4)[0] & shadow_updates.LIST_TAG
+           for block in blocks):
+        features |= FEATURE_SHADOW_UPDATE_LISTS
     header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
@@ -1233,8 +1275,37 @@ def main():
             f"pack: internal cold tile mismatch at frame {frame}: "
             f"runs={int(packed_tiles[frame])} resolve={int(n_load[frame])}")
     verify_sim_pattern_transfers(log, packed_tiles, packed_runs, supply_plan)
+    shadow_meta = log.get("shadow_updates") or {}
+    update_lists = np.asarray(
+        shadow_meta.get("selected", np.zeros(len(per), np.bool_)), np.bool_)
+    if update_lists.shape != (len(per),):
+        raise SystemExit("pack: frozen shadow update-list flags have wrong frame count")
+    if len(update_lists) and bool(update_lists[0]):
+        raise SystemExit("pack: frame 0 must retain the legacy bitmap format")
+    if update_lists.any() and not supply_plan.enabled:
+        raise SystemExit("pack: shadow update lists require the cold-run/pattern-supply path")
+    frozen_legacy = np.asarray(shadow_meta.get("legacy_cycles", ()), np.int64)
+    frozen_list = np.asarray(shadow_meta.get("list_cycles", ()), np.int64)
+    recomputed_costs = tuple(
+        shadow_updates.frame_cost(cells, C_CELLS) for cells, _entries, _colds in per)
+    recomputed_legacy = np.asarray(
+        [cost.legacy_cycles for cost in recomputed_costs], np.int64)
+    recomputed_list = np.asarray(
+        [cost.list_cycles for cost in recomputed_costs], np.int64)
+    if (frozen_legacy.shape != recomputed_legacy.shape
+            or not np.array_equal(frozen_legacy, recomputed_legacy)
+            or frozen_list.shape != recomputed_list.shape
+            or not np.array_equal(frozen_list, recomputed_list)):
+        raise SystemExit("pack: shadow update cycle model differs from frozen sim decision")
+    if np.any(update_lists & (recomputed_list >= recomputed_legacy)):
+        frame = int(np.flatnonzero(update_lists & (recomputed_list >= recomputed_legacy))[0])
+        raise SystemExit(f"pack: selected shadow list is not faster at frame {frame}")
     blocks, source_pcm_chunks = build_control(
-        log, per, n_upd, pal_w, audio_path, supply_plan.sources)
+        log, per, n_upd, pal_w, audio_path, supply_plan.sources, update_lists)
+    print(
+        f"  shadow updates: list={int(update_lists.sum())}/{len(update_lists)} "
+        f"Main saved={int(((recomputed_legacy - recomputed_list) * update_lists).sum())} cycles "
+        f"control delta={sum(len(block) for block in blocks) - int(stream_schedule.control_block_lengths(n_upd, packed_runs, cells=C_CELLS, audio_frame_bytes=AUDIO_CONTROL, debug=PACK_DEBUG).sum())}B")
     sc = schedule(per, supply_plan.prg_loads, blocks)
     if supply_plan.enabled and log.get("pattern_supply") is None:
         frozen_lengths = np.asarray(

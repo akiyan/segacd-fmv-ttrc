@@ -90,6 +90,9 @@
 .equ CPU_DIRECT_MAX_WORDS, 32	/* 1-2 tiles: CPU writes beat per-run DMA setup */
 .equ FEATURE_FIXED_N2_BIT, 1	/* header features bit 1 */
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
+.equ SHADOW_UPDATE_LIST_BIT, 15
+.equ SHADOW_UPDATE_COUNT_MASK, 0x7FFF
+.equ SHADOW_OFFSET_MASK, 0x0FFE	/* 4KB physical shadow, even word offsets */
 .equ PACE_N2_ARM_TICKS, 800	/* 24.576ms: safely between VBlank 1 and 2 */
 
 .ifdef DEBUG
@@ -685,13 +688,17 @@ bf_upd:
 	   Word-RAM bank.  The Sub already walks them to build cold runs; rewriting
 	   every (cell,entry) pair was duplicate work on the bottleneck CPU. */
 	lea	(PROBE_BANK+0x10000+4), a0	/* skip total_len + frame_seq */
-	move.w	(a0)+, d7			/* n_upd */
+	move.w	(a0)+, d7			/* bit15=list format, low15=n_upd */
+	move.w	d7, d6			/* preserve format tag */
+	andi.w	#SHADOW_UPDATE_COUNT_MASK, d7
 	beq	bf_blit
 	move.w	(a0)+, d0			/* pal(hi), dbg flag(lo) */
 	tst.b	d0
 	beq	1f
 	adda.w	#22, a0				/* optional debug block */
 1:
+	btst	#SHADOW_UPDATE_LIST_BIT, d6
+	bne	bf_update_list
 	movea.l	a0, a2				/* bitmap */
 	PC_ADDA_W md_bmbytes, PC_BMBYTES, a0	/* entries */
 	lea	shadow, a1
@@ -1000,6 +1007,20 @@ bf_after_flip:
 .endif
 	movem.l	(sp)+, d0-d7/a0-a3
 	rts
+
+bf_update_list:
+	/* Completed (shadow byte offset, final name-table entry) pairs.  Masking
+	   every untrusted offset into the expanded 4KB shadow allocation is cheaper
+	   and safer than a taken/not-taken range branch per item.  This out-of-line
+	   walker keeps the successful generated-bitmap path's fall-through intact. */
+	lea	shadow, a1
+	subq.w	#1, d7
+1:
+	move.w	(a0)+, d0
+	andi.w	#SHADOW_OFFSET_MASK, d0
+	move.w	(a0)+, (a1,d0.w)
+	dbra	d7, 1b
+	bra	bf_blit
 
 /* vblankに入るまで待つ(既に中なら即戻る)。trashes d0 */
 wait_vb_in:
@@ -1706,7 +1727,7 @@ dbg_hex_pairs:
 	.bss
 	.align 2
 shadow:
-	.space 1120*2				/* 最大グリッド(H40 40x28)ぶん */
+	.space 0x1000				/* logical H40=2240B; padded for bounded list offsets */
 dbg_row:
 	.space 28*2				/* prebuilt values-only H40 row; H32 uses first 22 words */
 .ifndef PLAYER_SPECIALIZED
