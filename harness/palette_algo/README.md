@@ -13,7 +13,7 @@ When the optional CuPy environment is available, run the same verification on
 the GPU path:
 
 ```sh
-~/.config/cbrsim-gpu/venv/bin/python harness/palette_algo/verify_lut.py
+tools/python.sh --gpu harness/palette_algo/verify_lut.py
 ```
 
 The check uses deterministic random RGB333 tiles and deliberate duplicate
@@ -35,10 +35,16 @@ growth for a source with more than 15 useful colours, and fixed HUD extrema:
 tools/python.sh harness/palette_algo/verify_mosaic.py
 ```
 
+This check also proves that grouped 512-colour histograms agree exactly between
+the CPU fallback and CuPy paths. It verifies the vectorized tile layout and
+reconstruction of float64 edge weights from cached one-byte gradient strengths
+as well. Real Lunar and Bad Apple runs separately prove that the emitted
+palettes and segment assignment remain identical to the former per-line scans.
+
 Compare both algorithms on evenly sampled Bad Apple and Sonic master frames:
 
 ```sh
-~/.config/cbrsim-gpu/venv/bin/python \
+tools/python.sh --gpu \
   harness/palette_algo/compare_sources.py --frames 60
 ```
 
@@ -46,10 +52,26 @@ Find the point where adding more learning frames stops improving a fixed
 validation set:
 
 ```sh
-~/.config/cbrsim-gpu/venv/bin/python \
+tools/python.sh --gpu \
   harness/palette_algo/sample_convergence.py \
   videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/master
 ```
+
+## Training speed result (2026-07-21)
+
+MOSAIC-GM now keeps RGB333 keys and edge weights resident on the GPU and
+builds every palette line's 512-colour histogram in one grouped `bincount`.
+The first shared-row fit reuses that grouped histogram across all six core-size
+candidates. The sim also decodes each master PNG once into an in-memory frame
+feature cache shared by global training, segment training and final
+quantization.
+
+On the RTX 4090 host, a fixed 240-frame Lunar H32 training pass fell from
+8.522 s to 1.725 s with an identical palette SHA-256 and identical score/grow
+statistics. Full Lunar H32 palette selection fell from 84.6 s before this work
+to 8.80 s including the 2.12 s, 571.9 MiB frame-cache build. Full Bad Apple H40
+used 1854.4 MiB and reproduced the previous segment palettes and `frame_seg`
+exactly.
 
 ## Sample-count result (2026-07-16)
 

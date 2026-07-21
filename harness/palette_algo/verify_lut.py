@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from quantize_global4_tiles import (  # noqa: E402
-    build_palettes, edge_weights, palette15, palette_lut, rgb333_keys, tile_errors,
+    build_palettes, edge_strengths, edge_weights, edge_weights_from_strengths,
+    palette15, palette_lut, rgb333_keys, tile_blocks, tile_errors,
 )
 from palette_algorithms import coherent_assign_idx  # noqa: E402
 
@@ -91,6 +92,21 @@ def main() -> int:
     tiles = rng.integers(0, 8, size=(8192, 64, 3), dtype=np.uint8)
     palettes = rng.integers(0, 8, size=(4, 15, 3), dtype=np.uint8)
     palettes[:, -2:] = palettes[:, :2]  # exercise first-minimum tie behaviour
+
+    raster = rng.integers(0, 8, size=(225, 321, 3), dtype=np.uint8)
+    expected_blocks = np.array([
+        raster[row:row + 8, col:col + 8].reshape(64, 3)
+        for row in range(0, 224, 8)
+        for col in range(0, 320, 8)
+    ], dtype=np.uint8)
+    actual_blocks = tile_blocks(raster)
+    np.testing.assert_array_equal(actual_blocks, expected_blocks)
+    strength = edge_strengths(actual_blocks)
+    np.testing.assert_array_equal(
+        edge_weights_from_strengths(strength, 3.0),
+        edge_weights(actual_blocks, 3.0),
+    )
+    print("Frame features exact: vectorized tile order and cached edge weights verified")
 
     for pal in palettes:
         np.testing.assert_array_equal(tile_errors(tiles, pal), direct_tile_errors(tiles, pal))

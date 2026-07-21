@@ -204,7 +204,7 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
     if not 1 <= active_tiles <= total_tiles:
         raise ValueError(
             f"{profile_path}: video.active_tiles must be within 1..{total_tiles}")
-    vram_tiles = int(data.get("encoder", {}).get("vram_tiles", 1400))
+    vram_tiles = int(data.get("encoder", {}).get("vram_tiles", 1440))
     if not 1 <= vram_tiles <= MAX_RESIDENT_VRAM_TILES:
         raise ValueError(
             f"{profile_path}: encoder.vram_tiles must be within "

@@ -59,6 +59,35 @@ class SimMultiprocessingTests(unittest.TestCase):
             sim.own_pattern_cache_arrays(
                 np.zeros((1, 8, 8, 3), np.uint8), np.zeros(12, np.float32))
 
+    def test_rendered_colour_keys_round_trip_all_rgb333_colours(self) -> None:
+        keys = sim.rendered_color_keys(sim._MD_RGB888.astype(np.uint8))
+        np.testing.assert_array_equal(keys, np.arange(512, dtype=np.uint16))
+
+    def test_resident_distance_luts_match_direct_f3_math(self) -> None:
+        rng = np.random.default_rng(7)
+        candidates = sim.MD_LEVELS[
+            rng.integers(0, 8, (24, 8, 8, 3))]
+        target = sim.MD_LEVELS[rng.integers(0, 8, (8, 8, 3))]
+
+        direct_y = np.abs(candidates @ sim._LWv - target @ sim._LWv)
+        direct_ym = direct_y.reshape(24, -1).mean(1)
+        direct_yp = direct_y.reshape(24, -1).max(1)
+        direct_cm = np.sqrt(
+            (candidates @ sim._CBv - target @ sim._CBv) ** 2
+            + (candidates @ sim._CRv - target @ sim._CRv) ** 2
+        ).reshape(24, -1).mean(1)
+
+        candidate_keys = sim.rendered_color_keys(candidates).reshape(24, 64)
+        target_keys = sim.rendered_color_keys(target).reshape(64)
+        table_y = sim._F3_DY_LUT[candidate_keys, target_keys]
+        table_ym = table_y.mean(1)
+        table_yp = table_y.max(1)
+        table_cm = sim._F3_DC_LUT[candidate_keys, target_keys].mean(1)
+
+        np.testing.assert_array_equal(table_ym, direct_ym)
+        np.testing.assert_array_equal(table_yp, direct_yp)
+        np.testing.assert_array_equal(table_cm, direct_cm)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,8 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from palette_algorithms import (  # noqa: E402
-    MOSAIC_GM, build_mosaic_palettes, coherent_assign_idx,
+    MOSAIC_GM, PaletteEvaluator, _counts, build_mosaic_palettes, coherent_assign_idx,
     refine_one_line_palette,
+)
+from quantize_global4_tiles import (  # noqa: E402
+    edge_strengths, rgb333_keys,
 )
 
 
@@ -59,6 +62,26 @@ def main() -> int:
     warm = common + [(r, g, 0) for r, g in ((7, 1), (7, 2), (6, 1), (6, 2), (5, 1), (7, 3), (6, 3), (5, 2))]
     cool = common + [(0, g, b) for g, b in ((1, 7), (2, 7), (1, 6), (2, 6), (1, 5), (3, 7), (3, 6), (2, 5))]
     mixed = np.concatenate([tiled(warm, 512, 2), tiled(cool, 512, 3)])
+    assignment = np.arange(len(mixed), dtype=np.int16) % 4
+    strengths = edge_strengths(mixed)
+    evaluator = PaletteEvaluator(
+        mixed, weight_strengths=strengths, weight_alpha=3.0)
+    keys = rgb333_keys(mixed).reshape(len(mixed), 64)
+    expected_raw = np.stack([
+        _counts(keys, tile_mask=assignment == line)
+        for line in range(4)
+    ])
+    expected_strength = np.stack([
+        _counts(keys, strengths, assignment == line)
+        for line in range(4)
+    ])
+    expected_weighted = expected_raw + 3.0 * expected_strength / 21.0
+    np.testing.assert_array_equal(
+        evaluator.color_histograms(assignment, groups=4), expected_raw)
+    np.testing.assert_array_equal(
+        evaluator.color_histograms(assignment, groups=4, weighted=True),
+        expected_weighted)
+
     palettes, stats = build_mosaic_palettes(mixed, return_stats=True)
     assert 2 <= stats["active_lines"] <= 4, stats
     assert stats["core_colors"] >= 2, stats
@@ -93,7 +116,9 @@ def main() -> int:
         adjacent, spatial_palettes, 1, 2, seam_weight=8, iterations=2)
     np.testing.assert_array_equal(independent, (0, 1))
     assert coherent[0] == coherent[1], coherent
-    print("MOSAIC-GM exact: one-line stop, shared-core growth, and HUD extrema verified")
+    print(
+        "MOSAIC-GM exact: grouped histograms, one-line stop, shared-core growth, "
+        "and HUD extrema verified")
     return 0
 
 

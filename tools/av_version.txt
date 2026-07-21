@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e74 : Make ADPCM22 and the qualified 1440-pattern resident VRAM pool the
+#        standard across every checked-in profile and direct sim defaults.
+#        Cache palette frame features, resident colour-distance data, and
+#        same-frame bucket candidate windows; keep decision and packed-stream
+#        output byte-identical while substantially reducing encoder time.
 #   e73 : Raise the Bad Apple H40 resident VRAM pool from the legacy 1400
 #        profile value to the qualified 1440-tile H40 limit enabled by the
 #        16-pattern playback HUD font.
@@ -512,5 +517,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260721
-e=73
+e=74
 p=67

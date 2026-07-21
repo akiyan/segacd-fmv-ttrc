@@ -13,16 +13,16 @@ height = 224
 fit = "pad"
 
 [audio]
-kind = "pcm13"
+kind = "adpcm22"
 
 [output]
-directory = "videos/lunar_sss_op_H32_256x224_pcm/tmp"
+directory = "videos/lunar_sss_op_H32_256x224_adpcm22/tmp"
 reuse = false
 emit_decisions = true
 
 [encoder]
 gpu = true
-vram_tiles = 1400
+vram_tiles = 1440
 dither = true
 segment_palettes = true
 near = true

@@ -89,11 +89,11 @@ def tile_blocks(rgb333):
     """Return (n_tiles, 64, 3) RGB333 tiles in VDP order (row-major tiles)."""
     h, w, _ = rgb333.shape
     ty, tx = h // TILE, w // TILE
-    blocks = []
-    for r in range(ty):
-        for c in range(tx):
-            blocks.append(rgb333[r*TILE:(r+1)*TILE, c*TILE:(c+1)*TILE].reshape(64, 3))
-    return np.array(blocks, dtype=np.uint8)
+    raster = np.asarray(rgb333[:ty * TILE, :tx * TILE], dtype=np.uint8)
+    return np.ascontiguousarray(
+        raster.reshape(ty, TILE, tx, TILE, 3)
+        .transpose(0, 2, 1, 3, 4)
+        .reshape(ty * tx, TILE * TILE, 3))
 
 
 def hist(pixels, weights=None):
@@ -105,21 +105,33 @@ def hist(pixels, weights=None):
     return rgb, counts[used]
 
 
+def edge_strengths(tiles):
+    """Return the integer local-gradient numerator used by edge_weights()."""
+    T = tiles.shape[0]
+    t = tiles.reshape(T, 8, 8, 3).astype(np.int32)
+    e = np.zeros((T, 8, 8), np.int32)
+    e[:, :, :-1] += np.abs(t[:, :, :-1] - t[:, :, 1:]).sum(3)   # 右隣との差
+    e[:, :, 1:] += np.abs(t[:, :, 1:] - t[:, :, :-1]).sum(3)    # 左隣
+    e[:, :-1, :] += np.abs(t[:, :-1, :] - t[:, 1:, :]).sum(3)   # 下隣
+    e[:, 1:, :] += np.abs(t[:, 1:, :] - t[:, :-1, :]).sum(3)    # 上隣
+    return e.reshape(T, 64).astype(np.uint8)
+
+
+def edge_weights_from_strengths(strengths, alpha):
+    """Convert cached integer gradients to the learner's float64 weights."""
+    if alpha <= 0:
+        return None
+    e_norm = np.asarray(strengths, dtype=np.float64) / 21.0
+    return 1.0 + alpha * e_norm
+
+
 def edge_weights(tiles, alpha):
     """tiles (T,64,3) rgb333 -> 画素ごとの学習重み (T,64) = 1 + alpha*edge。edge=局所勾配(隣接画素との
     rgb絶対差の和)。線/輪郭の画素ほど大きい=面積が小さくてもパレットに拾われる。alpha<=0 なら None(無効)。
     平坦部は勾配0で重み1のまま=実写など滑らかな素材は自動的にほぼ無変化(自動バランス)。"""
     if alpha <= 0:
         return None
-    T = tiles.shape[0]
-    t = tiles.reshape(T, 8, 8, 3).astype(np.int32)
-    e = np.zeros((T, 8, 8), np.float64)
-    e[:, :, :-1] += np.abs(t[:, :, :-1] - t[:, :, 1:]).sum(3)   # 右隣との差
-    e[:, :, 1:] += np.abs(t[:, :, 1:] - t[:, :, :-1]).sum(3)    # 左隣
-    e[:, :-1, :] += np.abs(t[:, :-1, :] - t[:, 1:, :]).sum(3)   # 下隣
-    e[:, 1:, :] += np.abs(t[:, 1:, :] - t[:, :-1, :]).sum(3)    # 上隣
-    e_norm = e.reshape(T, 64) / 21.0        # 21=1方向で全chが最大差(0↔7)。強い線でe_norm≈2, 緩い勾配≈0.3
-    return (1.0 + alpha * e_norm)
+    return edge_weights_from_strengths(edge_strengths(tiles), alpha)
 
 
 def palette15(pixels, colors=15, weights=None):

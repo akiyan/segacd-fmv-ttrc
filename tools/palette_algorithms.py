@@ -13,7 +13,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from quantize_global4_tiles import edge_weights, palette15, palette_lut, rgb333_keys
+from quantize_global4_tiles import (
+    edge_strengths, palette15, palette_lut, rgb333_keys,
+)
 
 
 STL4 = "stl4"
@@ -174,19 +176,106 @@ def refine_one_line_palette(palette, source_counts, candidate_limit=64):
 
 
 class PaletteEvaluator:
-    """Keep RGB333 tile keys resident and score changing palette candidates."""
+    """Keep RGB333 tile data resident while palette candidates change.
 
-    def __init__(self, tiles):
+    MOSAIC-GM repeatedly needs a 512-colour histogram for every current
+    palette-line assignment.  Building one histogram per line used to rescan
+    and copy the same tile pixels many times.  Keep the optional edge weights
+    beside the keys and build every line's histogram in one grouped pass.
+    """
+
+    def __init__(self, tiles, weights=None, weight_strengths=None,
+                 weight_alpha=None):
         self.keys = rgb333_keys(tiles).reshape(len(tiles), 64)
+        self.weights = (None if weights is None else
+                        np.asarray(weights, dtype=np.float64).reshape(self.keys.shape))
+        self.weight_strengths = (
+            None if weight_strengths is None else
+            np.asarray(weight_strengths, dtype=np.uint8).reshape(self.keys.shape))
+        self.weight_alpha = (None if weight_alpha is None else float(weight_alpha))
+        if self.weight_strengths is not None and self.weight_alpha is None:
+            raise ValueError("edge strengths need their alpha coefficient")
         self._cp = None
         self._gpu_keys = None
+        self._gpu_weights = None
+        self._gpu_weight_strengths = None
         try:
             import gpu_quant
             if gpu_quant.enabled():
                 self._cp = gpu_quant.cupy()
                 self._gpu_keys = self._cp.asarray(self.keys)
+                if self.weights is not None:
+                    self._gpu_weights = self._cp.asarray(self.weights)
+                if self.weight_strengths is not None:
+                    self._gpu_weight_strengths = self._cp.asarray(
+                        self.weight_strengths)
         except Exception as exc:  # GPU remains an optional acceleration path
             print(f"[MOSAIC-GM] GPU evaluator fallback: {exc}")
+
+    def color_histograms(self, assign=None, groups=1, weighted=False):
+        """Return all assigned groups' RGB333 histograms in one data pass.
+
+        ``assign`` is one group number per tile.  Encoding the group into the
+        upper bits of the 9-bit RGB333 key turns N separate masked bincounts
+        into one contiguous bincount.  CuPy follows the same path while the
+        keys and edge weights remain resident on the GPU.
+        """
+        groups = max(1, int(groups))
+        if assign is None:
+            if groups != 1:
+                raise ValueError("unassigned colour histograms have one group")
+            host_assign = None
+        else:
+            host_assign = np.asarray(assign, dtype=np.int16).reshape(-1)
+            if len(host_assign) != len(self.keys):
+                raise ValueError(
+                    f"assignment count {len(host_assign)} differs from "
+                    f"tile count {len(self.keys)}")
+            if len(host_assign) and (
+                    int(host_assign.min()) < 0 or int(host_assign.max()) >= groups):
+                raise ValueError("palette assignment lies outside histogram groups")
+
+        if self._cp is None:
+            encoded = self.keys
+            if host_assign is not None:
+                encoded = encoded + host_assign[:, None].astype(np.uint16) * 512
+            if weighted and self.weight_strengths is not None:
+                count = np.bincount(
+                    encoded.reshape(-1), minlength=groups * 512)
+                strength = np.bincount(
+                    encoded.reshape(-1),
+                    weights=self.weight_strengths.reshape(-1),
+                    minlength=groups * 512)
+                return (count.astype(np.float64)
+                        + self.weight_alpha * strength / 21.0).reshape(groups, 512)
+            values = (None if not weighted or self.weights is None else
+                      self.weights.reshape(-1))
+            return np.bincount(
+                encoded.reshape(-1), weights=values,
+                minlength=groups * 512,
+            ).reshape(groups, 512)
+
+        cp = self._cp
+        encoded = self._gpu_keys
+        if host_assign is not None:
+            gpu_assign = cp.asarray(host_assign, dtype=cp.uint16)
+            encoded = encoded + gpu_assign[:, None] * 512
+        if weighted and self._gpu_weight_strengths is not None:
+            count = cp.bincount(
+                encoded.reshape(-1), minlength=groups * 512)
+            strength = cp.bincount(
+                encoded.reshape(-1),
+                weights=self._gpu_weight_strengths.reshape(-1),
+                minlength=groups * 512)
+            result = count.astype(cp.float64) + self.weight_alpha * strength / 21.0
+            return cp.asnumpy(result.reshape(groups, 512))
+        values = (self._gpu_weights.reshape(-1)
+                  if weighted and self._gpu_weights is not None else None)
+        result = cp.bincount(
+            encoded.reshape(-1), weights=values,
+            minlength=groups * 512,
+        ).reshape(groups, 512)
+        return cp.asnumpy(result)
 
     def errors(self, palettes):
         cost = np.stack([palette_lut(palette, squared=True)[0] for palette in palettes])
@@ -237,10 +326,7 @@ def score_palettes(tiles, palettes, evaluator=None, mapping_weight=None, core_co
     tile_error = errors[np.arange(len(errors)), assign]
     pixel_error = int(tile_error.sum())
 
-    line_hist = np.stack([
-        np.bincount(evaluator.keys[assign == line].reshape(-1), minlength=512)
-        for line in range(len(palettes))
-    ])
+    line_hist = evaluator.color_histograms(assign, groups=len(palettes))
     maps = []
     for palette in palettes:
         _error, index = palette_lut(palette, squared=True)
@@ -319,17 +405,19 @@ def coherent_assign_idx(tiles, palettes, rows, cols, seam_weight=1.0, iterations
     return assign, selected.astype(np.uint8)
 
 
-def _fit_independent(tiles, keys, weights, initial, evaluator, iterations=3):
+def _fit_independent(initial, evaluator, iterations=3):
     palettes = [np.asarray(palette, dtype=np.uint8) for palette in initial]
     for _ in range(iterations):
         assign = evaluator.errors(palettes).argmin(1)
+        grouped = evaluator.color_histograms(
+            assign, groups=len(palettes), weighted=True)
         next_palettes = []
         for line, old in enumerate(palettes):
             mask = assign == line
             if not mask.any():
                 next_palettes.append(old)
                 continue
-            counts = _counts(keys, weights, mask)
+            counts = grouped[line]
             next_palettes.append(_force_source_extremes(
                 _palette_from_counts(counts, 15), counts))
         palettes = next_palettes
@@ -358,7 +446,7 @@ def _specialists(common, count, group_counts, residual_counts, fallback):
     return np.asarray(result, dtype=np.uint8)
 
 
-def _shared_rows(tiles, keys, weights, assign, independent, core_size, global_counts):
+def _shared_rows(independent, core_size, global_counts, group_counts):
     common = _force_source_extremes(
         _palette_from_counts(global_counts, core_size), global_counts)
     specialist_count = 15 - len(common)
@@ -369,11 +457,13 @@ def _shared_rows(tiles, keys, weights, assign, independent, core_size, global_co
 
     rows = []
     for line in range(len(independent)):
-        mask = assign == line
-        group_counts = _counts(keys, weights, mask)
-        residual_counts = _counts(keys, weights, mask, extra_lut=common_error)
+        counts = group_counts[line]
+        # common_error depends only on the 512-colour key.  Multiplying the
+        # already grouped histogram is equivalent to rescanning every selected
+        # pixel with that lookup table.
+        residual_counts = counts * common_error
         specialist = _specialists(
-            common, specialist_count, group_counts, residual_counts, independent[line])
+            common, specialist_count, counts, residual_counts, independent[line])
         if len(common) <= 1:
             row = np.vstack([common, specialist])
         else:
@@ -384,7 +474,8 @@ def _shared_rows(tiles, keys, weights, assign, independent, core_size, global_co
     return rows
 
 
-def build_mosaic_palettes(train_tiles, n_pal=4, return_stats=False):
+def build_mosaic_palettes(train_tiles, n_pal=4, return_stats=False,
+                          train_weights=None, train_strengths=None):
     """Learn one to four shared-core lines with automatic Grow/Merge selection."""
     if n_pal < 1 or n_pal > 4:
         raise ValueError("MOSAIC-GM supports one to four hardware palette lines")
@@ -392,10 +483,20 @@ def build_mosaic_palettes(train_tiles, n_pal=4, return_stats=False):
     if not len(tiles):
         raise ValueError("cannot train palettes without tiles")
     alpha = float(os.environ.get("CBRSIM_EDGE_WEIGHT", "3.0"))
-    weights = edge_weights(tiles, alpha)
-    keys = rgb333_keys(tiles).reshape(len(tiles), 64)
-    global_counts = _counts(keys, weights)
-    evaluator = PaletteEvaluator(tiles)
+    if train_strengths is not None:
+        strengths = np.asarray(
+            train_strengths, dtype=np.uint8).reshape(len(tiles), 64)
+        weights = None
+    elif train_weights is None:
+        strengths = edge_strengths(tiles) if alpha > 0 else None
+        weights = None
+    else:
+        weights = np.asarray(train_weights, dtype=np.float64).reshape(len(tiles), 64)
+        strengths = None
+    evaluator = PaletteEvaluator(
+        tiles, weights=weights, weight_strengths=strengths,
+        weight_alpha=alpha if strengths is not None else None)
+    global_counts = evaluator.color_histograms(weighted=True)[0]
 
     base = _force_source_extremes(_palette_from_counts(global_counts, 15), global_counts)
     current = score_palettes(tiles, [base], evaluator=evaluator, core_colors=15)
@@ -415,23 +516,27 @@ def build_mosaic_palettes(train_tiles, n_pal=4, return_stats=False):
             break
         seed_count = min(len(positive), max(64, len(tiles) // 8))
         order = positive[np.argsort(current.tile_error[positive], kind="stable")[-seed_count:]]
-        seed_counts = _counts(keys, weights, np.isin(np.arange(len(tiles)), order))
+        seed_mask = np.zeros(len(tiles), dtype=np.int8)
+        seed_mask[order] = 1
+        seed_counts = evaluator.color_histograms(
+            seed_mask, groups=2, weighted=True)[1]
         seed = _force_source_extremes(_palette_from_counts(seed_counts, 15), seed_counts)
-        independent = _fit_independent(
-            tiles, keys, weights, [*current.palettes, seed], evaluator)
+        independent = _fit_independent([*current.palettes, seed], evaluator)
         independent_assign = evaluator.errors(independent).argmin(1)
+        independent_counts = evaluator.color_histograms(
+            independent_assign, groups=len(independent), weighted=True)
 
         candidates = []
         for core_size in core_sizes:
             shared = _shared_rows(
-                tiles, keys, weights, independent_assign, independent,
-                core_size, global_counts)
+                independent, core_size, global_counts, independent_counts)
             # Refit specialists once after the shared rows move tile ownership.
             first = score_palettes(
                 tiles, shared, evaluator=evaluator, core_colors=core_size)
+            first_counts = evaluator.color_histograms(
+                first.assign, groups=len(independent), weighted=True)
             shared = _shared_rows(
-                tiles, keys, weights, first.assign, independent,
-                core_size, global_counts)
+                independent, core_size, global_counts, first_counts)
             candidates.append(score_palettes(
                 tiles, shared, evaluator=evaluator, core_colors=core_size))
         candidate = min(candidates, key=lambda result: result.score)
