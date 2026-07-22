@@ -50,12 +50,15 @@ HUD_FIELD_DIGITS = (     # 値のみ。field間の空けはない
     ("J", 2),
 )
 HUD_H40_FIELD_DIGITS = HUD_FIELD_DIGITS
-# H40 DEBUG builds with HUD_FLIP_FIELDS append two flip-phase fields:
-# V = V-counter at the previous accepted flip, O = that flip's lateness
-# past the fixed-N2 arm point in 30.72us ticks (clamped to 0xFF).
+# H40 DEBUG builds with HUD_FLIP_FIELDS append three flip-phase fields:
+# V = V-counter at the previous accepted flip, O = that flip's interval
+# excess over 1024 stopwatch ticks (nominal N2 interval ~1086; clamped FF),
+# E = this frame's Pass2 entry delay since the previous flip in 4-tick
+# units (clamped FF).
 HUD_H40_FLIP_FIELD_DIGITS = HUD_FIELD_DIGITS + (
     ("V", 2),
     ("O", 2),
+    ("E", 2),
 )
 
 

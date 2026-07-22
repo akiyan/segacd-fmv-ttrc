@@ -363,7 +363,7 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
         "desync", "resync", "lead_256b", "lead_hex", "cd_wait", "sub_wait_lines",
         "main_vblank_wait", "sub_adpcm_decode_units", "main_pattern_ticks",
         "main_pattern_ms", "cold_runs_low8", "prgbuf_jitter_peak_kib",
-        "flip_vcounter", "flip_arm_overshoot_ticks",
+        "flip_vcounter", "flip_interval_excess_ticks", "pass2_entry_q4",
         "r_transition", "prev_frame",
         "prev_lead_256b", "next_frame", "next_lead_256b",
     ]
@@ -404,7 +404,8 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
                 "flip_vcounter": (
                     f"{values['V']:02X}" if "V" in values else ""
                 ),
-                "flip_arm_overshoot_ticks": values.get("O", ""),
+                "flip_interval_excess_ticks": values.get("O", ""),
+                "pass2_entry_q4": values.get("E", ""),
                 "r_transition": (
                     f"{previous.values['R']:02X}->{values['R']:02X}" if previous else ""
                 ),

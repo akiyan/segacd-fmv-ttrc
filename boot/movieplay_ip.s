@@ -399,6 +399,7 @@ ip_entry:
 .ifdef HUD_FLIP_FIELDS
 	clr.w	flip_hv_v
 	clr.w	arm_overshoot
+	clr.w	pass2_entry_q
 .endif
 .endif
 play_loop:
@@ -854,6 +855,21 @@ bf_dma:
 	/* Pass2: 表を順に Word-RAM からVRAMへ転送。VBLANK予算(d7)でランをまたいで分割。
 	   長runのWord-RAM DMAは先頭1ワードが化ける(実測/Sega文書)ため、src+2/full lengthを
 	   dstへDMAした後、チャンク先頭の1ワードをCPUで上書き修復する。短runはCPU直書き。 */
+.ifdef HUD_FLIP_FIELDS
+	/* E: how late the pre-transfer Main work (swap wait, parse, bitmap, NT
+	   blit) reached this point, in 4-tick units since the previous flip.
+	   Captured before the blank wait, so it is the deadline-side phase the
+	   plain U (transfer interval) cannot show. */
+	move.w	(GA_STOPWATCH).l, d0
+	sub.w	pace_flip_tick, d0
+	andi.w	#0x0FFF, d0
+	lsr.w	#2, d0
+	cmpi.w	#0xFF, d0
+	bls.s	7f
+	move.w	#0xFF, d0
+7:
+	move.w	d0, pass2_entry_q
+.endif
 	move.w	n_runs, d4
 	beq	bf_flip
 	lea	RUN_TABLE, a2
@@ -1152,7 +1168,7 @@ do_flip:
 	move.w	d1, d0
 	sub.w	pace_flip_tick, d0
 	andi.w	#0x0FFF, d0
-	subi.w	#PACE_N2_ARM_TICKS, d0
+	subi.w	#1024, d0			/* nominal N2 interval is ~1086 ticks */
 	bpl.s	8f
 	moveq	#0, d0				/* frame0/loop priming can restamp early */
 8:
@@ -1536,8 +1552,11 @@ prepare_dbg:
 	   its own frame's flip, so the freshest sample is one frame old). */
 	move.w	flip_hv_v, d4
 	DBG_PUT2
-	/* O: that flip's lateness past the arm point, 30.72us ticks, clamped FF */
+	/* O: that flip's interval excess over 1024 ticks (nominal N2 ~1086) */
 	move.w	arm_overshoot, d4
+	DBG_PUT2
+	/* E: this frame's Pass2 entry delay since the previous flip, ticks/4 */
+	move.w	pass2_entry_q, d4
 	DBG_PUT2
 .endif
 .ifdef HUD_HEX_TABLE
@@ -1562,7 +1581,7 @@ publish_dbg:
 	lea	dbg_row, a0
 .ifdef PLAYER_SPECIALIZED
 .ifdef HUD_FLIP_FIELDS
-	.rept 17				/* 34 cells: common 30 + V/O */
+	.rept 18				/* 36 cells: common 30 + V/O/E */
 	move.l	(a0)+, (VDP_DATA).l
 	.endr
 .else
@@ -1631,7 +1650,7 @@ dbg_hex_pairs:
 shadow:
 	.space 0x1000				/* logical H40=2240B; padded for bounded list offsets */
 dbg_row:
-	.space 34*2				/* prebuilt values-only row; 30 cells common, +V/O on H40 DEBUG */
+	.space 36*2				/* prebuilt values-only row; 30 cells common, +V/O/E on H40 DEBUG */
 .ifndef PLAYER_SPECIALIZED
 md_mode:
 	.space 2
@@ -1685,7 +1704,9 @@ dma_start_tick:
 flip_hv_v:
 	.space 2				/* DEBUG HUD V: V-counter at the last accepted flip */
 arm_overshoot:
-	.space 2				/* DEBUG HUD O: flip lateness past the arm point, ticks */
+	.space 2				/* DEBUG HUD O: flip interval excess over 1024 ticks */
+pass2_entry_q:
+	.space 2				/* DEBUG HUD E: Pass2 entry delay since prev flip, ticks/4 */
 wr_ptr0:
 	.space 4				/* next Wr0 preload address in the currently mapped bank */
 wr_ptr1:

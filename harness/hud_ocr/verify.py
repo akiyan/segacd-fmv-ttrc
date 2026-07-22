@@ -90,15 +90,15 @@ def main():
                      "D": 0xFF, "R": 0x00, "L": 0x7F,
                      "C": 0x00, "W": 0xFF, "M": 0x02, "A": 0x00,
                      "U": 0x1234, "N": 0x2F, "J": 0x28}, (0, 3))
-    if read_frameno.HUD_H40_FLIP_CELLS != 34:
+    if read_frameno.HUD_H40_FLIP_CELLS != 36:
         raise SystemExit(
             f"H40 flip HUD is {read_frameno.HUD_H40_FLIP_CELLS} cells, "
-            "expected 34")
+            "expected 36")
     check_case(320, {"F": 0x0A99, "P": 0x0C, "S": 0x00,
                      "D": 0x00, "R": 0x00, "L": 0x38,
                      "C": 0x00, "W": 0x63, "M": 0x01, "A": 0x42,
                      "U": 0x023D, "N": 0x87, "J": 0x0E,
-                     "V": 0xF2, "O": 0xFF}, (0, 3),
+                     "V": 0xF2, "O": 0x3E, "E": 0x88}, (0, 3),
                layout=read_frameno.HUD_H40_FLIP_LAYOUT)
 
     h40 = np.asarray(make_hud(

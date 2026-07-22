@@ -44,9 +44,9 @@ F / P / S / D / R / L / C / W / M / A / U / N / J
 ```
 
 H32 and H40 use the same layout. Every digit occupies one 8x8 cell.
-H40 DEBUG builds additionally append two flip-phase fields, extending the
-order to `... / J / V / O` (34 cells). H32 keeps the 30-cell layout — its
-32-cell row has no room for the extension.
+H40 DEBUG builds additionally append three flip-phase fields, extending the
+order to `... / J / V / O / E` (36 cells). H32 keeps the 30-cell layout —
+its 32-cell row has no room for the extension.
 
 | Field | Cell columns | Native pixel range | Digits |
 |---|---:|---:|---:|
@@ -65,9 +65,10 @@ order to `... / J / V / O` (34 cells). H32 keeps the 30-cell layout — its
 | `J` | 28-29 | x=224-239 | 2 |
 | `V` (H40 only) | 30-31 | x=240-255 | 2 |
 | `O` (H40 only) | 32-33 | x=256-271 | 2 |
+| `E` (H40 only) | 34-35 | x=272-287 | 2 |
 
 The common part covers 30 cells or 240 pixels. H32's rightmost 2 cells
-remain movie-visible; H40 covers 34 cells, leaving its rightmost 6 cells
+remain movie-visible; H40 covers 36 cells, leaving its rightmost 4 cells
 movie-visible.
 
 The HUD always occupies row 0 of the native 256x224 or 320x224 raster. It can
@@ -100,8 +101,9 @@ the user explicitly reviews and approves all six maxima.
 | `U` | Main | per frame | Main pattern-transfer elapsed time | Below the frame's available transfer window |
 | `N` | Main | per frame | Source-aware cold-run descriptor count | Content-dependent; correlate with `U` |
 | `J` | Sub | cumulative peak | Maximum streamed PrgBuf occupancy above 404 KiB | `00` means the jitter headroom was never used |
-| `V` | Main | previous frame | V-counter at the last accepted display flip (H40 only) | Stable value inside the VBlank line range; drift toward the terminal lines warns of a cadence slip |
-| `O` | Main | previous frame | That flip's lateness past the fixed-N2 arm point, in 30.72 us ticks, clamped to `FF` (H40 only) | Small and stable; growth across a heavy stretch shows the flip-phase ratchet |
+| `V` | Main | previous frame | V-counter at the last accepted display flip (H40 only) | `E0` = flip at the VBlank start; higher blank lines mean the flip ran late inside its blank |
+| `O` | Main | previous frame | That flip's interval excess over 1024 stopwatch ticks (H40 only) | About `3E` (62 = nominal 1086-tick N2 interval); `FF` marks a slipped 3-field frame |
+| `E` | Main | per frame | Pass2 entry delay since the previous flip, in 4-tick units (H40 only) | Below one field (`88` = 544 ticks) with margin; approaching the field-1 blank end means the transfer is about to miss its VBlank |
 
 `S`, `D`, and `R` are cumulative counters. They should be read as transitions:
 once incremented, they remain nonzero until playback restarts, and the displayed
@@ -111,7 +113,8 @@ and `N` describe one frame. `F`, `P`, and `L` describe current player state.
 `V` and `O` are sampled at `do_flip` *after* the flip register write, so the
 row that carries them was built one frame later: frame `F`'s row shows the
 flip that published frame `F - 1`. Shift by one frame when correlating them
-with per-frame workload.
+with per-frame workload. `E` is sampled during frame `F`'s own build, before
+its transfer VBlank wait, and needs no shift.
 
 ## Field details
 
@@ -270,20 +273,27 @@ excluded. The field measures simultaneous occupancy, not whether a circular
 read or write pointer happened to enter the physical address range above the
 404 KiB boundary.
 
-### `V` / `O`: flip phase and arm overshoot (H40 DEBUG builds)
+### `V` / `O` / `E`: flip phase and Pass2 entry phase (H40 DEBUG builds)
 
 `V` is the raw V-counter high byte read immediately after the accepted
-display flip's register write. A flip inside the VBlank shows values in the
-blank line range; values drifting toward the guarded terminal lines
-(`FC..FF`) mean the flip is running out of phase margin. `O` is how many
-30.72 us stopwatch ticks that same flip happened after the fixed-N2 arm
-point (`pace_flip_tick + 800`), clamped to `FF` (about 7.8 ms). Because
-`pace_flip_tick` is restamped with the *actual* flip time, consecutive
-late-in-blank flips shift later cumulatively; `O` and `V` together expose
-this ratchet, which the workload fields (`U`, `W`, `M`) cannot see. Both
-fields describe the flip that published the *previous* frame (see above).
-They exist to answer one question: which frames erode the two-VBlank
-cadence margin before a slip, and by how much.
+display flip's register write. `E0` (line 224) is a flip taken exactly at
+the VBlank start — the dominant healthy value; higher blank lines mean the
+flip ran late inside its blank, and the guarded terminal lines (`FC..FF`)
+are never accepted. `O` is the flip-to-flip stopwatch interval minus 1024
+ticks, clamped to `0..FF`: the nominal fixed-N2 interval of ~1086 ticks
+reads as about `3E` (62), late-in-blank flips read higher, and a slipped
+3-field frame saturates at `FF`. Both describe the flip that published the
+*previous* frame (see above).
+
+`E` is sampled at the Pass2 entry (`bf_dma`), before its VBlank wait: the
+stopwatch distance from the previous flip in 4-tick units. It measures the
+complete pre-transfer Main phase — CMD_SWAP wait (`W`), control parse, the
+bitmap/list shadow walk, and the name-table blit — against the hard
+deadline this investigation identified: Pass2 must enter before field 1's
+VBlank (one field = 543 ticks = `E` about `88`) or the transfer consumes
+the flip's own VBlank and the frame slips to three fields. `U` alone
+cannot show this because its stopwatch starts only inside the transfer
+VBlank.
 
 ## Reading combinations
 
@@ -310,13 +320,13 @@ the packed stream when investigating a regression.
 The HUD does not use the Window plane. For each frame the Main CPU:
 
 1. builds the complete next movie name table in the inactive Plane A table;
-2. formats the HUD into a 60-byte Main-RAM row (68 bytes with `V`/`O`);
-3. overwrites only the first 30 name-table cells (34 on H40 DEBUG builds);
+2. formats the HUD into a 60-byte Main-RAM row (72 bytes with `V`/`O`/`E`);
+3. overwrites only the first 30 name-table cells (36 on H40 DEBUG builds);
 4. selects that completed table with the same register-2 flip as the movie.
 
 The inactive tables are at VRAM `0xC000` and `0xE000`. Publishing the HUD uses
-15 longword writes (17 with `V`/`O`) and no DMA. The unoccupied cells retain
-their movie entries, which avoids exposing an unrelated Plane B frame.
+15 longword writes (18 with `V`/`O`/`E`) and no DMA. The unoccupied cells
+retain their movie entries, which avoids exposing an unrelated Plane B frame.
 
 The final flip has a terminal-VBlank guard: V-counter lines `FC` through `FF`
 are rejected so the table is not selected at the end-of-blank race.

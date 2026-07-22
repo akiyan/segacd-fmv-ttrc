@@ -11,6 +11,12 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p75 : Rebase HUD O to the flip-to-flip interval excess over 1024 ticks
+#        (the arm-point base of p74 saturated on every normal frame) and add
+#        E, the Pass2 entry delay since the previous flip in 4-tick units,
+#        sampled before the transfer VBlank wait. E measures the pre-transfer
+#        Main phase against the field-1 VBlank deadline that decides cadence
+#        slips. H40 DEBUG row is now 36 cells (V/O/E).
 #   p74 : Append two H40 DEBUG HUD flip-phase fields: V = V-counter at the
 #        accepted display flip, O = that flip's lateness past the fixed-N2 arm
 #        point in 30.72 us ticks (clamped FF). Captured after the flip write,
@@ -569,4 +575,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
 e=82
-p=74
+p=75

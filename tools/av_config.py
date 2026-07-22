@@ -23,6 +23,8 @@ refuses to re-cap an already encoded stream.
 """
 
 import math
+import os
+import sys
 from dataclasses import dataclass
 
 # Physical PRG-RAM ring in the player. MUST equal boot/movieplay_sp.s
@@ -241,6 +243,12 @@ def cold_cap_qualification(fps, mode, active_tiles):
 
     Results are not reused across active-tile counts, display modes, or nominal
     frame rates even when another measurement looks more conservative.
+
+    CBRSIM_COLD_CAP_DIAG replaces the measured cap with an UNQUALIFIED value
+    for cap-raise measurement streams only (harness/cold_cap_model).  It is
+    deliberately loud, never a production fallback, and the resulting stream
+    must not be published or used to update the qualification table without a
+    full-length hardware qualification of its own.
     """
     mode_key = str(mode).upper()
     if mode_key not in _COLD_CAP_MODES:
@@ -251,6 +259,19 @@ def cold_cap_qualification(fps, mode, active_tiles):
     active_tiles_value = int(active_tiles)
     if active_tiles_value <= 0:
         raise ValueError(f"active tile count must be positive: {active_tiles!r}")
+
+    diag = os.environ.get("CBRSIM_COLD_CAP_DIAG", "").strip()
+    if diag:
+        diag_cap = int(diag)
+        if diag_cap <= 0:
+            raise ValueError(f"CBRSIM_COLD_CAP_DIAG must be positive: {diag!r}")
+        print(
+            f"[cold-cap] DIAGNOSTIC OVERRIDE: cap={diag_cap} for "
+            f"mode={mode_key} fps={fps_value:g} active_tiles={active_tiles_value}"
+            " (UNQUALIFIED - measurement stream only)",
+            file=sys.stderr)
+        return ColdCapQualification(
+            mode_key, fps_value, active_tiles_value, diag_cap)
 
     same_rate = [
         item for item in COLD_CAP_QUALIFICATIONS
