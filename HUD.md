@@ -96,7 +96,7 @@ the user explicitly reviews and approves all six maxima.
 | `L` | Sub | current state | Audio write lead, in units of 256 decoded bytes | Stable and comfortably inside the configured lead range |
 | `C` | Sub | per frame | Blocking CD sector pumps before control execution | `00` means control was already ready |
 | `W` | Main | per frame | Main wait for Sub handoff, in approximate scanlines | Small and stable |
-| `M` | Main | per frame | VBlank starts waited by the Main pattern path | `00` or `01`; `02+` proves an extra spill |
+| `M` | Main | per timed frame | VBlank starts waited by the Main pattern path; frame 0 reports `00` because it is an untimed boot construction | `00` or `01`; `02+` proves an extra spill |
 | `A` | Sub | per frame | ADPCM decode phase time | Stable band for the same profile |
 | `U` | Main | per frame | Main pattern-transfer elapsed time | Below the frame's available transfer window |
 | `N` | Main | per frame | Source-aware cold-run descriptor count | Content-dependent; correlate with `U` |

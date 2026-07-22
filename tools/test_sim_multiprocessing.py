@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -62,6 +63,27 @@ class SimMultiprocessingTests(unittest.TestCase):
     def test_rendered_colour_keys_round_trip_all_rgb333_colours(self) -> None:
         keys = sim.rendered_color_keys(sim._MD_RGB888.astype(np.uint8))
         np.testing.assert_array_equal(keys, np.arange(512, dtype=np.uint16))
+
+    def test_boot_inline_selection_follows_packed_physical_order(self) -> None:
+        # Request order is logical 1,2,3, but the physical permutation puts
+        # logical 2 and 3 first.  These are the records pack_stream places in
+        # frame 0's inline suffix; logical 1 belongs in the sidecar.
+        mapping = np.array([3, 2, 0, 1], np.int64)
+        self.assertEqual(
+            sim._inline_boot_prefetch_slots((1, 2, 3), 2, mapping),
+            (2, 3),
+        )
+        self.assertEqual(
+            sim._inline_boot_prefetch_slots((1, 2, 3), 2),
+            (1, 2),
+        )
+
+    def test_untimed_frame_zero_is_absent_from_run_optimization(self) -> None:
+        replay = SimpleNamespace(cold_slots=((0, 1, 2), (3, 4)))
+        self.assertEqual(
+            sim._run_accounted_cold_slots(replay, 2),
+            ((), (3, 4)),
+        )
 
     def test_resident_distance_luts_match_direct_f3_math(self) -> None:
         rng = np.random.default_rng(7)

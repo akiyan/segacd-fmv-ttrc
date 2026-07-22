@@ -10,7 +10,7 @@ sar = "25:27"
 mode = "H40"
 width = 320
 height = 224
-fit = "crop"
+fit = "pad"
 
 [audio]
 kind = "adpcm22"
@@ -27,6 +27,8 @@ dither = true
 segment_palettes = true
 near = true
 coa = true
+boot_vram_prefetch = true
+raw_prefetch = false
 
 [palette]
 algorithm = "mosaic-gm"

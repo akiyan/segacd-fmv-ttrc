@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p78 : Add a boot-only Word-RAM handoff before BODY.DAT starts. Main installs
+#        the v13 backside-VRAM sidecar while no timed CD read exists, then Sub
+#        starts the unchanged continuous BODY path. This prevents the sidecar's
+#        startup VDP writes from consuming PrgBuf jitter headroom. DEBUG HUD M
+#        reports 00 for untimed frame 0 while retaining ordinary-frame waits.
 #   e86 : Make frame 0 an exact boot construction instead of passing it through
 #        the timed-frame Near/Coa/Flbk decision path. Its displayed categories
 #        are now strictly Raw for each first exact pattern load and Same for
@@ -626,4 +631,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
 e=86
-p=77
+p=78

@@ -665,7 +665,11 @@ def _source_run_groups(
                 raise ValueError(
                     f"frame {frame} update {update} has invalid source {source}")
         if frame == 0 and boot_inline_requests is not None:
-            prefetch_slots = prefetch_slots[:int(boot_inline_requests)]
+            # Frame 0 is an untimed boot construction.  Its staging region can
+            # hold the worst possible descriptor fragmentation, so spending
+            # locality iterations on it can only displace timed-frame gains.
+            result.append(())
+            continue
         groups = []
         if prg:
             groups.append(tuple(prg))
@@ -681,16 +685,30 @@ def _source_run_groups(
     return tuple(result)
 
 
+def _inline_boot_prefetch_slots(
+        prefetch_slots, inline_count, physical_by_logical=None):
+    """Choose the boot requests carried by frame 0's inline payload.
+
+    The packer sorts the complete boot-prefetch suffix by physical slot, then
+    puts the first ``inline_count`` patterns in O_LOADS and the rest in the
+    direct-write sidecar.  Apply that same rule whenever a physical mapping is
+    known.  The logical/request order remains the deterministic seed rule
+    before the first mapping exists.
+    """
+    slots = tuple(int(slot) for slot in prefetch_slots)
+    count = max(0, min(int(inline_count), len(slots)))
+    if physical_by_logical is None:
+        return slots[:count]
+    mapping = np.asarray(physical_by_logical, np.int64)
+    return tuple(sorted(
+        slots, key=lambda slot: (int(mapping[slot]), slot))[:count])
+
+
 def _run_accounted_cold_slots(replay, boot_inline_requests):
-    """Exclude direct boot-sidecar writes from the control-run optimizer."""
+    """Exclude all untimed frame-0 writes from the run optimizer."""
     cold = list(replay.cold_slots)
-    if cold:
-        visible = tuple(
-            int(slot) for slot, is_cold in replay.placements[0] if is_cold)
-        inline = tuple(
-            int(slot) for slot in
-            replay.prefetch_cold_slots[0][:int(boot_inline_requests)])
-        cold[0] = visible + inline
+    if cold and boot_inline_requests is not None:
+        cold[0] = ()
     return tuple(cold)
 
 
@@ -2818,12 +2836,12 @@ def main():
         if replay.tearing:
             raise AssertionError(
                 f"final slot-locality logical replay tore {replay.tearing} patterns")
+        accounted_mapping = np.asarray(physical_by_logical, np.int64)
         run_groups = _source_run_groups(
             replay, supply_sources_log,
             boot_inline_requests=boot_inline_requests)
-        accounted_mapping = np.asarray(physical_by_logical, np.int64)
         accounted_locality = evaluate_slot_locality(
-            replay.cold_slots,
+            _run_accounted_cold_slots(replay, boot_inline_requests),
             VRAM_TILES,
             accounted_mapping,
             cold_cap=MAX_COLD,
@@ -2877,7 +2895,8 @@ def main():
                 for position, index in enumerate(order)
             ]
             run_prefetch_slots = (
-                prefetch_slots[:boot_inline_requests]
+                _inline_boot_prefetch_slots(
+                    prefetch_slots, boot_inline_requests, final_mapping)
                 if frame_index == 0 else prefetch_slots)
             mapped_prefetch_slots = sorted(
                 int(final_mapping[slot]) for slot in run_prefetch_slots)

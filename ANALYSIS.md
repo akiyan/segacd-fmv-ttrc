@@ -6,8 +6,39 @@ This document defines, exactly and completely, every element drawn in the
 `tools/layout_preview.py` (dummy data); `render_analysis` runs the same drawing
 functions on real encoder output.
 
+Every render also writes a machine-readable, one-row-per-frame TSV beside the
+video: `videos/<stem>_analysis.tsv`. It is generated from the same
+`frame_data()` values used by the overlay, before PNG rendering begins, so
+numeric comparisons do not require OCR. A frame-range render still refreshes
+the complete TSV. Set `ANALYSIS_TSV` only when a different output path is
+required.
+
 Keep this file in sync whenever the layout changes (the `/analysis` skill
 automates: update layout -> update this file -> notify).
+
+## Analysis TSV sidecar
+
+The TSV starts with one header row and then contains every encoded frame in
+ascending order. Integer display fields are written exactly as the overlay
+uses them. In particular, frame 0 keeps its `legend_raw` and `legend_same`
+classification, while the untimed `status_cold`, `status_pre`,
+`status_band_kib_s`, `status_dma`, and `status_run` fields are zero. The
+corresponding encoder values remain available in the `stat_*` columns.
+
+| Columns | Definition |
+|---|---|
+| `schema_version` | TSV schema version, currently `1`. |
+| `frame`, `frame_hex`, `time_seconds`, `palette_segment` | Decimal frame, HUD-style hexadecimal frame, exact playback time, and CRAM palette-segment index. |
+| `cells`, `active_tiles`, `budget_tiles`, `cold_cap_tiles`, `prefetch_cap_tiles` | Raster and configured per-frame limits repeated on every row for self-contained filtering. |
+| `legend_raw`, `legend_same`, `legend_dic`, `legend_prg`, `legend_wr`, `legend_wr0`, `legend_wr1`, `legend_near`, `legend_coa`, `legend_flbk`, `legend_miss` | Per-frame category counts. `legend_wr` is the displayed Wr0+Wr1 total; the two source banks are also kept separately. |
+| `status_req`, `status_miss`, `status_cold`, `status_pre`, `status_band_kib_s`, `status_prg`, `status_wr0`, `status_wr1`, `status_dma`, `status_run` | Numeric values printed in the bottom status bar, including the frame-0 untimed display rule. |
+| `body_payload_bytes`, `body_control_bytes`, `body_pad_bytes`, `body_physical_bytes`, `body_useful_bytes`, `body_band_bps` | Exact physical BODY delivery-slot accounting behind the Band display. Slot 0 is zero because frame 0 comes from `HEADER.DAT`. |
+| `quality_budget_remaining_bytes` | Encoder-only whole-movie quality allowance remaining after the frame. This is diagnostic state, not a physical meter. |
+| `stat_frame` through the remaining `stat_*` columns | Every column from `stats.npz`, preserved with a `stat_` prefix and in its original order. These raw columns may grow when the simulator gains a new statistic. |
+
+The default path follows `ANALYSIS_OUT`: changing
+`videos/example_analysis.mp4` produces `videos/example_analysis.tsv` unless
+`ANALYSIS_TSV` is explicitly set.
 
 ## Layout map
 

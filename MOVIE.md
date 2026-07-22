@@ -321,14 +321,21 @@ zero-based physical VRAM slot (`u16`) plus one packed 32-byte pattern. Records
 occupy three preserved holes: `+0xA000..+0xAF00`, the bytes after the palette
 table through `+0xD000`, and `+0xF000..+0x10000`. The intervening ranges are
 reserved for frame diagnostics, the duplicated 64-byte `O_HDR`, and the
-`+0xD000..+0xF000` Dic staging area. The Main CPU consumes these records after
-the final boot bank handoff and writes them directly to their resident VRAM
-slots. It repeats the same boot load on movie restart. Sidecar patterns do not
-appear in frame 0's run suffix or `O_LOADS`, but they do count in frame 0's
-internal boot-load totals. Analysis deliberately displays frame-0 Cold, Pre,
-DMA, Run, and Band as zero because they are timed-work meters. Sidecar patterns
-are not PrgBuf occupancy or a `Prg` displayed category: their physical source
-at this point is the temporary Word-RAM boot stage.
+`+0xD000..+0xF000` Dic staging area. Before starting the continuous BODY read,
+the Sub CPU hands the frame-0 bank to Main. Main writes the records directly to
+their resident VRAM slots and acknowledges the boot-only handoff; only then
+does Sub arm BODY.DAT. It repeats the same sequence on movie restart. The
+packer sorts the complete boot-prefetch suffix by final physical VRAM slot:
+the lowest slots that fit frame 0 staging remain in `O_LOADS`, and the rest
+become sidecar records. The simulator uses the same partition when counting
+runs, but excludes frame 0 from slot-locality optimization because its boot
+work has no display deadline and its staging area already covers worst-case
+run fragmentation. Sidecar patterns do not appear in frame 0's run suffix or
+`O_LOADS`, but they do count in frame 0's internal boot-load totals. Analysis
+deliberately displays frame-0 Cold, Pre, DMA, Run, and Band as zero because
+they are timed-work meters. Sidecar patterns are not PrgBuf occupancy or a
+`Prg` displayed category: their physical source at this point is the
+temporary Word-RAM boot stage.
 
 ## ADPCM_TABLE (v9, feature bit 2)
 

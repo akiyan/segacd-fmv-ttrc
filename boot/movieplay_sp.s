@@ -86,6 +86,7 @@
 .equ SUB_GA_BASE, 0x00FF8000
 .equ MEMMODE,     SUB_GA_BASE+0x0002
 .equ COMCMD0,     SUB_GA_BASE+0x0010
+.equ COMCMD1,     SUB_GA_BASE+0x0012
 .equ COMSTAT0,    SUB_GA_BASE+0x0020
 .equ COMSTAT1,    SUB_GA_BASE+0x0022
 .equ COMSTAT2,    SUB_GA_BASE+0x0024
@@ -208,6 +209,7 @@
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
+.equ STAT_BOOT_VRAM, 0x8002		/* frame-0 bank ready; BODY not started */
 .equ STAT_READY, 0x8003
 .equ STAT_END,   0x8004			/* 全フレーム再生完了(MDは15秒待って CMD_STREAM 再送) */
 
@@ -581,9 +583,15 @@ rt_copy:
 	move.w	#1, frame_idx			/* frame0処理済み(旧playerと同じframe_idx=1) */
 	bsr	expand_frame
 	clr.w	f0_expand
+	/* Hand the complete frame-0 bank to Main before BODY.DAT starts. */
+	bchg	#0, (MEMMODE+1).l
+	bsr	swap_settle
+	move.w	#STAT_BOOT_VRAM, (COMSTAT0).l
+1:
+	tst.w	(COMCMD1).l
+	beq.s	1b
 	/* Start one continuous read at BODY.DAT's actual ISO extent.  Rebase slip
-	   recovery there because HEADER.DAT and BODY.DAT need not be adjacent.
-	   Pre-drain frame 1 completely before releasing frame 0. */
+	   recovery there because HEADER.DAT and BODY.DAT need not be adjacent. */
 	move.w	#1, drain_frame
 .ifdef PLAYER_SPECIALIZED
 .if PC_FRAMES < 2
@@ -593,8 +601,10 @@ rt_copy:
 	cmpi.w	#2, h_frames
 	blo	stream_armed
 .endif
+.ifndef PLAYER_SPECIALIZED
 	tst.l	body_total
 	beq	stream_armed
+.endif
 	/* Detect a missing first BODY sector even when ISO extents are non-adjacent
 	   or BODY sorts before HEADER.  ISO LBA and linear MSF share the same signed
 	   sector delta, so anchor BODY before issuing its read. */
@@ -619,16 +629,11 @@ stream_armed:
 	   first CMD_SWAP below is that acknowledgement; starting earlier lets the
 	   expensive frame-0 VRAM build consume the audio lead and causes startup R
 	   re-syncs before the timed stream has even begun. */
-	/* frame0 を表示(swap)。 */
-	bchg	#0, (MEMMODE+1).l
-	bsr	swap_settle
+	/* Release Main only after frame 1 is fully pre-drained. */
 	move.w	#STAT_READY, (COMSTAT0).l
-2:
+1:
 	tst.w	(COMCMD0).l
-	beq.s	5f
-	bsr	pump_poll_core
-	bra	2b
-5:
+	bne.s	1b
 	move.w	#0, (COMSTAT0).l
 .equ ISO_HOLD_F0, 0			/* ISO診断: frame0 表示直後に静止(frame0単体の健全性確認) */
 .if ISO_HOLD_F0

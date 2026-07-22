@@ -33,6 +33,7 @@
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
+.equ STAT_BOOT_VRAM, 0x8002		/* frame-0 bank ready; BODY not started */
 .equ STAT_READY, 0x8003
 .equ STAT_END,   0x8004			/* SPからの映画終端通知(15秒待って再ループ) */
 
@@ -256,7 +257,6 @@ ip_entry:
 .else
 	bsr	cmd_wait_ready
 .endif
-	bsr	load_boot_vram_sidecar
 
 	/* frame0準備完了=バンクにヘッダ写し(O_HDR)がある。mode/tcols/trows/pool/base を読み
 	   モード依存のVDP設定と実行時変数を確定する(汎用化: H32/H40, mode4は将来) */
@@ -445,7 +445,6 @@ movie_end_md:
 	dbra	d2, 1b
 	move.w	#CMD_STREAM, d0			/* SPを再ストリーム開始させる */
 	bsr	cmd_wait_ready			/* SPのframe0準備完了(STAT_READY)まで待つ */
-	bsr	load_boot_vram_sidecar
 	clr.w	frame_no
 	clr.w	started
 	clr.w	dbg_seg
@@ -1077,6 +1076,10 @@ bf_flip:
 	move.w	d0, dma_elapsed_ticks
 1:
 	move.w	vsync_acc, frame_vblank_waits	/* exclude display pacing from workload HUD M */
+	tst.w	frame_no			/* frame 0 is an untimed boot construction */
+	bne.s	1f
+	clr.w	frame_vblank_waits		/* its VBlank count is not playback load */
+1:
 .endif
 	/* Precompute the display-register write before the cadence wait.
 	   do_flip performs only a final VBlank check followed by this command, so
@@ -1572,6 +1575,8 @@ cmd_wait_startup:
 	move.w	#0xFFFF, d5			/* last displayed remaining count */
 1:
 	move.w	(GA_COMSTAT0).l, d0
+	cmp.w	#STAT_BOOT_VRAM, d0
+	beq.s	8f
 	cmp.w	#STAT_READY, d0
 	beq.s	3f
 	move.w	(GA_COMSTAT1).l, d0
@@ -1591,9 +1596,16 @@ cmd_wait_startup:
 	   hammering the gate-array registers in an unbounded Main-CPU loop. */
 	bsr	wait_vblank
 	bra	1b
+8:
+	bsr	load_boot_vram_sidecar
+	move.w	#1, (GA_COMCMD1).l
+9:
+	cmp.w	#STAT_READY, (GA_COMSTAT0).l
+	bne.s	9b
 3:
 	moveq	#0, d0
 	bsr	startup_update_prg
+	move.w	#0, (GA_COMCMD1).l
 	move.w	#0, (GA_COMCMD0).l
 4:
 	tst.w	(GA_COMSTAT0).l
@@ -1604,13 +1616,24 @@ cmd_wait_startup:
 cmd_wait_ready:
 	move.w	d0, (GA_COMCMD0).l
 1:
-	cmp.w	#STAT_READY, (GA_COMSTAT0).l
+	move.w	(GA_COMSTAT0).l, d0
+	cmp.w	#STAT_BOOT_VRAM, d0
+	beq.s	3f
+	cmp.w	#STAT_READY, d0
 	bne	1b
+	move.w	#0, (GA_COMCMD1).l
 	move.w	#0, (GA_COMCMD0).l
 2:
 	tst.w	(GA_COMSTAT0).l
 	bne	2b
 	rts
+3:
+	bsr	load_boot_vram_sidecar
+	move.w	#1, (GA_COMCMD1).l
+4:
+	cmp.w	#STAT_READY, (GA_COMSTAT0).l
+	bne.s	4b
+	bra.s	1b
 /* v13 boot-stage directory at +0xAFC0:
      "BVRM", count_A.w, count_B.w, count_C.w
    Records are [zero-based physical_slot.w, packed_pattern[32]] in three holes

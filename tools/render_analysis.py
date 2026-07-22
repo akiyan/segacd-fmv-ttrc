@@ -3,6 +3,7 @@
 
 新レイアウトの『正』は tools/layout_preview.py(ダミー値で秒プレビュー)。本スクリプトは
 その描画関数を実データで回して1920x1080/全フレームを描き、ffmpegでmp4(音声付き)にする。
+動画へ焼き込む数値と元statsの全列は、同じ実データから1フレーム1行のTSVにも出力する。
 sim 側(sim.py)や旧 compose(make_base/render_statusline/compose_*.sh)は使わない。
 
 入力(env):
@@ -11,6 +12,7 @@ sim 側(sim.py)や旧 compose(make_base/render_statusline/compose_*.sh)は使わ
   CBRSIM_SRCLABEL  右Sourceパネル見出し(既定 "Source")
   CBRSIM_MODE      画面モード H32/H40 (既定 H32。DMA理論値に使う)
   ANALYSIS_OUT     出力mp4パス (既定 videos/<stem>_analysis.mp4)
+  ANALYSIS_TSV     出力TSVパス (既定 ANALYSIS_OUT の拡張子を .tsv に変更)
   ANALYSIS_CQ      h264_nvenc cq (既定 23)
 W/H/タイル数/表示アスペクト/諸元は sim 出力から自動導出。
 
@@ -19,6 +21,7 @@ usage: python3 tools/render_analysis.py            # 全編→mp4
 """
 import sys
 import os
+import csv
 import glob
 import pickle
 import subprocess
@@ -72,6 +75,7 @@ def _source_spec():
 SRC_SPEC = _source_spec()
 MODE = os.environ.get("CBRSIM_MODE", "H32")
 OUT_MP4 = os.environ.get("ANALYSIS_OUT", str(artifact_path("analysis", sim_dir=SIM)))
+OUT_TSV = os.environ.get("ANALYSIS_TSV", str(Path(OUT_MP4).with_suffix(".tsv")))
 CQ = os.environ.get("ANALYSIS_CQ", "23")
 FRAMES_DIR = f"{SIM}/analysis_frames"
 AUDIO_STR = "13.3kHz mono 8bit PCM"          # 既定。sim出力(stats)にラベルがあればそれを使う
@@ -87,7 +91,8 @@ L.f_pal = ImageFont.truetype(L.FONT, 14)
 # ---- sim出力から諸元を自動導出 ----
 z = np.load(f"{SIM}/stats.npz", allow_pickle=True)
 S = z["stats"]
-idx = {k: i for i, k in enumerate(str(z["cols"]).split())}
+STAT_COLUMNS = tuple(str(z["cols"]).split())
+idx = {k: i for i, k in enumerate(STAT_COLUMNS)}
 FPS = float(z["fps"]); C = int(z["cells"]); BUDGET = int(z["budget_tiles"])
 ACTIVE_TILES = int(z["active_tiles"]) if "active_tiles" in z else C
 COLD_CAP = (int(z["max_cold"]) if "max_cold" in z else
@@ -589,6 +594,100 @@ def frame_data(i):
                         for k in FULL})
 
 
+ANALYSIS_TSV_COLUMNS = (
+    "schema_version", "frame", "frame_hex", "time_seconds",
+    "palette_segment", "cells", "active_tiles", "budget_tiles",
+    "cold_cap_tiles", "prefetch_cap_tiles",
+    "legend_raw", "legend_same", "legend_dic", "legend_prg",
+    "legend_wr", "legend_wr0", "legend_wr1", "legend_near",
+    "legend_coa", "legend_flbk", "legend_miss",
+    "status_req", "status_miss", "status_cold", "status_pre",
+    "status_band_kib_s", "status_prg", "status_wr0", "status_wr1",
+    "status_dma", "status_run",
+    "body_payload_bytes", "body_control_bytes", "body_pad_bytes",
+    "body_physical_bytes", "body_useful_bytes", "body_band_bps",
+    "quality_budget_remaining_bytes",
+) + tuple(f"stat_{name}" for name in STAT_COLUMNS)
+
+
+def _tsv_number(value):
+    """Return a stable built-in scalar for csv without losing float values."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float):
+        if np.isfinite(value) and value.is_integer():
+            return int(value)
+        return format(value, ".17g")
+    return value
+
+
+def analysis_tsv_row(i):
+    """Build one row from the exact data used by the overlay for frame i."""
+    data = frame_data(i)
+    cn = data["counts"]
+    row = {
+        "schema_version": 1,
+        "frame": i,
+        "frame_hex": f"0x{i:04X}",
+        "time_seconds": format(i / FPS, ".9f"),
+        "palette_segment": int(FRAME_SEG[i]),
+        "cells": C,
+        "active_tiles": ACTIVE_TILES,
+        "budget_tiles": BUDGET,
+        "cold_cap_tiles": COLD_CAP,
+        "prefetch_cap_tiles": PREFETCH_CAP,
+        "legend_raw": cn["Raw"],
+        "legend_same": cn["Same"],
+        "legend_dic": cn["Dic"],
+        "legend_prg": cn["Prg"],
+        "legend_wr": cn["Wr0"] + cn["Wr1"],
+        "legend_wr0": cn["Wr0"],
+        "legend_wr1": cn["Wr1"],
+        "legend_near": cn["Near"],
+        "legend_coa": cn["Coa"],
+        "legend_flbk": cn["Flbk"],
+        "legend_miss": cn["Miss"],
+        "status_req": data["req"],
+        "status_miss": data["miss"],
+        "status_cold": data["cold"],
+        "status_pre": data["cold_prefetch"],
+        "status_band_kib_s": data["band_kbps"],
+        "status_prg": data["supply_remaining"]["Prg"],
+        "status_wr0": data["supply_remaining"]["Wr0"],
+        "status_wr1": data["supply_remaining"]["Wr1"],
+        "status_dma": data["dma_tiles"],
+        "status_run": data["dma_runs"],
+        "body_payload_bytes": int(BODY_PAYLOAD_BYTES[i]),
+        "body_control_bytes": int(BODY_CONTROL_BYTES[i]),
+        "body_pad_bytes": int(BODY_PAD_BYTES[i]),
+        "body_physical_bytes": int(BODY_PHYSICAL_BYTES[i]),
+        "body_useful_bytes": int(BODY_USEFUL_BYTES[i]),
+        "body_band_bps": int(BAND_BPS[i]),
+        "quality_budget_remaining_bytes": int(QUALITY_REM[i]),
+    }
+    row.update({
+        f"stat_{name}": _tsv_number(S[i, idx[name]])
+        for name in STAT_COLUMNS
+    })
+    return row
+
+
+def write_analysis_tsv():
+    """Atomically write the full per-frame analysis sidecar."""
+    path = Path(OUT_TSV)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(
+            fh, fieldnames=ANALYSIS_TSV_COLUMNS, delimiter="\t",
+            lineterminator="\n", extrasaction="raise")
+        writer.writeheader()
+        for i in range(NF):
+            writer.writerow(analysis_tsv_row(i))
+    tmp.replace(path)
+    return path
+
+
 def draw_waveform_real(i):
     """音声波形パネル: このコマの前後2sを描く。中央=現在(now)、左=過去(明)/右=未来(暗)、左へ流れる。"""
     bw, bh = WAVE_BW, L.WAVE_FRAME[3] - L.WAVE_FRAME[1] - 2
@@ -668,6 +767,7 @@ def mux():
 if __name__ == "__main__":
     from multiprocessing import get_context
     os.makedirs(FRAMES_DIR, exist_ok=True)
+    print(f"analysis data -> {write_analysis_tsv()}", flush=True)
     rng = None
     if len(sys.argv) == 3:                     # 範囲指定(検証用): PNGのみ, mp4化しない
         rng = list(range(int(sys.argv[1]), int(sys.argv[2])))

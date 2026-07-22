@@ -214,6 +214,7 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 | Artifact | Path |
 |---|---|
 | Analysis-frame video (from `sim`) | `videos/<stem>_analysis.mp4` |
+| Per-frame analysis data (same values as the overlay) | `videos/<stem>_analysis.tsv` |
 | Straight sim output, video+audio, no overlay (`export_sim_video.py`) | `videos/<stem>_sim.mp4` |
 | PNGs, logs, stats for that encode  | `videos/<stem>/tmp/` (the sim working dir) |
 | Lossless emulator capture (`record`) | `videos/<stem>_emu_lossless.mkv` |

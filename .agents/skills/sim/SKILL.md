@@ -222,8 +222,12 @@ ANALYSIS_OUT=videos/<stem>_analysis.mp4 \
 tools/python.sh --gpu tools/render_analysis.py --config configs/<source>-<mode>.toml
 ```
 
-The full render generates all PNG frames in parallel (`nproc-2`) and then calls
-FFmpeg, usually with `h264_nvenc`, `-r 60`, and audio.
+Every invocation first writes the complete per-frame numeric sidecar to
+`videos/<stem>_analysis.tsv` (or `ANALYSIS_TSV` when explicitly set) from the
+same values used by the overlay. Use it for maxima, totals, and frame-to-frame
+comparisons instead of OCR. The full render then generates all PNG frames in
+parallel (`nproc-2`) and calls FFmpeg, usually with `h264_nvenc`, `-r 60`, and
+audio.
 
 Frame-range check only:
 

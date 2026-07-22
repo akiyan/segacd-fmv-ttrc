@@ -49,7 +49,7 @@ can schedule.
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | Prg prebuffer | up to `PRG_BUF_CAP_KB` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both usable Prg capacity and the clip's future Prg load total. |
 | frame-0 inline staging | 36 KB max | sp | Boot-only PRG region `0x71000..0x7A000` plus the ordinary `O_LOADS` path. It holds every exact frame-0 display pattern and as much future preload as still fits the grid-sized path. The additional boot sidecar below fills otherwise-free resident VRAM slots, so total frame-0 exact plus prefetch is capped by the resident pool rather than by visible cells. |
-| boot VRAM sidecar stage | 24 KB | pack / sp / ip | Temporary Word-RAM image at bank `+0xA000..+0x10000`. PALTAB remains at `+0xB000`; sidecar records use preserved holes around `O_HDR`, diagnostics, palettes, and Dic staging. Main writes them directly to their final backside-VRAM slots before frame 0 and on movie restart. It adds no timed BODY control or playback-loop work. |
+| boot VRAM sidecar stage | 24 KB | pack / sp / ip | Temporary Word-RAM image at bank `+0xA000..+0x10000`. PALTAB remains at `+0xB000`; sidecar records use preserved holes around `O_HDR`, diagnostics, palettes, and Dic staging. Before starting the continuous BODY read, Sub performs a boot-only bank handoff and Main writes the records directly to their final backside-VRAM slots. The same handshake runs on movie restart. It adds no timed BODY control, PrgBuf jitter use, or playback-loop work. |
 
 DEBUG overwrites only the first 30 cells of the inactive movie
 Plane A name table with one HUD row. The unused width remains the exact movie
