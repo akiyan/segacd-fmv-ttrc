@@ -17,11 +17,20 @@ timeline model and targeted re-measurements.
   parsed per-frame run count against the DEBUG HUD `N` column of a
   recording; a full-length match also proves that recording played exactly
   that stream.
+- `verify_slot_locality.py` — replays the shared logical allocator, applies
+  the frozen logical-to-physical VRAM slot permutation, and models every cold
+  transfer and displayed cell. It proves that the permutation changes neither
+  cold/reuse decisions nor displayed patterns. The report deliberately treats
+  total run count as informational: the optimizer may add runs to light frames
+  when that lowers the worst per-frame `cold + run-boundary` deadline cost.
 
 ```sh
 tools/python.sh harness/cold_cap_model/extract_frames.py \
     out/sonic-jam-op-h40 --csv frames_175.csv \
     --hud-csv videos/SonicJamOp_H40_jitter_final_hud.csv
+
+tools/python.sh harness/cold_cap_model/verify_slot_locality.py \
+    videos/SonicJamOp_H40_320x224_adpcm22/tmp/decisions.pkl
 ```
 
 ## Specimen inventory (all full-length Sonic Jam OP, H40/30fps/1,120 tiles)

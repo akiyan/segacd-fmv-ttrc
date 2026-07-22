@@ -32,6 +32,10 @@ class DemandPrediction:
     # these empty for compatibility with older tests/logs.
     cold_keys: tuple[tuple[bytes, ...], ...] = ()
     protected_keys: tuple[tuple[bytes, ...], ...] = ()
+    # Logical VRAM slots assigned to the exact cold keys above.  The encoder
+    # uses this dry-run trace only to choose a movie-wide physical slot
+    # permutation; logical residency and cold/reuse decisions stay unchanged.
+    cold_slots: tuple[tuple[int, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,7 +103,7 @@ def predict_update_demand_details(
     if n == 0:
         empty = np.zeros(0, np.int64)
         return DemandPrediction(
-            empty, empty.copy(), empty.copy(), empty.copy(), (), ())
+            empty, empty.copy(), empty.copy(), empty.copy(), (), (), ())
     if vram_tiles <= 0:
         raise ValueError("vram_tiles must be positive")
     if name_bytes < 0 or pattern_bytes < 0 or max_cold < 0:
@@ -122,6 +126,7 @@ def predict_update_demand_details(
     protected_cold_demand = np.zeros(n, np.int64)
     cold_keys_by_frame: list[tuple[bytes, ...]] = []
     protected_keys_by_frame: list[tuple[bytes, ...]] = []
+    cold_slots_by_frame: list[tuple[int, ...]] = []
 
     for frame_idx in range(n):
         patterns = np.asarray(pattern_frames[frame_idx])
@@ -153,8 +158,10 @@ def predict_update_demand_details(
         protected_cold_keys = tuple(dict.fromkeys(
             keys[cell] for cell in protected_cells
             if not allocator.is_resident(keys[cell])))
-        allocator.place_frame(
+        placements = allocator.place_frame(
             [(cell, keys[cell]) for cell in changed_cells], frame_idx)
+        exact_cold_slots = tuple(
+            int(slot) for slot, cold in placements if cold)
 
         if frame_idx > 0:
             exact_cold = len(exact_cold_keys)
@@ -164,6 +171,7 @@ def predict_update_demand_details(
                 protected_cold = min(protected_cold, max_cold)
                 exact_cold_keys = exact_cold_keys[:max_cold]
                 protected_cold_keys = protected_cold_keys[:max_cold]
+                exact_cold_slots = exact_cold_slots[:max_cold]
             exact_demand[frame_idx] = (
                 len(changed_cells) * name_bytes + exact_cold * pattern_bytes)
             protected_demand[frame_idx] = (
@@ -175,6 +183,8 @@ def predict_update_demand_details(
         cold_keys_by_frame.append(exact_cold_keys if frame_idx > 0 else ())
         protected_keys_by_frame.append(
             protected_cold_keys if frame_idx > 0 else ())
+        cold_slots_by_frame.append(
+            exact_cold_slots if frame_idx > 0 else ())
 
         for cell in changed_cells:
             previous_keys[cell] = keys[cell]
@@ -187,6 +197,7 @@ def predict_update_demand_details(
         protected_cold_demand,
         tuple(cold_keys_by_frame),
         tuple(protected_keys_by_frame),
+        tuple(cold_slots_by_frame),
     )
 
 

@@ -7,7 +7,14 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tile_alloc import TileAllocator
+from tile_alloc import (
+    TileAllocator,
+    cold_transfer_order,
+    optimize_slot_locality,
+    remap_placements,
+    validate_physical_slots,
+    verify_display_equivalence,
+)
 
 
 class TileAllocatorPrefetchTests(unittest.TestCase):
@@ -45,6 +52,42 @@ class TileAllocatorPrefetchTests(unittest.TestCase):
         self.assertTrue(result[1])
         self.assertTrue(alloc.is_resident(b"keep-next"))
         self.assertEqual(alloc.prefetch_cache_evictions, 1)
+
+
+class SlotLocalityTests(unittest.TestCase):
+    def test_transfer_order_follows_physical_slots_without_changing_cold(self):
+        placements = [(5, True), (2, False), (1, True), (3, True)]
+        self.assertEqual(cold_transfer_order(placements), (2, 3, 0))
+
+        mapping = validate_physical_slots([2, 0, 3, 1], 4)
+        logical = [(0, True), (3, False), (2, True)]
+        self.assertEqual(
+            remap_placements(logical, mapping),
+            [(2, True), (1, False), (3, True)],
+        )
+
+    def test_physical_permutation_is_display_equivalent_for_every_frame(self):
+        frames = [
+            [(0, b"a"), (1, b"b"), (2, b"c")],
+            [(0, b"d"), (2, b"a")],
+            [(1, b"d"), (2, b"e")],
+            [(0, b"b"), (1, b"e")],
+        ]
+        result = verify_display_equivalence(
+            frames, 3, 6, [4, 1, 5, 0, 3, 2])
+        self.assertEqual(result["frames"], len(frames))
+        self.assertEqual(result["tearing"], 0)
+
+    def test_optimizer_targets_heavy_runs_without_changing_membership(self):
+        heavy = tuple(range(0, 100, 2))
+        trace = [(), heavy, tuple(range(1, 100, 2)), heavy]
+        plan = optimize_slot_locality(trace, 100, cold_cap=50, iterations=6)
+        validate_physical_slots(plan.physical_by_logical, 100)
+        self.assertEqual(plan.cold.tolist(), [0, 50, 50, 50])
+        self.assertLess(
+            int(plan.optimized_runs[plan.risk_frames].max()),
+            int(plan.baseline_runs[plan.risk_frames].max()),
+        )
 
 
 if __name__ == "__main__":
