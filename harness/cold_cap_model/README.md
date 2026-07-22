@@ -87,11 +87,69 @@ palette frame. The gap between 175 and ~190 is not a hard cycle wall but a
 near-zero *phase margin* around the flip deadline, plus one real Main-window
 ceiling (high-run-count frames) and one palette-frame hazard.
 
-## Next
+## Phase 1 findings (mechanism + cost coefficients)
 
-- Reconstruct per-frame two-CPU timelines from U/W plus the extracted
-  workload, model the flip deadline, and calibrate until the model
-  reproduces every break in the census (gates G1-G4 of the plan).
-- Then rank fixes: run-overhead reduction (run count, not words, drives U),
-  palette-frame scheduling, Sub parity smoothing (2/3-sector pump), and
-  flip-phase headroom.
+**Flip pacing allows phase drift (the ratchet).** `do_flip`
+(`boot/movieplay_ip.s`) stamps `pace_flip_tick` with the *actual* flip
+stopwatch time; the next frame's arm point is that stamp + 800 ticks
+(24.58 ms), and a flip is accepted anywhere inside the target VBlank
+except its terminal 4 V-counter lines (`FC..FF` guard). A flip accepted
+late inside its blank therefore moves the next deadline base late as
+well. A frame that misses the guarded window pays a whole extra VBlank
+(the observed cadence break) and thereby resets the phase early.
+Palette-switch frames are strictly harder: `wait_fixed_palette_flip`
+requires a *fresh* VBlank start after the arm point, then writes 64 CRAM
+words before flipping — consistent with the realized-190 break landing
+exactly on a palette frame.
+
+**Main transfer cost is run-dominated.** Regressing the HUD `U` series
+(pattern-transfer ticks) on the extracted workload gives, consistently
+across three builds/streams (residual std ≈ 31 ticks):
+
+```
+U [ticks] ≈ 0.61..0.71 per load + 9.2..9.9 per run − 5..6 per short run − 65
+```
+
+i.e. ~300 µs per DMA-path run descriptor versus ~20 µs per 32-byte
+pattern. First-principles instruction counting of `bf_run_lp` +
+`dma_chunk_wr` (register programming ≈ 40 instructions, completion poll,
+first-word repair) explains ~100-150 µs; the excess is consistent with
+Word-RAM DMA source reads contending with the Sub CPU. Short runs take
+the CPU-direct path and are *cheaper* than a DMA setup. Run-count
+reduction (pack-side coalescing/ordering) and per-run overhead reduction
+are therefore the highest-leverage Main-side levers — not word volume.
+
+**W (Main-waits-for-Sub at the bank swap) is phase-driven, not
+workload-driven.** Regression against workload explains little (residual
+std 25-30 lines); W is systematically higher on 2-sector slots and
+reaches 99 lines (6.3 ms) on the current build.
+
+**Negative result — breaks are NOT predicted by observable load.** A
+naive additive timeline model (fixed work + W + U against the ratchet
+rules; `model.py --sweep`) reproduces either zero or a periodic flood of
+breaks, never the observed 1-2; measured U cannot be reused additively
+because it embeds each run's real VBlank alignment. Rolling sums of
+(W·line + U·tick) rank the actual break frames 100th-1300th — the
+heaviest stretches (frames ~1976, ~2660) do NOT break. The variable that
+decides *which* marginal frame slips is invisible to the current HUD:
+the flip phase inside the blank, the Sub's READY micro-timing, or CDC
+service alignment.
+
+## Next: targeted HUD measurement (Phase 2)
+
+The missing per-frame observables, each cheap (a stopwatch/HV read plus
+a stored word):
+
+1. **Flip phase** — V-counter (or stopwatch minus blank anchor) at the
+   accepted flip: shows the ratchet drift directly and how close each
+   flip runs to the FC..FF guard.
+2. **Arm overshoot** — how far past `pace_flip_tick + 800` the flip
+   actually happened.
+3. **Sub READY margin** — time between the Sub posting STAT_READY and
+   Main's CMD_SWAP arrival (or the wait on the other side, complementing
+   `W`).
+
+Then record the realized-178 stream (breaks expected on current builds)
+plus a realized-175 control with the instrumented DEBUG build and read
+the series around the breaks. The static model resumes calibration with
+those phases pinned.
