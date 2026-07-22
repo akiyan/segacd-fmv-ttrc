@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from tile_alloc import (  # noqa: E402
-    TileAllocator,
     optimize_slot_locality,
+    replay_logical_slots,
     validate_physical_slots,
     verify_display_equivalence,
 )
@@ -27,19 +27,6 @@ def decision_frames(log: dict) -> list[list[tuple[int, bytes]]]:
         [(int(cell), key) for cell, _palette, key in sorted(frame)]
         for frame in log["frames"]
     ]
-
-
-def logical_cold_trace(frames, cells: int, pool: int):
-    allocator = TileAllocator(cells, pool, 1)
-    trace = []
-    for frame_index, frame in enumerate(frames):
-        placements = allocator.place_frame(frame, frame_index)
-        trace.append(tuple(
-            int(slot) for slot, cold in placements if cold))
-    if allocator.tearing:
-        raise AssertionError(
-            f"logical replay tore {allocator.tearing} displayed patterns")
-    return tuple(trace)
 
 
 def main() -> None:
@@ -59,9 +46,15 @@ def main() -> None:
     if cells <= 0:
         raise SystemExit("decision log has no valid cell count")
 
-    trace = logical_cold_trace(frames, cells, pool)
+    prefetch_requests = (log.get("raw_prefetch") or {}).get("requests")
+    replay = replay_logical_slots(
+        frames, cells, pool, prefetch_requests=prefetch_requests)
+    if replay.tearing:
+        raise AssertionError(
+            f"logical replay tore {replay.tearing} displayed patterns")
+    trace = replay.cold_slots
     locality = log.get("slot_locality") or {}
-    if int(locality.get("schema_version", 0)) == 1:
+    if int(locality.get("schema_version", 0)) in (1, 2):
         physical_by_logical = validate_physical_slots(
             locality["physical_by_logical"], pool)
         stored = True
@@ -91,11 +84,23 @@ def main() -> None:
     )
 
     proof = verify_display_equivalence(
-        frames, cells, pool, physical_by_logical)
+        frames, cells, pool, physical_by_logical,
+        prefetch_requests=prefetch_requests)
     cold = membership.sum(axis=1)
     cap = args.cold_cap or int(log.get("max_cold", 0)) or int(cold[1:].max())
-    risk = (cold >= int(np.ceil(cap * 0.85))) & (baseline_runs >= 40)
+    risk = cold >= int(np.ceil(cap * 0.85))
     risk[0] = False
+    if int(locality.get("schema_version", 0)) >= 2:
+        source_baseline = np.asarray(
+            locality.get("baseline_runs", ()), np.int64)
+        source_optimized = np.asarray(
+            locality.get("optimized_runs", ()), np.int64)
+        if (source_baseline.shape != baseline_runs.shape
+                or source_optimized.shape != optimized_runs.shape):
+            raise SystemExit("slot-locality source-run trace has wrong shape")
+    else:
+        source_baseline = baseline_runs
+        source_optimized = optimized_runs
     print(f"map={'stored' if stored else 'derived'} pool={pool}")
     print(
         f"display={proof['frames']}/{len(frames)} exact "
@@ -104,12 +109,12 @@ def main() -> None:
         f"stream max runs {int(baseline_runs[1:].max(initial=0))} -> "
         f"{int(optimized_runs[1:].max(initial=0))}")
     print(
-        f"deadline-risk frames={int(risk.sum())} max runs "
-        f"{int(baseline_runs[risk].max(initial=0))} -> "
-        f"{int(optimized_runs[risk].max(initial=0))}")
+        f"deadline-heavy frames={int(risk.sum())} source-aware max runs "
+        f"{int(source_baseline[risk].max(initial=0))} -> "
+        f"{int(source_optimized[risk].max(initial=0))}")
     print(
-        f"total runs {int(baseline_runs[1:].sum())} -> "
-        f"{int(optimized_runs[1:].sum())} (not an optimization constraint)")
+        f"physical-slot total runs {int(baseline_runs[1:].sum())} -> "
+        f"{int(optimized_runs[1:].sum())} (diagnostic only; not a constraint)")
 
 
 if __name__ == "__main__":

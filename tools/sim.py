@@ -42,6 +42,7 @@ from encode_config import consume_config_arg, profile_identity  # noqa: E402
 # Apply a per-source TOML profile before any CBRSIM-backed module constants are
 # evaluated.  The internal environment remains compatible with older scripts,
 # but TOML values always win over an inherited shell environment.
+_ORIGINAL_ARGV = tuple(sys.argv)
 CONFIG_PROFILE = consume_config_arg(sys.argv)
 import av_config  # noqa: E402
 import ima_adpcm  # noqa: E402
@@ -231,6 +232,12 @@ def near_mask_eval(cur, plain, changed):
 # ボトルネックなのでDMAは実質フリー扱い。0=無効(既定)。512KB/32B=16384枚。
 L3_TILES = int(os.environ.get("CBRSIM_L3", "0"))
 NO_PANELS = bool(os.environ.get("CBRSIM_NOPANELS"))   # 計測専用: 解析パネルPNGの書き出しを省く
+_SLOT_LOCALITY_STAGE = os.environ.get(
+    "CBRSIM_SLOT_LOCALITY_STAGE", "").strip().lower()
+# Final source-aware minimax placement is cheap next to the full encode but
+# needs enough reweighting rounds to bring every near-cap Sonic frame to the
+# 30-run target.  The broad exact-target predictor keeps the faster default.
+SLOT_LOCALITY_FINAL_ITERATIONS = 160
 # PRG-RAM先読みバッファ: 再生前にPRGへ載せた静的タイル集合(pickle set of pattern keys)。
 # ここにあるパターンは再生中いつでもCD 0バイト(RAM→VRAM DMAのみ)で出せる=Fill扱い。
 PRG_PRELOAD_PATH = os.environ.get("CBRSIM_PRG_PRELOAD", "")
@@ -613,6 +620,52 @@ _EMIT_DEC_ENV = os.environ.get("CBRSIM_EMIT_DEC", "").strip()
 EMIT_DEC = (str(OUT / "decisions.pkl")
             if _EMIT_DEC_ENV.lower() in {"1", "true", "yes", "on"}
             else _EMIT_DEC_ENV)
+
+
+def _source_run_groups(replay, sources_by_frame):
+    """Partition each cold trace by the physical source that splits runs.
+
+    Prg and Word loads can join only loads from the same source.  DicBuf also
+    requires consecutive dictionary indices, so each Dic load is kept as a
+    conservative singleton for placement; the exact final counter may still
+    merge compatible neighbours afterwards.
+    """
+    if len(sources_by_frame) != len(replay.placements):
+        raise ValueError("pattern-source frame count differs")
+    result = []
+    for frame, (placements, prefetch_slots, raw_sources) in enumerate(zip(
+            replay.placements,
+            replay.prefetch_cold_slots,
+            sources_by_frame)):
+        if len(raw_sources) != len(placements):
+            raise ValueError(
+                f"frame {frame} pattern-source/update count differs")
+        prg = []
+        word = []
+        dic = []
+        for update, ((slot, cold), raw_source) in enumerate(zip(
+                placements, raw_sources)):
+            if not cold:
+                continue
+            source = int(raw_source)
+            if source == pattern_supply.SOURCE_PRG:
+                prg.append(int(slot))
+            elif source == pattern_supply.SOURCE_WR:
+                word.append(int(slot))
+            elif source == pattern_supply.SOURCE_DIC:
+                dic.append((int(slot),))
+            else:
+                raise ValueError(
+                    f"frame {frame} update {update} has invalid source {source}")
+        prg.extend(int(slot) for slot in prefetch_slots)
+        groups = []
+        if prg:
+            groups.append(tuple(prg))
+        if word:
+            groups.append(tuple(word))
+        groups.extend(dic)
+        result.append(tuple(groups))
+    return tuple(result)
 
 
 def border_weight_mask():
@@ -1146,9 +1199,13 @@ def main():
 
     # CBRSIM_REUSE=1: 既に展開済みの master/raw/audio を再利用し ffmpeg 展開を省く
     # (レイアウト調整でパネルだけ描き直したいとき用。OUTは丸ごとクリアしない)。
-    reuse = os.environ.get("CBRSIM_REUSE", "0").strip().lower() not in {
+    reuse = (
+        os.environ.get("CBRSIM_SLOT_LOCALITY_REUSE", "0").strip().lower()
+        not in {"", "0", "false", "no", "off"}
+        or os.environ.get("CBRSIM_REUSE", "0").strip().lower() not in {
         "", "0", "false", "no", "off",
-    }
+        }
+    )
     master_dir = OUT / "master"     # ディザ除去済み(量子化入力)
     raw_dir = OUT / "raw"           # 生のオリジナル(比較TR用)
     cached = reuse and any(master_dir.glob("*.png")) and any(raw_dir.glob("*.png"))
@@ -1284,8 +1341,11 @@ def main():
     from tile_alloc import (
         TileAllocator,
         cold_transfer_order,
+        evaluate_slot_locality,
         optimize_slot_locality,
+        replay_logical_slots,
         remap_placements,
+        verify_display_equivalence,
     )
     # 共有割り当て(連続, pack と同一コード)。これが residency の真の源=pack の realized と一致=cap=realized。
     # 判定は前フレーム末の状態を参照し、割り当て(スロット付与+追い出し)は各フレーム末に cell順で実行
@@ -1465,11 +1525,20 @@ def main():
         max_cold=MAX_COLD,
         protected_frames=main_protected,
     )
-    slot_locality = optimize_slot_locality(
-        demand_prediction.cold_slots,
-        VRAM_TILES,
-        cold_cap=MAX_COLD,
-    )
+    slot_locality_map = os.environ.get("CBRSIM_SLOT_LOCALITY_MAP", "").strip()
+    if slot_locality_map:
+        slot_locality = evaluate_slot_locality(
+            demand_prediction.cold_slots,
+            VRAM_TILES,
+            np.load(slot_locality_map),
+            cold_cap=MAX_COLD,
+        )
+    else:
+        slot_locality = optimize_slot_locality(
+            demand_prediction.cold_slots,
+            VRAM_TILES,
+            cold_cap=MAX_COLD,
+        )
     physical_by_logical = np.asarray(
         slot_locality.physical_by_logical, np.int64)
     predicted_risk = np.asarray(slot_locality.risk_frames, bool)
@@ -1479,6 +1548,7 @@ def main():
         slot_locality.optimized_runs, np.int64)
     print(
         "slot locality: fixed logical->physical bijection; "
+        f"map={'loaded' if slot_locality_map else 'predicted'}; "
         f"predicted max runs {int(predicted_baseline_runs[1:].max(initial=0))}"
         f"->{int(predicted_local_runs[1:].max(initial=0))}, "
         f"risk frames={int(predicted_risk.sum())} "
@@ -2568,6 +2638,148 @@ def main():
             f"cache_builds={_lp_counts['resident_cache_builds']}",
             flush=True,
         )
+
+    # The first pass chooses a physical map from its completed logical
+    # decisions.  The second pass accounts for that map's real run cost while
+    # making its quality decisions.  Only now is the trace stable enough to
+    # choose the delivered map.  Recompute every run-dependent artifact from
+    # these frozen decisions; cold/reuse membership and displayed pixels stay
+    # unchanged.
+    if _SLOT_LOCALITY_STAGE == "final":
+        decision_key_frames = [
+            [(int(cell), key) for cell, _palette, key in sorted(frame)]
+            for frame in dec_frames
+        ]
+        replay = replay_logical_slots(
+            decision_key_frames,
+            C_CELLS,
+            VRAM_TILES,
+            prefetch_requests=prefetch_requests_log,
+        )
+        if replay.tearing:
+            raise AssertionError(
+                f"final slot-locality logical replay tore {replay.tearing} patterns")
+        final_locality = optimize_slot_locality(
+            replay.cold_slots,
+            VRAM_TILES,
+            cold_cap=MAX_COLD,
+            iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
+            run_groups_by_frame=_source_run_groups(
+                replay, supply_sources_log),
+        )
+        final_mapping = np.asarray(
+            final_locality.physical_by_logical, np.int64)
+        proof = verify_display_equivalence(
+            decision_key_frames,
+            C_CELLS,
+            VRAM_TILES,
+            final_mapping,
+            prefetch_requests=prefetch_requests_log,
+        )
+        if proof["cold"] != int(np.sum(transfer_tiles_log)):
+            raise AssertionError(
+                "final slot-locality proof changed the frozen cold total")
+
+        final_runs = []
+        for frame_index, (
+                frame, logical, prefetch_slots, raw_sources) in enumerate(zip(
+                    decision_key_frames,
+                    replay.placements,
+                    replay.prefetch_cold_slots,
+                    supply_sources_log)):
+            physical = remap_placements(logical, final_mapping)
+            order = cold_transfer_order(physical)
+            slots = [int(physical[index][0]) for index in order]
+            sources = [int(raw_sources[index]) for index in order]
+            dic_indices = [
+                (dic_dictionary_index[frame[index][1]]
+                 if sources[position] == pattern_supply.SOURCE_DIC else -1)
+                for position, index in enumerate(order)
+            ]
+            slots.extend(int(final_mapping[slot]) for slot in prefetch_slots)
+            sources.extend(
+                [pattern_supply.SOURCE_PRG] * len(prefetch_slots))
+            dic_indices.extend([-1] * len(prefetch_slots))
+            if len(slots) != int(transfer_tiles_log[frame_index]):
+                raise AssertionError(
+                    f"frame {frame_index}: final slot-locality changed cold count")
+            final_runs.append(pattern_supply.count_source_runs(
+                slots, sources, dic_indices))
+
+        # The second pass paid for its own map.  The delivered map may move
+        # run control between frames, so replay the whole quality budget and
+        # require every frozen decision to remain funded before accepting it.
+        final_quality_budget = []
+        budget_after = QUALITY_BUDGET_BYTES if QUALITY_BUDGET_ON else 0
+        minimum_budget = budget_after
+        for frame_index, runs in enumerate(final_runs):
+            if frame_index == 0:
+                budget_after = QUALITY_BUDGET_BYTES
+            elif QUALITY_BUDGET_ON:
+                pal_swap = (
+                    SEGPAL_ON
+                    and int(frame_seg[frame_index])
+                    != int(frame_seg[frame_index - 1])
+                )
+                frame_supply = max(
+                    int(body_variable_supply_bytes[frame_index])
+                    - (PAL_WRITE_BYTES if pal_swap else 0),
+                    0,
+                )
+                variable_work = (
+                    int(name_records_log[frame_index]) * NAME_BYTES
+                    + int(prg_loads_log[frame_index]) * PATTERN_BYTES
+                    + int(runs) * stream_schedule.RUN_DESCRIPTOR_BYTES
+                )
+                available = budget_after + frame_supply
+                if variable_work > available:
+                    raise SystemExit(
+                        "final slot-locality map is not funded: "
+                        f"frame {frame_index} needs {variable_work}B with "
+                        f"{available}B available")
+                budget_after = min(
+                    QUALITY_BUDGET_BYTES, available - variable_work)
+                minimum_budget = min(minimum_budget, budget_after)
+            if QUALITY_BUDGET_ON:
+                final_quality_budget.append(budget_after // PATTERN_BYTES)
+
+            if frame_index == 0:
+                frame_bytes_log[frame_index] = 0
+            else:
+                frame_bytes_log[frame_index] = (
+                    int(body_fixed_control_bytes[frame_index])
+                    + int(name_records_log[frame_index]) * NAME_BYTES
+                    + int(prg_loads_log[frame_index]) * PATTERN_BYTES
+                    + int(runs) * stream_schedule.RUN_DESCRIPTOR_BYTES
+                )
+            row = list(stat_rows[frame_index])
+            row[25] = int(runs)
+            stat_rows[frame_index] = tuple(row)
+
+        old_runs = np.asarray(transfer_runs_log, np.int64)
+        final_runs_array = np.asarray(final_runs, np.int64)
+        final_risk = np.asarray(final_locality.risk_frames, bool)
+        print(
+            "slot locality final: frozen-decision map; "
+            f"display={proof['frames']}/{n} exact tearing={proof['tearing']}; "
+            f"source runs max {int(old_runs[1:].max(initial=0))}"
+            f"->{int(final_runs_array[1:].max(initial=0))}; "
+            f"deadline-heavy source-aware runs "
+            f"{int(final_locality.baseline_runs[final_risk].max(initial=0))}"
+            f"->{int(final_locality.optimized_runs[final_risk].max(initial=0))}; "
+            f"quality floor={minimum_budget}B",
+            flush=True,
+        )
+        physical_by_logical = final_mapping
+        predicted_baseline_runs = np.asarray(
+            final_locality.baseline_runs, np.int64)
+        predicted_local_runs = np.asarray(
+            final_locality.optimized_runs, np.int64)
+        predicted_risk = final_risk
+        transfer_runs_log = final_runs
+        if QUALITY_BUDGET_ON:
+            quality_budget_log = final_quality_budget
+
     _t = time.perf_counter()
 
     fb_baseline = np.array(frame_bytes_log, np.float64)
@@ -2906,14 +3118,19 @@ def main():
             "frame_seg": np.asarray(frame_seg, np.int32),
             "frames": dec_frames,                                     # [[(cell,pal,key),...], ...]
             "slot_locality": {
-                "schema_version": 1,
+                "schema_version": 2,
+                "trace": (
+                    "final_decisions"
+                    if _SLOT_LOCALITY_STAGE == "final"
+                    else "predictive_exact_target"
+                ),
                 "physical_by_logical": np.asarray(
                     physical_by_logical, np.uint16),
-                "predicted_baseline_runs": np.asarray(
+                "baseline_runs": np.asarray(
                     predicted_baseline_runs, np.uint16),
-                "predicted_optimized_runs": np.asarray(
+                "optimized_runs": np.asarray(
                     predicted_local_runs, np.uint16),
-                "predicted_risk_frames": np.asarray(
+                "risk_frames": np.asarray(
                     predicted_risk, np.bool_),
             },
             "pattern_supply": {
@@ -3027,5 +3244,98 @@ def main():
     print(f"  {'合計':<22s} {total:8.1f}s  ({total / n * 1000:7.1f} ms/frame  {total / n:8.4f} s/frame)")
 
 
+def _derive_completed_slot_map(decision_log, output_path):
+    """Derive and prove the physical map used by the accounting pass."""
+    import pickle
+    from tile_alloc import (
+        optimize_slot_locality,
+        replay_logical_slots,
+        verify_display_equivalence,
+    )
+
+    with Path(decision_log).open("rb") as source:
+        log = pickle.load(source)
+    frames = [
+        [(int(cell), key) for cell, _palette, key in sorted(frame)]
+        for frame in log["frames"]
+    ]
+    prefetch_requests = (log.get("raw_prefetch") or {}).get("requests")
+    replay = replay_logical_slots(
+        frames,
+        int(log["geom"][2]),
+        int(log["vram_tiles"]),
+        prefetch_requests=prefetch_requests,
+    )
+    if replay.tearing:
+        raise AssertionError(
+            f"seed slot-locality replay tore {replay.tearing} patterns")
+    plan = optimize_slot_locality(
+        replay.cold_slots,
+        int(log["vram_tiles"]),
+        cold_cap=int(log.get("max_cold", 0)),
+        iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
+        run_groups_by_frame=_source_run_groups(
+            replay, (log.get("pattern_supply") or {}).get("sources", ())),
+    )
+    proof = verify_display_equivalence(
+        frames,
+        int(log["geom"][2]),
+        int(log["vram_tiles"]),
+        plan.physical_by_logical,
+        prefetch_requests=prefetch_requests,
+    )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(output_path, np.asarray(plan.physical_by_logical, np.uint16))
+    risk = np.asarray(plan.risk_frames, bool)
+    print(
+        "slot locality seed proof: "
+        f"display={proof['frames']}/{len(frames)} exact "
+        f"cold={proof['cold']} tearing={proof['tearing']}; "
+        f"deadline-heavy source-aware runs "
+        f"{int(plan.baseline_runs[risk].max(initial=0))}"
+        f"->{int(plan.optimized_runs[risk].max(initial=0))}",
+        flush=True,
+    )
+
+
+def _run_slot_locality_pipeline():
+    """Run decision seeding, then one accounting pass with its frozen map."""
+    import subprocess
+
+    command = [sys.executable, *_ORIGINAL_ARGV]
+    seed_env = os.environ.copy()
+    seed_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "seed"
+    seed_env["CBRSIM_NOPANELS"] = "1"
+    seed_env.pop("CBRSIM_SLOT_LOCALITY_MAP", None)
+    seed_env.pop("CBRSIM_SLOT_LOCALITY_REUSE", None)
+    print("slot locality pass 1/2: seed logical decisions", flush=True)
+    subprocess.run(command, env=seed_env, check=True)
+
+    map_path = Path("tmp") / f"slot_locality_seed_{os.getpid()}.npy"
+    try:
+        _derive_completed_slot_map(EMIT_DEC, map_path)
+        final_env = os.environ.copy()
+        final_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "final"
+        final_env["CBRSIM_SLOT_LOCALITY_MAP"] = str(map_path.resolve())
+        final_env["CBRSIM_SLOT_LOCALITY_REUSE"] = "1"
+        print(
+            "slot locality pass 2/2: account frozen seed map, then "
+            "finalize from completed decisions",
+            flush=True,
+        )
+        subprocess.run(command, env=final_env, check=True)
+    finally:
+        map_path.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
-    main()
+    locality_disabled = os.environ.get(
+        "CBRSIM_SLOT_LOCALITY_PASSES", "1").strip().lower() in {
+            "", "0", "false", "no", "off",
+        }
+    if (_SLOT_LOCALITY_STAGE or locality_disabled or not EMIT_DEC
+            or os.environ.get("CBRSIM_SLOT_LOCALITY_MAP", "").strip()):
+        main()
+    else:
+        _run_slot_locality_pipeline()

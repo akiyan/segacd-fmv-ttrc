@@ -259,7 +259,7 @@ def resolve(log, POOL, mode="lru"):
     alloc = TileAllocator(C_CELLS, POOL, BASE)   # 共有割り当て(連続)。sim も同一 = cap=realized
     locality = log.get("slot_locality") or {}
     locality_schema = int(locality.get("schema_version", 0))
-    if locality_schema not in (0, 1):
+    if locality_schema not in (0, 1, 2):
         raise SystemExit(
             f"pack: unsupported slot-locality schema {locality_schema}")
     physical_by_logical = validate_physical_slots(

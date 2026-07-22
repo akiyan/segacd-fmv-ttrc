@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tile_alloc import (
     TileAllocator,
     cold_transfer_order,
+    evaluate_slot_locality,
     optimize_slot_locality,
     remap_placements,
     validate_physical_slots,
@@ -88,6 +89,22 @@ class SlotLocalityTests(unittest.TestCase):
             int(plan.optimized_runs[plan.risk_frames].max()),
             int(plan.baseline_runs[plan.risk_frames].max()),
         )
+
+    def test_fixed_map_evaluation_uses_the_supplied_permutation(self):
+        trace = [(), (0, 2, 4), (1, 3, 5)]
+        plan = evaluate_slot_locality(
+            trace, 6, [0, 3, 1, 4, 2, 5], cold_cap=3)
+        self.assertEqual(plan.baseline_runs.tolist(), [0, 3, 3])
+        self.assertEqual(plan.optimized_runs.tolist(), [0, 1, 1])
+
+    def test_run_groups_keep_physical_sources_separate(self):
+        trace = [(), (0, 1, 2, 3)]
+        groups = [(), ((0, 2), (1, 3))]
+        plan = evaluate_slot_locality(
+            trace, 4, [0, 2, 1, 3], cold_cap=4,
+            run_groups_by_frame=groups)
+        self.assertEqual(plan.baseline_runs.tolist(), [0, 4])
+        self.assertEqual(plan.optimized_runs.tolist(), [0, 2])
 
 
 if __name__ == "__main__":

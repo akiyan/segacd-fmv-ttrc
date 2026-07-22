@@ -41,6 +41,16 @@ class SlotLocalityPlan:
     risk_frames: np.ndarray
 
 
+@dataclass(frozen=True)
+class LogicalSlotReplay:
+    """Frozen logical placements and prefetch slots for every frame."""
+
+    placements: tuple[tuple[tuple[int, bool], ...], ...]
+    prefetch_cold_slots: tuple[tuple[int, ...], ...]
+    cold_slots: tuple[tuple[int, ...], ...]
+    tearing: int
+
+
 def validate_physical_slots(physical_by_logical, pool):
     """Return a validated logical->physical slot permutation."""
     mapping = np.asarray(physical_by_logical, dtype=np.int64)
@@ -77,16 +87,76 @@ def cold_transfer_order(placements):
     ))
 
 
-def _run_counts(membership, logical_at_physical):
-    """Count contiguous true ranges after applying one physical slot order."""
-    membership = np.asarray(membership, dtype=bool)
-    logical_at_physical = np.asarray(logical_at_physical, dtype=np.int64)
-    if not len(logical_at_physical):
-        return np.zeros(len(membership), np.int32)
-    ordered = membership[:, logical_at_physical]
-    return (
-        ordered[:, 0].astype(np.int32)
-        + np.count_nonzero(ordered[:, 1:] & ~ordered[:, :-1], axis=1)
+def _membership_and_run_groups(
+        cold_slots_by_frame, pool, run_groups_by_frame=None):
+    """Validate cold membership and same-source run groups."""
+    frame_count = len(cold_slots_by_frame)
+    membership = np.zeros((frame_count, pool), dtype=bool)
+    normalized_groups = []
+    if run_groups_by_frame is not None and len(run_groups_by_frame) != frame_count:
+        raise ValueError("run-group frame count differs")
+    for frame, raw_slots in enumerate(cold_slots_by_frame):
+        slots = np.asarray(tuple(int(slot) for slot in raw_slots), np.int64)
+        if slots.size:
+            if int(slots.min()) < 0 or int(slots.max()) >= pool:
+                raise ValueError(f"frame {frame} has a cold slot outside the pool")
+            if len(np.unique(slots)) != len(slots):
+                raise ValueError(f"frame {frame} repeats a cold slot")
+            membership[frame, slots] = True
+        if run_groups_by_frame is None:
+            groups = (tuple(int(slot) for slot in slots),) if slots.size else ()
+        else:
+            groups = tuple(
+                tuple(int(slot) for slot in group)
+                for group in run_groups_by_frame[frame]
+                if len(group)
+            )
+            flattened = tuple(slot for group in groups for slot in group)
+            if len(flattened) != len(slots) or set(flattened) != set(slots):
+                raise ValueError(
+                    f"frame {frame} run groups do not partition its cold slots")
+        normalized_groups.append(groups)
+    return membership, tuple(normalized_groups)
+
+
+def _group_run_counts(run_groups_by_frame, physical_by_logical):
+    """Count runs that cannot cross physical-source group boundaries."""
+    mapping = np.asarray(physical_by_logical, dtype=np.int64)
+    counts = np.zeros(len(run_groups_by_frame), np.int32)
+    for frame, groups in enumerate(run_groups_by_frame):
+        for group in groups:
+            positions = np.sort(mapping[np.asarray(group, np.int64)])
+            if positions.size:
+                counts[frame] += 1 + int(np.count_nonzero(
+                    positions[1:] != positions[:-1] + 1))
+    return counts
+
+
+def evaluate_slot_locality(
+        cold_slots_by_frame, pool, physical_by_logical, *, cold_cap=0,
+        run_groups_by_frame=None):
+    """Measure one fixed physical-slot permutation against a cold trace."""
+    pool = int(pool)
+    mapping = validate_physical_slots(physical_by_logical, pool)
+    frame_count = len(cold_slots_by_frame)
+    membership, run_groups = _membership_and_run_groups(
+        cold_slots_by_frame, pool, run_groups_by_frame)
+
+    cold = membership.sum(axis=1, dtype=np.int32)
+    identity = np.arange(pool, dtype=np.int32)
+    baseline_runs = _group_run_counts(run_groups, identity)
+    optimized_runs = _group_run_counts(run_groups, mapping)
+    measured_cap = int(cold_cap) or int(cold[1:].max(initial=0))
+    risk_cold = max(1, int(np.ceil(measured_cap * 0.85)))
+    risk_frames = cold >= risk_cold
+    if frame_count:
+        risk_frames[0] = False
+    return SlotLocalityPlan(
+        tuple(int(slot) for slot in mapping),
+        baseline_runs,
+        optimized_runs,
+        cold,
+        risk_frames,
     )
 
 
@@ -161,13 +231,15 @@ def _maximum_weight_slot_path(weight):
 
 def optimize_slot_locality(
         cold_slots_by_frame, pool, *, cold_cap=0, iterations=20,
-        target_heavy_runs=30):
+        target_heavy_runs=30, run_groups_by_frame=None):
     """Choose one movie-wide slot permutation for deadline-heavy frames.
 
     The objective deliberately does *not* minimize total runs.  It estimates
     the Main transfer deadline as ``0.7*cold + 9.5*runs`` and repeatedly adds
-    weight to the worst frames.  Frames near the measured cold cap that are
-    already fragmented receive an explicit target of at most 30 runs.  Run
+    weight to the worst frames. Every frame at 85% or more of the measured cold
+    cap receives an explicit target of at most 30 runs, including a frame that
+    was compact before another heavy frame's map changed it. Optional run
+    groups prevent a run from crossing Prg/Wr/Dic source boundaries. Run
     increases on light frames are accepted when they lower the worst deadline.
     """
     pool = int(pool)
@@ -176,19 +248,12 @@ def optimize_slot_locality(
     if iterations <= 0:
         raise ValueError("slot-locality iterations must be positive")
     frame_count = len(cold_slots_by_frame)
-    membership = np.zeros((frame_count, pool), dtype=bool)
-    for frame, raw_slots in enumerate(cold_slots_by_frame):
-        slots = np.asarray(tuple(int(slot) for slot in raw_slots), np.int64)
-        if slots.size:
-            if int(slots.min()) < 0 or int(slots.max()) >= pool:
-                raise ValueError(f"frame {frame} has a cold slot outside the pool")
-            if len(np.unique(slots)) != len(slots):
-                raise ValueError(f"frame {frame} repeats a cold slot")
-            membership[frame, slots] = True
+    membership, run_groups = _membership_and_run_groups(
+        cold_slots_by_frame, pool, run_groups_by_frame)
 
     identity = np.arange(pool, dtype=np.int32)
     cold = membership.sum(axis=1, dtype=np.int32)
-    baseline_runs = _run_counts(membership, identity)
+    baseline_runs = _group_run_counts(run_groups, identity)
     if frame_count <= 1 or not membership[1:].any():
         return SlotLocalityPlan(
             tuple(int(slot) for slot in identity), baseline_runs,
@@ -198,7 +263,6 @@ def optimize_slot_locality(
     risk_cold = max(1, int(np.ceil(measured_cap * 0.85)))
     risk_frames = (
         (cold >= risk_cold)
-        & (baseline_runs >= 40)
     )
     risk_frames[0] = False
 
@@ -224,13 +288,17 @@ def optimize_slot_locality(
     for _iteration in range(int(iterations)):
         selected_frames = weights > 0.0010001
         adjacency = np.zeros((pool, pool), dtype=np.float64)
-        for present, frame_weight in zip(
-                membership[selected_frames], weights[selected_frames]):
-            slots = np.flatnonzero(present)
-            adjacency[np.ix_(slots, slots)] += float(frame_weight)
+        for frame, frame_weight in zip(
+                np.flatnonzero(selected_frames), weights[selected_frames]):
+            for group in run_groups[int(frame)]:
+                slots = np.asarray(group, np.int64)
+                adjacency[np.ix_(slots, slots)] += float(frame_weight)
         np.fill_diagonal(adjacency, 0.0)
         logical_at_physical = _maximum_weight_slot_path(adjacency)
-        runs = _run_counts(membership, logical_at_physical)
+        physical_by_logical = np.empty(pool, dtype=np.int32)
+        physical_by_logical[logical_at_physical] = np.arange(
+            pool, dtype=np.int32)
+        runs = _group_run_counts(run_groups, physical_by_logical)
         score = 0.7 * cold + 9.5 * runs
         streaming_score = score[1:]
         risk_max = int(runs[risk_frames].max(initial=0))
@@ -248,6 +316,13 @@ def optimize_slot_locality(
         if risk_frames.any():
             weights[risk_frames] += (
                 np.maximum(runs[risk_frames] - 25, 0) * 0.5)
+            # Minimax pressure: once most heavy frames are compact, focus the
+            # next path on the current worst one or two instead of spending
+            # equal effort on already-safe heavy frames.  The best-so-far
+            # objective prevents an oscillation from replacing a better map.
+            worst = risk_frames & (runs >= max(risk_max - 1, 0))
+            weights[worst] += 50.0 + np.maximum(
+                runs[worst] - int(target_heavy_runs), 0) * 5.0
 
     _objective, logical_at_physical, optimized_runs = best
     physical_by_logical = np.empty(pool, dtype=np.int32)
@@ -263,8 +338,55 @@ def optimize_slot_locality(
     )
 
 
+def replay_logical_slots(
+        frames, c_cells, pool, *, prefetch_requests=None, base=1):
+    """Replay frozen decisions and return their authoritative logical slots."""
+    if prefetch_requests is None:
+        prefetch_requests = tuple(() for _ in frames)
+    if len(prefetch_requests) != len(frames):
+        raise ValueError("prefetch request frame count differs")
+    allocator = TileAllocator(c_cells, pool, base)
+    placements_by_frame = []
+    prefetch_by_frame = []
+    cold_by_frame = []
+    for frame_index, (raw_updates, raw_requests) in enumerate(
+            zip(frames, prefetch_requests)):
+        updates = [(int(cell), key) for cell, key in raw_updates]
+        placements = tuple(allocator.place_frame(updates, frame_index))
+        frame_prefetch = []
+        for request in raw_requests:
+            if len(request) == 2:
+                key, deadline = request
+                forced_slot = None
+            elif len(request) == 3:
+                key, deadline, forced_slot = request
+            else:
+                raise ValueError(
+                    f"frame {frame_index} has a malformed prefetch request")
+            result = allocator.prefetch(
+                key, frame_index, int(deadline), forced_slot=forced_slot)
+            if result is None:
+                raise AssertionError(
+                    f"frame {frame_index} prefetch allocation diverged")
+            slot, cold = result
+            if cold:
+                frame_prefetch.append(int(slot))
+        update_cold = tuple(
+            int(slot) for slot, cold in placements if cold)
+        placements_by_frame.append(placements)
+        prefetch_by_frame.append(tuple(frame_prefetch))
+        cold_by_frame.append(update_cold + tuple(frame_prefetch))
+    return LogicalSlotReplay(
+        tuple(placements_by_frame),
+        tuple(prefetch_by_frame),
+        tuple(cold_by_frame),
+        int(allocator.tearing),
+    )
+
+
 def verify_display_equivalence(
-        frames, c_cells, pool, physical_by_logical, *, base=1):
+        frames, c_cells, pool, physical_by_logical, *,
+        prefetch_requests=None, base=1):
     """Replay every decision and prove the physical permutation is invisible.
 
     ``frames`` contains update-aligned ``(cell, key)`` pairs.  The verifier
@@ -281,20 +403,47 @@ def verify_display_equivalence(
     cold_total = 0
     run_total = 0
 
-    for frame_index, raw_updates in enumerate(frames):
+    if prefetch_requests is None:
+        prefetch_requests = tuple(() for _ in frames)
+    if len(prefetch_requests) != len(frames):
+        raise ValueError("prefetch request frame count differs")
+
+    for frame_index, (raw_updates, raw_requests) in enumerate(
+            zip(frames, prefetch_requests)):
         updates = [(int(cell), key) for cell, key in raw_updates]
         logical = allocator.place_frame(updates, frame_index)
         physical = remap_placements(logical, mapping)
         order = cold_transfer_order(physical)
         cold_total += len(order)
-        run_total += count_slot_runs(
-            physical[index][0] for index in order)
+        update_physical = [physical[index][0] for index in order]
 
         for update_index in order:
             slot, cold = physical[update_index]
             if not cold:
                 raise AssertionError("transfer order contains a reuse update")
             physical_patterns[slot] = updates[update_index][1]
+        prefetch_physical = []
+        for request in raw_requests:
+            if len(request) == 2:
+                key, deadline = request
+                forced_slot = None
+            elif len(request) == 3:
+                key, deadline, forced_slot = request
+            else:
+                raise ValueError(
+                    f"frame {frame_index} has a malformed prefetch request")
+            result = allocator.prefetch(
+                key, frame_index, int(deadline), forced_slot=forced_slot)
+            if result is None:
+                raise AssertionError(
+                    f"frame {frame_index} prefetch allocation diverged")
+            logical_slot, cold = result
+            if cold:
+                physical_slot = int(mapping[logical_slot])
+                physical_patterns[physical_slot] = key
+                prefetch_physical.append(physical_slot)
+        cold_total += len(prefetch_physical)
+        run_total += count_slot_runs(update_physical + prefetch_physical)
         for (cell, key), (slot, _cold) in zip(updates, physical):
             displayed_slots[cell] = slot
             expected_patterns[cell] = key
