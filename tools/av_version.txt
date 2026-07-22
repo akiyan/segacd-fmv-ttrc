@@ -11,14 +11,20 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
-#   p76 : Pre-swizzle the cold-run RUN_TABLE in Pass1: each record carries
+#   p76 : Two Main-side transfer-path changes for the cold-cap work.
+#        (1) Pre-swizzle the cold-run RUN_TABLE in Pass1: each record carries
 #        ready 0x93-0x97 register words (+2-adjusted Word-RAM source) and the
-#        VRAM command, so Pass2 pops them straight into the control port.
-#        Whole runs issue per VBlank; only a run above one full budget takes
-#        the old chunk split. Measured per-run Pass2 cost drops from ~300 us
-#        to ~130 us (the remainder is the per-DMA completion quantum, not
-#        register programming). A build_frame reorder experiment (Pass2
-#        before the bitmap/blit) was measured strictly worse and reverted.
+#        VRAM command, so Pass2 pops them straight into the control port;
+#        whole runs issue per VBlank with the old chunk split kept for runs
+#        above one full budget. (2) NT_DMA_FLIP (specialized fixed-N2 H40):
+#        re-stage the 40-pitch shadow into a 64-entry-pitch buffer in active
+#        time (~1.5 ms RAM copy) and copy the complete back name table with
+#        ONE linear Main-RAM DMA inside the flip VBlank (~14 blank lines),
+#        replacing the ~8 ms FIFO-throttled data-port blit; the DEBUG HUD row
+#        is republished after the DMA. Pre-transfer phase (HUD E) median
+#        drops 12.7 ms -> 7.1 ms. Measured rejections: a build_frame reorder
+#        (Pass2 first) and CPU_DIRECT_MAX_WORDS=128 were both strictly worse
+#        (transfer time is VRAM-slot bound, not issue-mechanism bound).
 #   p75 : Rebase HUD O to the flip-to-flip interval excess over 1024 ticks
 #        (the arm-point base of p74 saturated on every normal frame) and add
 #        E, the Pass2 entry delay since the previous flip in 4-tick units,

@@ -1,0 +1,45 @@
+schema_version = 1
+
+[source]
+path = "assets/SonicJamOp.mp4"
+fps = "30"
+duration = "90.466016"
+sar = "25:27"
+
+[video]
+mode = "H40"
+width = 320
+height = 224
+fit = "pad"
+
+[audio]
+kind = "adpcm22"
+
+[output]
+directory = "videos/SonicJamOp_H40_320x224_adpcm22/tmp"
+reuse = false
+emit_decisions = true
+
+[encoder]
+gpu = true
+vram_tiles = 1518
+dither = true
+segment_palettes = true
+near = true
+coa = true
+
+[palette]
+algorithm = "mosaic-gm"
+map_weight = 1.0
+seam_weight = 8.0
+seam_iterations = 2
+sample_counts = [120, 240, 480]
+validate_frames = 120
+segment_train_frames = 240
+segment_validate_frames = 60
+
+[pack]
+debug = true
+fill = true
+startup_audio_frames = 30
+output = "out/movieplay/MOVIE.DAT"

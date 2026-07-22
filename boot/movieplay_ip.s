@@ -88,7 +88,9 @@
    これを超える転送はランをまたいで次VBLANKへ分割=active表示中へのはみ出し防止(ares対策)。 */
 .equ VB_WORDS_H32, 2800		/* H32 V28 NTSC */
 .equ VB_WORDS_H40, 3400		/* H40 V28 NTSC(理論~3895語より保守的) */
-.equ CPU_DIRECT_MAX_WORDS, 32	/* 1-2 tiles: CPU writes beat per-run DMA setup */
+.equ CPU_DIRECT_MAX_WORDS, 32	/* 1-2 tiles: CPU writes beat per-run DMA setup
+				   (128 was measured no better: transfer time is
+				   VRAM-slot bound, not issue-mechanism bound) */
 .equ FEATURE_FIXED_N2_BIT, 1	/* header features bit 1 */
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
 .equ SHADOW_UPDATE_LIST_BIT, 15
@@ -112,6 +114,18 @@
 /* H40 DEBUG builds append two flip-phase fields (V, O) to the values-only
    HUD.  H32's 32-cell row has no room for them; layout stays 30 cells there. */
 .equ HUD_FLIP_FIELDS, 1
+.endif
+.endif
+
+.ifdef PLAYER_SPECIALIZED
+.if (PC_FEATURES & 0x0002) != 0
+.if PC_MODE == 1
+/* Fixed-N2 specialized H40 builds copy the back name table with one linear
+   Main-RAM DMA inside the flip VBlank (64-entry-pitch staging, ~18 blank
+   lines) instead of the FIFO-throttled CPU blit (~8 ms of active display).
+   This frees the pre-transfer phase so Pass2 can catch field 1's VBlank. */
+.equ NT_DMA_FLIP, 1
+.endif
 .endif
 .endif
 
@@ -847,6 +861,21 @@ bf_blit:
 	lsl.l	#8, d5
 	lsl.l	#5, d5				/* back_idx*0x2000 */
 	add.l	#NT0, d5			/* back_base = 0xC000 or 0xE000 (flipまで保持) */
+.ifdef NT_DMA_FLIP
+	/* Re-stage the 40-words/row shadow into the 64-entry plane pitch so the
+	   flip-blank copy is ONE linear DMA.  Plain RAM-to-RAM copy in active
+	   time (~1.5 ms) replacing the ~8 ms FIFO-throttled data-port blit. */
+	lea	shadow, a0
+	lea	nt_stage, a1
+	move.w	#PC_TROWS-1, d0
+9:
+	.rept 20				/* 40 words = one visible H40 row */
+	move.l	(a0)+, (a1)+
+	.endr
+	lea	48(a1), a1			/* skip plane columns 40-63 */
+	dbra	d0, 9b
+	bra	bf_dma				/* NT copied by DMA inside the flip blank */
+.endif
 .ifdef MAIN_CODEGEN
 	move.w	(md_codegen_blit).l, d0
 	beq	bf_blit_reference
@@ -1018,15 +1047,14 @@ bf_short_run:
 	addq.l	#8, a2				/* skip dst + reg95/96/97 */
 	move.l	d0, (VDP_CTRL).l
 	movea.l	(a2)+, a3			/* +18 src */
-	cmpi.w	#16, d1				/* two tiles write one extra 32-byte block */
-	beq.s	2f
-	.rept 8
-	move.l	(a3)+, (VDP_DATA).l
-	.endr
+	move.w	d1, d0
+	lsr.w	#4, d0				/* run length is always count*16 words */
+	subq.w	#1, d0
 2:
-	.rept 8
+	.rept 8					/* one 32-byte pattern per iteration */
 	move.l	(a3)+, (VDP_DATA).l
 	.endr
+	dbra	d0, 2b
 	sub.w	d1, d7
 .endif
 bf_run_done:
@@ -1068,7 +1096,9 @@ bf_flip:
 	adda.w	d0, a0				/* src = 表[区間] (最大63*128=8064<32767でadda.w可) */
 .ifdef DEBUG
 	bsr	prepare_dbg			/* build the inactive HUD row before the deadline */
+.ifndef NT_DMA_FLIP
 	bsr	publish_dbg
+.endif
 .endif
 .ifdef PLAYER_SPECIALIZED
 .if (PC_FEATURES & 0x0002) != 0
@@ -1084,6 +1114,12 @@ bf_flip:
 1:
 	bsr	wait_vb_start			/* 頭から使える新しいvblank(CRAM+flipが確実に収まる) */
 2:
+.endif
+.ifdef NT_DMA_FLIP
+	bsr	nt_dma_flip			/* whole back NT in ~11 blank lines */
+.ifdef DEBUG
+	bsr	publish_dbg			/* republish: the DMA replaced HUD row 0 */
+.endif
 .endif
 	move.l	#0xC0000000, (VDP_CTRL).l	/* CRAM addr 0 */
 	move.w	#64-1, d1
@@ -1104,11 +1140,20 @@ bf_doflip:
 	   wait_vb_start just like a split DMA. */
 .ifdef DEBUG
 	bsr	prepare_dbg
+.ifndef NT_DMA_FLIP
 	bsr	publish_dbg
+.endif
 .endif
 .ifdef PLAYER_SPECIALIZED
 .if (PC_FEATURES & 0x0002) != 0
 	bsr	wait_fixed_flip			/* normal frame: exactly N flip-to-flip VBlanks */
+.ifdef NT_DMA_FLIP
+	bsr	wait_vb_start			/* NT DMA needs the blank head */
+	bsr	nt_dma_flip
+.ifdef DEBUG
+	bsr	publish_dbg			/* republish: the DMA replaced HUD row 0 */
+.endif
+.endif
 .endif
 .else
 	tst.w	md_fixed_n2
@@ -1388,6 +1433,45 @@ wait_dma_done:
 	btst	#1, d0
 	bne	1b
 	rts
+
+.ifdef NT_DMA_FLIP
+/* Copy the complete shadow name table into the inactive back table with one
+   Main-RAM DMA.  Call inside the flip VBlank; ~11 blank lines for PC_CELLS
+   words.  trashes d0, d2. */
+nt_dma_flip:
+	move.w	#0x8F02, (VDP_CTRL).l
+	move.w	#0x9300|((64*PC_TROWS)&0xFF), (VDP_CTRL).l
+	move.w	#0x9400|(((64*PC_TROWS)>>8)&0xFF), (VDP_CTRL).l
+	move.l	#nt_stage, d2
+	lsr.l	#1, d2
+	move.w	#0x9500, d0
+	move.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	lsr.l	#8, d2
+	move.w	#0x9600, d0
+	move.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	lsr.l	#8, d2
+	move.w	#0x9700, d0
+	move.b	d2, d0
+	move.w	d0, (VDP_CTRL).l
+	moveq	#0, d0
+	move.w	back_idx, d0
+	lsl.l	#8, d0
+	lsl.l	#5, d0
+	add.l	#NT0, d0			/* back_base */
+	move.l	d0, d2
+	andi.l	#0x00003FFF, d0
+	swap	d0
+	ori.l	#0x40000000, d0
+	lsr.w	#7, d2
+	lsr.w	#7, d2
+	andi.w	#0x0003, d2
+	or.w	d2, d0
+	ori.w	#0x0080, d0			/* CD5 */
+	move.l	d0, (VDP_CTRL).l
+	bra	wait_dma_done
+.endif
 
 /* d0 = VRAM addr(<=0xFFFF) -> VDP_CTRL に write コマンド。trashes d0,d2 */
 set_vram_write:
@@ -1733,6 +1817,8 @@ shadow:
 	.space 0x1000				/* logical H40=2240B; padded for bounded list offsets */
 dbg_row:
 	.space 36*2				/* prebuilt values-only row; 30 cells common, +V/O/E on H40 DEBUG */
+nt_stage:
+	.space 64*32*2				/* 64-entry-pitch staging for the flip-blank NT DMA */
 .ifndef PLAYER_SPECIALIZED
 md_mode:
 	.space 2
