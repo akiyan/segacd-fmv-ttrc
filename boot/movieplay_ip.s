@@ -107,6 +107,14 @@
 	.include "player_constants.inc"
 .endif
 
+.ifdef HUD_HEX_TABLE
+.if PC_MODE == 1
+/* H40 DEBUG builds append two flip-phase fields (V, O) to the values-only
+   HUD.  H32's 32-cell row has no room for them; layout stays 30 cells there. */
+.equ HUD_FLIP_FIELDS, 1
+.endif
+.endif
+
 .macro PC_MOVE_W runtime, constant, dest
 .ifdef PLAYER_SPECIALIZED
 	move.w	#\constant, \dest
@@ -388,6 +396,10 @@ ip_entry:
 	clr.w	sub_wait_lines
 	clr.w	dma_elapsed_ticks
 	clr.w	dma_start_tick
+.ifdef HUD_FLIP_FIELDS
+	clr.w	flip_hv_v
+	clr.w	arm_overshoot
+.endif
 .endif
 play_loop:
 	/* v8: feature bit 1ならSubの1001/400 sector rateと対になるflip直前N2
@@ -1128,7 +1140,32 @@ do_flip:
 	eori.w	#1, back_idx			/* 裏を反転 */
 .ifdef PLAYER_SPECIALIZED
 .if (PC_FEATURES & 0x0002) != 0
+.ifdef HUD_FLIP_FIELDS
+	/* Off the critical path (after the flip write): record the flip's
+	   V-counter and its lateness past the arm point, then restamp.  The
+	   pair exposes the flip-phase drift that the plain HUD cannot see. */
+	move.w	d1, -(sp)
+	move.w	(VDP_HV).l, d1
+	lsr.w	#8, d1
+	move.w	d1, flip_hv_v
+	move.w	(GA_STOPWATCH).l, d1
+	move.w	d1, d0
+	sub.w	pace_flip_tick, d0
+	andi.w	#0x0FFF, d0
+	subi.w	#PACE_N2_ARM_TICKS, d0
+	bpl.s	8f
+	moveq	#0, d0				/* frame0/loop priming can restamp early */
+8:
+	cmpi.w	#0xFF, d0
+	bls.s	9f
+	move.w	#0xFF, d0
+9:
+	move.w	d0, arm_overshoot
+	move.w	d1, pace_flip_tick		/* exact flip-to-flip deadline */
+	move.w	(sp)+, d1
+.else
 	move.w	(GA_STOPWATCH).l, pace_flip_tick	/* exact flip-to-flip deadline */
+.endif
 .endif
 .else
 	tst.w	md_fixed_n2
@@ -1494,6 +1531,15 @@ prepare_dbg:
 	moveq	#0, d4
 2:
 	DBG_PUT2
+.ifdef HUD_FLIP_FIELDS
+	/* V: V-counter at the previous accepted flip (this row is built before
+	   its own frame's flip, so the freshest sample is one frame old). */
+	move.w	flip_hv_v, d4
+	DBG_PUT2
+	/* O: that flip's lateness past the arm point, 30.72us ticks, clamped FF */
+	move.w	arm_overshoot, d4
+	DBG_PUT2
+.endif
 .ifdef HUD_HEX_TABLE
 	movem.l	(sp)+, d0-d4/a0-a1
 .else
@@ -1515,9 +1561,15 @@ publish_dbg:
 	bsr	set_vram_write
 	lea	dbg_row, a0
 .ifdef PLAYER_SPECIALIZED
+.ifdef HUD_FLIP_FIELDS
+	.rept 17				/* 34 cells: common 30 + V/O */
+	move.l	(a0)+, (VDP_DATA).l
+	.endr
+.else
 	.rept 15
 	move.l	(a0)+, (VDP_DATA).l
 	.endr
+.endif
 .else
 	moveq	#15-1, d1			/* common H32/H40 row: 30 words */
 1:
@@ -1579,7 +1631,7 @@ dbg_hex_pairs:
 shadow:
 	.space 0x1000				/* logical H40=2240B; padded for bounded list offsets */
 dbg_row:
-	.space 30*2				/* common prebuilt values-only H32/H40 row */
+	.space 34*2				/* prebuilt values-only row; 30 cells common, +V/O on H40 DEBUG */
 .ifndef PLAYER_SPECIALIZED
 md_mode:
 	.space 2
@@ -1630,6 +1682,10 @@ dma_elapsed_ticks:
 	.space 2				/* DEBUG Uxxxx: 30.72 us stopwatch ticks */
 dma_start_tick:
 	.space 2				/* DEBUG stopwatch sample at first pattern transfer */
+flip_hv_v:
+	.space 2				/* DEBUG HUD V: V-counter at the last accepted flip */
+arm_overshoot:
+	.space 2				/* DEBUG HUD O: flip lateness past the arm point, ticks */
 wr_ptr0:
 	.space 4				/* next Wr0 preload address in the currently mapped bank */
 wr_ptr1:

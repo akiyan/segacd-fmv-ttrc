@@ -26,7 +26,8 @@ def _draw_cell(dst, x, y, rows):
                 dst[y + dy, x + dx] = 235
 
 
-def make_hud(width, values, origin=(5, 4), complete=True, black_backing=False):
+def make_hud(width, values, origin=(5, 4), complete=True, black_backing=False,
+             layout=None):
     height = 32
     yy, xx = np.mgrid[:height, :width]
     # Deliberately bright/noisy movie pixels surround the opaque value cells.
@@ -34,7 +35,8 @@ def make_hud(width, values, origin=(5, 4), complete=True, black_backing=False):
     # the unused H40 width remains the original movie name-table content.
     image = (150 + (7 * xx + 11 * yy) % 91).astype(np.uint8)
     x, y = origin
-    layout = read_frameno.hud_layout_for_width(width)
+    if layout is None:
+        layout = read_frameno.hud_layout_for_width(width)
     fields = layout if complete else layout[:1]
     if black_backing:
         cells = max(col + digits for _name, col, digits in layout)
@@ -48,10 +50,11 @@ def make_hud(width, values, origin=(5, 4), complete=True, black_backing=False):
     return Image.fromarray(image, "L")
 
 
-def check_case(width, values, origin):
-    image = make_hud(width, values, origin, black_backing=True)
-    got = read_frameno.read_hud(image)
-    for name, _col, digits in read_frameno.hud_layout_for_width(width):
+def check_case(width, values, origin, layout=None):
+    image = make_hud(width, values, origin, black_backing=True, layout=layout)
+    got = read_frameno.read_hud(image, layout=layout)
+    for name, _col, digits in (layout
+                               or read_frameno.hud_layout_for_width(width)):
         mask = (1 << (digits * 4)) - 1
         expected = values[name] & mask
         if got[name][0] != expected:
@@ -87,6 +90,16 @@ def main():
                      "D": 0xFF, "R": 0x00, "L": 0x7F,
                      "C": 0x00, "W": 0xFF, "M": 0x02, "A": 0x00,
                      "U": 0x1234, "N": 0x2F, "J": 0x28}, (0, 3))
+    if read_frameno.HUD_H40_FLIP_CELLS != 34:
+        raise SystemExit(
+            f"H40 flip HUD is {read_frameno.HUD_H40_FLIP_CELLS} cells, "
+            "expected 34")
+    check_case(320, {"F": 0x0A99, "P": 0x0C, "S": 0x00,
+                     "D": 0x00, "R": 0x00, "L": 0x38,
+                     "C": 0x00, "W": 0x63, "M": 0x01, "A": 0x42,
+                     "U": 0x023D, "N": 0x87, "J": 0x0E,
+                     "V": 0xF2, "O": 0xFF}, (0, 3),
+               layout=read_frameno.HUD_H40_FLIP_LAYOUT)
 
     h40 = np.asarray(make_hud(
         320, {"F": 0x0000, "P": 0x00, "S": 0x00, "D": 0x00,

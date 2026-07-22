@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p74 : Append two H40 DEBUG HUD flip-phase fields: V = V-counter at the
+#        accepted display flip, O = that flip's lateness past the fixed-N2 arm
+#        point in 30.72 us ticks (clamped FF). Captured after the flip write,
+#        off the critical path; H32 and release builds are unchanged. They
+#        expose the flip-phase ratchet behind cold-cap cadence breaks.
 #   e82/p73 : Separate 20 KiB of timed-delivery jitter headroom from the 4 KiB
 #        physical ring guard, setting the PrgBuf and quality-budget ceiling to
 #        404 KiB. Move boot-only frame-0/routing staging accordingly and rebase
@@ -564,4 +569,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
 e=82
-p=73
+p=74

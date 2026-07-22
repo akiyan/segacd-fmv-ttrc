@@ -117,14 +117,21 @@ def iter_samples(
     probe: Probe,
     confidence: float,
     crop_x: int,
+    flip_fields: bool = False,
 ) -> Iterable[Sample]:
     # Only the top-left HUD area is sent through the pipe.  Decoding still sees
     # every source frame, while pipe traffic stays small even for an upscaled MP4.
     available_width = probe.width - crop_x
     layout = read_frameno.hud_layout_for_width(available_width)
+    if flip_fields:
+        if layout is not read_frameno.HUD_H40_LAYOUT:
+            raise SystemExit("--flip-fields requires a native H40 recording")
+        layout = read_frameno.HUD_H40_FLIP_LAYOUT
     fields = tuple(name for name, _col, _digits in layout)
     hud_cells = (
-        read_frameno.HUD_H40_CELLS
+        read_frameno.HUD_H40_FLIP_CELLS
+        if layout is read_frameno.HUD_H40_FLIP_LAYOUT
+        else read_frameno.HUD_H40_CELLS
         if layout is read_frameno.HUD_H40_LAYOUT
         else read_frameno.HUD_CELLS
     )
@@ -356,6 +363,7 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
         "desync", "resync", "lead_256b", "lead_hex", "cd_wait", "sub_wait_lines",
         "main_vblank_wait", "sub_adpcm_decode_units", "main_pattern_ticks",
         "main_pattern_ms", "cold_runs_low8", "prgbuf_jitter_peak_kib",
+        "flip_vcounter", "flip_arm_overshoot_ticks",
         "r_transition", "prev_frame",
         "prev_lead_256b", "next_frame", "next_lead_256b",
     ]
@@ -393,6 +401,10 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
                 ),
                 "cold_runs_low8": values.get("N", ""),
                 "prgbuf_jitter_peak_kib": values.get("J", ""),
+                "flip_vcounter": (
+                    f"{values['V']:02X}" if "V" in values else ""
+                ),
+                "flip_arm_overshoot_ticks": values.get("O", ""),
                 "r_transition": (
                     f"{previous.values['R']:02X}->{values['R']:02X}" if previous else ""
                 ),
@@ -511,6 +523,11 @@ def parse_args() -> argparse.Namespace:
         help="left edge of the native HUD crop (default: 0; legacy centered H32 may use 32)",
     )
     parser.add_argument(
+        "--flip-fields", action="store_true",
+        help="parse the 34-cell H40 layout with the V/O flip-phase fields "
+             "(HUD_FLIP_FIELDS DEBUG builds only)",
+    )
+    parser.add_argument(
         "--max-gap", type=int, default=3,
         help="maximum capture-frame gap inside one F group (default: 3)",
     )
@@ -551,7 +568,8 @@ def main() -> int:
         f"{float(probe.fps):.6f} capture fps)"
     )
     raw_groups = group_samples(
-        iter_samples(args.recording, probe, args.confidence, args.crop_x),
+        iter_samples(args.recording, probe, args.confidence, args.crop_x,
+                     args.flip_fields),
         args.max_gap,
     )
     groups = select_movie_groups(raw_groups, args.anchor_run, args.max_frame_step)

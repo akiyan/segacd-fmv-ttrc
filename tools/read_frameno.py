@@ -50,6 +50,13 @@ HUD_FIELD_DIGITS = (     # 値のみ。field間の空けはない
     ("J", 2),
 )
 HUD_H40_FIELD_DIGITS = HUD_FIELD_DIGITS
+# H40 DEBUG builds with HUD_FLIP_FIELDS append two flip-phase fields:
+# V = V-counter at the previous accepted flip, O = that flip's lateness
+# past the fixed-N2 arm point in 30.72us ticks (clamped to 0xFF).
+HUD_H40_FLIP_FIELD_DIGITS = HUD_FIELD_DIGITS + (
+    ("V", 2),
+    ("O", 2),
+)
 
 
 def _make_layout(field_digits):
@@ -65,6 +72,8 @@ HUD_LAYOUT, HUD_CELLS = _make_layout(HUD_FIELD_DIGITS)
 HUD_FIELDS = tuple(name for name, _col, _digits in HUD_LAYOUT)
 HUD_H40_LAYOUT, HUD_H40_CELLS = _make_layout(HUD_H40_FIELD_DIGITS)
 HUD_H40_FIELDS = tuple(name for name, _col, _digits in HUD_H40_LAYOUT)
+HUD_H40_FLIP_LAYOUT, HUD_H40_FLIP_CELLS = _make_layout(HUD_H40_FLIP_FIELD_DIGITS)
+HUD_H40_FLIP_FIELDS = tuple(name for name, _col, _digits in HUD_H40_FLIP_LAYOUT)
 H40_NATIVE_WIDTH = 320
 
 
