@@ -173,6 +173,51 @@ Next: the realized-180 diagnostic stream (CBRSIM_COLD_CAP_DIAG=180,
 profile `configs/sonic-jam-op-h40-cold180.toml`) should produce several
 breaks in one recording, enough to pattern-match the unexplained term.
 
+## Phase 2 ladder (diagnostic caps via CBRSIM_COLD_CAP_DIAG, player p75)
+
+Full-length emulator runs, one per realized cap, all with S=D=R=C=0 and
+J within gate:
+
+| realized | breaks | type | min transfer slack (ticks) | V tail |
+|---|---|---|---|---|
+| 175 | 1 (f471 held) | freeze-type: slack +277, unexplained ~8.5 ms stall | -17 (f2019) | E7 |
+| 180 | 0 | — | -15 (f1970) | F3 once (see below) |
+| 190 | 1 (f1968 held) | transfer-cliff: slack -23, fully predicted by E/U | -35 (f1970) | F0 |
+
+- The **transfer cliff becomes the deterministic cold-cap bottleneck
+  around realized 185-190**, at the heavy section (frames ~1960-1976).
+  Mechanism: per-run in-blank cost (~90 us of DMA register programming +
+  polling per run, 20-30 runs at the plateau) overflows the 2.42 ms
+  VBlank; the remainder of the transfer crawls through active display at
+  slot-limited speed (~18 B/line), stretching U to 550-580 ticks and
+  pushing the flip past its blank.  The DATA (about 3,000 words) easily
+  fits one blank at DMA rate — the per-run setup work is what spills.
+- The **freeze-type slips are cap-independent** (~0-1 per full run, moved
+  471 -> none -> none across caps) and remain unexplained: cold180's
+  frame 1467 flip shows V=F3 / O=114 with transfer done 15 ms earlier —
+  the Main CPU lost ~1.2 ms while only spin-waiting (interrupts are
+  masked at SR=2700; VDP/GA register spins cannot block).  Emulator-level
+  artifact not excluded.  A fourth probe (do_flip arrival time) can
+  bracket it if it recurs.
+
+## Transfer-cliff fix (next implementation)
+
+Move the per-run DMA arithmetic out of the blank: Pass1 (`bf_stage`,
+active-display time) emits pre-swizzled records — 0x93/94 length words,
+0x95-97 source words (already +2-adjusted for Word-RAM sources, normal
+for DicBuf), the ready VRAM command longword, plus raw dst/len/src for
+the short-run and budget-split fallbacks.  Pass2 then pops register
+values straight into the VDP control port: ~12 instructions per run
+in-blank instead of ~40, cutting the per-run blank cost to ~30-45 us,
+so a 30-run plateau transfer fits its single VBlank (~2.6 ms total).
+The unified repair write (dst[0] = src[0]) stays for every source —
+redundant but correct for DicBuf.  The split path (runs longer than a
+full VBlank budget, e.g. H40/15 machi) keeps the old on-the-fly
+arithmetic.  Expected effect: plateau U collapses from ~550 to ~100
+ticks, the 1968-type break disappears, and the deterministic ceiling
+moves toward the 3,400-word budget (~212 loads) or the next binding
+resource (Sub/CD).
+
 ## Phase 2 measurement design (as built)
 
 The missing per-frame observables, each cheap (a stopwatch/HV read plus
