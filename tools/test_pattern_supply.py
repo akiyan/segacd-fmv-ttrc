@@ -180,6 +180,37 @@ class PatternSupplyPlannerTests(unittest.TestCase):
         self.assertEqual(plan.dic_indices, ((-1,), (0, 1), (0,)))
         np.testing.assert_array_equal(plan.dic_loads, [0, 2, 1])
 
+    def test_transfer_order_maps_payload_back_to_update_indices(self):
+        pattern_a = bytes([0x11]) * 32
+        pattern_b = bytes([0x22]) * 32
+        pattern_c = bytes([0x33]) * 32
+        per = [
+            ([], [], []),
+            ([0, 1, 2], [1, 2, 3], [True, True, True]),
+        ]
+        log = {
+            "pattern_supply": {
+                "schema_version": 2,
+                "dic_dictionary": [pattern_a, pattern_b, pattern_c],
+                "sources": [[], [
+                    supply.SOURCE_DIC,
+                    supply.SOURCE_DIC,
+                    supply.SOURCE_DIC,
+                ]],
+            },
+        }
+        plan = supply.plan_supply(
+            log,
+            per,
+            [pattern_c, pattern_a, pattern_b],
+            transfer_orders=[(), (2, 0, 1)],
+            enabled=True,
+            wr_patterns=0,
+            dic_patterns=3,
+        )
+        self.assertEqual(plan.dic_indices, ((), (0, 1, 2)))
+        np.testing.assert_array_equal(plan.dic_loads, [0, 3])
+
 
 if __name__ == "__main__":
     unittest.main()

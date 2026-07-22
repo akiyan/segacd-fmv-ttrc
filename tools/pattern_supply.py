@@ -508,6 +508,7 @@ def plan_supply(
     patterns: Sequence[bytes],
     *,
     prefetch_per: Sequence[Sequence[tuple]] | None = None,
+    transfer_orders: Sequence[Sequence[int]] | None = None,
     enabled: bool = True,
     wr_patterns: int = WORD_BUF_PATTERNS,
     dic_patterns: int = DIC_BUF_PATTERNS,
@@ -524,6 +525,23 @@ def plan_supply(
         prefetch_per = tuple(() for _ in per)
     if len(prefetch_per) != frame_count:
         raise ValueError("prefetch frame count differs from decisions")
+    if transfer_orders is None:
+        transfer_orders = tuple(
+            tuple(index for index, cold in enumerate(colds) if cold)
+            for _cells, _entries, colds in per)
+    if len(transfer_orders) != frame_count:
+        raise ValueError("transfer-order frame count differs from decisions")
+    normalized_orders: list[tuple[int, ...]] = []
+    for frame, ((_cells, entries, colds), raw_order) in enumerate(
+            zip(per, transfer_orders)):
+        order = tuple(int(index) for index in raw_order)
+        expected = {index for index, cold in enumerate(colds) if cold}
+        if (len(order) != len(expected) or set(order) != expected
+                or any(not 0 <= index < len(entries) for index in order)):
+            raise ValueError(
+                f"transfer order does not cover each cold update at frame {frame}")
+        normalized_orders.append(order)
+    transfer_orders = tuple(normalized_orders)
     sources = [[SOURCE_PRG] * len(entries) for _cells, entries, _colds in per]
     run_map = [_cold_runs(entries, colds) for _cells, entries, colds in per]
 
@@ -615,12 +633,14 @@ def plan_supply(
         else:  # pragma: no cover - guarded by construction
             raise AssertionError(source)
 
-    for frame, ((_cells, _entries, colds), frame_sources, frame_prefetch) in enumerate(
-            zip(per, sources, prefetch_per)):
-        for update_index, (cold, source) in enumerate(zip(colds, frame_sources)):
-            if not cold:
-                continue
-            consume_pattern(frame, update_index, source)
+    for frame, ((_cells, _entries, colds), frame_sources, frame_prefetch,
+                transfer_order) in enumerate(
+            zip(per, sources, prefetch_per, transfer_orders)):
+        for update_index in transfer_order:
+            if not colds[update_index]:
+                raise AssertionError("transfer order selected a reuse update")
+            consume_pattern(
+                frame, update_index, frame_sources[update_index])
         for item in frame_prefetch:
             if bool(item[1]):
                 consume_pattern(frame, None, SOURCE_PRG)

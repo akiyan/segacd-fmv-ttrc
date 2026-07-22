@@ -1281,7 +1281,12 @@ def main():
     cur_key = [None] * C_CELLS          # 表示中パターン(idx bytes)
     cur_pal = np.full(C_CELLS, -1, np.int16)
     committed_plain = [None] * C_CELLS  # 直近commitした plain パターン(内容変化検出用)
-    from tile_alloc import TileAllocator
+    from tile_alloc import (
+        TileAllocator,
+        cold_transfer_order,
+        optimize_slot_locality,
+        remap_placements,
+    )
     # 共有割り当て(連続, pack と同一コード)。これが residency の真の源=pack の realized と一致=cap=realized。
     # 判定は前フレーム末の状態を参照し、割り当て(スロット付与+追い出し)は各フレーム末に cell順で実行
     # (=pack の resolve と同一順)。VRAM_TILES=pack POOL。
@@ -1459,6 +1464,27 @@ def main():
         pattern_bytes=PATTERN_BYTES,
         max_cold=MAX_COLD,
         protected_frames=main_protected,
+    )
+    slot_locality = optimize_slot_locality(
+        demand_prediction.cold_slots,
+        VRAM_TILES,
+        cold_cap=MAX_COLD,
+    )
+    physical_by_logical = np.asarray(
+        slot_locality.physical_by_logical, np.int64)
+    predicted_risk = np.asarray(slot_locality.risk_frames, bool)
+    predicted_baseline_runs = np.asarray(
+        slot_locality.baseline_runs, np.int64)
+    predicted_local_runs = np.asarray(
+        slot_locality.optimized_runs, np.int64)
+    print(
+        "slot locality: fixed logical->physical bijection; "
+        f"predicted max runs {int(predicted_baseline_runs[1:].max(initial=0))}"
+        f"->{int(predicted_local_runs[1:].max(initial=0))}, "
+        f"risk frames={int(predicted_risk.sum())} "
+        f"risk max {int(predicted_baseline_runs[predicted_risk].max(initial=0))}"
+        f"->{int(predicted_local_runs[predicted_risk].max(initial=0))}",
+        flush=True,
     )
     supply_budget = pattern_supply.plan_frame_budgets(
         demand_prediction, enabled=PATTERN_SUPPLY_ON)
@@ -2111,12 +2137,15 @@ def main():
         # 更新でないので place しない=cur_slot/slot_refs が前回のまま(参照継続で保護)。realized=cap の要。
         upd_ck = [(int(c), cur_key[int(c)]) for c in np.where(updated)[0]
                   if cur_key[int(c)] is not None]
-        placements = alloc.place_frame(upd_ck, i)
+        logical_placements = alloc.place_frame(upd_ck, i)
+        placements = remap_placements(
+            logical_placements, physical_by_logical)
+        transfer_order = cold_transfer_order(placements)
         frame_sources = [pattern_supply.SOURCE_PRG] * len(upd_ck)
         preload_updates = [
             update_index
             for update_index, ((_, key), (_, cold))
-            in enumerate(zip(upd_ck, placements))
+            in enumerate(zip(upd_ck, logical_placements))
             if cold and key in preload_sources
         ]
         if len(preload_updates) != wr_used + dic_used:
@@ -2146,7 +2175,7 @@ def main():
             raise AssertionError(
                 f"frame {i}: exact key has both Raw and Buf funding")
         for (cell, key), (_slot, cold), source in zip(
-                upd_ck, placements, frame_sources):
+                upd_ck, logical_placements, frame_sources):
             if not cold:
                 continue
             if key in raw_keys:
@@ -2224,33 +2253,38 @@ def main():
                             key, i, deadline, avoid_keys=deadline_keys)
                         if result is None:
                             continue
-                        slot, cold = result
-                        frame_prefetch_requests.append((key, deadline, slot))
+                        logical_slot, cold = result
+                        frame_prefetch_requests.append(
+                            (key, deadline, logical_slot))
                         if cold:
                             cold_spent += 1
                             spent_tiles += PATTERN_BYTES
-                            prefetch_cold_slots.append(slot)
+                            prefetch_cold_slots.append(
+                                int(physical_by_logical[logical_slot]))
                     if len(frame_prefetch_requests) >= capacity:
                         break
 
-        dma_slots = [slot for slot, cold in placements if cold] + prefetch_cold_slots
+        dma_slots = [
+            int(placements[index][0]) for index in transfer_order
+        ] + prefetch_cold_slots
         dma_sources = [
-            source for source, (_, cold) in zip(frame_sources, placements) if cold]
+            frame_sources[index] for index in transfer_order
+        ]
         dma_sources.extend(
             [pattern_supply.SOURCE_PRG] * len(prefetch_cold_slots))
-        dma_dic_indices = [
-            dic_dictionary_index[key]
-            if source == pattern_supply.SOURCE_DIC else -1
-            for source, (_slot, cold), (_cell, key)
-            in zip(frame_sources, placements, upd_ck)
-            if cold
-        ]
+        dma_dic_indices = []
+        for index in transfer_order:
+            source = frame_sources[index]
+            key = upd_ck[index][1]
+            dma_dic_indices.append(
+                dic_dictionary_index[key]
+                if source == pattern_supply.SOURCE_DIC else -1)
         dma_dic_indices.extend([-1] * len(prefetch_cold_slots))
         dma_tiles = len(dma_slots)                 # 実際にVRAMへ送る32Bパターンタイル数
         if not L3_TILES and dma_tiles != cold_spent:
             raise AssertionError(
                 f"frame {i}: encoder cold={cold_spent} allocator cold={dma_tiles}")
-        # MainのHUD Nと同じlogical run数。p45では1-2 tile runはCPU直書き、長runは
+        # MainのHUD Nと同じsource-aware physical run数。p45では1-2 tile runはCPU直書き、長runは
         # VBlank境界で複数DMAに割れるため、物理VDP DMA発行回数とは意図的に異なる。
         dma_runs = pattern_supply.count_source_runs(
             dma_slots, dma_sources, dma_dic_indices)
@@ -2871,6 +2905,17 @@ def main():
             "seg_pals": [np.asarray(p, np.uint8) for p in seg_pals],  # list of (4,15,3)
             "frame_seg": np.asarray(frame_seg, np.int32),
             "frames": dec_frames,                                     # [[(cell,pal,key),...], ...]
+            "slot_locality": {
+                "schema_version": 1,
+                "physical_by_logical": np.asarray(
+                    physical_by_logical, np.uint16),
+                "predicted_baseline_runs": np.asarray(
+                    predicted_baseline_runs, np.uint16),
+                "predicted_optimized_runs": np.asarray(
+                    predicted_local_runs, np.uint16),
+                "predicted_risk_frames": np.asarray(
+                    predicted_risk, np.bool_),
+            },
             "pattern_supply": {
                 "schema_version": 2,
                 "enabled": bool(PATTERN_SUPPLY_ON),

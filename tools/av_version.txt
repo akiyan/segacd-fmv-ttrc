@@ -11,6 +11,13 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e83 : Keep the shared logical VRAM allocator and its cold/reuse decisions
+#        unchanged, then apply one movie-wide logical-to-physical slot
+#        permutation trained from the exact-target dry run. Emit cold payloads
+#        in physical-slot order so deadline-heavy frames trade fragmented
+#        1-2-tile runs for longer transfers. The optimizer targets worst-frame
+#        cold plus run-boundary cost rather than total runs, and the packer
+#        proves every displayed cell against the frozen decisions.
 #   p76 : Two Main-side transfer-path changes for the cold-cap work.
 #        (1) Pre-swizzle the cold-run RUN_TABLE in Pass1: each record carries
 #        ready 0x93-0x97 register words (+2-adjusted Word-RAM source) and the
@@ -588,5 +595,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
-e=82
+e=83
 p=76

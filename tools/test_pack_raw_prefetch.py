@@ -35,7 +35,8 @@ class PackRawPrefetchTests(unittest.TestCase):
         old_cells = pack_stream.C_CELLS
         pack_stream.C_CELLS = 1
         try:
-            per, prefetch, loads, updates, _pal, patterns, tearing = (
+            (per, prefetch, transfer_orders, loads, updates, _pal,
+             patterns, tearing) = (
                 pack_stream.resolve(log, 8, mode="contig"))
         finally:
             pack_stream.C_CELLS = old_cells
@@ -48,10 +49,11 @@ class PackRawPrefetchTests(unittest.TestCase):
         self.assertFalse(per[2][2][0])
 
         plan = pattern_supply.plan_supply(
-            log, per, patterns, prefetch_per=prefetch, enabled=False)
+            log, per, patterns, prefetch_per=prefetch,
+            transfer_orders=transfer_orders, enabled=False)
         np.testing.assert_array_equal(plan.prg_loads, [1, 1, 0])
         packed_loads, packed_runs = pack_stream.run_stats(
-            per, plan.sources, prefetch)
+            per, plan.sources, prefetch, transfer_orders=transfer_orders)
         np.testing.assert_array_equal(packed_loads, loads)
         np.testing.assert_array_equal(packed_runs, [1, 1, 0])
 

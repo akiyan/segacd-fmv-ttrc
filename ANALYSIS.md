@@ -285,6 +285,11 @@ the pattern tiles, exactly matching the packer's cold-run descriptors, the
 Main CPU run-table record count, and H40 DEBUG HUD `N` (before its low-byte
 display truncation). Reuse entries do not break a run; a slot discontinuity
 does, including a wrap from the end of the slot pool to slot zero.
+Cold payload order follows the movie-wide physical slot permutation and is
+independent of cell/name-update order. The optimizer targets the worst
+per-frame cold plus run-boundary deadline cost; total runs over the whole movie
+are not constrained, so a light frame can gain runs when a heavy frame loses
+more expensive fragmentation.
 
 This is deliberately **not the number of VDP DMA commands**. With the p45
 player, a one- or two-tile run is copied directly by the CPU, while a longer

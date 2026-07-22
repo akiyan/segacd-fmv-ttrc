@@ -14,8 +14,11 @@ AUDIO = "tmp/machi_ed_dec/audio_13k3_s8.raw"
 def analyze(cap):
     os.environ["CBRSIM_PACK_MAXCOLD"]=str(cap)
     importlib.reload(P)
-    per, n_load, n_upd, pal_w, Plist, tearing = P.resolve(log, POOL, "contig")
-    blocks = P.build_control(log, per, n_upd, pal_w, AUDIO)
+    (per, prefetch, transfer_orders, n_load, n_upd, pal_w,
+     Plist, tearing) = P.resolve(log, POOL, "contig")
+    blocks, _pcm = P.build_control(
+        log, per, n_upd, pal_w, AUDIO,
+        prefetch_per=prefetch, transfer_orders=transfer_orders)
     sc = P.schedule(per, n_load, blocks)
     nps = sc["n_pay_sec"]; nc = sc["n_ctrl_sec"]; B = sc["prebuf_pat"]
     d = np.cumsum(n_load)

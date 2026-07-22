@@ -48,7 +48,13 @@ from encode_config import load_profile
 from cbr_paths import sim_work_dir
 from quantize_global4_tiles import pals_to_bytes
 from quantize_md_video import rgb333_to_rgb888
-from tile_alloc import slot_runs
+from tile_alloc import (
+    TileAllocator,
+    cold_transfer_order,
+    remap_placements,
+    slot_runs,
+    validate_physical_slots,
+)
 
 SECTOR = 2048
 MAGIC = b"TTRC"             # Tile Texture Reuse Codec
@@ -245,13 +251,21 @@ def resolve(log, POOL, mode="lru"):
     """検証済み LRU+ダブルバッファ保護スロットモデルで cold を検出。
        mode="contig": クロックハンド円環走査でフレーム内coldを昇順(なるべく連番)スロットへ
        割当 -> MD側が連続ランを少数の大DMAにまとめられる。
-       per=[(cells,entries,colds)], n_load, n_upd, pal_w, P(消費順cold pattern 32B) を返す。"""
+       per=[(cells,entries,colds)], transfer_orders, n_load, n_upd, pal_w,
+       P(物理slot順cold pattern 32B) を返す。"""
     frames = log["frames"]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
     nfr = len(frames)
-    from tile_alloc import TileAllocator
     alloc = TileAllocator(C_CELLS, POOL, BASE)   # 共有割り当て(連続)。sim も同一 = cap=realized
+    locality = log.get("slot_locality") or {}
+    locality_schema = int(locality.get("schema_version", 0))
+    if locality_schema not in (0, 1):
+        raise SystemExit(
+            f"pack: unsupported slot-locality schema {locality_schema}")
+    physical_by_logical = validate_physical_slots(
+        locality.get("physical_by_logical", np.arange(POOL)), POOL)
     per = []
+    transfer_orders = []
     n_load = np.zeros(nfr, np.int64)
     n_upd = np.zeros(nfr, np.int64)
     pal_w = np.zeros(nfr, np.int64)
@@ -262,20 +276,29 @@ def resolve(log, POOL, mode="lru"):
     if prefetch_enabled and len(raw_requests) != nfr:
         raise SystemExit("pack: raw-prefetch frame count differs from decisions")
     prefetch_per = []
+    physical_patterns = [None] * POOL
+    displayed_slots = np.full(C_CELLS, -1, np.int64)
+    expected_patterns = [None] * C_CELLS
 
     for i in range(nfr):
         fr = sorted(frames[i], key=lambda t: t[0])
-        results = alloc.place_frame([(int(cell), key) for (cell, pal, key) in fr], i)
+        logical_results = alloc.place_frame(
+            [(int(cell), key) for (cell, pal, key) in fr], i)
+        results = remap_placements(
+            logical_results, physical_by_logical)
+        transfer_order = cold_transfer_order(results)
         pal_w[i] = 1 if (i == 0 or frame_seg[i] != frame_seg[i - 1]) else 0
         cells, entries, colds = [], [], []
         for (cell, pal, key), (slot, cold) in zip(fr, results):
             if cold:
-                Plist.append(pack_key(key))
                 n_load[i] += 1
             cells.append(int(cell))
             entries.append((int(pal) << 13) | (BASE + slot))
             colds.append(cold)
             n_upd[i] += 1
+        Plist.extend(pack_key(fr[index][2]) for index in transfer_order)
+        for index in transfer_order:
+            physical_patterns[results[index][0]] = fr[index][2]
         frame_prefetch = []
         if prefetch_enabled:
             for request in raw_requests[i]:
@@ -292,12 +315,27 @@ def resolve(log, POOL, mode="lru"):
                 if result is None:
                     raise SystemExit(
                         f"pack: raw-prefetch allocation diverged at frame {i}")
-                slot, cold = result
+                logical_slot, cold = result
+                physical_slot = int(physical_by_logical[logical_slot])
                 if cold:
                     Plist.append(pack_key(key))
                     n_load[i] += 1
-                frame_prefetch.append((int(slot), bool(cold), key, int(deadline)))
+                    physical_patterns[physical_slot] = key
+                frame_prefetch.append(
+                    (physical_slot, bool(cold), key, int(deadline)))
+        for (cell, _pal, key), (physical_slot, _cold) in zip(fr, results):
+            displayed_slots[int(cell)] = int(physical_slot)
+            expected_patterns[int(cell)] = key
+        for cell, expected in enumerate(expected_patterns):
+            if expected is None:
+                continue
+            physical_slot = int(displayed_slots[cell])
+            if physical_patterns[physical_slot] != expected:
+                raise SystemExit(
+                    f"pack: slot-locality display mismatch at frame {i}, "
+                    f"cell {cell}, physical slot {physical_slot}")
         prefetch_per.append(frame_prefetch)
+        transfer_orders.append(transfer_order)
         per.append((cells, entries, colds))
         if (i + 1) % 400 == 0:
             print(f"  resolve {i+1}/{nfr}", flush=True)
@@ -309,7 +347,10 @@ def resolve(log, POOL, mode="lru"):
         if frozen_cold.shape != actual_cold.shape or not np.array_equal(
                 frozen_cold, actual_cold):
             raise SystemExit("pack: raw-prefetch cold trace differs from simulation")
-    return per, prefetch_per, n_load, n_upd, pal_w, Plist, alloc.tearing
+    print(f"  slot-locality display照合: {nfr}/{nfr} frames exact")
+    return (
+        per, prefetch_per, tuple(transfer_orders), n_load, n_upd, pal_w,
+        Plist, alloc.tearing)
 
 
 def sourced_cold_runs(entries, colds, sources, dic_indices=None):
@@ -345,15 +386,25 @@ def sourced_cold_runs(entries, colds, sources, dic_indices=None):
     return runs
 
 
-def sourced_transfer_runs(entries, colds, sources, prefetch=(), dic_indices=None):
+def sourced_transfer_runs(
+        entries, colds, sources, prefetch=(), dic_indices=None,
+        transfer_order=None):
     """Return update cold runs followed by optional Prg prefetch runs."""
+    if transfer_order is None:
+        transfer_order = tuple(
+            index for index, cold in enumerate(colds) if cold)
+    else:
+        transfer_order = tuple(int(index) for index in transfer_order)
+    expected = {index for index, cold in enumerate(colds) if cold}
+    if len(transfer_order) != len(expected) or set(transfer_order) != expected:
+        raise ValueError("transfer order must cover every cold update exactly once")
     slots = [
-        (int(entry) & 0x07FF) - BASE
-        for entry, cold in zip(entries, colds) if cold
+        (int(entries[index]) & 0x07FF) - BASE
+        for index in transfer_order
     ]
     item_sources = [
-        int(source)
-        for source, cold in zip(sources, colds) if cold
+        int(sources[index])
+        for index in transfer_order
     ]
     slots.extend(int(item[0]) for item in prefetch if bool(item[1]))
     item_sources.extend(
@@ -361,7 +412,7 @@ def sourced_transfer_runs(entries, colds, sources, prefetch=(), dic_indices=None
     if dic_indices is None:
         dic_indices = (-1,) * len(entries)
     run_dic_indices = [
-        int(index) for index, cold in zip(dic_indices, colds) if cold
+        int(dic_indices[index]) for index in transfer_order
     ]
     run_dic_indices.extend(-1 for item in prefetch if bool(item[1]))
     # Reuse the authoritative source-aware grouping by presenting synthetic
@@ -371,7 +422,9 @@ def sourced_transfer_runs(entries, colds, sources, prefetch=(), dic_indices=None
         synthetic, [True] * len(synthetic), item_sources, run_dic_indices)
 
 
-def run_stats(per, sources=None, prefetch_per=None, dic_indices=None):
+def run_stats(
+        per, sources=None, prefetch_per=None, dic_indices=None,
+        transfer_orders=None):
     """フレーム内cold tile数とplayer cold-run record数を返して表示する。"""
     runs_per_frame = np.zeros(len(per), np.int64)
     colds_per_frame = np.zeros(len(per), np.int64)
@@ -383,14 +436,17 @@ def run_stats(per, sources=None, prefetch_per=None, dic_indices=None):
     if dic_indices is None:
         dic_indices = tuple(tuple(-1 for _ in entries)
                             for _cells, entries, _colds in per)
+    if transfer_orders is None:
+        transfer_orders = tuple(None for _ in per)
     prg_per_frame = np.zeros(len(per), np.int64)
     wr_per_frame = np.zeros(len(per), np.int64)
     dic_per_frame = np.zeros(len(per), np.int64)
     for i, ((cells, entries, colds), frame_sources, frame_prefetch,
-            frame_dic_indices) in enumerate(
-            zip(per, sources, prefetch_per, dic_indices)):
+            frame_dic_indices, transfer_order) in enumerate(
+            zip(per, sources, prefetch_per, dic_indices, transfer_orders)):
         runs = sourced_transfer_runs(
-            entries, colds, frame_sources, frame_prefetch, frame_dic_indices)
+            entries, colds, frame_sources, frame_prefetch,
+            frame_dic_indices, transfer_order)
         runs_per_frame[i] = len(runs)
         colds_per_frame[i] = sum(count for _slot, count, _source, _dic in runs)
         for _slot, count, source, _dic in runs:
@@ -653,7 +709,7 @@ def build_audio_chunks(audio_path, frame_count):
 
 def build_control(
         log, per, n_upd, pal_w, audio_path, sources=None, update_lists=None,
-        prefetch_per=None, dic_indices=None):
+        prefetch_per=None, dic_indices=None, transfer_orders=None):
     """Build control blocks and return their reconstructed source PCM chunks."""
     seg_cram = [pals_to_bytes_128(p) for p in log["seg_pals"]]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
@@ -679,6 +735,8 @@ def build_control(
     if dic_indices is None:
         dic_indices = tuple(tuple(-1 for _ in entries)
                             for _cells, entries, _colds in per)
+    if transfer_orders is None:
+        transfer_orders = tuple(None for _ in per)
     if update_lists is None:
         update_lists = np.zeros(len(per), np.bool_)
     update_lists = np.asarray(update_lists, np.bool_)
@@ -715,7 +773,8 @@ def build_control(
         if len(body) & 1:
             body += b"\0"
         runs = sourced_transfer_runs(
-            entries, colds, frame_sources, prefetch_per[i], dic_indices[i])
+            entries, colds, frame_sources, prefetch_per[i], dic_indices[i],
+            transfer_orders[i])
         body += struct.pack(">H", len(runs))
         for slot, count, source, dic_index in runs:
             body += struct.pack(
@@ -1331,14 +1390,15 @@ def main():
         audio_path = str(candidate)
     compare = args.compare or str(dec_log.parent / "preview")
     POOL = args.pool_slots or int(log["vram_tiles"])
-    per, prefetch_per, n_load, n_upd, pal_w, Plist, tearing = resolve(
-        log, POOL, mode=args.alloc)
+    (per, prefetch_per, transfer_orders, n_load, n_upd, pal_w,
+     Plist, tearing) = resolve(log, POOL, mode=args.alloc)
     print(f"resolve[{args.alloc}]: tearing={tearing} M(payload)={len(Plist)} frames={len(per)}")
     supply_enabled = bool(args.pattern_supply and FPS >= 24.0)
     if args.pattern_supply and not supply_enabled:
         print("  pattern supply: disabled below 24fps until the dense-poll player path is qualified")
     supply_plan = pattern_supply.plan_supply(
         log, per, Plist, prefetch_per=prefetch_per,
+        transfer_orders=transfer_orders,
         enabled=supply_enabled)
     if supply_enabled and int((log.get("pattern_supply") or {}).get(
             "schema_version", 0)) != 2:
@@ -1371,7 +1431,8 @@ def main():
           f"active tiles cap {cold_ceiling} (measured at "
           f"{cold_qualification.active_tiles} tiles, 共有割り当て)")
     packed_tiles, packed_runs = run_stats(
-        per, supply_plan.sources, prefetch_per, supply_plan.dic_indices)
+        per, supply_plan.sources, prefetch_per, supply_plan.dic_indices,
+        transfer_orders)
     if not np.array_equal(packed_tiles, n_load):
         frame = int(np.flatnonzero(packed_tiles != n_load)[0])
         raise SystemExit(
@@ -1405,7 +1466,7 @@ def main():
         raise SystemExit(f"pack: selected shadow list is not faster at frame {frame}")
     blocks, source_pcm_chunks = build_control(
         log, per, n_upd, pal_w, audio_path, supply_plan.sources, update_lists,
-        prefetch_per, supply_plan.dic_indices)
+        prefetch_per, supply_plan.dic_indices, transfer_orders)
     print(
         f"  shadow updates: list={int(update_lists.sum())}/{len(update_lists)} "
         f"Main saved={int(((recomputed_legacy - recomputed_list) * update_lists).sum())} cycles "

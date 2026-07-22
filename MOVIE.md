@@ -474,6 +474,13 @@ pixels `(hi<<4)|lo`.
 For the legacy representation, the suffix repeats information already encoded
 by the cold entry flag, source, and tile index. For the completed-list
 representation it is the only physical pattern-delivery description.
+The encoder keeps logical cache residency and cold/reuse decisions separate
+from physical VRAM numbering. One movie-wide slot permutation maps the logical
+allocator onto physical slots, then cold patterns are consumed in ascending
+physical-slot order. This transfer order is intentionally independent of the
+cell/name-update order; the final name entries already contain their physical
+tile indices. The permutation is a bijection, so resident reuse and displayed
+pattern identity are unchanged.
 The first word stores the zero-based VRAM slot in bits 0-10 and DicBuf index
 bits 3-7 in bits 11-15. The second word stores count in bits 0-10, DicBuf index
 bits 0-2 in bits 11-13, and source in bits 14-15. Source values are 0=Prg,
