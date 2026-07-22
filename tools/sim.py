@@ -26,6 +26,7 @@
   不要になったタイルは changed から外れ wait=0 に戻り自然消滅する。
 - 音声: pcm13 または adpcm22 (TOML指定)。Plane B オーバーレイは無し。
 """
+import json
 import os
 import sys
 import time
@@ -1468,6 +1469,19 @@ def main():
     l3_hits_log = []           # L3(PRG-RAM)ヒット数(CD再読みを回避できた再登場パターン)
     prg_hits_log = []          # PRG先読みヒット数(事前ロード済みで0CD Fillできたタイル)
     coa_hits_log = []          # 粗い近似dedup(Coa)ヒット数
+    # coldlife計測: coldロード(Raw/Buf)が次フレーム以降も役立つかの実測。先読み減点
+    # ヒューリスティックの効果上限を測るためのカウンタで、エンコード決定には影響しない。
+    coldlife_pending = []      # 前フレームのcoldロード [(cell, key, kind), ...]
+    coldlife = {
+        "total": {"raw": 0, "buf": 0},           # frame 1以降の全coldロード
+        "survive_target": {"raw": 0, "buf": 0},  # 次フレームもターゲット不変(そのまま有効)
+        "die_settle": {"raw": 0, "buf": 0},      # 次で変わるがその次は安定(1フレーム待てば1ロード節約)
+        "die_motion": {"raw": 0, "buf": 0},      # 次もその次も変化(連続運動: 減点するとゴースト蓄積)
+        "tail": {"raw": 0, "buf": 0},            # 末尾フレームで分類不能
+        "disp_seen1": {"raw": 0, "buf": 0},      # 翌フレームの実表示を確認できた母数
+        "disp_alive1": {"raw": 0, "buf": 0},     # 実表示: 翌フレームどこかのセルで表示継続(Near-keep/再利用込み)
+        "disp_cell1": {"raw": 0, "buf": 0},      # 実表示: 翌フレーム同じセルで表示継続
+    }
     stat_rows = []             # per-frame status line 用の実測値
     stale_rows = []            # per-frame の Miss(stale)マスク(packbits, 72B/frame)
     wait_hist_rows = []        # per-frame の繰越年齢分布(MissCarryバー用)
@@ -2406,6 +2420,38 @@ def main():
             raise AssertionError(
                 f"frame {i}: physical source split does not cover Buf loads")
 
+        # coldlife計測: このフレームのcoldロードを未来ターゲット(前計算済み)で分類。
+        # 「次フレームで死ぬ」でも、収束型(その次から安定)と連続運動型(変化が続く)は
+        # 意味が正反対: 前者は1フレーム遅らせれば中間ロードが浮き、後者は減点すると飢餓が出る。
+        frame_cold = []
+        if i > 0:
+            for (cl_cell, cl_key), (_cl_slot, cl_cold) in zip(
+                    upd_ck, logical_placements):
+                if not cl_cold:
+                    continue
+                kind = "raw" if cl_key in raw_keys else "buf"
+                c = int(cl_cell)
+                frame_cold.append((c, cl_key, kind))
+                coldlife["total"][kind] += 1
+                if i + 1 >= n:
+                    coldlife["tail"][kind] += 1
+                    continue
+                seg1_same = int(frame_seg[i + 1]) == int(frame_seg[i])
+                t1_same = (seg1_same
+                           and Q_pidx[i + 1][c].tobytes() == plain_keys[c]
+                           and int(Q_assign[i + 1][c]) == int(assign[c]))
+                if t1_same:
+                    coldlife["survive_target"][kind] += 1
+                elif i + 2 >= n or (
+                        int(frame_seg[i + 2]) == int(frame_seg[i + 1])
+                        and Q_pidx[i + 2][c].tobytes()
+                        == Q_pidx[i + 1][c].tobytes()
+                        and int(Q_assign[i + 2][c])
+                        == int(Q_assign[i + 1][c])):
+                    coldlife["die_settle"][kind] += 1
+                else:
+                    coldlife["die_motion"][kind] += 1
+
         # Raw prefetch runs only after visible updates and upgrades have been
         # decided. Frame 0 installs the frozen boot plan into free slots;
         # later frames may optionally spend spare BODY/cold room on the next
@@ -2596,6 +2642,18 @@ def main():
         l3_hits_log.append(l3_hits)
         prg_hits_log.append(prg_hits)
         coa_hits_log.append(coa_hits)
+
+        # coldlife計測: 前フレームのcoldロードが今フレームの実表示に残ったか
+        # (Near-keepや他セルでの再利用も「生存」と数える表示ベースの実測)。
+        if coldlife_pending:
+            disp_now = {k for k in cur_key if k is not None}
+            for cl_cell, cl_key, kind in coldlife_pending:
+                coldlife["disp_seen1"][kind] += 1
+                if cl_key in disp_now:
+                    coldlife["disp_alive1"][kind] += 1
+                if cur_key[cl_cell] == cl_key:
+                    coldlife["disp_cell1"][kind] += 1
+        coldlife_pending = frame_cold
 
         # --- per-frame 実測(status line用) ---
         near_eff = near_mask if MIDFAR_ON else near   # MIDFARは統合探索が埋めたnear_mask
@@ -3048,6 +3106,30 @@ def main():
         transfer_runs_log = final_runs_array.tolist()
         if QUALITY_BUDGET_ON:
             quality_budget_log = final_quality_budget
+
+    # coldlife計測の集計: 先読み減点ヒューリスティックの効果上限。
+    with open(os.path.join(OUT, "coldlife.json"), "w") as f:
+        json.dump(coldlife, f, indent=1)
+
+    def _cl_line(kind):
+        tot = coldlife["total"][kind]
+        if tot == 0:
+            return f"{kind}: total=0"
+        parts = []
+        for name in ("survive_target", "die_settle", "die_motion", "tail"):
+            v = coldlife[name][kind]
+            parts.append(f"{name}={v}({100.0 * v / tot:.1f}%)")
+        seen = coldlife["disp_seen1"][kind]
+        if seen:
+            a = coldlife["disp_alive1"][kind]
+            cc = coldlife["disp_cell1"][kind]
+            parts.append(
+                f"disp_alive1={a}({100.0 * a / seen:.1f}%) "
+                f"disp_cell1={cc}({100.0 * cc / seen:.1f}%)")
+        return f"{kind}: total={tot} " + " ".join(parts)
+
+    print(f"coldlife {_cl_line('raw')}", flush=True)
+    print(f"coldlife {_cl_line('buf')}", flush=True)
 
     _t = time.perf_counter()
 
