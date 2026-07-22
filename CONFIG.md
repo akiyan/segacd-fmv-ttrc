@@ -85,7 +85,7 @@ four rows. Frames are then quantised against this final palette grouping.
 ## B. Cold cap (quality vs. sector slip) — the main quality lever
 
 "Cold" = 32-byte tile patterns newly written to VRAM this frame, whether their
-physical source is Prg, Wr0, Wr1, or Main (as opposed to reusing a resident
+physical source is Prg, Wr0, Wr1, or Dic (as opposed to reusing a resident
 tile). More cold gives the encoder more exact updates, but the player still has
 a measured per-frame processing ceiling.
 
@@ -104,7 +104,7 @@ and no per-source environment override.
 | H40 | 15 | 720 | 400 |
 | H40 | 15 | 1,040 | 400 |
 | H40 | 24 | 1,120 | 200 |
-| H40 | 30 | 1,120 | 175 |
+| H40 | 30 | 1,120 | 185 |
 
 For example, H40/15 at 720 or 1,040 active tiles uses its respective measured
 cap of 400. H40/15 at 900 or 1,120 tiles has no exact measurement and is
@@ -125,19 +125,20 @@ decoded exactly; the DEBUG recording kept `S=0`, `D=0`, and `R=0`, with at most
 two Main-CPU VBlank waits. This result applies only to exactly 720 active tiles;
 the separate 1,040-tile measurement below applies only to exactly 1,040.
 
-The H40/30 fps/1,120-active-tile value of 175 is the conservative current cap.
-It is below the full-length-qualified value of 178 measured with the
-2,714-frame Sonic Jam OP stream. The pack had `under=0`, exact reconstruction,
-and a 17-pattern minimum ready payload. The DEBUG recording kept `S=0`, `D=0`,
-`R=0`, and `C=0`; every one of the 2,713 timed frame intervals was exactly two
-VBlanks. Current-player full-length cap-195 and cap-200 retries also kept
-`S=0`, `D=0`, and `R=0`, but missed the fixed cadence: cap 195 first displayed
-frames `0x0565` and `0x0A3C` after three VBlanks, while cap 200 did so at
-`0x0A3E`. A repeated cap-195 recording was byte-for-byte equivalent at the
-decoded video and PCM levels. The matching cap-178 recording retained exact
-two-VBlank cadence for all 2,713 intervals. The lower cap 175 is being retained
-to add headroom for the mixed shadow-update path; 195 and 200 remain unqualified.
-This value is specific to H40, 30 fps, and the full 1,120-tile raster.
+The H40/30 fps/1,120-active-tile value of 185 is full-length-qualified with the
+2,714-frame Sonic Jam OP stream. The e83 movie-wide physical-slot permutation
+keeps every frame at 85% or more of the cap to at most 30 source-aware runs;
+the former heavy plateau at frames 1960-1976 is 21-30 runs. The pack reconstructs
+every frame exactly, keeps its finalized quality budget positive, and reports
+no Prg underrun. Two same-Replay DEBUG recordings match exactly in all 7,191
+decoded video frames, 5,294,592 stereo PCM sample frames, packet timing, and
+metadata. Both keep `S=0`, `D=0`, `R=0`, `C=0`, `M=1`, and `J=12 KiB`, with all
+2,713 timed intervals exactly two VBlanks; frame 2712 also remains two VBlanks.
+The diagnostic cap180 and cap190 recordings each retained one non-monotonic
+freeze-type hold away from the repaired heavy plateau, so cap190 is not
+qualified. Whole-movie run total is not a gate: light frames may gain runs when
+that lowers the deadline cost of heavy frames. This value is specific to H40,
+30 fps, and the full 1,120-tile raster.
 
 The previously qualified Bad Apple H40 full-raster stream combined cap 175
 with a 1,440-tile resident VRAM pool. Its 6,576-frame TTRC v11 stream selected 557
@@ -224,7 +225,7 @@ continuously.
 | `VB_WORDS_H32` | 2800 words/VBlank | ip | H32 per-VBlank DMA word budget. |
 | fixed N2 cadence | `FEATURE_FIXED_N2` (v8) | pack / sp / ip | Main flips every exactly two VBlanks. The paired Sub schedule is 1001/400 sectors/frame, so CD delivery does not run ahead of the fixed display clock. This feature bit is authoritative; `vsync_n` alone never enables the path. Current 24fps and 15fps streams leave it clear and remain delivery-paced. |
 | `MAIN_CODEGEN_BASE..LIMIT` | 17.5 KB (`0xFF2000..0xFF65FF`) | ip | Reserved for Main-CPU code generated once after header setup. The H40 maximum currently ends at `0xFF6580`; `DicBuf` begins at `0xFF6600`, leaving a 128-byte guard. |
-| `RUN_TABLE` | 1536 records by address range; current cold cap is much lower | ip | `(dst, len, src)` table of contiguous physical cold-slot runs. Each record is counted by HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. The encoder minimizes the maximum source-aware run count over every frame at 85% or more of the measured cold cap. Prg/Wr/Dic boundaries split runs. Whole-movie run total is not constrained, so light frames may gain runs when that removes a deadline cliff. |
+| `RUN_TABLE` | 488 pre-swizzled records by address range; every supported cap is at most 400 | ip | 22-byte records for contiguous physical cold-slot runs. Pass1 stores ready VDP length/source words, the VRAM command, and raw fallback fields so Pass2 avoids rebuilding them inside VBlank. Each record is counted by HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. The encoder minimizes the maximum source-aware run count over every frame at 85% or more of the measured cold cap. Prg/Wr/Dic boundaries split runs. Whole-movie run total is not constrained, so light frames may gain runs when that removes a deadline cliff. |
 
 ## F. Physical CD delivery and encoder allowance
 

@@ -2,19 +2,19 @@
 
 This document answers one planning question: **what memory and CPU time can a
 new live-playback feature use without consuming an existing safety margin?** It
-describes the current TTRC v11 player in `boot/movieplay_sp.s` and
-`boot/movieplay_ip.s`, audited on 2026-07-21 with checkpointed ADPCM22 and the
-four-source pattern-supply path enabled.
+describes the current TTRC v12 player in `boot/movieplay_sp.s` and
+`boot/movieplay_ip.s`, audited on 2026-07-22 with checkpointed ADPCM22, the
+four-source pattern-supply path, and the e84/p76 H40 cold-cap path enabled.
 
 The short answer is:
 
 | Domain | Safe fixed space, all supported playback | H40 fixed-N2 steady-stream space | Conditional space |
 |---|---:|---:|---:|
-| Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 48 bytes of SP boot-slot growth, not data RAM |
-| Word RAM bank 0 | 12.14 KiB | 48.70 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Word RAM bank 1 | 12.14 KiB | 48.70 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Main RAM | 16.74 KiB | 18.47 KiB | Boot UI shares the future generated-code area; none counted from palette or stack reservations |
-| Main CPU | no hard positive guarantee | about 39,930 local cycles (5.21 ms) | qualified H40 reference only; Sub must already be ready |
+| Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 2 bytes of SP boot-slot growth, not data RAM |
+| Word RAM bank 0 | 10.64 KiB | 48.42 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
+| Word RAM bank 1 | 10.64 KiB | 48.42 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
+| Main RAM | 5.63 KiB | 10.25 KiB | Boot UI shares the future generated-code area; none counted from palette or stack reservations |
+| Main CPU | no hard positive guarantee | measured `U` at most 409 ticks (12.56 ms) | repeated cap185 recording has zero cadence holds; this is evidence, not spendable slack |
 | Sub CPU | no hard positive guarantee | ADPCM decoder measured 7.62-8.11 ms in H40/N2 | full Sonic capture passes; BIOS/CD/Word-RAM waits remain outside that stopwatch |
 
 “Safe fixed” means that the address can be assigned a fixed purpose and still
@@ -42,7 +42,7 @@ The live throughput reference is the largest current fixed-cadence raster:
 | Frame time | 33.367 ms |
 | Main clock and frame budget | 7,670,454 Hz; 255,937 cycles |
 | Sub clock and frame budget | 12,500,000 Hz; 417,083 cycles |
-| Timed cold cap | 178 patterns/frame |
+| Timed cold cap | 185 patterns/frame |
 | Maximum updates | 1,120 entries/frame |
 | Audio | PCM13: 444 direct bytes/frame; ADPCM22: 372 control bytes -> 736 decoded samples |
 | Maximum BODY routing slot | 5 sectors |
@@ -50,8 +50,8 @@ The live throughput reference is the largest current fixed-cadence raster:
 
 Memory that must work for every supported rate uses the qualified H40/15 fps
 720- and 1,040-active-tile limit where necessary: 400 cold patterns, 888 PCM
-bytes, and a 4,900-byte control block. H40/15 with all 1,120 tiles active stays
-at 350. Frame 0 is outside timed streaming and may contain all 1,120 patterns.
+bytes, and a 4,900-byte control block. H40/15 with all 1,120 tiles active is
+unmeasured and rejected. Frame 0 is outside timed streaming and may contain all 1,120 patterns.
 Its initial ascending slot allocation makes one 35,844-byte load run.
 
 Instruction-cycle models use the standard MC68000 four-clock memory cycle.
@@ -69,21 +69,23 @@ allocation and a build-time overlap check before use.
 | Address | Size | Current owner | Available to a new feature? |
 |---|---:|---|---|
 | `0x00000..0x05FFF` | 24.00 KiB | BIOS / low PRG work area | No |
-| `0x06000..0x06FCF` | 4,048 B | largest current specialized DEBUG Sub boot image | No |
-| `0x06FD0..0x06FFF` | 48 B | remainder of the 4,096-byte SP boot slot | Code growth only |
+| `0x06000..0x06FFD` | 4,094 B | largest current specialized DEBUG Sub boot image | No |
+| `0x06FFE..0x06FFF` | 2 B | remainder of the 4,096-byte SP boot slot | Code growth only |
 | `0x07000..0x07FFF` | 4.00 KiB | boot ISO scratch and BIOS-unsafe streaming range | No |
 | `0x08000..0x097FF` | **6.00 KiB** | unused, previously marker-verified safe | **Yes, fixed PRG feature area** |
 | `0x09800..0x0BFFF` | 10.00 KiB | touched by BIOS during continuous reads | No |
-| `0x0C000..0x6CFFF` | 388.00 KiB | usable streamed `PrgBuf` / quality-budget capacity ceiling | No free headroom |
-| `0x6D000..0x76FFF` | 40.00 KiB | delivery-jitter reserve; frame-0 pattern staging during boot | No; this is timing safety, not free RAM |
-| `0x77000..0x7F7FF` | 34.00 KiB | APPLY circular queue | No; its 4 KiB back-pressure gap is queue safety |
+| `0x0C000..0x70FFF` | 404.00 KiB | usable streamed `PrgBuf` / quality-budget capacity ceiling | No free headroom |
+| `0x71000..0x75FFF` | 20.00 KiB | delivery-jitter headroom; frame-0 pattern staging during boot | No; this is timing safety, not free RAM |
+| `0x76000..0x76FFF` | 4.00 KiB | physical PrgBuf overflow guard; frame-0 pattern staging during boot | No; pump back-pressure starts here |
+| `0x77000..0x7F7FF` | 34.00 KiB | APPLY circular queue; its first 12 KiB is reused only by frame-0 boot staging | No; its 4 KiB back-pressure gap is queue safety |
 | `0x7F800..0x7FEFF` | 1.75 KiB | Sub stack reserve, growing downward from `0x7FF00` | No |
 | `0x7FF00..0x7FFFF` | 256 B | above the configured stack top / reserved | No |
 
 Do not count the difference between the 428 KiB physical PrgBuf ring and its
-388 KiB scheduling cap. That 40 KiB is what keeps normal CD-delivery variation
-away from the 424 KiB pump back-pressure threshold. Likewise, APPLY's 34 KiB
-allocation is intentionally kept below about 30 KiB occupancy.
+404 KiB scheduling cap. The next 20 KiB absorbs timed-delivery variation before
+the 424 KiB pump back-pressure threshold; the final 4 KiB is a separate physical
+overflow guard. Likewise, APPLY's 34 KiB allocation is intentionally kept below
+about 30 KiB occupancy.
 
 ## Word RAM 1M/1M map
 
@@ -102,14 +104,14 @@ physical bank.
 | Bank offset | Sub address | Size | Current owner / worst use | Fixed headroom |
 |---|---|---:|---|---:|
 | `+0x00000..+0x00083` | `0xC0000..0xC0083` | 132 B | palette reference, reserved CRAM area, `n_load` | 0 |
-| `+0x00084..+0x097FF` | `0xC0084..0xC97FF` | 37.87 KiB | cold load runs | 2.87 KiB after the 35,844-byte frame-0 maximum; 31.61 KiB during H40/N2 streaming |
+| `+0x00084..+0x097FF` | `0xC0084..0xC97FF` | 37.87 KiB | cold load runs | 2.87 KiB after the 35,844-byte frame-0 maximum; 31.37 KiB during H40/N2 streaming |
 | `+0x09800..+0x09801` | `0xC9800..0xC9801` | 2 B | `n_upd` | 0 |
 | `+0x09802..+0x0AEFF` | `0xC9802..0xCAEFF` | 5.75 KiB | obsolete normal-path `O_UPDS`; still used by dump diagnostics | Conditional 5.75 KiB |
 | `+0x0AF00..+0x0AFFF` | `0xCAF00..0xCAFFF` | 256 B | DEBUG counters and copied header | 156 B in three fixed holes |
 | `+0x0B000..+0x0CFFF` | `0xCB000..0xCCFFF` | 8.00 KiB | maximum 64-entry PALTAB staging | 0 |
 | `+0x0D000..+0x0EFFF` | `0xCD000..0xCEFFF` | 8.00 KiB | DicBuf boot staging in the physical frame-0 bank | 0 for fixed all-playback allocation |
 | `+0x0F000..+0x0FFFF` | `0xCF000..0xCFFFF` | **4.00 KiB** | tail after maximum DicBuf stage | **4.00 KiB** |
-| `+0x10000..+0x11FFF` | `0xD0000..0xD1FFF` | 8.00 KiB | linear control scratch | 3.21 KiB after the all-rate 4,900-byte maximum; 4.53 KiB for H40/N2 |
+| `+0x10000..+0x11FFF` | `0xD0000..0xD1FFF` | 8.00 KiB | linear control scratch | 3.21 KiB after the all-rate 4,900-byte maximum; 4.49 KiB for H40/N2 |
 | `+0x12000..+0x127FF` | `0xD2000..0xD27FF` | 2.00 KiB | one CD-sector stage / pad discard | 0 |
 | `+0x12800..+0x14A5F` | `0xD2800..0xD4A5F` | 8,800 B | full ADPCM next-index, signed-delta, and output tables | 0 |
 | `+0x14A60..+0x14BFF` | `0xD4A60..0xD4BFF` | **416 B** | alignment gap | **416 B** |
@@ -129,11 +131,12 @@ The fixed all-playback total in one bank is:
 10.640 KiB safe fixed space per physical bank
 ```
 
-The H40/N2 steady-stream total substitutes a 6,408-byte worst load block
-(`178 * 32 + 178 * 4`) and a 3,556-byte worst control block, producing
-**48.700 KiB per bank** after subtracting the persistent 27.5 KiB WordBuf. It
-is not replay-safe because frame 0 overwrites most
-of the load-tail gain.
+The H40/N2 steady-stream total substitutes a 6,660-byte worst load block
+(`185 * 32 + 185 * 4`) and a 3,596-byte worst control block (the larger PCM13
+control case). After boot, the temporary 8 KiB DicBuf stage is also reusable.
+Together these produce **48.418 KiB per bank** after subtracting the persistent
+27.5 KiB WordBuf. It is not replay-safe because frame 0 overwrites most of the
+load-tail gain and reuses the DicBuf stage.
 
 `O_UPDS` is not read or written by normal playback anymore; Main re-walks the
 bitmap and entries in the linear control block. The old area remains used by
@@ -154,23 +157,24 @@ a separate proof that its maximum output ends at `0xFF6580`.
 
 | Address | Size | Current owner / worst use | Safe headroom |
 |---|---:|---|---:|
-| `0xFF0000..0xFF1B9F` | 6.906 KiB | permanent Main player text/data, including the preload UI routines but excluding its transient font and strings | 0 |
-| `0xFF1BA0..0xFF1FFF` | **1.094 KiB** | link gap before generated code | **1.094 KiB** of permanent code/data growth |
+| `0xFF0000..0xFF1C1F` | 7.031 KiB | permanent Main player text/data, including alignment and the preload UI routines but excluding its transient font and strings | 0 |
+| `0xFF1C20..0xFF1FFF` | **0.969 KiB** | link gap before generated code | **0.969 KiB** of permanent code/data growth |
 | `0xFF2000..0xFF657F` | 17.375 KiB | maximum generated bitmap handlers and two H40 blitters | 0 |
 | `0xFF2000..0xFF267F` at boot only | 1.625 KiB | transient SGDK font, preload-screen text, and lookup data; deliberately overwritten by generated code before playback | 0 additional runtime use |
 | `0xFF6580..0xFF65FF` | **128 B** | asserted guard after maximum generated code | **128 B** |
 | `0xFF6600..0xFF85FF` | 8.00 KiB | persistent DicBuf, 256 patterns | 0 |
-| `0xFF8600..0xFFA8FF` | 8.75 KiB | theoretical H40-full maximum of 1,120 run records at 8 B each | 0 |
-| `0xFFA900..0xFFAFFF` | **1.75 KiB** | RUN_TABLE tail after the theoretical maximum | **1.75 KiB** |
+| `0xFF8600..0xFFA85F` | 8.594 KiB | all-supported maximum of 400 pre-swizzled run records at 22 B each | 0 |
+| `0xFFA860..0xFFAFFF` | **1.906 KiB** | RUN_TABLE tail after the largest qualified cap | **1.906 KiB** |
 | `0xFFB000..0xFFCFFF` | 8.00 KiB | 64-entry resident PALTAB | 0 |
-| `0xFFD000..0xFFE06B` | 4,204 B | BSS, including the 4,096-byte bounded name-table shadow and 56-byte prebuilt DEBUG HUD row | 0 |
-| `0xFFE06C..0xFFFAFF` | **6.645 KiB** | unused below the stack guard | **6.645 KiB** |
+| `0xFFD000..0xFFF07D` | 8,318 B | BSS: 4,096-byte shadow, 72-byte DEBUG HUD row, 4,096-byte 64-pitch name-table DMA stage, and fixed state | 0 |
+| `0xFFF07E..0xFFFAFF` | **2.627 KiB** | unused below the stack guard | **2.627 KiB** |
 | `0xFFFB00..0xFFFCFF` | 512 B | conservative stack and interrupt reserve | 0 |
 | `0xFFFD00..0xFFFFFF` | 768 B | above configured stack top / BIOS reserve | 0 |
 
-This yields **9.614 KiB** safe even if every H40 cell becomes a separate run.
-Profile-specific cold caps usually leave more RUN_TABLE tail, but that extra is
-not counted as general-purpose memory. The 512-byte stack
+This yields **5.627 KiB** safe with the largest supported cap of 400 treated as
+400 separate runs. H40/N2 cap185 leaves another 4.619 KiB in RUN_TABLE, for
+**10.246 KiB** of steady-stream Main RAM, but that profile-specific tail is not
+counted as general-purpose fixed memory. The 512-byte stack
 reserve is deliberately larger than the approximately 80-byte deepest visible
 player call chain; it leaves room for interrupt/BIOS use that the assembly call
 graph alone cannot prove.
@@ -201,20 +205,19 @@ sequenceDiagram
         Note right of S: S1 55k-cycle planning envelope for routing and five stage copies<br/>BIOS wait/retry cycles excluded; remaining before waits about 362k
         S->>S: Fetch control, decode ADPCM, write 736 reconstructed samples
         Note right of S: S2 PCM13 baseline 30k cycles plus 95k-101k measured decode<br/>the extra 292 RF5C164 writes are not modeled; remaining before waits is less than 231k
-        S->>W: Walk up to 1,120 entries and copy up to 178 cold patterns
+        S->>W: Walk up to 1,120 entries and copy up to 185 cold patterns
         Note right of S: S3 75k-cycle planning envelope<br/>remaining before waits is less than 156k
         S->>S: Bookkeeping, polls, next READY preparation
         Note right of S: S4 10k reserve; ADPCM visible subtotal exceeds 271k cycles<br/>raw remainder before waits is less than 146k, safe spendable remainder = 0
     and Main consumes frame N
         M->>W: Parse load runs into RUN_TABLE
         Note right of M: M1 10k-cycle planning envelope<br/>remaining 245,937
-        M->>M: Apply selected bitmap or completed list to shadow and generate back name table
-        M->>V: Write complete 40 x 28 name table
-        Note right of M: M2 at most 55,280 modeled cycles<br/>remaining 190,657
+        M->>M: Apply selected bitmap/list and stage the 40-pitch shadow at 64-entry pitch
+        Note right of M: M2 is included in HUD E; polling and VBlank phase prevent a fixed spendable remainder
         M->>V: Wait for VBlank; transfer cold runs; repair DMA first words
-        Note right of M: M3 135,727 elapsed Main cycles in the qualified full H40 capture<br/>remaining 54,930
-        M->>V: DEBUG HUD, optional CRAM load, atomic name-table flip
-        Note right of M: M4 15k-cycle planning reserve<br/>qualified local remainder about 39,930 cycles (5.21 ms)
+        Note right of M: M3 at most 409 ticks / about 96,375 Main cycles in the qualified cap185 capture
+        M->>V: DMA staged name table; republish HUD; optional CRAM; atomic flip
+        Note right of M: M4 has no guaranteed positive slack; all 2,713 cap185 intervals still meet two fields
     end
 
     M->>S: Next CMD_SWAP
@@ -237,26 +240,27 @@ For H40 full screen:
 
 | Main phase | Worst value used here | Basis |
 |---|---:|---|
-| Load-run parsing and fixed setup | 10,000 cycles | conservative planning envelope; 178 records is the format maximum at N2 |
+| Load-run parsing and fixed setup | 10,000 cycles | conservative planning envelope; 185 records is the cap maximum at N2 |
 | Bitmap handler | 38,690 cycles | theoretical worst of all 256 bitmap-byte handlers across 140 bytes |
-| Generated 40 x 28 name-table blit | 16,590 cycles | exact instruction model |
-| Pattern-transfer interval | 135,727 cycles | 576 hardware stopwatch ticks at 30.72 us/tick in the full 2,714-frame H40 Sonic capture |
+| 64-pitch staging plus name-table DMA | not independently bounded | staging is part of HUD `E`; DMA completion and VBlank alignment include hardware waits |
+| Pattern-transfer interval | 96,375 cycles | 409 hardware stopwatch ticks at 30.72 us/tick in the repeated full cap185 Sonic capture |
 | DEBUG HUD, CRAM/flip, residual setup | 15,000 cycles | planning reserve around code not covered by the two exact models |
-| **Total planning envelope** | **216,007 cycles** | values above summed conservatively |
-| **Local remainder** | **39,930 cycles / 5.21 ms** | 255,937 - 216,007 |
+| **Safe spendable remainder** | **0 cycles** | BIOS, bank, VBlank, and DMA waits have no finite hard bound; the measured phases are not independently additive |
 
-The 576-tick measurement is from the current p56 full-length Sonic
-qualification at cold 178. The frame with the largest pattern interval is not
-necessarily the frame with the theoretical worst bitmap, which is why summing
-both is conservative.
+The 409-tick measurement is from both byte-exact p76 full-length Sonic
+recordings at cold185. `E` reaches 249 quarter-ticks and `N` reaches 65, while
+every frame at 85% or more of the cap is constrained to 30 or fewer
+source-aware runs. All 2,713 timed intervals remain exactly two fields, but the
+largest measured phases need not occur on the same frame and cannot be summed
+as independent work. The qualification is evidence for this stream, not a
+general cycle allowance.
 
-This is still not a formal player-wide bound. The format permits up to 178
-isolated one-tile runs, but the current contiguous allocator normally produces
-fewer (129 maximum in the reference H40 pack). There is no pack-time limit
-on run count or Main elapsed transfer time. A pathological but currently
-accepted stream can therefore consume the complete two-VBlank deadline. Until
-such a guard exists, **39,930 cycles is a qualification target, not permission
-to spend 39,930 cycles unconditionally**.
+The format permits up to 185 isolated one-tile runs in this profile; the pack
+observed at most 65. Whole-movie run total is not constrained because light
+frames have ample deadline room and may trade extra fragmentation for fewer
+runs on heavy frames. A pathological but format-valid stream can still consume
+the complete two-VBlank deadline, so the safe unconditional Main-CPU allowance
+remains zero.
 
 ### Sub cycle basis
 
@@ -266,8 +270,8 @@ assembly instructions in the H40/N2 path:
 | Sub phase | Rounded instruction subtotal | Important exclusion |
 |---|---:|---|
 | Routing plus up to five 2 KiB stage copies | 55,000 cycles | time inside `CDC_STAT`, `CDC_READ`, `CDC_TRN`, and `CDC_ACK` |
-| Maximum 3,556-byte APPLY-to-control copy plus 444-byte PCM13 write | 30,000 cycles | Word-RAM and RF5C164 wait states |
-| 1,120-entry legacy walk, 178 cold copies, run construction | 75,000 cycles | asynchronous CD work reached by polls |
+| Maximum 3,596-byte APPLY-to-control copy plus 444-byte PCM13 write | 30,000 cycles | Word-RAM and RF5C164 wait states |
+| 1,120-entry legacy walk, 185 cold copies, run construction | 75,000 cycles | asynchronous CD work reached by polls |
 | Fixed bookkeeping and reserve | 10,000 cycles | bank-settle polling |
 | **Visible subtotal** | **170,000 cycles** | all exclusions above |
 | **Raw remainder before waits** | **247,083 cycles / 19.77 ms** | not safe spendable time |
@@ -279,8 +283,8 @@ about 95,000-101,000 Sub cycles. Adding that to the PCM13 baseline already
 raises visible work to roughly 265,000-271,000 cycles, and ADPCM writes 292
 more RF5C164 samples than PCM13; that extra writer cost is not included in this
 number. Thus the pre-wait arithmetic remainder is less than about 146,000
-cycles, not 247,083. The same capture nevertheless completed with `S=0`,
-`D=0`, `R=0`, `C=0`, and 14-15 KiB of audio lead.
+cycles, not 247,083. Both cap185 captures nevertheless complete with `S=0`,
+`D=0`, `R=0`, `C=0`, and a 12 KiB PrgBuf jitter-reserve high-water mark.
 
 At H40/15, the 1,472-sample decode is about 16 ms and crosses a 13.3 ms
 CD-sector interval. Player p56 therefore performs non-blocking CDC polls during
@@ -325,7 +329,7 @@ profile and does not turn either arithmetic remainder into spendable time.
 
 Use the low-risk spaces in this order:
 
-1. Use Main RAM `0xFFE06C..0xFFFAFF` (6.645 KiB) for Main-only state, retaining
+1. Use Main RAM `0xFFF07E..0xFFFAFF` (2.627 KiB) for Main-only state, retaining
    the 512-byte stack guard.
 2. Put small bank-local state in the 4 KiB tail after DicBuf staging or the
    416-byte ADPCM alignment gap, with explicit overlap assertions. Do not use
@@ -360,11 +364,10 @@ make movieplay CONFIG=configs/sonic-jam-op-h40.toml \
   tmp/sonic-jam-op-h40/build/movieplay_ip.o \
   tmp/sonic-jam-op-h40/build/movieplay_sp.o
 
-tools/python.sh harness/main_codegen/measure_cycles.py \
-  --header out/sonic-jam-op-h40/HEADER.DAT \
-  --body out/sonic-jam-op-h40/BODY.DAT
+tools/python.sh harness/cold_cap_model/extract_frames.py \
+  out/sonic-jam-op-h40 --csv /tmp/sonic-h40-frames.csv
 ```
 
-Re-run the full DEBUG recording and HUD extraction before revising the 576-tick
-qualified maximum. Do not replace that elapsed measurement with the instruction
+Re-run the full DEBUG recording and HUD extraction before revising the 409-tick
+qualified maximum. Do not replace that elapsed measurement with an instruction
 model: VBlank alignment and DMA completion are part of the real Main deadline.

@@ -139,6 +139,15 @@ pack asserts each streaming frame's realized new-tile loads stay within the
 same selected cap and never re-caps the stream. Capped cells show as Miss in
 the analysis overlay's category map.
 
+The current full-raster H40/30fps tuple is 1,120 active tiles at cold cap 185.
+Its e83 physical-slot allocation keeps every frame at 85% or more of that cap
+to 30 or fewer source-aware runs. The full Sonic qualification reconstructs
+all frames exactly with no Prg underrun; two exact same-Replay recordings keep
+all 2,713 timed intervals at two VBlanks with `S/D/R/C=0`, `M=1`, and
+`J=12 KiB`. Total runs across the whole movie are informational, not a limit:
+extra fragmentation on light frames is acceptable when heavy-frame deadline
+cost falls.
+
 `boot/movieplay_ip.s` sets a per-mode VBlank word budget (`md_vbudget`):
 `VB_WORDS_H32` = 2800 and `VB_WORDS_H40` = 3400. Both are below the GPGX
 ceilings (H32 2982 words/VBlank, H40 3664 words/VBlank). Re-check against the

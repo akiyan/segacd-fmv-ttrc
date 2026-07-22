@@ -4,7 +4,7 @@
 listening-qualified. H40/15 Machi OP and Machi ED, and the v10 four-supply
 H40/30 Bad Apple profile, completed their full recording, HUD, stream, and
 replay-equivalence checks.** The ADPCM22 path introduced in v9 and retained by
-the current v10 stream decodes 22.05 kHz mono IMA ADPCM directly on the Sub CPU
+the current v12 stream decodes 22.05 kHz mono IMA ADPCM directly on the Sub CPU
 and writes the reconstructed 8-bit samples to the
 RF5C164. H40 Sonic Jam completed all 2,714 frames in the lossless Genesis Plus
 GX recording with no CD slip, stream desync, audio re-sync, or blocking CD
@@ -108,7 +108,7 @@ cadence, 2,714 frames.
 
 | Result | Value |
 |---|---:|
-| Timed cold cap | 178 patterns/frame |
+| Timed cold cap | 185 patterns/frame |
 | Decoded audio | 736 samples/frame |
 | ADPCM control audio | 372 B/frame, 50.5% of decoded PCM bytes |
 | Full-table memory | 8,800 B in each physical Word-RAM bank |
@@ -116,9 +116,9 @@ cadence, 2,714 frames.
 | Decoder time | 7.62 ms minimum; 8.11 ms typical/maximum |
 | CD slip / stream desync | `S=0`, `D=0` for all 2,714 frames |
 | Audio re-sync / blocking pumps | `R=0`, `C=0` for all 2,714 frames |
-| Wave-RAM lead | 14,336 through 15,360 bytes |
+| Wave-RAM lead | 14,080 through 15,360 bytes |
 | Display cadence | all 2,713 timed intervals exactly two VBlanks; no extra scanout |
-| Main pattern transfer | 17.69 ms maximum; at most one VBlank wait |
+| Main pattern transfer | 12.56 ms maximum; at most one VBlank wait |
 | Offline IMA SNR on this source | 25.2 dB |
 | Sim model | shared packer-reference IMA decode plus RF5C164 8-bit conversion |
 | Listening | corrected sim reconstruction and captured playback accepted |
@@ -136,11 +136,14 @@ conversion, the reconstructed sim audio and captured playback were also checked
 by listening and accepted. This closes the ADPCM22 implementation. Physical
 Mega-CD playback remains a separate portability qualification.
 
-The 178 cold limit is also a delivery qualification, not a DMA ceiling. A cap
-of 179 kept the DEBUG slip counter at zero but inserted one extra scanout
-between frames 30 and 31. A cap of 200 still completed Main pattern transfer in
-19.81 ms, but exhausted payload delivery margin and held `S=2` from frame 2,126
-onward. This distinguishes the Sub/CD delivery margin from Main DMA time.
+The 185 cold limit is a complete pipeline qualification, not a theoretical DMA
+ceiling. The e83 physical-slot permutation keeps every frame at 85% or more of
+the cap to 30 or fewer source-aware runs. The pack reconstructs every frame
+exactly with no Prg underrun, and two same-Replay recordings match exactly in
+video, PCM, packet timing, and metadata while keeping `S/D/R/C=0`, `M=1`, and
+`J=12 KiB`. Diagnostic cap180 and cap190 runs each retained one non-monotonic
+freeze-type three-field hold away from the repaired heavy plateau. That is why
+cap190 remains unqualified even though its heavy run fragmentation is fixed.
 
 ## H40/15 Machi OP qualification
 
