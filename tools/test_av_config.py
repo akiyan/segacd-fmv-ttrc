@@ -10,13 +10,15 @@ import av_config
 class RingGeometryTests(unittest.TestCase):
     def test_full_reclaimed_ring_geometry(self) -> None:
         self.assertEqual(av_config.RING_SIZE_KB, 428)
-        self.assertEqual(av_config.RING_JITTER_MARGIN_KB, 40)
-        self.assertEqual(av_config.RING_CAP_KB, 388)
-        self.assertEqual(av_config.PRG_BUF_CAP_KB, 388)
-        self.assertEqual(av_config.QUALITY_BUDGET_KB, 388)
+        self.assertEqual(av_config.RING_PHYSICAL_GUARD_KB, 4)
+        self.assertEqual(av_config.RING_JITTER_HEADROOM_KB, 20)
+        self.assertEqual(av_config.FRAME0_PATTERN_STAGING_KB, 36)
+        self.assertEqual(av_config.RING_CAP_KB, 404)
+        self.assertEqual(av_config.PRG_BUF_CAP_KB, 404)
+        self.assertEqual(av_config.QUALITY_BUDGET_KB, 404)
         self.assertEqual(av_config.BACKPRESSURE_KB, 424)
         self.assertEqual(
-            av_config.BACKPRESSURE_KB - av_config.RING_CAP_KB, 36)
+            av_config.BACKPRESSURE_KB - av_config.RING_CAP_KB, 20)
 
 
 class PlaybackTimingTests(unittest.TestCase):

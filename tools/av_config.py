@@ -7,7 +7,7 @@ and player schedule and hold physical PrgBuf sectors. Historically each side
 had its own capacity knob:
 
 * player  ``.equ RING_SIZE``       = 428 KB   (the physical buffer)
-* pack    ``CBRSIM_RING_CAP_KB``    = 388 KB   (legacy internal scheduler name)
+* pack    ``CBRSIM_RING_CAP_KB``    = 404 KB   (legacy internal scheduler name)
 * sim     quality budget             = 440 KB   (*larger than PrgBuf!*)
 
 Three independent capacity values are a double-management trap: the sim can
@@ -31,24 +31,24 @@ from dataclasses import dataclass
 # complete safe PRG range from 0x0C000 up to APPLY_BASE at 0x77000.
 RING_SIZE_KB = 428
 
-# The player throttles its CD pump at RING_SIZE-4KB (back-pressure); real
-# CD-delivery jitter shrinks the usable ring further. The pack schedules within
-# this cap, and the sim may borrow no more quality budget than the same cap.
-# Their occupancies remain separate. 40 KB keeps the scheduled peak
-# comfortably below the 424 KB back-pressure threshold.
-RING_JITTER_MARGIN_KB = 40
+# Keep the physical overflow guard distinct from delivery-jitter headroom. The
+# player throttles its CD pump at RING_SIZE-4KB (back-pressure), and the pack
+# schedules another 20KB below that threshold. The sim may borrow no more
+# quality budget than the same cap; its occupancy remains separate.
+RING_PHYSICAL_GUARD_KB = 4
+RING_JITTER_HEADROOM_KB = 20
+
+# Frame 0 is staged only during boot and may span the jitter tail plus the
+# otherwise-unused APPLY ring. It is not part of the timed PrgBuf occupancy.
+FRAME0_PATTERN_STAGING_KB = 36
 
 # Derived — do not set these independently anywhere else.
-RING_CAP_KB = RING_SIZE_KB - RING_JITTER_MARGIN_KB   # internal ring scheduler name
+BACKPRESSURE_KB = RING_SIZE_KB - RING_PHYSICAL_GUARD_KB
+RING_CAP_KB = BACKPRESSURE_KB - RING_JITTER_HEADROOM_KB  # internal scheduler name
 PRG_BUF_CAP_KB = RING_CAP_KB                         # public physical-buffer name
 QUALITY_BUDGET_KB = PRG_BUF_CAP_KB                   # virtual quality ceiling
 
-# The player's pump_poll back-pressure threshold (RING_SIZE - 4KB). RING_CAP must
-# stay below this or the pump stalls (back-pressure ratchet -> CDC drops).
-BACKPRESSURE_KB = RING_SIZE_KB - 4
-
-assert RING_CAP_KB <= BACKPRESSURE_KB, (
-    f"RING_CAP_KB={RING_CAP_KB} must be <= back-pressure {BACKPRESSURE_KB}")
+assert BACKPRESSURE_KB - RING_CAP_KB == RING_JITTER_HEADROOM_KB
 
 # --- CRAM pre-load table (PALTAB) capacity ---
 # All segment palettes ship once in a PALTAB region right after the header and

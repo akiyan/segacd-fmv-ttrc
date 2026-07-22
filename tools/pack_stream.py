@@ -1052,10 +1052,10 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
         stream_pay = payload[nl0 * PAT:]             # frames1+ の payload連結
         f0_ctrl_sec = -(-len(f0_ctrl) // SECTOR)
         f0_pat_sec = -(-len(f0_pat) // SECTOR)
-        if f0_pat_sec * SECTOR > av_config.RING_JITTER_MARGIN_KB * 1024:
+        if f0_pat_sec * SECTOR > av_config.FRAME0_PATTERN_STAGING_KB * 1024:
             raise SystemExit(
                 f"pack: frame0 needs {f0_pat_sec} pattern sectors, beyond the "
-                f"{av_config.RING_JITTER_MARGIN_KB}KB boot staging tail")
+                f"{av_config.FRAME0_PATTERN_STAGING_KB}KB boot staging area")
     else:
         f0_ctrl = f0_pat = b""
         stream_ctrl = control

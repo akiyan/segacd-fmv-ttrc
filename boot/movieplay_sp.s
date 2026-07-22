@@ -88,6 +88,7 @@
 .equ COMCMD0,     SUB_GA_BASE+0x0010
 .equ COMSTAT0,    SUB_GA_BASE+0x0020
 .equ COMSTAT1,    SUB_GA_BASE+0x0022
+.equ COMSTAT2,    SUB_GA_BASE+0x0024
 .equ GA_STOPWATCH,SUB_GA_BASE+0x000C    /* 12-bit, 30.72us/tick */
 
 .equ SUB_BANK_1M, 0x000C0000
@@ -120,16 +121,16 @@
 .equ SP_STACK,    0x0007FF00        /* スタック最上位(apply端0x7F800の上, 1.8KB) */
 /* 0x9800-0xC000は連続読み中にBIOSが踏む(回収を試みたら化けた)。RINGは0xC000から。 */
 .equ RING_BASE,   0x0000C000
-.equ RING_SIZE,   0x0006B000        /* 428KB。APPLY直前までの物理上限、40KB jitter余白は維持 */
+.equ RING_SIZE,   0x0006B000        /* 428KB。APPLY直前までの物理上限、20KB jitter余白は維持 */
 .equ RING_END,    RING_BASE+RING_SIZE     /* 0x77000 = APPLY_BASE */
 .equ RING_PATTERNS, RING_SIZE/32
-.equ RING_CAP_END,0x0006D000        /* usable cap 388KBの終端。boot中だけframe0 patternsを
-                                       40KB jitter余白に置き、BODY開始前に展開する。 */
-.equ F0PAT_TMP,   0x0006D000        /* H40最大1120 patternsは36KB(セクタ丸め)でRING_END内 */
+.equ RING_CAP_END,0x00071000        /* usable cap 404KBの終端。424KB backpressureまで20KB。 */
+.equ F0PAT_TMP,   0x00071000        /* boot限定: H40最大1120 patterns=36KBをjitter tailから
+                                       未使用APPLY先頭まで連続配置し、BODY前に展開する。 */
 .equ APPLY_BASE,  0x00077000
 .equ APPLY_SIZE,  0x00008800        /* 34KB(16KBは頭詰まり→滑りを実測。42KB→34KBはrouting移設分) */
 .equ APPLY_END,   APPLY_BASE+APPLY_SIZE   /* 0x7F800 */
-.equ ROUTING_TMP, 0x00077000        /* boot中のみ。HEADERから読んだ16KBを未使用APPLYに一時保持 */
+.equ ROUTING_TMP, 0x0007A000        /* boot限定。最大frame0 staging直後の未使用APPLY 16KB */
 
 /* --- Word-RAM スクラッチ(SPバンク内, 毎フレーム再利用=スワップ影響なし) --- */
 .equ CTRL_SCR,    0x000D0000        /* control block linearization (<=4900B) */
@@ -159,8 +160,6 @@
 .equ O_UPDS,   SUB_BANK_1M+0x9802
 .equ O_SLIP,   SUB_BANK_1M+0xAF00   /* slip_count(=再シーク回復回数=グリッチ) */
 .equ O_DSY,    SUB_BANK_1M+0xAF7E   /* desync_count(同期マーカー不一致=フォールバック) */
-.equ O_DBG,    SUB_BANK_1M+0xAF02   /* 22Bデバッグブロック転写先(raw,same,near,coa,flbk,buf,miss,予約4)
-                                       control の dbg==1 のとき転写、dbg==0 はゼロ埋め */
 .equ O_CTRLWAIT,SUB_BANK_1M+0xAF18  /* DEBUG: current-control blocking sector pumps */
 .equ O_BODYWAIT,SUB_BANK_1M+0xAF1A  /* DEBUG: prior BODY payload/pad blocking pumps */
 .equ O_AUDIOLEFT,SUB_BANK_1M+0xAF1C /* DEBUG: ADPCM decode stopwatch, raw 30.72us ticks */
@@ -289,6 +288,7 @@ stream_start:
 	clr.w	slip_count
 	clr.w	desync_count
 	clr.w	(COMSTAT1).l
+	clr.w	(COMSTAT2).l
 	clr.w	drain_frame
 	bsr	init_pcm
 	clr.l	prev_msf			/* HEADER first sector establishes the disc MSF base */
@@ -498,8 +498,8 @@ ap_done:
 	PC_MOVE_W h_f0_ctrl_sec, PC_F0_CTRL_SEC, d0
 	lea	CTRL_SCR, a0
 	bsr	drain_lin_staged
-	/* frame0 patterns は PRG ring の40KB jitter余白へ一時保持する。PREBUF1の
-	   usable capより後ろで、BODY開始前に展開済みなのでstreamingとは重ならない。 */
+	/* frame0 patterns はusable cap後方から未使用APPLY先頭へ一時保持する。
+	   BODY開始前に展開済みなので20KB timed jitter余白とは同時利用しない。 */
 	move.l	#F0PAT_TMP, f0_pat_addr
 	moveq	#0, d0
 	PC_MOVE_W h_f0_pat_sec, PC_F0_PAT_SEC, d0
@@ -1077,6 +1077,21 @@ p1_ring:
 	movea.l	#RING_BASE, a0
 1:
 	move.l	a0, ring_tail
+.ifdef DEBUG
+	/* Only a payload append can raise occupancy. Keep the exact sticky
+	   high-water in 32-byte patterns in dedicated COMSTAT2; Main converts
+	   it to J's ceil-KiB excess. Frame-0 boot staging never reaches this path. */
+	move.l	a0, d0
+	sub.l	ring_head, d0
+	bpl.s	2f
+	add.l	#RING_SIZE, d0
+2:
+	lsr.l	#5, d0				/* exact occupied pattern count */
+	cmp.w	(COMSTAT2).l, d0
+	bls.s	3f
+	move.w	d0, (COMSTAT2).l
+3:
+.endif
 	bra	p1_adv
 p1_apply:
 	movea.l	apply_tail, a1
@@ -1319,23 +1334,9 @@ expand_frame:
 	move.w	d1, d5
 1:
 	move.w	(a0)+, d0			/* pal(hi) dbg(lo) */
-	lea	(O_DBG).l, a1
-	move.w	d0, d4
-	andi.w	#0xFF, d4			/* dbg フラグ */
-	beq	ef_nodbg
-	moveq	#11-1, d1			/* 22B デバッグブロックを MD へ転写 */
-1:
-	move.w	(a0)+, (a1)+
-	dbra	d1, 1b
-	bra	ef_pal
-ef_nodbg:
-	moveq	#0, d1				/* デバッグ欄なし: 22Bをlong×5+wordで消す */
-	move.l	d1, (a1)+
-	move.l	d1, (a1)+
-	move.l	d1, (a1)+
-	move.l	d1, (a1)+
-	move.l	d1, (a1)+
-	move.w	d1, (a1)+
+	tst.b	d0				/* packed debug counts are offline-only */
+	beq	ef_pal
+	adda.w	#22, a0				/* preserve control layout without copying unused counts */
 ef_pal:
 	move.w	d0, d4
 	lsr.w	#8, d4				/* pal = 区間番号+1(0=切替なし) — MDはMain-RAM表を引く */

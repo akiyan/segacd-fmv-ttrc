@@ -18,6 +18,8 @@ Use this skill to:
 - build a DEBUG disc by default, or release only when explicitly requested;
 - launch RetroArch, send START, and record synchronized A/V;
 - validate timing, video, audio, logs, and optional diagnostic counters;
+- run the mandatory `S/D/R/C/M/J` HUD upload gate for any capture that may
+  proceed to `compilation` or another upload step;
 - return the raw lossless MKV, sidecars, and verification preview.
 
 Do not apply upload PAR/upscaling, create YouTube metadata, or upload here. Pass the verified
@@ -203,17 +205,38 @@ Check the raw MKV and reports before trusting a capture:
 6. After changing RetroArch, the core, the offline harness, or recorder settings, requalify
    with a same-Replay `--realtime-lossless` comparison and a second offline run through
    `tools/compare_recordings.py`. Also requalify any suspect result.
+7. Before handing a recording to `compilation` or any upload step, OCR one
+   complete movie loop and write a passing HUD gate sidecar:
+
+   ```sh
+   tools/python.sh harness/startup_resync/analyze.py videos/STEM_emu_lossless.mkv \
+     --csv videos/STEM_emu_hud.csv \
+     --gate-json videos/STEM_emu_hud_gate.json --expected-frames FRAME_COUNT
+   ```
+
+   The command exits nonzero unless the first loop contains every frame and
+   `S/D/R/C=00`, `M<=01`, and `J<=17`. The `J` limit is derived from the current
+   404 KiB cap plus the complete 24 KiB tail: `17` is 23 KiB and proves the
+   circular ring never became completely full. `J` above `14` means the 20 KiB
+   jitter headroom was exhausted and sector-granular back-pressure entered the
+   separate physical guard; report this explicitly for manual review. `C` is not
+   corruption by itself, but any nonzero critical-path CD work fails the gate.
+   Do not waive, hand-edit, or reuse a gate JSON from another recording.
+
+   Even on PASS, report all six maxima and **stop before compilation or upload**.
+   Continue only after the user explicitly reviews and approves that exact
+   recording's result. This manual pause is mandatory for `$run` too.
 
 Structural audio presence is not a substitute for listening. Claim that the
 sound is clean or free of audible clicks only after listening to the final file.
 
-## Optional HUD diagnostics
+## Required upload HUD gate and optional diagnostics
 
 The standard capture already builds DEBUG. The HUD omits category glyphs and
-shows values in the fixed internal order `F/P/S/D/R/L/C/W/M/A`, followed by the
-H40-only `U/N` values. Parse them only when the task asks for those diagnostics;
-otherwise leave the visible HUD unparsed. Keep OCR work separate from
-ordinary recording and publication head cueing:
+uses the same 30-cell `F/P/S/D/R/L/C/W/M/A/U/N/J` order in H32 and H40. Parse
+the complete first loop whenever the capture can be uploaded; for a local-only
+recording, full OCR remains optional unless diagnostics were requested. Keep
+OCR work separate from ordinary recording and publication head cueing:
 
 ```sh
 ps -eo pid,etimes,args | grep -v grep \
@@ -225,13 +248,15 @@ OUTDIR="$PWD/videos" tools/run_headless.sh out/PROFILE.cue \
   --shots 68 --interval 2 --display :NNN
 ```
 
-Confirm the contiguous top-row Plane A HUD is visible before a long OCR scan. H32
-uses `xxxx xx xx xx xx xx xx xx xx xx`; H40 appends `xxxx xx`. The first value
-(`F`) and the H40 penultimate value (`U`) contain four hexadecimal digits; every
-other value contains two. Read the requested counters over the complete loop.
-In H40, `U` is the Main pattern-transfer time in 30.72 us Mega-CD stopwatch
-ticks and `N` is the packed cold-run count's low byte (wrapping at 256). Never
-reuse this OCR as a publication trim point.
+Confirm the contiguous top-row Plane A HUD is visible before a long OCR scan.
+Both modes use `xxxx xx xx xx xx xx xx xx xx xx xxxx xx xx`. `F` and `U`
+contain four hexadecimal digits; every other value contains two. Read the
+requested counters over the complete loop. `U` is the Main pattern-transfer
+time in 30.72 us Mega-CD stopwatch ticks, `N` is the packed cold-run count's low
+byte, and `J` is the sticky ceil-KiB streamed PrgBuf excess above 404 KiB. A
+passing `S/D/R/C/M/J` gate JSON plus explicit user approval after reviewing its
+maxima are required handoff conditions. Its HUD timing must never be reused as
+a publication trim or chapter point.
 
 ## Existing recordings and smoke tests
 
@@ -274,4 +299,5 @@ sample rate, channels and packet presence, whether startup was retained, and
 whether human listening was performed. For offline runs also report the Replay
 path, requested/max frame count, wall time, and speed. When the run requalifies
 the fast path, additionally report the exact-comparison JSON/pass state and
-repeat-run result.
+repeat-run result. For an upload-capable capture, report the HUD gate JSON,
+complete-loop frame count, `S/D/R/C/M/J` maxima, and PASS state.

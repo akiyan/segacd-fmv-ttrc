@@ -11,6 +11,19 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e82/p73 : Separate 20 KiB of timed-delivery jitter headroom from the 4 KiB
+#        physical ring guard, setting the PrgBuf and quality-budget ceiling to
+#        404 KiB. Move boot-only frame-0/routing staging accordingly and rebase
+#        HUD J plus its recording gate to the 404/424 KiB boundaries.
+#   e81/p72 : Raise the scheduled PrgBuf and matching quality budget from 388
+#        to 408 KiB, leaving a 20 KiB physical jitter tail. Relocate the
+#        boot-only maximum frame-0 staging so it spans that tail and unused
+#        APPLY space without reducing H40 support. Rebase HUD J to 408 KiB.
+#   p71 : Use one common 30-cell DEBUG HUD in H32 and H40. Expose U/N in both
+#        modes and add J, the sticky ceil-KiB high-water occupancy above the
+#        388 KiB streamed PrgBuf scheduling ceiling, excluding frame-0 staging.
+#        Skip the offline-only packed debug counts instead of copying them to
+#        an unread Word-RAM area, keeping the H40/30 Sub boot image within 4 KiB.
 #   e80 : Balance Main-risk demand that exceeds the complete whole-movie
 #        quality-budget capacity across each continuous burst. Build its
 #        backwards reserve from feasible demand so unavoidable loss is no
@@ -549,6 +562,6 @@
 #   e17: Raise requested startup PCM arming from 32 to 45 frames. The pack
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
-date=20260721
-e=80
-p=70
+date=20260722
+e=82
+p=73

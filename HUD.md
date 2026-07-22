@@ -34,17 +34,16 @@ The hardware draws hexadecimal values only. There are no labels, spaces, or
 separators in the actual image. Spaces below show the field boundaries:
 
 ```text
-H32: FFFF PP SS DD RR LL CC WW MM AA
-H40: FFFF PP SS DD RR LL CC WW MM AA UUUU NN
+H32/H40: FFFF PP SS DD RR LL CC WW MM AA UUUU NN JJ
 ```
 
 The fixed interpretation order is:
 
 ```text
-F / P / S / D / R / L / C / W / M / A / U / N
+F / P / S / D / R / L / C / W / M / A / U / N / J
 ```
 
-`U` and `N` exist only in H40. Every digit occupies one 8x8 cell.
+H32 and H40 use the same layout. Every digit occupies one 8x8 cell.
 
 | Field | Cell columns | Native pixel range | Digits |
 |---|---:|---:|---:|
@@ -58,15 +57,25 @@ F / P / S / D / R / L / C / W / M / A / U / N
 | `W` | 16-17 | x=128-143 | 2 |
 | `M` | 18-19 | x=144-159 | 2 |
 | `A` | 20-21 | x=160-175 | 2 |
-| `U` | 22-25 | x=176-207 | 4, H40 only |
-| `N` | 26-27 | x=208-223 | 2, H40 only |
+| `U` | 22-25 | x=176-207 | 4 |
+| `N` | 26-27 | x=208-223 | 2 |
+| `J` | 28-29 | x=224-239 | 2 |
 
-H32 therefore covers 22 cells or 176 pixels. Its rightmost 10 cells remain
-movie-visible. H40 covers 28 cells or 224 pixels, and its rightmost 12 cells
-remain movie-visible.
+Both modes cover 30 cells or 240 pixels. H32's rightmost 2 cells remain
+movie-visible; H40's rightmost 10 cells remain movie-visible.
 
 The HUD always occupies row 0 of the native 256x224 or 320x224 raster. It can
 cover active picture content; it is not repositioned around letterboxing.
+
+For any recording that can proceed to compilation or upload, the complete first
+movie loop is a mandatory gate. `S/D/R/C` must remain zero, `M` must remain at
+most `01`, and `J` must remain at most `17` (23 KiB). The last limit proves the
+404 KiB schedule plus measured excess stayed below the 428 KiB physical ring
+end despite `J`'s upward KiB rounding. `J` above `14` means the 20 KiB jitter
+headroom was exhausted and sector-granular back-pressure entered the separate
+4 KiB physical guard; this must be reported for manual review. A nonzero `C` is not data corruption by itself,
+but fails the automatic gate. Even on PASS, publication pauses until
+the user explicitly reviews and approves all six maxima.
 
 ## At-a-glance field reference
 
@@ -84,11 +93,13 @@ cover active picture content; it is not repositioned around letterboxing.
 | `A` | Sub | per frame | ADPCM decode phase time | Stable band for the same profile |
 | `U` | Main | per frame | Main pattern-transfer elapsed time | Below the frame's available transfer window |
 | `N` | Main | per frame | Source-aware cold-run descriptor count | Content-dependent; correlate with `U` |
+| `J` | Sub | cumulative peak | Maximum streamed PrgBuf occupancy above 404 KiB | `00` means the jitter headroom was never used |
 
 `S`, `D`, and `R` are cumulative counters. They should be read as transitions:
 once incremented, they remain nonzero until playback restarts, and the displayed
-low byte wraps from `FF` to `00`. `C`, `W`, `M`, `A`, `U`, and `N` describe one
-frame. `F`, `P`, and `L` describe current player state.
+low byte wraps from `FF` to `00`. `J` is also cumulative but retains the
+largest observed excess rather than counting events. `C`, `W`, `M`, `A`, `U`,
+and `N` describe one frame. `F`, `P`, and `L` describe current player state.
 
 ## Field details
 
@@ -208,7 +219,7 @@ rates, the longer ADPCM decoder periodically services the CDC, so `A` can also
 include that intentionally interleaved pump work. It does not measure the
 subsequent RF5C164 wave-RAM write phase.
 
-### `U`: Main pattern-transfer time, H40 only
+### `U`: Main pattern-transfer time
 
 `U` displays four hexadecimal digits from the Main CPU's Mega-CD stopwatch.
 One tick is 30.72 us. Measurement begins at the first cold run and ends after
@@ -219,7 +230,7 @@ The hardware counter is 12-bit, and the player masks the difference to
 `0x0FFF`. It therefore wraps after 4096 ticks, about 125.83 ms. A frame with no
 cold runs reports `0000`.
 
-### `N`: packed cold-run count, H40 only
+### `N`: packed cold-run count
 
 `N` is the low byte of the source-aware cold-run descriptor count constructed
 for the frame. A run groups consecutive VRAM slots from the same physical
@@ -230,6 +241,22 @@ runs even when the destination slots are consecutive.
 commands. One- and two-tile runs use CPU writes. Longer runs use DMA and can be
 split again at VBlank boundaries. `N` measures fragmentation before those
 hardware transfer choices.
+
+### `J`: streamed PrgBuf jitter-reserve high-water mark
+
+`J` is the maximum simultaneous streamed PrgBuf occupancy above the 404 KiB
+scheduling ceiling observed since BODY streaming began. It is rounded upward
+to KiB and displayed in hexadecimal. `J=00` proves that occupancy never crossed
+the ceiling; `J=01` means a nonzero excess of at most 1 KiB, and `J=0A` means a
+maximum excess of at most 10 KiB.
+
+The Sub CPU samples occupancy immediately after each BODY payload sector is
+appended. Only an append can raise the high-water mark, so polling and pattern
+consumption need no extra sampling. The separate frame-0 block temporarily
+stored at `F0PAT_TMP` does not pass through this path and is deliberately
+excluded. The field measures simultaneous occupancy, not whether a circular
+read or write pointer happened to enter the physical address range above the
+404 KiB boundary.
 
 ## Reading combinations
 
@@ -245,6 +272,8 @@ hardware transfer choices.
 | `U` rises while `N` stays modest | Larger pattern volume or VBlank splitting dominates rather than descriptor count |
 | `M` reaches `02` or more | Main pattern work crossed an extra VBlank deadline |
 | `P` changes with stable `S/D` | Normal scheduled CRAM segment switch |
+| `J` changes from `00` | Streaming occupancy used part of the physical jitter reserve |
+| `J` rises again later | Timed playback exceeded the previous startup/runtime high-water mark |
 
 These are correlations, not standalone proofs. Use native lossless capture and
 the packed stream when investigating a regression.
@@ -254,12 +283,12 @@ the packed stream when investigating a regression.
 The HUD does not use the Window plane. For each frame the Main CPU:
 
 1. builds the complete next movie name table in the inactive Plane A table;
-2. formats the HUD into a 56-byte Main-RAM row;
-3. overwrites only the first 22 H32 or 28 H40 name-table cells;
+2. formats the HUD into a 60-byte Main-RAM row;
+3. overwrites only the first 30 name-table cells;
 4. selects that completed table with the same register-2 flip as the movie.
 
 The inactive tables are at VRAM `0xC000` and `0xE000`. Publishing the HUD uses
-11 H32 or 14 H40 longword writes and no DMA. The unoccupied cells retain their
+15 longword writes in either mode and no DMA. The unoccupied cells retain their
 movie entries, which avoids exposing an unrelated Plane B frame.
 
 The final flip has a terminal-VBlank guard: V-counter lines `FC` through `FF`
@@ -295,9 +324,9 @@ frame.png -> F=012A(0.99) P=03(0.99) S=00(0.99) ...
 ```
 
 `read_frameno.py` decodes the barcode and checks the lower glyph with normalized
-correlation. It expects the native 256- or 320-pixel width when selecting H32
-versus H40 automatically. If an H40 image has already been cropped narrower,
-call `read_hud` with `HUD_H40_LAYOUT` explicitly.
+correlation. H32 and H40 share the same field layout; native width is retained
+only as mode metadata. If an H40 image has already been cropped narrower, call
+`read_hud` with `HUD_H40_LAYOUT` explicitly.
 
 For a complete recording, `harness/startup_resync/analyze.py` groups repeated
 60 Hz capture frames by `F`, retains per-field confidence, and reports counter

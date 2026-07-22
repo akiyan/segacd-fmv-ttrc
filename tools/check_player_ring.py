@@ -142,15 +142,26 @@ print(f"check_player_ring: OK  RING_SIZE={ring_bytes//1024}KB "
       f"== av_config.RING_SIZE_KB (PrgBuf cap {av_config.PRG_BUF_CAP_KB}KB, "
       f"quality budget {av_config.QUALITY_BUDGET_KB}KB)")
 
+ip_prg_cap_patterns = _equ(ip_text, "PRG_BUF_CAP_PATTERNS", IP)
+want_prg_cap_patterns = av_config.PRG_BUF_CAP_KB * 1024 // 32
+if ip_prg_cap_patterns != want_prg_cap_patterns:
+    sys.exit(
+        "check_player_ring: Main HUD PrgBuf cap does not match av_config: "
+        f"{ip_prg_cap_patterns} patterns != {want_prg_cap_patterns}")
+
 # --- Boot-time PRG staging and resident Word-RAM routing map ---
-# Frame 0 is allowed to load the whole H40 raster, unlike timed frames. Keep its
-# sector-rounded pattern block in the physical ring's jitter-only tail, then
-# reuse that memory only after frame 0 has expanded. ROUTING_TMP borrows APPLY
-# before steady streaming starts. The validated table is duplicated at the end
+# Frame 0 is allowed to load the whole H40 raster, unlike timed frames. Its
+# sector-rounded pattern block starts at the usable cap and may extend from the
+# jitter tail into APPLY during boot. ROUTING_TMP follows the maximum frame-0
+# block inside APPLY. Both are gone before steady streaming. The validated table is duplicated at the end
 # of both 128 KiB Word-RAM banks, so routing remains visible after every swap.
 route_bytes = ttrc_routing.ROUTE_BYTES
 sector = ttrc_routing.SECTOR_BYTES
 max_f0_bytes = ((40 * 28 * 32 + sector - 1) // sector) * sector
+if max_f0_bytes != av_config.FRAME0_PATTERN_STAGING_KB * 1024:
+    sys.exit(
+        "check_player_ring: configured frame-0 staging does not match H40 maximum: "
+        f"{av_config.FRAME0_PATTERN_STAGING_KB}KB != {max_f0_bytes // 1024}KB")
 ring_base = _equ(text, "RING_BASE", SP)
 ring_cap_end = _equ(text, "RING_CAP_END", SP)
 f0pat_tmp = _equ(text, "F0PAT_TMP", SP)
@@ -179,18 +190,22 @@ if ring_end != apply_base:
     sys.exit(
         f"check_player_ring: relocated routing leaves reclaimable PRG RAM: "
         f"RING_END={ring_end:#x}, APPLY_BASE={apply_base:#x}")
-if ring_end - ring_cap_end != av_config.RING_JITTER_MARGIN_KB * 1024:
+total_headroom_kb = (
+    av_config.RING_JITTER_HEADROOM_KB + av_config.RING_PHYSICAL_GUARD_KB)
+if ring_end - ring_cap_end != total_headroom_kb * 1024:
     sys.exit(
         "check_player_ring: physical-to-usable ring gap does not match the "
-        f"configured jitter margin: {ring_end - ring_cap_end} bytes")
-if f0pat_tmp + max_f0_bytes > ring_end:
+        f"configured jitter headroom plus guard: {ring_end - ring_cap_end} bytes")
+f0pat_end = f0pat_tmp + max_f0_bytes
+if f0pat_end > apply_base + apply_size:
     sys.exit(
         f"check_player_ring: H40 frame-0 staging ends at "
-        f"{f0pat_tmp + max_f0_bytes:#x}, beyond RING_END={ring_end:#x}")
-if routing_tmp != apply_base or routing_tmp + route_bytes > apply_base + apply_size:
+        f"{f0pat_end:#x}, beyond APPLY_END={apply_base + apply_size:#x}")
+if routing_tmp != f0pat_end or routing_tmp + route_bytes > apply_base + apply_size:
     sys.exit(
-        "check_player_ring: boot routing staging must fit in the unused APPLY "
-        f"ring: ROUTING_TMP={routing_tmp:#x}, APPLY={apply_base:#x}.."
+        "check_player_ring: boot routing staging must follow maximum frame-0 "
+        f"staging and fit in APPLY: ROUTING_TMP={routing_tmp:#x}, "
+        f"expected={f0pat_end:#x}, APPLY={apply_base:#x}.."
         f"{apply_base + apply_size:#x}")
 word_bank_end = sub_bank + 0x20000
 if routing + route_bytes != word_bank_end:
@@ -199,7 +214,7 @@ if routing + route_bytes != word_bank_end:
         f"the owned Word-RAM bank: ROUTING={routing:#x}, bank end={word_bank_end:#x}")
 print(
     "check_player_ring: OK  frame0 boot staging "
-    f"{f0pat_tmp:#x}..{f0pat_tmp + max_f0_bytes:#x}, routing temp "
+    f"{f0pat_tmp:#x}..{f0pat_end:#x}, routing temp "
     f"{routing_tmp:#x}..{routing_tmp + route_bytes:#x}, Word routing "
     f"{routing:#x}..{routing + route_bytes:#x}, PRG ring end {ring_end:#x}")
 

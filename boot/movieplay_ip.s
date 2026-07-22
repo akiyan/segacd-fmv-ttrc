@@ -26,6 +26,7 @@
 .equ GA_COMCMD1, 0x00A12012
 .equ GA_COMSTAT0, 0x00A12020
 .equ GA_COMSTAT1, 0x00A12022
+.equ GA_COMSTAT2, 0x00A12024
 .equ GA_STOPWATCH, 0x00A1200C		/* 12-bit, 30.72 us/tick, Main read-only */
 
 .equ PROBE_BANK, 0x00200000
@@ -94,6 +95,7 @@
 .equ SHADOW_UPDATE_COUNT_MASK, 0x7FFF
 .equ SHADOW_OFFSET_MASK, 0x0FFE	/* 4KB physical shadow, even word offsets */
 .equ PACE_N2_ARM_TICKS, 800	/* 24.576ms: safely between VBlank 1 and 2 */
+.equ PRG_BUF_CAP_PATTERNS, 0x3280 /* 404 KiB / 32 B; checked against av_config.py */
 
 .ifdef DEBUG
 .ifdef PLAYER_SPECIALIZED
@@ -1430,8 +1432,7 @@ wait_vblank:
    Publishing the finished row into the inactive Plane A table is a short fixed
    copy; reg2 selects the completed picture and HUD atomically.
    Category glyphs are omitted to reserve cells for future supply metrics.
-   H32: xxxx xx xx xx xx xx xx xx xx xx = 22 words.
-   H40: the same 22 words followed by xxxx xx = 28 words.
+   H32/H40: xxxx xx xx xx xx xx xx xx xx xx xxxx xx xx = 30 words.
 	frame/Main-timeは16-bit、leadはhigh byte、他はlow byteの2桁。leadは256B単位。 */
 prepare_dbg:
 .ifdef HUD_HEX_TABLE
@@ -1474,24 +1475,25 @@ prepare_dbg:
 	move.w	(PROBE_BANK+0xAF1C).l, d4
 	lsr.w	#2, d4
 	DBG_PUT2
-	/* H40 has exactly eight additional visible HUD cells. Keep the shared
-	   H32 prefix stable and use the tail for direct Main/DMA correlation. */
-.ifdef PLAYER_SPECIALIZED
-.if PC_MODE == 1
+	/* Keep one common layout for every display mode. */
 	move.w	dma_elapsed_ticks, d4
 	DBG_PUT4
 	move.w	n_runs, d4
 	DBG_PUT2
-.endif
-.else
-	cmpi.w	#1, md_mode
-	bne.s	1f
-	move.w	dma_elapsed_ticks, d4
-	DBG_PUT4
-	move.w	n_runs, d4
-	DBG_PUT2
+	/* COMSTAT2 holds Sub's exact sticky high-water occupancy in patterns.
+	   Convert only the excess above the shared 404KB scheduling cap, rounding
+	   upward so any use of the physical jitter reserve displays J>=01. */
+	move.w	(GA_COMSTAT2).l, d4
+	cmp.w	#PRG_BUF_CAP_PATTERNS, d4
+	bls.s	1f
+	sub.w	#PRG_BUF_CAP_PATTERNS, d4
+	add.w	#31, d4
+	lsr.w	#5, d4				/* 32 patterns = 1 KiB */
+	bra.s	2f
 1:
-.endif
+	moveq	#0, d4
+2:
+	DBG_PUT2
 .ifdef HUD_HEX_TABLE
 	movem.l	(sp)+, d0-d4/a0-a1
 .else
@@ -1513,20 +1515,11 @@ publish_dbg:
 	bsr	set_vram_write
 	lea	dbg_row, a0
 .ifdef PLAYER_SPECIALIZED
-.if PC_MODE == 1
-	.rept 14
+	.rept 15
 	move.l	(a0)+, (VDP_DATA).l
 	.endr
 .else
-	.rept 11
-	move.l	(a0)+, (VDP_DATA).l
-	.endr
-.endif
-.else
-	moveq	#11-1, d1			/* H32: 22 words */
-	cmpi.w	#1, md_mode
-	bne.s	1f
-	moveq	#14-1, d1			/* H40: 28 words */
+	moveq	#15-1, d1			/* common H32/H40 row: 30 words */
 1:
 	move.l	(a0)+, (VDP_DATA).l
 	dbra	d1, 1b
@@ -1586,7 +1579,7 @@ dbg_hex_pairs:
 shadow:
 	.space 0x1000				/* logical H40=2240B; padded for bounded list offsets */
 dbg_row:
-	.space 28*2				/* prebuilt values-only H40 row; H32 uses first 22 words */
+	.space 30*2				/* common prebuilt values-only H32/H40 row */
 .ifndef PLAYER_SPECIALIZED
 md_mode:
 	.space 2
@@ -1634,7 +1627,7 @@ sub_wait_lines:
 frame_vblank_waits:
 	.space 2				/* DEBUG HUD M snapshot before display pacing */
 dma_elapsed_ticks:
-	.space 2				/* DEBUG H40 Uxxxx: 30.72 us stopwatch ticks */
+	.space 2				/* DEBUG Uxxxx: 30.72 us stopwatch ticks */
 dma_start_tick:
 	.space 2				/* DEBUG stopwatch sample at first pattern transfer */
 wr_ptr0:

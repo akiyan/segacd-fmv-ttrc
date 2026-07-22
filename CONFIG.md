@@ -38,18 +38,19 @@ can schedule.
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | `RING_SIZE` / `RING_SIZE_KB` | 428 KB (0x6B000) | sp / cfg | Internal circular allocation backing `PrgBuf`, from 0x0C000 up to `APPLY_BASE`. The `RING_*` spelling describes the implementation, not a fifth public object. |
-| `RING_JITTER_MARGIN_KB` | 40 KB | cfg | Headroom for real CD-delivery jitter, subtracted from the physical PRG ring. |
-| `PRG_BUF_CAP_KB` | 388 KB (derived) | cfg -> sim / pack | Public usable `PrgBuf` schedule/prefetch ceiling = `RING_SIZE_KB - RING_JITTER_MARGIN_KB`. `RING_CAP_KB` remains an internal compatibility alias. |
-| `QUALITY_BUDGET_KB` | 388 KB (derived) | cfg -> sim | Capacity of offline quality accounting. It matches the usable Prg ceiling but has an independent trace and no physical meter. Configured runs overwrite inherited `CBRSIM_QUALITY_BUDGET_KB`. |
+| `RING_JITTER_HEADROOM_KB` | 20 KB | cfg | Timed-delivery headroom between the 404 KB scheduling ceiling and 424 KB pump back-pressure. |
+| `RING_PHYSICAL_GUARD_KB` | 4 KB | cfg | Separate overflow guard between pump back-pressure and the 428 KB physical ring end. It is not counted as jitter headroom. |
+| `PRG_BUF_CAP_KB` | 404 KB (derived) | cfg -> sim / pack | Public usable `PrgBuf` schedule/prefetch ceiling = `BACKPRESSURE_KB - RING_JITTER_HEADROOM_KB`. `RING_CAP_KB` remains an internal compatibility alias. |
+| `QUALITY_BUDGET_KB` | 404 KB (derived) | cfg -> sim | Capacity of offline quality accounting. It matches the usable Prg ceiling but has an independent trace and no physical meter. Configured runs overwrite inherited `CBRSIM_QUALITY_BUDGET_KB`. |
 | `WordBuf0` / `WordBuf1` | 880 patterns each (27.5 KB each) | sp / ip / sim / pack | Different boot-preloaded sequences in the two physical Word-RAM banks at offset `+0x15200..+0x1C000`. Wr0 serves even timed frames and Wr1 odd timed frames; they are not duplicated copies. |
 | `DicBuf` | 256 patterns (8 KB) | ip / sim / pack | Persistent dictionary boot-staged at Word-RAM `+0xD000`, then copied once to Main RAM `0xFF6600..0xFF8600`. Either frame parity may reuse entries by 8-bit index without consuming them. |
 | `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. The Prg schedule ceiling must stay below it. |
 | routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v12 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | Prg prebuffer | up to `PRG_BUF_CAP_KB` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both usable Prg capacity and the clip's future Prg load total. |
-| frame-0 boot staging | 36 KB max in the 40 KB jitter tail | sp | Frame 0 is temporarily stored at the usable-Prg end and expanded before BODY streaming reuses those PRG-RAM bytes. |
+| frame-0 boot staging | 36 KB max | sp | Boot-only region from `0x71000..0x7A000`. It spans the 20 KB jitter headroom, 4 KB physical guard, and 12 KB of otherwise-unused APPLY. Frame 0 is expanded before timed BODY streaming or APPLY use begins. |
 
-DEBUG overwrites only the first 22 H32 or 28 H40 cells of the inactive movie
+DEBUG overwrites only the first 30 cells of the inactive movie
 Plane A name table with one HUD row. The unused width remains the exact movie
 table, avoiding Window transparency exposing an unrelated Plane B frame.
 Diagnostic playback still performs the same full video-name-table work as a
@@ -223,7 +224,7 @@ continuously.
 | `VB_WORDS_H32` | 2800 words/VBlank | ip | H32 per-VBlank DMA word budget. |
 | fixed N2 cadence | `FEATURE_FIXED_N2` (v8) | pack / sp / ip | Main flips every exactly two VBlanks. The paired Sub schedule is 1001/400 sectors/frame, so CD delivery does not run ahead of the fixed display clock. This feature bit is authoritative; `vsync_n` alone never enables the path. Current 24fps and 15fps streams leave it clear and remain delivery-paced. |
 | `MAIN_CODEGEN_BASE..LIMIT` | 17.5 KB (`0xFF2000..0xFF65FF`) | ip | Reserved for Main-CPU code generated once after header setup. The H40 maximum currently ends at `0xFF6580`; `DicBuf` begins at `0xFF6600`, leaving a 128-byte guard. |
-| `RUN_TABLE` | 1536 records by address range; current cold cap is much lower | ip | `(dst, len, src)` table of contiguous cold-slot runs. Each record is counted by H40 HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. |
+| `RUN_TABLE` | 1536 records by address range; current cold cap is much lower | ip | `(dst, len, src)` table of contiguous cold-slot runs. Each record is counted by HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. |
 
 ## F. Physical CD delivery and encoder allowance
 
@@ -376,7 +377,7 @@ and on the disc because those are TTRC format names read by the player.
 Before the first movie frame, specialized builds show only four hexadecimal
 digits at the physical top-left of Plane A. The value is the amount of safe
 PrgBuf preload already received, in KiB (`0000` through `0184` for the standard
-388 KiB preload). An exact negative startup status remains visible as its
+404 KiB preload). An exact negative startup status remains visible as its
 `BADx` code. Progress is sampled once per VBlank. The display uses the same
 16-glyph hexadecimal font as the runtime DEBUG HUD; those tiles stay reserved
 and are uploaded during startup in both DEBUG and release builds. H32 and H40
@@ -419,10 +420,9 @@ in ip, read back by `tools/read_frameno.py: read_hud`). The table is not visible
 until the same reg2 flip that publishes the movie, so text and picture stay on
 the same frame.
 
-The player draws values only, with no category letters or separators. H32 uses
-22 cells: `xxxx xx xx xx xx xx xx xx xx xx`. H40 keeps that prefix and appends
-`xxxx xx`, for 28 cells total. The fixed interpretation order is
-`F/P/S/D/R/L/C/W/M/A`, followed by H40-only `U/N`. `F` and `U` are four
+The player draws values only, with no category letters or separators. H32 and
+H40 use the same 30 cells: `xxxx xx xx xx xx xx xx xx xx xx xxxx xx xx`.
+The fixed interpretation order is `F/P/S/D/R/L/C/W/M/A/U/N/J`. `F` and `U` are four
 hexadecimal digits; `L` shows the high byte of the lead, and the other fields
 show their low byte. Two-digit fields wrap naturally from `FF` to `00`.
 
@@ -437,10 +437,10 @@ VBlank wait.
 
 The occupied value cells cover the video visually, but a DEBUG build first
 updates the complete video name table exactly as a release build, then replaces
-only its first 22 H32 or 28 H40 cells with opaque font entries. Thus H40's
-unused right-hand 12 cells remain the exact same movie frame. The values are
-formatted into a Main-RAM row before the display deadline, then published with
-11 H32 or 14 H40 longword writes to the inactive movie table at VRAM `0xC000`
+only its first 30 cells with opaque font entries. H32's unused right-hand 2
+cells and H40's unused right-hand 10 cells remain the exact same movie frame.
+The values are formatted into a Main-RAM row before the display deadline, then
+published with 15 longword writes to the inactive movie table at VRAM `0xC000`
 or `0xE000`. The final control-port word selects that table. A
 terminal-VBlank guard rejects V-counter lines `0xFC..0xFF` and waits for a fresh
 blank before that write, closing the end-of-blank race without adding a
@@ -462,5 +462,6 @@ red indicator because they do not have the HUD.
 | `W` | 2 | Approximate Main-CPU wait for Sub completion at `CMD_SWAP`, in V-counter scanlines. It wraps at 256, so use it as a short-wait diagnostic rather than an absolute stopwatch. |
 | `M` | 2 | VBlank starts waited by the Main pattern path this frame. Values of 2 or more prove an extra VBlank spill. |
 | `A` | 2 | Sub ADPCM decode phase time. One displayed unit is four 30.72 us stopwatch ticks (about 0.1229 ms); PCM builds display zero. H40 Sonic ADPCM measured `3E..42`, about 7.62..8.11 ms. At low frame rates this phase includes any opportunistic CDC pump performed inside the longer decode. |
-| `U` | 4 (H40) | Main pattern-transfer time in Mega-CD stopwatch ticks, measured from the first run through the final DMA repair or CPU-direct write. One tick is 30.72 us; the 12-bit counter wraps after 4096 ticks (about 125.83 ms). |
-| `N` | 2 (H40) | Low byte of the source-aware packed cold-run descriptor count for this frame. This is the fragmentation count before a long run is split by the VBlank word budget and wraps at 256. |
+| `U` | 4 | Main pattern-transfer time in Mega-CD stopwatch ticks, measured from the first run through the final DMA repair or CPU-direct write. One tick is 30.72 us; the 12-bit counter wraps after 4096 ticks (about 125.83 ms). |
+| `N` | 2 | Low byte of the source-aware packed cold-run descriptor count for this frame. This is the fragmentation count before a long run is split by the VBlank word budget and wraps at 256. |
+| `J` | 2 | Sticky maximum streamed PrgBuf occupancy above the 404 KiB scheduling ceiling since BODY streaming began, in ceil-KiB units. `00` means the jitter headroom was never used. Values above `14` show that 20 KiB headroom was exhausted and sector-granular back-pressure entered the physical guard. `17` is the largest recording-gate value and proves the ring did not become full. Frame-0 boot staging is excluded. |

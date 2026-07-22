@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """Extract and aggregate the DEBUG HUD from a native playback recording.
 
-The player renders values only in this fixed internal order, with an H40-only
-diagnostic suffix:
+The player renders values only in one fixed 30-cell order in both modes:
 
-    H32: xxxx xx xx xx xx xx xx xx xx xx
-    H40: xxxx xx xx xx xx xx xx xx xx xx xxxx xx
+    H32/H40: xxxx xx xx xx xx xx xx xx xx xx xxxx xx xx
 
-The corresponding keys remain F/P/S/D/R/L/C/W/M/A/U/N in the CSV and report.
+The corresponding keys are F/P/S/D/R/L/C/W/M/A/U/N/J in the CSV and report.
 
 Frames are decoded sequentially through ffmpeg.  High-confidence OCR samples
 with the same F value are combined before R transitions are reported.  This is
@@ -35,6 +33,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 import read_frameno  # noqa: E402
+import av_config  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -300,13 +299,14 @@ def transition_indices(groups: list[FrameGroup]) -> list[int]:
 
 def _fmt(group: FrameGroup) -> str:
     v = group.values
-    h40 = f" U{v['U']:04X} N{v['N']:02X}" if "U" in v else ""
+    transfer = f" U{v['U']:04X} N{v['N']:02X}" if "U" in v else ""
+    jitter = f" J{v['J']:02X}" if "J" in v else ""
     return (
         f"loop={group.loop} t={group.time_first:8.3f}s "
         f"cap={group.capture_first:5d}-{group.capture_last:<5d} "
         f"F{v['F']:04X} P{v['P']:02X} S{v['S']:02X} D{v['D']:02X} "
         f"R{v['R']:02X} L{v['L']:02X} C{v['C']:02X} W{v['W']:02X} "
-        f"M{v['M']:02X} A{v['A']:02X}{h40} n={group.sample_count} "
+        f"M{v['M']:02X} A{v['A']:02X}{transfer}{jitter} n={group.sample_count} "
         f"conf={group.confidence:.3f}"
     )
 
@@ -317,6 +317,18 @@ def print_report(groups: list[FrameGroup], context: int) -> list[int]:
     print(f"first: {_fmt(groups[0])}")
     print(f"last:  {_fmt(groups[-1])}")
     print(f"R transitions: {len(transitions)}")
+    if "J" in groups[0].values:
+        peak = max(group.values["J"] for group in groups)
+        peak_group = next(group for group in groups if group.values["J"] == peak)
+        updates = sum(
+            groups[index].values["J"] > groups[index - 1].values["J"]
+            for index in range(1, len(groups))
+        )
+        print(
+            f"J high-water: {peak:02X} ({peak} KiB ceil) first at "
+            f"F{peak_group.values['F']:04X} ({peak_group.values['F']}), "
+            f"updates={updates}"
+        )
     for number, index in enumerate(transitions, 1):
         previous = groups[index - 1]
         current = groups[index]
@@ -343,7 +355,7 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
         "sample_count", "confidence", "frame", "frame_hex", "palette", "slip",
         "desync", "resync", "lead_256b", "lead_hex", "cd_wait", "sub_wait_lines",
         "main_vblank_wait", "sub_adpcm_decode_units", "main_pattern_ticks",
-        "main_pattern_ms", "cold_runs_low8",
+        "main_pattern_ms", "cold_runs_low8", "prgbuf_jitter_peak_kib",
         "r_transition", "prev_frame",
         "prev_lead_256b", "next_frame", "next_lead_256b",
     ]
@@ -380,6 +392,7 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
                     f"{values['U'] * 0.03072:.5f}" if "U" in values else ""
                 ),
                 "cold_runs_low8": values.get("N", ""),
+                "prgbuf_jitter_peak_kib": values.get("J", ""),
                 "r_transition": (
                     f"{previous.values['R']:02X}->{values['R']:02X}" if previous else ""
                 ),
@@ -391,12 +404,104 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
     print(f"CSV: {path}")
 
 
+def evaluate_upload_gate(
+    groups: list[FrameGroup], expected_frames: int, recording: Path
+) -> dict:
+    """Require a complete clean first loop before a recording may be uploaded."""
+    first_loop = [group for group in groups if group.loop == 0]
+    fields = ("S", "D", "R", "C", "M", "J")
+    failures: list[str] = []
+    missing = [field for field in fields if field not in first_loop[0].values]
+    maxima = {
+        field: max(group.values.get(field, 0) for group in first_loop)
+        for field in fields
+    }
+    if missing:
+        failures.append(f"HUD fields missing: {','.join(missing)}")
+
+    frames = [group.values["F"] for group in first_loop]
+    wanted = list(range(expected_frames))
+    if frames != wanted:
+        first_bad = next(
+            (index for index, (actual, expected) in enumerate(zip(frames, wanted))
+             if actual != expected),
+            min(len(frames), len(wanted)),
+        )
+        actual = frames[first_bad] if first_bad < len(frames) else None
+        expected = wanted[first_bad] if first_bad < len(wanted) else None
+        failures.append(
+            f"first loop is incomplete: got {len(frames)} frames, expected "
+            f"{expected_frames}; first mismatch index={first_bad} "
+            f"actual={actual} expected={expected}"
+        )
+
+    limits = {
+        "S": 0,
+        "D": 0,
+        "R": 0,
+        "C": 0,
+        "M": 1,
+        # J is ceil-KiB. Leave one complete KiB below the physical ring end so
+        # an accepted value proves head and tail never became equal at full.
+        # Values beyond jitter headroom remain visible for mandatory review.
+        "J": av_config.RING_SIZE_KB - av_config.PRG_BUF_CAP_KB - 1,
+    }
+    for field, limit in limits.items():
+        if maxima[field] > limit:
+            failures.append(
+                f"{field} peak {maxima[field]:02X} exceeds upload limit {limit:02X}"
+            )
+
+    stat = recording.stat()
+    result = {
+        "schema_version": 1,
+        "pass": not failures,
+        "recording": str(recording.resolve()),
+        "recording_size": stat.st_size,
+        "recording_mtime_ns": stat.st_mtime_ns,
+        "expected_frames": expected_frames,
+        "observed_first_loop_frames": len(first_loop),
+        "maxima": maxima,
+        "limits": limits,
+        "prg_buf_cap_kib": av_config.PRG_BUF_CAP_KB,
+        "backpressure_kib": av_config.BACKPRESSURE_KB,
+        "physical_ring_kib": av_config.RING_SIZE_KB,
+        "requires_explicit_upload_approval": True,
+        "failures": failures,
+    }
+    return result
+
+
+def write_gate_json(path: Path, result: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    state = "PASS" if result["pass"] else "FAIL"
+    maxima = result["maxima"]
+    print(
+        f"HUD record gate: {state}  "
+        + " ".join(f"{field}{maxima[field]:02X}" for field in "SDRCMJ")
+        + f"  frames={result['observed_first_loop_frames']}/"
+        f"{result['expected_frames']}"
+    )
+    for failure in result["failures"]:
+        print(f"  gate failure: {failure}")
+    print(f"HUD gate JSON: {path}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Aggregate the DEBUG HUD and report audio R transitions."
     )
     parser.add_argument("recording", type=Path, help="native FFV1 MKV or MP4 recording")
     parser.add_argument("--csv", type=Path, help="write all aggregated movie frames to CSV")
+    parser.add_argument(
+        "--gate-json", type=Path,
+        help="write the mandatory pre-upload review and fail on unsafe SDRCMJ values",
+    )
+    parser.add_argument(
+        "--expected-frames", type=int,
+        help="complete first-loop frame count required by --gate-json",
+    )
     parser.add_argument(
         "--confidence", type=float, default=0.90,
         help="minimum confidence for every HUD field (default: 0.90)",
@@ -431,6 +536,10 @@ def parse_args() -> argparse.Namespace:
             parser.error(f"--{name.replace('_', '-')} must be at least 1")
     if args.context < 0:
         parser.error("--context must not be negative")
+    if args.gate_json and not args.expected_frames:
+        parser.error("--gate-json requires --expected-frames")
+    if args.expected_frames is not None and args.expected_frames < 1:
+        parser.error("--expected-frames must be at least 1")
     return args
 
 
@@ -449,6 +558,11 @@ def main() -> int:
     transitions = print_report(groups, args.context)
     if args.csv:
         write_csv(args.csv, groups, transitions)
+    if args.gate_json:
+        result = evaluate_upload_gate(groups, args.expected_frames, args.recording)
+        write_gate_json(args.gate_json, result)
+        if not result["pass"]:
+            return 1
     return 0
 
 

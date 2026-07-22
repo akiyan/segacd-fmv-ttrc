@@ -74,23 +74,25 @@ def main():
                            for bit in range(3, -1, -1))
         if rows[0] != expected:
             raise SystemExit(f"glyph {value:X} barcode {rows[0]!r}, expected {expected!r}")
-    if read_frameno.HUD_CELLS != 22:
-        raise SystemExit(f"H32 HUD is {read_frameno.HUD_CELLS} cells, expected 22")
-    if read_frameno.HUD_H40_CELLS != 28:
+    if read_frameno.HUD_CELLS != 30:
+        raise SystemExit(f"H32 HUD is {read_frameno.HUD_CELLS} cells, expected 30")
+    if read_frameno.HUD_H40_CELLS != 30:
         raise SystemExit(
-            f"H40 HUD is {read_frameno.HUD_H40_CELLS} cells, expected 28")
+            f"H40 HUD is {read_frameno.HUD_H40_CELLS} cells, expected 30")
     check_case(256, {"F": 0x1234, "P": 0xAB, "S": 0xFF,
                      "D": 0x00, "R": 0x7E, "L": 0x68,
-                     "C": 0x02, "W": 0x03, "M": 0x04, "A": 0x1E}, (0, 5))
+                     "C": 0x02, "W": 0x03, "M": 0x04, "A": 0x1E,
+                     "U": 0x2345, "N": 0x17, "J": 0x0A}, (0, 5))
     check_case(320, {"F": 0x0000, "P": 0xFF, "S": 0x00,
                      "D": 0xFF, "R": 0x00, "L": 0x7F,
                      "C": 0x00, "W": 0xFF, "M": 0x02, "A": 0x00,
-                     "U": 0x1234, "N": 0x2F}, (0, 3))
+                     "U": 0x1234, "N": 0x2F, "J": 0x28}, (0, 3))
 
     h40 = np.asarray(make_hud(
         320, {"F": 0x0000, "P": 0x00, "S": 0x00, "D": 0x00,
               "R": 0x00, "L": 0x00, "C": 0x00, "W": 0x00,
-              "M": 0x00, "A": 0x00, "U": 0x0000, "N": 0x00},
+              "M": 0x00, "A": 0x00, "U": 0x0000, "N": 0x00,
+              "J": 0x00},
         origin=(0, 3), black_backing=True))
     if np.all(h40[3:11, read_frameno.HUD_H40_CELLS * 8:] == 0):
         raise SystemExit("H40 HUD unused width must remain movie-visible")
@@ -104,7 +106,7 @@ def main():
         raise SystemExit(
             f"standalone F API: got {frame:04X}/{confidence:.3f}, expected CAFE")
 
-    print("HUD OCR proof: OK (values only, H32 22 cells, H40 28 cells, "
+    print("HUD OCR proof: OK (values only, common H32/H40 30 cells, "
           "unused H40 width movie-visible, standalone F compatible)")
 
 

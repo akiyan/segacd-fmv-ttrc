@@ -2,12 +2,12 @@
 """実機/エミュ録画のデバッグHUD(左上端・1行)から各値を読む。
 
 HUD はカテゴリ文字を描かず、boot/movieplay_ip.s の固定順で値だけを描く:
-    H32: xxxx xx xx xx xx xx xx xx xx xx
-    H40: xxxx xx xx xx xx xx xx xx xx xx xxxx xx
-内部キー順は従来どおり F/P/S/D/R/L/C/W/M/A/U/N。F は16進4桁、L は
+    H32/H40: xxxx xx xx xx xx xx xx xx xx xx xxxx xx xx
+内部キー順は F/P/S/D/R/L/C/W/M/A/U/N/J。F は16進4桁、L は
 音声リードの上位byte（256B単位）、P/S/D/R/C/W/M/A/N はlow byteの
 16進2桁、U は16進4桁。U はMain pattern転送時間（Mega-CD stopwatchの
-30.72 us tick）、N はcold-run数の下位byte。
+30.72 us tick）、N はcold-run数の下位byte、J は404 KiBを超えた
+streamed PrgBuf占有量の再生中最大値（1 KiB単位、端数切り上げ）。
 各8x8セルの上段バーコードを直接4-bitとして読み、下段の小型hex字形とのNCCで
 信頼度を確認する。ネイティブ録画の原点(0,0)は即時判定し、位置がずれた画像だけ
 先頭4桁で原点を探索する。
@@ -45,8 +45,11 @@ HUD_FIELD_DIGITS = (     # 値のみ。field間の空けはない
     ("W", 2),
     ("M", 2),
     ("A", 2),
+    ("U", 4),
+    ("N", 2),
+    ("J", 2),
 )
-HUD_H40_FIELD_DIGITS = HUD_FIELD_DIGITS + (("U", 4), ("N", 2))
+HUD_H40_FIELD_DIGITS = HUD_FIELD_DIGITS
 
 
 def _make_layout(field_digits):
@@ -68,9 +71,8 @@ H40_NATIVE_WIDTH = 320
 def hud_layout_for_width(width):
     """Return the native H32/H40 layout from the captured frame width.
 
-    The values-only H40 row now fits inside 256 pixels, so row length can no
-    longer identify the mode.  OCR input is expected to retain the emulator's
-    native 256- or 320-pixel width.
+    H32 and H40 deliberately use the same 30-cell layout. Separate layout
+    objects remain for callers that retain native-mode metadata.
     """
     return HUD_H40_LAYOUT if width >= H40_NATIVE_WIDTH else HUD_LAYOUT
 

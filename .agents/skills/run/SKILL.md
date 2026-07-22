@@ -184,6 +184,10 @@ Before accepting the recording, verify:
   and packet metadata;
 - startup screens, later movie playback, visible DEBUG HUD, progression, and tail;
 - representative lossless frames against the sim when timing or fps behavior is new or suspect.
+- one complete HUD loop with `harness/startup_resync/analyze.py --gate-json`;
+  require every expected movie frame, `S/D/R/C=00`, `M<=01`, and `J<=17`.
+  Explicitly report whether `J` exceeded the 20 KiB jitter headroom (`J>14`).
+  Preserve the CSV and passing gate JSON next to the recording.
 
 Use `tools/extract_verification_frames.sh` for representative recording stills. Pass named
 timestamps and a `videos/<stem>/record_check` base; inspect only the new directory and its
@@ -198,9 +202,16 @@ recording, not a physical hardware recording.
 Use full HUD OCR only for requested diagnostics or to investigate a failure.
 Never use HUD OCR to choose a publication head cue or chapter offset.
 
+Do not enter Stage 5 when the HUD gate is missing or fails. Even on PASS, report
+the exact `S/D/R/C/M/J` maxima and stop `$run` until the user explicitly approves
+that recording. A nonzero `C` is not necessarily corruption, but fails the
+automatic safety gate so the critical-path CD spike can be investigated. Never
+waive or edit the sidecar.
+
 ## Stage 5: Compile and Upload Playback
 
-Pass only the latest verified native lossless MKV to `compilation`. Bake the
+Pass only the latest verified native lossless MKV with its matching passing
+HUD gate JSON to `compilation`. Bake the
 validated H32/H40 pixel aspect into 2048x1568 square pixels using nearest-neighbor
 scaling, H.264 CRF 10 slow, yuv420p, AAC 192 kbps, and faststart. Do not add
 `-ss`, `-t`, an fps filter, or `-r`.
@@ -229,6 +240,10 @@ re-upload and retain the returned URL.
 Stop before the next source whenever a stage fails. Preserve logs and evidence,
 identify the failing layer, fix it when the requested scope permits, and rerun
 the failed stage plus every downstream stage whose inputs changed.
+
+An absent or failed `S/D/R/C/M/J` gate is a Stage 4 failure. Stop before every
+analysis-independent playback compilation or upload until a newly recorded,
+complete loop passes.
 
 For new frame rates such as 24 fps, do not hide a player, recorder, or encoder
 defect by changing fps, shrinking the raster, loosening checks blindly, or
