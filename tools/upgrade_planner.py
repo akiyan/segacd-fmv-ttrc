@@ -56,6 +56,7 @@ def predict_update_demands(
     pattern_bytes: int = 32,
     max_cold: int = 0,
     protected_frames: Sequence[np.ndarray] | None = None,
+    boot_prefetch_requests: Sequence[tuple[bytes, int]] = (),
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate exact and protected byte demand in one VRAM dry run.
 
@@ -79,6 +80,7 @@ def predict_update_demands(
         pattern_bytes=pattern_bytes,
         max_cold=max_cold,
         protected_frames=protected_frames,
+        boot_prefetch_requests=boot_prefetch_requests,
     )
     return prediction.exact_bytes, prediction.protected_bytes
 
@@ -92,6 +94,7 @@ def predict_update_demand_details(
     pattern_bytes: int = 32,
     max_cold: int = 0,
     protected_frames: Sequence[np.ndarray] | None = None,
+    boot_prefetch_requests: Sequence[tuple[bytes, int]] = (),
 ) -> DemandPrediction:
     """Return the byte-demand traces and the cold counts behind them."""
 
@@ -185,6 +188,13 @@ def predict_update_demand_details(
             protected_cold_keys if frame_idx > 0 else ())
         cold_slots_by_frame.append(
             exact_cold_slots if frame_idx > 0 else ())
+
+        if frame_idx == 0:
+            for key, deadline in boot_prefetch_requests:
+                result = allocator.prefetch(key, frame_idx, int(deadline))
+                if result is None or not result[1]:
+                    raise ValueError(
+                        "boot-prefetch request does not fit a free VRAM slot")
 
         for cell in changed_cells:
             previous_keys[cell] = keys[cell]

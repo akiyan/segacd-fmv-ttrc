@@ -53,6 +53,12 @@ routing_equ_contract = {
         ttrc_routing.FEATURE_PATTERN_SUPPLY.bit_length() - 1),
     "FEATURE_SHADOW_UPDATE_LISTS_BIT": (
         ttrc_routing.FEATURE_SHADOW_UPDATE_LISTS.bit_length() - 1),
+    "FEATURE_VRAM_RAW_PREFETCH_BIT": (
+        ttrc_routing.FEATURE_VRAM_RAW_PREFETCH.bit_length() - 1),
+    "FEATURE_DICBUF_INDEXED_RUNS_BIT": (
+        ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS.bit_length() - 1),
+    "FEATURE_BOOT_VRAM_SIDECAR_BIT": (
+        ttrc_routing.FEATURE_BOOT_VRAM_SIDECAR.bit_length() - 1),
 }
 for equ_name, expected in routing_equ_contract.items():
     actual = _equ(text, equ_name, SP)
@@ -218,7 +224,7 @@ print(
     f"{routing_tmp:#x}..{routing_tmp + route_bytes:#x}, Word routing "
     f"{routing:#x}..{routing + route_bytes:#x}, PRG ring end {ring_end:#x}")
 
-# --- v12 boot-only pattern supply map ---
+# --- v13 boot-only pattern supply map ---
 word_buf = _equ(text, "WORD_BUF", SP)
 word_buf_patterns = _equ(text, "WORD_BUF_PATTERNS", SP)
 ip_word_buf_off = _equ(ip_text, "WORD_BUF_OFF", IP)
@@ -296,5 +302,19 @@ if sp_off != ip_off:
     sys.exit(
         f"check_player_ring: PALTAB_OFF mismatch sp={sp_off:#x} ip={ip_off:#x} "
         f"(the Word-RAM staging offset must agree between the two CPUs).")
+sp_stage_off = _equ(text, "PALTAB_STAGE_OFF", SP)
+ip_stage_off = _equ(ip_text, "PALTAB_STAGE_OFF", IP)
+if sp_stage_off != ip_stage_off:
+    sys.exit(
+        f"check_player_ring: PALTAB_STAGE_OFF mismatch "
+        f"sp={sp_stage_off:#x} ip={ip_stage_off:#x}")
+sp_stage = _equ(text, "PALTAB_STAGE_BYTES", SP)
+ip_stage = _equ(ip_text, "PALTAB_STAGE_BYTES", IP)
+expected_stage = av_config.PALTAB_STAGE_KB * 1024
+if sp_stage != expected_stage or ip_stage != expected_stage:
+    sys.exit(
+        "check_player_ring: PALTAB stage mismatch "
+        f"sp={sp_stage:#x} ip={ip_stage:#x} config={expected_stage:#x}")
 print(f"check_player_ring: OK  PALTAB_MAX_SEG={ip_max_seg} "
-      f"({ip_max_seg * 128 // 1024}KB Main-RAM table), staging offset {sp_off:#x}")
+      f"({ip_max_seg * 128 // 1024}KB Main-RAM table), staging offset {sp_off:#x}, "
+      f"temporary stage {sp_stage_off:#x}+{sp_stage // 1024}KB")

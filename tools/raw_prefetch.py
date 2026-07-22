@@ -1,11 +1,12 @@
-"""One-pass forecast for optional raw-pattern VRAM prefetch.
+"""Plan boot and optional streaming raw-pattern VRAM prefetch.
 
 The forecast is deliberately cheap: it walks the already-quantized exact
 movie once, marks frames whose protected exact demand exceeds the measured
-cold cap, and returns the most widely shared missing patterns first.  The
-caller currently considers only the immediately following frame.  The real
-encoder pass remains the authority for available cold/BODY/VRAM headroom and
-may skip any request.
+cold cap, and returns the most widely shared missing patterns first.  Boot
+planning then uses the inline frame-0 path and the boot sidecar to seed free
+resident VRAM slots with future exact patterns.  The live encoder remains the
+authority for actual slots and may reclaim speculative residency before its
+deadline.
 """
 from __future__ import annotations
 
@@ -27,6 +28,56 @@ class PrefetchForecast:
     requested_patterns: np.ndarray
 
 
+def plan_boot_requests(
+    prediction,
+    forecast: PrefetchForecast,
+    frame0_keys: Sequence[bytes],
+    *,
+    capacity: int,
+) -> tuple[tuple[bytes, int], ...]:
+    """Return deterministic future patterns to install while frame 0 boots.
+
+    Earlier deadlines win.  Within one deadline, patterns already identified
+    as cold-cap relief win, then protected exact demand, then all exact cold
+    demand.  The selected set is returned in reverse priority order: the
+    allocator hands out ascending free slots while later visible work reclaims
+    low speculative slots first, so the nearest/most important patterns are
+    deliberately installed last and survive longest.
+    """
+    capacity = int(capacity)
+    if capacity < 0:
+        raise ValueError("boot-prefetch capacity must be non-negative")
+    cold_frames = tuple(getattr(prediction, "cold_keys", ()) or ())
+    protected_frames = tuple(
+        getattr(prediction, "protected_keys", ()) or ())
+    frame_count = len(forecast.requests)
+    if cold_frames and len(cold_frames) != frame_count:
+        raise ValueError("boot-prefetch cold-key frame count differs")
+    if protected_frames and len(protected_frames) != frame_count:
+        raise ValueError("boot-prefetch protected-key frame count differs")
+    if not capacity or frame_count <= 1:
+        return ()
+
+    seen = {bytes(key) for key in frame0_keys}
+    selected: list[tuple[bytes, int]] = []
+    for deadline in range(1, frame_count):
+        groups = (
+            forecast.requests[deadline],
+            protected_frames[deadline] if protected_frames else (),
+            cold_frames[deadline] if cold_frames else (),
+        )
+        for group in groups:
+            for raw_key in group:
+                key = bytes(raw_key)
+                if key in seen:
+                    continue
+                seen.add(key)
+                selected.append((key, deadline))
+                if len(selected) == capacity:
+                    return tuple(reversed(selected))
+    return tuple(reversed(selected))
+
+
 def forecast_requests(
     pattern_frames: Sequence[np.ndarray],
     palette_frames: Sequence[np.ndarray],
@@ -34,6 +85,7 @@ def forecast_requests(
     *,
     vram_tiles: int,
     max_cold: int,
+    boot_prefetch_requests: Sequence[tuple[bytes, int]] = (),
 ) -> PrefetchForecast:
     """Return a conservative distinct-pattern request list for each frame.
 
@@ -101,6 +153,12 @@ def forecast_requests(
         requested_patterns[frame] = len(selected)
 
         alloc.place_frame([(cell, keys[cell]) for cell in changed], frame)
+        if frame == 0:
+            for key, deadline in boot_prefetch_requests:
+                result = alloc.prefetch(key, frame, int(deadline))
+                if result is None or not result[1]:
+                    raise ValueError(
+                        "boot-prefetch request does not fit a free VRAM slot")
         for cell in changed:
             previous_keys[cell] = keys[cell]
             previous_palettes[cell] = int(palettes[cell])

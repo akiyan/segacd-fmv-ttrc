@@ -137,7 +137,7 @@ find *some* resident rather than leave a hole.
 
 | Class | Colour | Bytes | Meaning |
 |-------|--------|-------|---------|
-| **Raw**  | black/white dashed border | 34 | An exact pattern delivered for this frame, loaded into VRAM before display, and used immediately. It is bounded by the per-frame cold cap. |
+| **Raw**  | black/white dashed border | 34 | An exact pattern delivered for this frame, loaded into VRAM before display, and used immediately. Timed frames are bounded by the per-frame cold cap; frame 0 is boot-loaded from `HEADER.DAT` and is exempt. |
 | **Same** | light/dark checker in legend; no map border | 0 or 2 (name only) | The target tile's exact pattern is **already resident** in VRAM. This includes a pattern prefetched in an earlier frame and first displayed now. No pattern transfer occurs this frame. |
 | **Near** | blue | 2 (name) | No exact match, but a resident pattern passes the **Near** thresholds; the cell points to it. Near-perfect reuse. Also covers "keep the current display" when the currently shown tile is already accurate and still within Near of the new target. |
 | **Coa**  | blue thick border (same colour as Near) | 2 (name) | Best resident passes **Coa** (a bit rougher than Near). Used for flat/low-detail tiles where a close-enough resident exists. Its meter/timeline fill remains green so Near and Coa totals remain distinguishable there. |
@@ -149,6 +149,14 @@ find *some* resident rather than leave a hole.
 | **Dic** | amber/transparent thin dashed border | 2 (name) | An exact cold load using an entry from persistent DicBuf. |
 
 ### Selection order (per changed tile, `commit_unified`)
+
+Frame 0 is a deliberate exception to this list. It has no timed BODY or cold
+budget, so every cell is installed as its exact target. The first cell using an
+exact pattern is `Raw`; further cells using the same pattern are `Same`.
+`Near`, `Coa`, `Flbk`, `Prg`, `Wr0`, `Wr1`, `Dic`, and `Miss` must all be zero
+in frame 0's displayed category totals. After those exact display patterns are
+placed, unused startup pattern capacity may install future exact patterns into
+otherwise-free VRAM slots; these have no displayed-cell category in frame 0.
 
 1. If the **currently displayed** tile is already accurate (its class last frame
    was exact) and is within `Near` of the new target -> keep it, 0 bytes -> `Near`.
@@ -184,20 +192,24 @@ yellow vertical **budget line** marking the per-frame update budget. The compact
 label is `Req:NNN Miss:NNN`.
 
 ### Cold meter
-`Cold:NNN` = this frame's **new tile loads** (`Raw + Prg + Wr0 + Wr1 + Dic + future raw
+`Cold:NNN` = this frame's **timed new tile loads** (`Raw + Prg + Wr0 + Wr1 + Dic + future raw
 prefetch`, i.e. every 32-byte pattern newly written to VRAM from any physical
 supply). The bar stacks the corresponding category/source colours and blue
 prefetch;
 full-scale = `cold_cap_for_fps`
 (`av_config.py`, selected only when mode/fps/active tiles exactly match a
 measured tuple; an unmeasured tuple is rejected before encoding).
+Frame 0 is outside this timing calculation and is displayed as `Cold:000`.
+Its Raw/Same category counts remain visible in the legend.
 This visualises the value the hardware slip investigations were fought over.
 
 ### Pre meter
-`Pre:NNN` is the number of future exact patterns successfully written into
-VRAM this frame without being displayed yet. Its full scale is the configured
-per-frame prefetch request cap. If one is used in a later frame, the displayed
-cell is `Same`, not `Raw`.
+`Pre:NNN` is the number of future exact patterns written by a timed frame
+without being displayed yet. Frame 0's boot preload is deliberately outside
+this meter and appears as `Pre:000`; its capacity and realized count remain in
+the decision log and report. The meter scale is the runtime per-frame request
+cap. If a prefetched pattern is used later, the displayed cell is `Same`, not
+`Raw`.
 
 ### Band meter (useful BODY delivery) - KiB/sec
 `Band` is the non-pad data physically read from `BODY.DAT` in this delivery
@@ -271,9 +283,9 @@ provide a pattern byte to the player.
 
 ### DMA meter
 `DMA:NNN` or `DMA:NNNN` = the number of **32-byte pattern tiles** transferred
-to VRAM this frame. The numeric field uses only the digits required by the
-current raster (three for full H32's 896 tiles, four for full H40's 1120), so
-the former five-digit byte meter is narrower. Its full-scale starts from the
+to VRAM by the timed frame. The numeric field uses the digits required by the
+current raster. Frame 0's boot construction is outside this calculation and is
+shown as zero. Its full-scale starts from the
 mode/fps theoretical VDP byte ceiling, subtracts the fixed full name-table DMA
 (`2 * cells` bytes), divides the remainder by 32 bytes/tile, and clamps it to
 the raster's tile count. Green fill; if the transfer exceeds that ceiling it
@@ -285,6 +297,8 @@ the pattern tiles, exactly matching the packer's cold-run descriptors, the
 Main CPU run-table record count, and H40 DEBUG HUD `N` (before its low-byte
 display truncation). Reuse entries do not break a run; a slot discontinuity
 does, including a wrap from the end of the slot pool to slot zero.
+Frame 0 is outside the timed run calculation and is shown as `Run:0000`, even
+though its internal boot-transfer trace remains available for packer checks.
 Cold payload order follows the movie-wide physical slot permutation and is
 independent of cell/name-update order. The optimizer targets the worst
 source-aware run count among frames at 85% or more of the measured cold cap;

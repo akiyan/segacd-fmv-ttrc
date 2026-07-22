@@ -554,6 +554,13 @@ def catmap_panel(i, sw, sh):
 
 def frame_data(i):
     cn = {k: int(FULL[k][i]) for k in FULL}
+    # Frame 0 is an untimed boot construction. Keep its Raw/Same display
+    # classification, but do not present boot work as timed codec load.
+    displayed_cold = (
+        cn["Raw"]
+        + sum(cn[name] for name in L.DISPLAY_SOURCE_ORDER)
+        + int(PREFETCH[i])
+    )
     return dict(C=C, counts=cn, fps=FPS, win=WIN,
                 mode=MODE, res=RES, audio=AUDIO_STR, avg_kbps=AVG_KBPS,
                 req=int(Want[i]), miss=cn["Miss"], budget=BUDGET,
@@ -563,15 +570,17 @@ def frame_data(i):
                     name: int(values[i])
                     for name, values in SUPPLY_REMAINING.items()
                 },
-                dma_tiles=int(DMA_TILES[i]), dma_runs=int(DMA_RUNS[i]),
-                body_payload_bytes=int(BODY_PAYLOAD_BYTES[i]),
-                body_control_bytes=int(BODY_CONTROL_BYTES[i]),
-                body_physical_bytes=int(BODY_PHYSICAL_BYTES[i]),
-                band_kbps=int(BAND[i]),
-                cold=(cn["Raw"] + sum(
-                    cn[name] for name in L.DISPLAY_SOURCE_ORDER)
-                      + int(PREFETCH[i])),
-                cold_prefetch=int(PREFETCH[i]),
+                dma_tiles=L.timed_metric_value(i, DMA_TILES[i]),
+                dma_runs=L.timed_metric_value(i, DMA_RUNS[i]),
+                body_payload_bytes=L.timed_metric_value(
+                    i, BODY_PAYLOAD_BYTES[i]),
+                body_control_bytes=L.timed_metric_value(
+                    i, BODY_CONTROL_BYTES[i]),
+                body_physical_bytes=L.timed_metric_value(
+                    i, BODY_PHYSICAL_BYTES[i]),
+                band_kbps=L.timed_metric_value(i, BAND[i]),
+                cold=L.timed_metric_value(i, displayed_cold),
+                cold_prefetch=L.timed_metric_value(i, PREFETCH[i]),
                 prefetch_cap=PREFETCH_CAP,
                 cold_cap=COLD_CAP,
                 pl_info=frame_plinfo(i),

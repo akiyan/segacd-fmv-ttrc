@@ -131,8 +131,13 @@ def dma_tile_capacity(mode, fps, cells):
 
 
 def dma_value_digits(cells):
-    """Digits needed by the DMA tile count for this raster."""
+    """Digits needed by the timed DMA tile count for this raster."""
     return len(str(max(0, int(cells))))
+
+
+def timed_metric_value(frame, value):
+    """Hide untimed frame-0 boot work from timing/load meters."""
+    return int(value) if int(frame) > 0 else 0
 
 
 def dma_run_worst_case(dma_tiles):

@@ -24,6 +24,24 @@ class DemandPredictionTests(unittest.TestCase):
 
         np.testing.assert_array_equal(demand, [0, 2])
 
+    def test_boot_prefetch_removes_future_pattern_payload_demand(self) -> None:
+        a = np.array([0, 1, 2, 3], np.uint8)
+        b = np.array([4, 5, 6, 7], np.uint8)
+        patterns = [np.stack([a]), np.stack([b])]
+        palettes = [np.array([0]), np.array([0])]
+
+        baseline, _risk = upgrade_planner.predict_update_demands(
+            patterns, palettes, vram_tiles=2)
+        demand, _risk = upgrade_planner.predict_update_demands(
+            patterns,
+            palettes,
+            vram_tiles=2,
+            boot_prefetch_requests=((bytes(b), 1),),
+        )
+
+        np.testing.assert_array_equal(baseline, [0, 34])
+        np.testing.assert_array_equal(demand, [0, 2])
+
     def test_cold_demand_is_clipped_to_hardware_limit(self) -> None:
         zero = np.zeros(4, np.uint8)
         patterns = [

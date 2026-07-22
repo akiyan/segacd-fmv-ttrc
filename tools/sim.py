@@ -262,9 +262,12 @@ COLD_CAP_QUALIFICATION = av_config.cold_cap_qualification(
 MAX_COLD = COLD_CAP_QUALIFICATION.cap
 MAX_RUN_CONTROL_BYTES = stream_schedule.max_run_control_reservation(
     MAX_COLD, ACTIVE_TILES)
-# Optional VRAM raw prefetch. It is profile-gated and off by default.  The
-# forecast requests only the exact cold excess of the next frame; only spare
-# cold/BODY capacity may load it, and visible work always wins.
+# Boot VRAM prefetch uses otherwise-unused frame-0 HEADER/staging capacity and
+# free resident slots.  It is default-on because it adds no timed BODY work.
+# Optional runtime prefetch remains profile-gated: only spare cold/BODY
+# capacity may move next-frame work earlier, and visible work always wins.
+BOOT_VRAM_PREFETCH_ON = (
+    os.environ.get("CBRSIM_BOOT_VRAM_PREFETCH", "1") != "0")
 RAW_PREFETCH_ON = os.environ.get("CBRSIM_RAW_PREFETCH", "0") != "0"
 RAW_PREFETCH_LOOKAHEAD = 1
 RAW_PREFETCH_MAX_REQUESTS_PER_FRAME = 32
@@ -622,7 +625,8 @@ EMIT_DEC = (str(OUT / "decisions.pkl")
             else _EMIT_DEC_ENV)
 
 
-def _source_run_groups(replay, sources_by_frame):
+def _source_run_groups(
+        replay, sources_by_frame, *, boot_inline_requests=None):
     """Partition each cold trace by the physical source that splits runs.
 
     Prg and Word loads can join only loads from the same source.  DicBuf also
@@ -657,6 +661,8 @@ def _source_run_groups(replay, sources_by_frame):
             else:
                 raise ValueError(
                     f"frame {frame} update {update} has invalid source {source}")
+        if frame == 0 and boot_inline_requests is not None:
+            prefetch_slots = prefetch_slots[:int(boot_inline_requests)]
         prg.extend(int(slot) for slot in prefetch_slots)
         groups = []
         if prg:
@@ -666,6 +672,19 @@ def _source_run_groups(replay, sources_by_frame):
         groups.extend(dic)
         result.append(tuple(groups))
     return tuple(result)
+
+
+def _run_accounted_cold_slots(replay, boot_inline_requests):
+    """Exclude direct boot-sidecar writes from the control-run optimizer."""
+    cold = list(replay.cold_slots)
+    if cold:
+        visible = tuple(
+            int(slot) for slot, is_cold in replay.placements[0] if is_cold)
+        inline = tuple(
+            int(slot) for slot in
+            replay.prefetch_cold_slots[0][:int(boot_inline_requests)])
+        cold[0] = visible + inline
+    return tuple(cold)
 
 
 def border_weight_mask():
@@ -1516,7 +1535,7 @@ def main():
                 previous_display_rgb, target_rgb, target_changed, coa_bounds)
             main_protected[i] = target_changed & ~graceful
         previous_target_rgb = target_rgb
-    demand_prediction = upgrade_planner.predict_update_demand_details(
+    baseline_demand_prediction = upgrade_planner.predict_update_demand_details(
         Q_pidx,
         Q_assign,
         vram_tiles=VRAM_TILES,
@@ -1524,6 +1543,56 @@ def main():
         pattern_bytes=PATTERN_BYTES,
         max_cold=MAX_COLD,
         protected_frames=main_protected,
+    )
+    baseline_prefetch_forecast = raw_prefetch.forecast_requests(
+        Q_pidx,
+        Q_assign,
+        main_protected,
+        vram_tiles=VRAM_TILES,
+        max_cold=MAX_COLD,
+    )
+    frame0_keys = tuple(dict.fromkeys(
+        Q_pidx[0][cell].tobytes() for cell in range(C_CELLS)))
+    frame0_inline_pattern_limit = min(
+        C_CELLS,
+        VRAM_TILES,
+        av_config.FRAME0_PATTERN_STAGING_KB * 1024 // PATTERN_BYTES,
+    )
+    boot_inline_capacity = max(
+        0, frame0_inline_pattern_limit - len(frame0_keys))
+    boot_sidecar_capacity = av_config.boot_vram_sidecar_capacity(
+        len(seg_pals))
+    boot_prefetch_capacity = min(
+        max(0, VRAM_TILES - len(frame0_keys)),
+        boot_inline_capacity + boot_sidecar_capacity,
+    )
+    boot_prefetch_plan = (
+        raw_prefetch.plan_boot_requests(
+            baseline_demand_prediction,
+            baseline_prefetch_forecast,
+            frame0_keys,
+            capacity=boot_prefetch_capacity,
+        )
+        if BOOT_VRAM_PREFETCH_ON else ()
+    )
+    boot_inline_requests = min(
+        len(boot_prefetch_plan), boot_inline_capacity)
+    boot_sidecar_requests = len(boot_prefetch_plan) - boot_inline_requests
+    # Re-run the cheap exact-target trace with the boot residency installed so
+    # pattern-supply credits, quality reserves, and runtime prefetch forecasts
+    # all see the same initial VRAM state as the real encoder pass.
+    demand_prediction = (
+        upgrade_planner.predict_update_demand_details(
+            Q_pidx,
+            Q_assign,
+            vram_tiles=VRAM_TILES,
+            name_bytes=NAME_BYTES,
+            pattern_bytes=PATTERN_BYTES,
+            max_cold=MAX_COLD,
+            protected_frames=main_protected,
+            boot_prefetch_requests=boot_prefetch_plan,
+        )
+        if boot_prefetch_plan else baseline_demand_prediction
     )
     slot_locality_map = os.environ.get("CBRSIM_SLOT_LOCALITY_MAP", "").strip()
     if slot_locality_map:
@@ -1573,6 +1642,7 @@ def main():
             main_protected,
             vram_tiles=VRAM_TILES,
             max_cold=MAX_COLD,
+            boot_prefetch_requests=boot_prefetch_plan,
         )
     else:
         prefetch_forecast = raw_prefetch.PrefetchForecast(
@@ -1621,7 +1691,12 @@ def main():
     )
     print(
         "raw VRAM prefetch: "
-        f"enabled={int(RAW_PREFETCH_ON)} lookahead={RAW_PREFETCH_LOOKAHEAD} "
+        f"boot={int(BOOT_VRAM_PREFETCH_ON)} "
+        f"frame0_exact={len(frame0_keys)} "
+        f"boot_loads={len(boot_prefetch_plan)}/{boot_prefetch_capacity} "
+        f"(inline={boot_inline_requests}/{boot_inline_capacity}, "
+        f"backside={boot_sidecar_requests}/{boot_sidecar_capacity}); "
+        f"runtime={int(RAW_PREFETCH_ON)} lookahead={RAW_PREFETCH_LOOKAHEAD} "
         f"max_requests/frame={RAW_PREFETCH_MAX_REQUESTS_PER_FRAME} "
         f"min_batch={RAW_PREFETCH_MIN_BATCH} "
         f"budget_floor={RAW_PREFETCH_BUDGET_FLOOR_PATTERNS}patterns "
@@ -1737,7 +1812,9 @@ def main():
         # Near: 変化タイルのうち見た目ほぼ同じ(F3)は先に省略(old表示を維持)。買い戻し(Raw更新)は
         # 準備金を食い潰すので入れない(=配給とセットでしか成立しないため今は無し)。
         # MIDFAR時は Near も統合探索(commit_unified)で判定するので事前フィルタしない。
-        near = near_mask_eval(cur_rgb, plain_rgb, changed) if (NEAR_ON and not MIDFAR_ON) else np.zeros(C_CELLS, bool)
+        near = (near_mask_eval(cur_rgb, plain_rgb, changed)
+                if i > 0 and NEAR_ON and not MIDFAR_ON
+                else np.zeros(C_CELLS, bool))
         # 同点tie-break: CENTERTIE_ON なら中央優先(lexsort: 主=-score, 副=center_dist)。
         # 既定は従来どおり argsort(-score)=不定(実機用simの決定を変えないため)。
         order = np.lexsort((center_dist, -score)) if CENTERTIE_ON else np.argsort(-score)
@@ -1890,6 +1967,33 @@ def main():
                     (int(mbk[cell, 0]), int(mbk[cell, 1]), int(mbk[cell, 2])))
             else:
                 revalidate_pattern_segment(key)
+
+        def commit_frame0_exact(c):
+            """Install frame 0 exactly; approximation has no boot-time value."""
+            nonlocal tile_recs, name_recs, dedup_saved, spent_tiles, cold_spent
+            key = plain_keys[c]
+            in_vram = key in loaded_keys
+            if in_vram:
+                dedup_saved += 1
+                dedup_mask[c] = True
+                activate_exact_pattern(key, c)
+                cost = NAME_BYTES
+            else:
+                loaded_keys.add(key)
+                cold_spent += 1
+                tile_recs += 1
+                raw_mask[c] = True
+                cost = NAME_BYTES + PATTERN_BYTES
+                cache_pattern(
+                    key, plain_rgb[c], sig2[c], assign[c], cur_seg)
+                append_coa_bucket(
+                    key,
+                    (int(mbk[c, 0]), int(mbk[c, 1]), int(mbk[c, 2])))
+            name_recs += 1
+            spent_tiles += cost
+            repoint(c, key, int(assign[c]), plain_rgb[c], i)
+            committed_plain[c] = key
+            updated[c] = True
 
         # frame0はDAT冒頭ヘッダで別ロード(リング非消費)なので常にcold上限を免除=全面フルロード。
         frame_max_cold = MAX_COLD if i > 0 else 0
@@ -2124,15 +2228,19 @@ def main():
             _lp_t = _lp_mark("decision_setup", _lp_t, _lp_frame)
 
         # 優先度順(予算内)。買えない高優先はスキップし、安い(常駐)セルは拾う
-        for c in order:
-            (commit_unified if MIDFAR_ON else commit_plain)(c)
+        if i == 0:
+            for c in range(C_CELLS):
+                commit_frame0_exact(c)
+        else:
+            for c in order:
+                (commit_unified if MIDFAR_ON else commit_plain)(c)
         if _loop_profile:
             _lp_t = _lp_mark("decision_commit", _lp_t, _lp_frame)
 
         # Upgrade approximate or carried cells to exact Raw/Buf using only
         # bytes above this frame's whole-movie reserve target.
         upgraded = 0
-        if UPGRADE_ON and QUALITY_BUDGET_ON:
+        if i > 0 and UPGRADE_ON and QUALITY_BUDGET_ON:
             upgrade_funded_limit = upgrade_planner.planned_spend_limit(
                 budget_before=quality_budget,
                 frame_supply=frame_cd,
@@ -2272,13 +2380,33 @@ def main():
             raise AssertionError(
                 f"frame {i}: physical source split does not cover Buf loads")
 
-        # Greedy raw prefetch runs only after visible updates and upgrades have
-        # been decided.  It may consume spare BODY bytes/cold slots for the
-        # next frame's predicted cold excess.  A speculative request is simply
-        # skipped when no unreferenced VRAM slot is safe.
+        # Raw prefetch runs only after visible updates and upgrades have been
+        # decided. Frame 0 installs the frozen boot plan into free slots;
+        # later frames may optionally spend spare BODY/cold room on the next
+        # frame's predicted excess.
         frame_prefetch_requests = []
         prefetch_cold_slots = []
-        if RAW_PREFETCH_ON and i > 0:
+        if i == 0 and boot_prefetch_plan:
+            for key, deadline in boot_prefetch_plan:
+                result = alloc.prefetch(key, i, deadline)
+                if result is None or not result[1]:
+                    raise AssertionError(
+                        "frame 0 boot prefetch did not use a free VRAM slot")
+                logical_slot, _cold = result
+                frame_prefetch_requests.append(
+                    (key, deadline, logical_slot))
+                cold_spent += 1
+                spent_tiles += PATTERN_BYTES
+                prefetch_cold_slots.append(
+                    int(physical_by_logical[logical_slot]))
+            if cold_spent > VRAM_TILES:
+                raise AssertionError(
+                    f"frame 0 exact+prefetch patterns {cold_spent} exceed "
+                    f"the {VRAM_TILES}-slot resident pool")
+            if len(frame0_keys) + boot_inline_requests > frame0_inline_pattern_limit:
+                raise AssertionError(
+                    "frame 0 inline patterns exceed the boot staging path")
+        elif RAW_PREFETCH_ON and i > 0:
             prefetch_spend_limit = min(
                 decision_budget,
                 max(
@@ -2356,8 +2484,12 @@ def main():
                 f"frame {i}: encoder cold={cold_spent} allocator cold={dma_tiles}")
         # MainのHUD Nと同じsource-aware physical run数。p45では1-2 tile runはCPU直書き、長runは
         # VBlank境界で複数DMAに割れるため、物理VDP DMA発行回数とは意図的に異なる。
+        run_prefetch_count = (
+            boot_inline_requests if i == 0 else len(prefetch_cold_slots))
+        run_tile_count = len(transfer_order) + run_prefetch_count
         dma_runs = pattern_supply.count_source_runs(
-            dma_slots, dma_sources, dma_dic_indices)
+            dma_slots[:run_tile_count], dma_sources[:run_tile_count],
+            dma_dic_indices[:run_tile_count])
         if dma_runs > cold_spent:
             raise AssertionError(
                 f"frame {i}: source-aware runs={dma_runs} exceed "
@@ -2476,6 +2608,21 @@ def main():
         if same_count < 0:
             raise AssertionError(
                 f"frame {i}: display categories exceed {C_CELLS} cells")
+        if i == 0:
+            if not bool(updated.all()):
+                raise AssertionError("frame 0 did not update every display cell")
+            if (source_count or near_count or coa_count or flbk_count or miss):
+                raise AssertionError(
+                    "frame 0 contains a non-Raw/Same display category")
+            if raw_count != len(frame0_keys):
+                raise AssertionError(
+                    f"frame 0 Raw={raw_count} but has "
+                    f"{len(frame0_keys)} exact unique patterns")
+            if raw_count + same_count != C_CELLS:
+                raise AssertionError("frame 0 Raw/Same coverage is incomplete")
+            if (not np.array_equal(disp_idx, plain_idx)
+                    or not np.array_equal(disp_pal, assign)):
+                raise AssertionError("frame 0 display is not the exact target")
         if EMIT_DEC:
             dec_miss.append(miss)
             # デバッグ欄用カテゴリ数: catmap と同一定義(Raw/Buf/Coa/Flbk/Near/Miss は互いに素、
@@ -2660,12 +2807,13 @@ def main():
             raise AssertionError(
                 f"final slot-locality logical replay tore {replay.tearing} patterns")
         final_locality = optimize_slot_locality(
-            replay.cold_slots,
+            _run_accounted_cold_slots(replay, boot_inline_requests),
             VRAM_TILES,
             cold_cap=MAX_COLD,
             iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
             run_groups_by_frame=_source_run_groups(
-                replay, supply_sources_log),
+                replay, supply_sources_log,
+                boot_inline_requests=boot_inline_requests),
         )
         final_mapping = np.asarray(
             final_locality.physical_by_logical, np.int64)
@@ -2696,13 +2844,21 @@ def main():
                  if sources[position] == pattern_supply.SOURCE_DIC else -1)
                 for position, index in enumerate(order)
             ]
-            slots.extend(int(final_mapping[slot]) for slot in prefetch_slots)
+            run_prefetch_slots = (
+                prefetch_slots[:boot_inline_requests]
+                if frame_index == 0 else prefetch_slots)
+            slots.extend(
+                int(final_mapping[slot]) for slot in run_prefetch_slots)
             sources.extend(
-                [pattern_supply.SOURCE_PRG] * len(prefetch_slots))
-            dic_indices.extend([-1] * len(prefetch_slots))
-            if len(slots) != int(transfer_tiles_log[frame_index]):
+                [pattern_supply.SOURCE_PRG] * len(run_prefetch_slots))
+            dic_indices.extend([-1] * len(run_prefetch_slots))
+            expected_run_tiles = (
+                int(transfer_tiles_log[frame_index]) - boot_sidecar_requests
+                if frame_index == 0 else int(transfer_tiles_log[frame_index]))
+            if len(slots) != expected_run_tiles:
                 raise AssertionError(
-                    f"frame {frame_index}: final slot-locality changed cold count")
+                    f"frame {frame_index}: final slot-locality changed "
+                    "inline cold count")
             final_runs.append(pattern_supply.count_source_runs(
                 slots, sources, dic_indices))
 
@@ -2911,8 +3067,10 @@ def main():
         f"avg_codec_work_bytes_per_frame={fb.mean():.1f}",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
         f"avg_PrgBuf_loads_per_frame={prg_loads.mean():.1f}",
-        f"raw_vram_prefetch={int(RAW_PREFETCH_ON)} "
-        f"loads={int(np.sum(prefetch_cold_log))} "
+        f"boot_vram_prefetch={int(BOOT_VRAM_PREFETCH_ON)} "
+        f"boot_loads={int(prefetch_cold_log[0]) if prefetch_cold_log else 0} "
+        f"runtime_raw_vram_prefetch={int(RAW_PREFETCH_ON)} "
+        f"total_loads={int(np.sum(prefetch_cold_log))} "
         f"request_events={sum(len(items) for items in prefetch_requests_log)} "
         f"cache_evictions={alloc.prefetch_cache_evictions} "
         f"pin_evictions={alloc.prefetch_evictions}",
@@ -2971,7 +3129,8 @@ def main():
     np.savez(OUT / "stats.npz", stats=stats, cols=cols, fps=FPS, cells=C_CELLS,
              active_tiles=ACTIVE_TILES, max_cold=MAX_COLD,
              raw_prefetch=np.asarray(prefetch_cold_log, np.int64),
-             raw_prefetch_cap=np.int64(RAW_PREFETCH_MAX_REQUESTS_PER_FRAME),
+             raw_prefetch_cap=np.int64(max(
+                 1, RAW_PREFETCH_MAX_REQUESTS_PER_FRAME)),
              cd1x=CD_RATE,
              body_gross_bytes=body_gross_bytes,
              body_fixed_control_bytes=body_fixed_control_bytes,
@@ -3093,6 +3252,7 @@ def main():
                 "max_cold": int(MAX_COLD),
             },
             "encoder": {
+                "boot_vram_prefetch": bool(BOOT_VRAM_PREFETCH_ON),
                 "raw_prefetch": bool(RAW_PREFETCH_ON),
                 "raw_prefetch_lookahead": int(RAW_PREFETCH_LOOKAHEAD),
                 "raw_prefetch_max_requests_per_frame": int(
@@ -3152,8 +3312,16 @@ def main():
                 },
             },
             "raw_prefetch": {
-                "schema_version": 1,
-                "enabled": bool(RAW_PREFETCH_ON),
+                "schema_version": 3,
+                "enabled": bool(BOOT_VRAM_PREFETCH_ON or RAW_PREFETCH_ON),
+                "boot_enabled": bool(BOOT_VRAM_PREFETCH_ON),
+                "runtime_enabled": bool(RAW_PREFETCH_ON),
+                "boot_capacity": int(boot_prefetch_capacity),
+                "boot_requests": int(len(boot_prefetch_plan)),
+                "boot_inline_capacity": int(boot_inline_capacity),
+                "boot_sidecar_capacity": int(boot_sidecar_capacity),
+                "boot_inline_requests": int(boot_inline_requests),
+                "boot_sidecar_requests": int(boot_sidecar_requests),
                 "lookahead": int(RAW_PREFETCH_LOOKAHEAD),
                 "max_requests_per_frame": int(
                     RAW_PREFETCH_MAX_REQUESTS_PER_FRAME),
@@ -3270,12 +3438,18 @@ def _derive_completed_slot_map(decision_log, output_path):
         raise AssertionError(
             f"seed slot-locality replay tore {replay.tearing} patterns")
     plan = optimize_slot_locality(
-        replay.cold_slots,
+        _run_accounted_cold_slots(
+            replay,
+            int((log.get("raw_prefetch") or {}).get(
+                "boot_inline_requests", 0))),
         int(log["vram_tiles"]),
         cold_cap=int(log.get("max_cold", 0)),
         iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
         run_groups_by_frame=_source_run_groups(
-            replay, (log.get("pattern_supply") or {}).get("sources", ())),
+            replay, (log.get("pattern_supply") or {}).get("sources", ()),
+            boot_inline_requests=int(
+                (log.get("raw_prefetch") or {}).get(
+                    "boot_inline_requests", 0))),
     )
     proof = verify_display_equivalence(
         frames,

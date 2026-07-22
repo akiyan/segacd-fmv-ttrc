@@ -52,22 +52,42 @@ QUALITY_BUDGET_KB = PRG_BUF_CAP_KB                   # virtual quality ceiling
 
 assert BACKPRESSURE_KB - RING_CAP_KB == RING_JITTER_HEADROOM_KB
 
-# --- CRAM pre-load table (PALTAB) capacity ---
-# All segment palettes ship once in a PALTAB region right after the header and
-# are copied at boot into a Main-RAM table (player `.equ PALTAB_MAX_SEG` in
+# --- v13 boot stage / CRAM pre-load table (PALTAB) capacity ---
+# A fixed 24 KiB boot stage ships right after the header.  All segment palettes
+# occupy its +0x1000..+0x3000 middle region and are copied at boot into a
+# Main-RAM table (player `.equ PALTAB_MAX_SEG` in
 # boot/movieplay_ip.s, asserted equal at build time by
 # tools/check_player_ring.py). The per-frame stream then carries only a 1-byte
 # segment reference (pal = seg+1, 0 = no switch) instead of a 128-byte CRAM
 # payload, so palettes are independent of stream timing (slip/recovery safe)
 # and the switch frame's budget is freed.
 # Capacity = Main-RAM table size = PALTAB_MAX_SEG * 128 bytes (64 -> 8 KB at
-# PALTAB_RAM 0xFFB000..0xFFD000). Raising it needs only this constant and the
-# player equ (build-checked), within these hard limits:
-#   * Word-RAM staging (O_PALTAB 0xB000..0x10000 = 20 KB) -> 160 segments max
+# PALTAB_RAM 0xFFB000..0xFFD000). Keep this constant and the player equ equal
+# (build-checked). Raising it beyond 64 also requires a new boot-stage layout:
+#   * palette part of the Word-RAM boot stage             -> 64 segments max
 #   * pal byte = seg+1 in one byte                        -> 255 segments max
 PALTAB_MAX_SEG = 64
+PALTAB_STAGE_KB = 24
+BOOT_VRAM_SIDECAR_ENTRY_BYTES = 34  # slot.u16 + packed 32-byte pattern
+BOOT_VRAM_REGION_A_BYTES = 0x0F00   # bank +0xA000..+0xAF00
+BOOT_VRAM_REGION_B_BYTES = 0x2000   # palette tail through bank +0xD000
+BOOT_VRAM_REGION_C_BYTES = 0x1000   # bank +0xF000..+0x10000
 
-assert PALTAB_MAX_SEG <= 160, "PALTAB staging (Word-RAM O_PALTAB) holds 160 segments max"
+
+def boot_vram_sidecar_capacity(palette_segments):
+    """Records preserved around frame-0 diagnostics, O_HDR, and Dic staging."""
+    palette_bytes = int(palette_segments) * 128
+    if not 0 <= palette_bytes <= BOOT_VRAM_REGION_B_BYTES:
+        raise ValueError("palette table exceeds the boot-sidecar middle region")
+    entry = BOOT_VRAM_SIDECAR_ENTRY_BYTES
+    return (
+        BOOT_VRAM_REGION_A_BYTES // entry
+        + (BOOT_VRAM_REGION_B_BYTES - palette_bytes) // entry
+        + BOOT_VRAM_REGION_C_BYTES // entry
+    )
+
+assert PALTAB_MAX_SEG * 128 <= BOOT_VRAM_REGION_B_BYTES, (
+    "PALTAB exceeds the middle region of the v13 Word-RAM boot stage")
 assert PALTAB_MAX_SEG <= 255, "pal byte = seg+1 addresses at most 255 segments"
 
 # --- Content timing shared by sim and pack ---

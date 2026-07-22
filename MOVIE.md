@@ -17,7 +17,7 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 12              (bump for an incompatible stream interpretation)
+VERSION        = 13              (bump for an incompatible stream interpretation)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = decoded header field (PCM: 888 B at N4 / 444 B at N2;
@@ -72,12 +72,20 @@ remains authoritative for physical pattern delivery.
 The optional feature bit 5 (`FEATURE_VRAM_RAW_PREFETCH`) keeps the same v11
 run-suffix syntax but allows additional Prg runs that have no same-frame name
 update. They load exact future patterns into unreferenced VRAM slots; a later
-name update reuses the resident slot without another pattern transfer.
+name update reuses the resident slot without another pattern transfer. The
+same syntax is valid in frame 0: after its exact display patterns, the remaining
+boot pattern allowance may preload future patterns directly into free VRAM.
 **v12** renames the Main-RAM pattern source to persistent `DicBuf`, expands it
 from 208 to 256 entries, and adds feature bit 6
 (`FEATURE_DICBUF_INDEXED_RUNS`). The existing four-byte run descriptor now
 carries an 8-bit DicBuf start index; Dic entries are reusable and are no longer
 consumed in chronological order. The `PSUP` extension version is 2.
+**v13** adds feature bit 7 (`FEATURE_BOOT_VRAM_SIDECAR`). Frame 0 still uses
+the existing control/F0PAT path for its visible exact patterns and any inline
+prefetch that fits that path. Additional future patterns are stored in a
+boot-stage sidecar and written directly to otherwise-unreferenced resident VRAM
+slots by the Main CPU. The sidecar changes startup only; it adds no timed-frame
+control record or playback-loop work.
 
 ## File layout
 
@@ -86,7 +94,7 @@ HEADER.DAT
 +--------------------------------------------------+  sector 0
 | HEADER (1 sector, zero-padded)                   |
 +--------------------------------------------------+  sector 1
-| PALTAB (paltab_sec sectors)                      |  all n_seg palettes, 128 B each
+| BOOT_STAGE (paltab_sec sectors)                  |  PALTAB plus optional boot-VRAM sidecar
 +--------------------------------------------------+
 | ADPCM_TABLE (5 sectors when feature bit 2 set)   |  8,800 B full lookup image
 +--------------------------------------------------+
@@ -123,9 +131,22 @@ until the Main CPU confirms that display; timed playback then begins while the
 no time budget and never competes with frame 1 delivery, while PrgBuf starts
 frame 1 pre-filled to its usable scheduling ceiling.
 
-During boot, frame 0's patterns temporarily occupy the 40 KiB jitter reserve
-between the 388 KiB usable PrgBuf ceiling and the 428 KiB physical ring; the largest
-H40 frame needs 36 KiB after sector rounding. The on-disc routing table is
+Frame 0 never uses approximation classes. Its complete name table points only
+at exact target patterns: the first physical load of each distinct pattern is
+Raw and its further cell references are Same. With feature bit 5, its cold-run
+suffix may append future-pattern loads without name updates while the ordinary
+frame-0 path remains at most `cells` patterns. With feature bit 7, the remaining
+future patterns use the boot sidecar instead. The combined exact-frame-0 and
+future-prefetch count is capped at the complete resident VRAM pool, not the
+visible cell count. For H40/320x224 with 1,518 resident slots, a frame containing
+1,120 distinct visible patterns can therefore preload all 398 backside slots.
+These patterns are speculative; later visible work may reclaim them before
+their predicted first use.
+
+During boot, frame 0's pattern stream temporarily occupies the 36 KiB boot-only
+staging area. That area combines 20 KiB of timed-delivery jitter headroom, the
+4 KiB physical guard, and 12 KiB of not-yet-active APPLY space; the largest H40
+frame needs 36 KiB after sector rounding. The on-disc routing table is
 staged in the not-yet-active APPLY ring,
 then copied identically into the final 16 KiB of both 1M Word-RAM banks after
 `HEADER.DAT` has been drained. Frame 0 is expanded before `BODY.DAT` can reuse
@@ -140,8 +161,8 @@ per-frame table transfer or pointer change after a bank handoff.
 
 When feature bit 3 is set, the Sub next loads three different chronological
 pattern sequences. Wr0 is written at offset `+0x15200` in the physical frame-0
-bank, Wr1 at the same offset in the other bank, and Main is staged at `+0xD000`
-in the frame-0 bank. The Main CPU copies Main once to `0xFF6600..0xFF8000`
+bank, Wr1 at the same offset in the other bank, and Dic is staged at `+0xD000`
+in the frame-0 bank. The Main CPU copies Dic once to `0xFF6600..0xFF8600`
 after the first handoff. Wr0 and Wr1 remain in their own physical banks; they
 are not duplicate copies.
 
@@ -152,7 +173,7 @@ First 22 bytes: `struct ">4sHHHHHHHHH"`.
 | Off | Size | Field          | Meaning |
 |-----|------|----------------|---------|
 | 0   | 4    | magic          | `"TTRC"` |
-| 4   | 2    | version        | format version (3 = fixed frames; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body; 7 = packed routing entries; 8 = feature-controlled fixed-N2 cadence; 9 = checkpointed ADPCM; 10 = four-source pattern supply) |
+| 4   | 2    | version        | format version (3 = palette table; 4 = rate-matched variable frames; 5 = startup PCM preload; 6 = split files and control-first body; 7 = packed routing; 8 = fixed-N2 contract; 9 = checkpointed ADPCM; 10 = pattern supply; 11 = shadow lists/raw prefetch; 12 = indexed DicBuf; 13 = boot-VRAM sidecar) |
 | 6   | 2    | frames         | total frame count (`nfr`) |
 | 8   | 2    | tcols          | tile grid columns |
 | 10  | 2    | trows          | tile grid rows |
@@ -186,7 +207,8 @@ Then:
   `HEADER.DAT` (v2+);
 - offset 44: `u32 f0_pat_sec` — sectors of frame 0's cold patterns in
   `HEADER.DAT` (v2+);
-- offset 48: `u32 paltab_sec` — sectors of the PALTAB region (v3; 0 = none);
+- offset 48: `u32 paltab_sec` — sectors of the boot-stage region containing
+  PALTAB (v3+) and, in v13, the optional boot-VRAM sidecar;
 - offset 52: `u16 vsync_n` (v4) — nearest display-VBlank interval
   `N = round(59.94/fps)` (15fps→4, 24/30fps→2). This is a cadence/performance
   hint, not a request to round delivery-paced 24fps to 29.97fps. `0` in v2/v3
@@ -224,7 +246,11 @@ Then:
   high-bit-tagged completed-list controls may occur; it is valid only together
   with bit 3 because completed-list entries omit cold/source metadata.
   Bit 5 (`FEATURE_VRAM_RAW_PREFETCH`, v11) allows the cold-run suffix to carry
-  additional Prg patterns that are not represented by same-frame updates.
+  additional Prg patterns that are not represented by same-frame updates,
+  including frame-0 boot loads of future patterns.
+  Bit 6 (`FEATURE_DICBUF_INDEXED_RUNS`, v12) selects indexed persistent DicBuf
+  run descriptors. Bit 7 (`FEATURE_BOOT_VRAM_SIDECAR`, v13) means the boot
+  stage carries the direct-to-VRAM sidecar described below.
   Unknown bits must not move any legacy field;
 - offset 64: 128 bytes = **`seg0`**, the CRAM palette (4 lines x 16 words) for the
   segment of frame 0, so the screen has correct colours before the first frame;
@@ -272,12 +298,12 @@ multiset is identical, and index 0 in all four lines stays zero. Frames are then
 quantised against that final grouping. This is a representation invariant, not
 another stream-layout version.
 
-## PALTAB (v3)
+## Boot stage / PALTAB (v13; palette table introduced in v3)
 
-`paltab_sec` sectors right after the first sector of `HEADER.DAT`: all `n_seg`
-segment palettes,
-128 bytes each, back to back (16 per sector), zero-padded to a sector boundary.
-At boot the Sub CPU stages this region into Word-RAM (same bank as frame 0) and
+`paltab_sec` sectors immediately follow the first sector of `HEADER.DAT`. The
+v13 stage is 24 KiB and is copied to Word-RAM bank offset `+0xA000`. All
+`n_seg` segment palettes remain back to back at `+0xB000`, 128 bytes each. At
+boot the Sub CPU stages this region into the frame-0 bank and
 the Main CPU copies it **once** into a Main-RAM table (8 KB, capacity
 `PALTAB_MAX_SEG` = 64 segments — see `tools/av_config.py`, asserted against the
 player at build time). Every later palette switch just indexes this table via
@@ -289,9 +315,24 @@ minimum and P0/index15 is tied for the global maximum. These fixed entries let
 a DEBUG player upload an opaque dark background and bright font once. Palette
 switches require no colour search, glyph rewrite, font DMA, or extra VBlank wait.
 
+When feature bit 7 is set, the same stage contains a directory at `+0xAFC0`:
+`"BVRM"`, then three big-endian `u16` record counts. Each record is a
+zero-based physical VRAM slot (`u16`) plus one packed 32-byte pattern. Records
+occupy three preserved holes: `+0xA000..+0xAF00`, the bytes after the palette
+table through `+0xD000`, and `+0xF000..+0x10000`. The intervening ranges are
+reserved for frame diagnostics, the duplicated 64-byte `O_HDR`, and the
+`+0xD000..+0xF000` Dic staging area. The Main CPU consumes these records after
+the final boot bank handoff and writes them directly to their resident VRAM
+slots. It repeats the same boot load on movie restart. Sidecar patterns do not
+appear in frame 0's run suffix or `O_LOADS`, but they do count in frame 0's
+internal boot-load totals. Analysis deliberately displays frame-0 Cold, Pre,
+DMA, Run, and Band as zero because they are timed-work meters. Sidecar patterns
+are not PrgBuf occupancy or a `Prg` displayed category: their physical source
+at this point is the temporary Word-RAM boot stage.
+
 ## ADPCM_TABLE (v9, feature bit 2)
 
-When `FEATURE_ADPCM22` is set, five sectors follow PALTAB. The first 8,800
+When `FEATURE_ADPCM22` is set, five sectors follow the boot stage. The first 8,800
 bytes are the immutable big-endian decoder image and the remaining 1,440 bytes
 are zero padding:
 
@@ -408,7 +449,7 @@ including the old 2.5-sector average at 30fps.
 light frames omit padding until that temporary lead is repaid. The complete
 stream converges to the CD 1x display-rate total without overflowing PrgBuf.
 Historical v2/v3 players defaulted `fps_int = 0` to 15, yielding the constant 5
-and reproducing the old fixed-slot behaviour. The current player accepts only v12 and
+and reproducing the old fixed-slot behaviour. The current player accepts only v13 and
 rejects a zero nominal fps before entering this schedule.
 
 The v6-and-later packer first spends that frame's allowance on control, then replaces
@@ -425,7 +466,7 @@ region remains on the 1001/400 two-or-three-sector sequence.
 The final `prebuf_sec` sectors of `HEADER.DAT` hold the first `Bpat`
 Prg-sourced patterns (32 bytes each) of frames 1 onward. Frame 0's patterns are
 in the earlier FRAME 0 region. The prebuffer is loaded into PrgBuf before
-playback and is capped by the 388 KiB usable Prg scheduling ceiling, so frame 1
+playback and is capped by the 404 KiB usable Prg scheduling ceiling, so frame 1
 starts armed.
 
 ## Frame (`fsec` sectors, rate-matched; frames 1..nfr-1)

@@ -188,7 +188,7 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
     ) = supply_values
     if pattern_supply_enabled:
         if not indexed_dicbuf:
-            raise ValueError("v12 pattern supply requires indexed DicBuf runs")
+            raise ValueError("v13 pattern supply requires indexed DicBuf runs")
         if supply_magic != PATTERN_SUPPLY_MAGIC:
             raise ValueError(f"bad pattern-supply magic: {supply_magic!r}")
         if supply_version != PATTERN_SUPPLY_VERSION or supply_reserved != 0:

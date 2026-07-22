@@ -268,7 +268,9 @@ player disc as
 `BODY.DAT`, `MOVIE.DAT`, and `palettes.bin` under `out/PROFILE/`, using the
 TOML filename as the artifact identity. Transient assembler files, disc staging,
 and the default direct-emulator scratch area are separated under `tmp/PROFILE/`.
-`HEADER.DAT` contains all startup state, including frame 0 and the prebuffer;
+`HEADER.DAT` contains all startup state, including an exact Raw/Same-only frame
+0, any future patterns placed into otherwise-free VRAM during that boot load,
+and the PrgBuf prebuffer;
 `BODY.DAT` starts at frame 1 and is read continuously. Their on-disc names
 remain fixed because the player opens those TTRC format names.
 

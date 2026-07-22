@@ -11,6 +11,13 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e85 : Make frame 0 an exact boot construction instead of passing it through
+#        the timed-frame Near/Coa/Flbk decision path. Its displayed categories
+#        are now strictly Raw for each first exact pattern load and Same for
+#        duplicate exact references. Fill the remaining 1,518-slot resident
+#        pool with deterministic future patterns, split between the existing
+#        inline frame-0 path and a v13 boot sidecar for backside VRAM. Timed
+#        visible work can reclaim speculative slots.
 #   e84 : Raise the qualified H40/30fps/1,120-active-tile cold cap from 175
 #        to 185 after e83 reduced every 85%-cap-or-heavier frame to at most 30
 #        source-aware runs. The full Sonic pack reconstructs all 2,714 frames
@@ -26,6 +33,11 @@
 #        1-2-tile runs for longer transfers. The optimizer targets worst-frame
 #        cold plus run-boundary cost rather than total runs, and the packer
 #        proves every displayed cell against the frozen decisions.
+#   p77 : Add the v13 fixed 24 KiB Word-RAM boot stage and have Main copy its
+#        optional sidecar patterns directly to final backside-VRAM slots before
+#        frame 0 and on movie restart. Preserved holes coexist with palettes,
+#        O_HDR, diagnostics and Dic staging. The Sub playback loop is unchanged
+#        and its specialized DEBUG binary remains 4,094 bytes.
 #   p76 : Two Main-side transfer-path changes for the cold-cap work.
 #        (1) Pre-swizzle the cold-run RUN_TABLE in Pass1: each record carries
 #        ready 0x93-0x97 register words (+2-adjusted Word-RAM source) and the
@@ -603,5 +615,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
-e=84
-p=76
+e=85
+p=77

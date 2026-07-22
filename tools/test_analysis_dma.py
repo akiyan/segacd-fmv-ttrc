@@ -9,9 +9,13 @@ from tile_alloc import count_slot_runs, slot_runs
 
 
 class AnalysisDmaTests(unittest.TestCase):
-    def test_dma_digits_follow_the_raster(self) -> None:
+    def test_dma_digits_follow_the_timed_raster(self) -> None:
         self.assertEqual(layout.dma_value_digits(32 * 28), 3)
         self.assertEqual(layout.dma_value_digits(40 * 28), 4)
+
+    def test_frame0_is_excluded_from_timed_metrics(self) -> None:
+        self.assertEqual(layout.timed_metric_value(0, 1518), 0)
+        self.assertEqual(layout.timed_metric_value(1, 185), 185)
 
     def test_run_digits_cover_full_h40_worst_case(self) -> None:
         self.assertEqual(layout.H40_FULL_TILES, 1120)

@@ -66,6 +66,7 @@ ENV_MAP = {
     ("encoder", "segment_palettes"): "CBRSIM_SEGPAL",
     ("encoder", "near"): "CBRSIM_NEAR",
     ("encoder", "coa"): "CBRSIM_COA",
+    ("encoder", "boot_vram_prefetch"): "CBRSIM_BOOT_VRAM_PREFETCH",
     ("encoder", "raw_prefetch"): "CBRSIM_RAW_PREFETCH",
     ("palette", "algorithm"): "CBRSIM_PAL_ALGO",
     ("palette", "map_weight"): "CBRSIM_PAL_MAP_WEIGHT",
@@ -84,6 +85,7 @@ PROFILE_ENV_DEFAULTS = {
     "CBRSIM_RESIZE_FILTER": "lanczos",
     "CBRSIM_MASTER_DENOISE": "1",
     "CBRSIM_QUALITY_BUDGET_KB": str(av_config.QUALITY_BUDGET_KB),
+    "CBRSIM_BOOT_VRAM_PREFETCH": "1",
     "CBRSIM_RAW_PREFETCH": "0",
 }
 

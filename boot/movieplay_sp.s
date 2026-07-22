@@ -93,8 +93,8 @@
 
 .equ SUB_BANK_1M, 0x000C0000
 
-/* --- TTRC v11 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
-.equ ROUTING_VERSION,       12
+/* --- TTRC v13 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
+.equ ROUTING_VERSION,       13
 .equ ROUTING_BYTES,         16384
 .equ ROUTING_MAX_FRAMES,    16384
 .equ ROUTING_SECTOR_BYTES,  2048
@@ -110,6 +110,7 @@
 .equ FEATURE_SHADOW_UPDATE_LISTS_BIT, 4
 .equ FEATURE_VRAM_RAW_PREFETCH_BIT, 5
 .equ FEATURE_DICBUF_INDEXED_RUNS_BIT, 6
+.equ FEATURE_BOOT_VRAM_SIDECAR_BIT, 7
 .equ SHADOW_UPDATE_LIST_BIT, 15
 .equ SHADOW_UPDATE_COUNT_MASK, 0x7FFF
 .equ ROUTING_COPY_LONGS,    4096
@@ -166,10 +167,10 @@
 .equ O_RESYNC, SUB_BANK_1M+0xAF20   /* 計測: 音声re-sync回数(リード下限/上限逸脱で書込ジャンプ=乱れの元) */
 .equ O_LEAD,   SUB_BANK_1M+0xAF22   /* 計測: 現コマの音声リード(write-play, バイト)。SYNC_MINに近づく=枯渇 */
 .equ O_HDR,    SUB_BANK_1M+0xAF80   /* ヘッダ先頭64Bの写し(MDがmode/tcols/trows/pool/baseを読む) */
-.equ PALTAB_OFF, 0xB000             /* PALTAB(全区間パレット)のWord-RAMステージ位置。boot時に
-                                       frame0と同じバンクへ置き、MDがMain-RAM表へ一度だけコピー。
-                                       0xB000..0x10000(CTRL_SCR手前)=20KB=160区間が物理上限。
-                                       ip.s の PALTAB_OFF と一致必須(check_player_ring.pyが検証) */
+.equ PALTAB_STAGE_OFF, 0xA000       /* v13 boot stage starts before the persistent palette */
+.equ PALTAB_OFF, 0xB000             /* palette table itself; ip.s must match */
+.equ PALTAB_STAGE_BYTES, 0x6000     /* +0xA000..+0x10000 temporary boot image */
+.equ O_PALTAB_STAGE, SUB_BANK_1M+PALTAB_STAGE_OFF
 .equ O_PALTAB, SUB_BANK_1M+PALTAB_OFF
 .equ DIC_STAGE, SUB_BANK_1M+0xD000 /* frame0 bank: DicBuf boot handoff, max 256 patterns */
 .equ DIC_STAGE_PATTERNS, 256
@@ -350,10 +351,10 @@ bad_header:
 	move.w	d0, h_f0_ctrl_sec
 	move.l	44(a0), d0			/* v2: frame0 pattern sectors @offset44 */
 	move.w	d0, h_f0_pat_sec
-	move.l	48(a0), d0			/* v3: PALTAB sectors @offset48 (v2ディスクは0) */
-	cmpi.w	#10, d0				/* 壊れたヘッダ対策: ステージ上限20KB=10secにクランプ */
+	move.l	48(a0), d0			/* v13: boot-stage sectors @offset48 */
+	cmpi.w	#12, d0				/* v13 boot-stage upper bound: 24KB=12 sectors */
 	bls	1f
-	moveq	#10, d0
+	moveq	#12, d0
 1:
 	move.w	d0, h_paltab_sec
 	/* Adapt both mid-expand and wave-writer polls to nominal fps.  24fps also
@@ -421,15 +422,15 @@ pm_set:
 1:
 	move.w	(a0)+, (a1)+
 	dbra	d1, 1b
-	/* PALTAB(ヘッダ直後, paltab_sec) → Word-RAM O_PALTAB へ(frame0と同じバンク)。
-	   MDはSTAT_READY後に一度だけMain-RAM表へコピーする(以降palバイトは表参照のみ)。 */
+	/* v13 boot stage(ヘッダ直後, paltab_sec) → Word-RAM +A000。
+	   MainはパレットをMain-RAM表へ、任意のsidecarをVRAMへ一度コピー。 */
 	moveq	#0, d0
 	PC_MOVE_W h_paltab_sec, PC_PALTAB_SEC, d0
 	beq	1f
-	lea	(O_PALTAB).l, a0
+	lea	(O_PALTAB_STAGE).l, a0
 	bsr	drain_lin_staged		/* CDC_TRN直行を避けSTAGE経由(スリップ防止) */
 1:
-	/* v9 ADPCM full lookup tables follow PALTAB.  Stage one immutable 8,800B
+	/* v9 ADPCM full lookup tables follow the v13 boot stage. Stage one immutable 8,800B
 	   image in boot-only PRG RAM, then duplicate it into the same offset of both
 	   physical 1M banks.  Two toggles return to the frame-0/PALTAB bank. */
 .ifdef INCLUDE_ADPCM_DECODER

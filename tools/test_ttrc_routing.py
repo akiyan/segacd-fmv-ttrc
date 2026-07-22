@@ -14,6 +14,7 @@ class RoutingEntryTests(unittest.TestCase):
         self.assertEqual(routing.FEATURE_FIXED_N2, 0x0002)
         self.assertEqual(routing.FEATURE_ADPCM22, 0x0004)
         self.assertEqual(routing.FEATURE_PATTERN_SUPPLY, 0x0008)
+        self.assertEqual(routing.FEATURE_BOOT_VRAM_SIDECAR, 0x0080)
 
     def test_all_valid_pairs_round_trip(self) -> None:
         seen = set()

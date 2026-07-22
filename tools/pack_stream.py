@@ -11,8 +11,8 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v12): HEADER.DAT = Header(1sec) + PALTAB(全区間パレット
-              n_seg×128B, boot時Main-RAM表へ) + [WR0/WR1/Dic pattern preloads]
+TTRCレイアウト(v13): HEADER.DAT = Header(1sec) + BOOT_STAGE(全区間パレット
+              n_seg×128B + optional boot-VRAM sidecar) + [WR0/WR1/Dic pattern preloads]
               + startup audio prefetch(1 sector/frame)
               + frame0(control+patterns) + routing(1B/frame: total<<3 | n_ctrl_sec)
               + prebuffer(payload先頭Bpat)
@@ -103,6 +103,7 @@ FEATURE_PATTERN_SUPPLY = ttrc_routing.FEATURE_PATTERN_SUPPLY
 FEATURE_SHADOW_UPDATE_LISTS = ttrc_routing.FEATURE_SHADOW_UPDATE_LISTS
 FEATURE_VRAM_RAW_PREFETCH = ttrc_routing.FEATURE_VRAM_RAW_PREFETCH
 FEATURE_DICBUF_INDEXED_RUNS = ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS
+FEATURE_BOOT_VRAM_SIDECAR = ttrc_routing.FEATURE_BOOT_VRAM_SIDECAR
 ADPCM_TABLE_SECTORS = math.ceil(ima_adpcm.FULL_TABLE_BYTES / SECTOR)
 ROUTING_MAX_FRAMES = ttrc_routing.MAX_FRAMES
 
@@ -219,21 +220,21 @@ def require_canonical_p0_debug_colours(log):
     """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
     if not seg_pals:
-        raise SystemExit("pack v12: decision log has no segment palettes; re-run sim")
+        raise SystemExit("pack v13: decision log has no segment palettes; re-run sim")
     for seg, pals in enumerate(seg_pals):
         a = np.asarray(pals, np.uint8)
         if a.shape != (4, 15, 3):
             raise SystemExit(
-                f"pack v12: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
+                f"pack v13: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
                 "re-run sim")
         brightness = a.astype(np.int16).sum(axis=2)
         if int(brightness[0, 0]) != int(brightness.min()):
             raise SystemExit(
-                f"pack v12: decision log segment {seg} P0 index1 is not tied for globally "
+                f"pack v13: decision log segment {seg} P0 index1 is not tied for globally "
                 "darkest usable CRAM colour (RGB sum); re-run sim with the current encoder")
         if int(brightness[0, 14]) != int(brightness.max()):
             raise SystemExit(
-                f"pack v12: decision log segment {seg} P0 index15 is not tied for globally "
+                f"pack v13: decision log segment {seg} P0 index15 is not tied for globally "
                 "brightest usable CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
@@ -422,9 +423,36 @@ def sourced_transfer_runs(
         synthetic, [True] * len(synthetic), item_sources, run_dic_indices)
 
 
+def split_boot_prefetch(log, prefetch_per):
+    """Split frame-0 prefetch into the ordinary control path and boot sidecar."""
+    if not prefetch_per:
+        return tuple(prefetch_per), ()
+    raw = log.get("raw_prefetch") or {}
+    schema = int(raw.get("schema_version", 0))
+    frame0 = tuple(prefetch_per[0])
+    cold_count = sum(bool(item[1]) for item in frame0)
+    if schema < 3:
+        inline_count = cold_count
+        sidecar_count = 0
+    else:
+        inline_count = int(raw.get("boot_inline_requests", -1))
+        sidecar_count = int(raw.get("boot_sidecar_requests", -1))
+        if min(inline_count, sidecar_count) < 0:
+            raise SystemExit(
+                "pack: schema-3 boot prefetch lacks inline/sidecar counts")
+        if inline_count + sidecar_count != cold_count:
+            raise SystemExit(
+                "pack: boot-prefetch split differs from resolved frame 0")
+    if any(not bool(item[1]) for item in frame0):
+        raise SystemExit("pack: frame-0 boot prefetch must be entirely cold")
+    inline = list(tuple(frame) for frame in prefetch_per)
+    inline[0] = frame0[:inline_count]
+    return tuple(inline), frame0[inline_count:inline_count + sidecar_count]
+
+
 def run_stats(
         per, sources=None, prefetch_per=None, dic_indices=None,
-        transfer_orders=None):
+        transfer_orders=None, boot_sidecar=()):
     """フレーム内cold tile数とplayer cold-run record数を返して表示する。"""
     runs_per_frame = np.zeros(len(per), np.int64)
     colds_per_frame = np.zeros(len(per), np.int64)
@@ -456,21 +484,32 @@ def run_stats(
                 wr_per_frame[i] += count
             elif source == pattern_supply.SOURCE_DIC:
                 dic_per_frame[i] += count
+    # The boot sidecar writes directly from the temporary boot-stage handoff.
+    # It is Cold work, but it is neither a PrgBuf source nor an O_LOADS run.
+    sidecar_count = sum(bool(item[1]) for item in boot_sidecar)
+    if sidecar_count:
+        colds_per_frame[0] += sidecar_count
     tot_c = int(colds_per_frame.sum())
     tot_r = int(runs_per_frame.sum())
-    heavy = colds_per_frame >= 300
-    msg = (f"run_stats: cold計{tot_c} run計{tot_r} 平均ラン長{tot_c / max(1, tot_r):.1f} "
+    run_colds_per_frame = colds_per_frame.copy()
+    run_colds_per_frame[0] -= sidecar_count
+    run_cold_total = int(run_colds_per_frame.sum())
+    heavy = run_colds_per_frame >= 300
+    msg = (f"run_stats: cold計{tot_c} run対象cold計{run_cold_total} run計{tot_r} "
+           f"平均ラン長{run_cold_total / max(1, tot_r):.1f} "
            f"フレーム最大run数{int(runs_per_frame.max())}")
+    if sidecar_count:
+        msg += f" boot backside={sidecar_count}"
     if heavy.any():
         msg += (f"  重量フレーム(cold>=300, {int(heavy.sum())}枚): "
                 f"平均run数{runs_per_frame[heavy].mean():.1f} "
-                f"平均ラン長{(colds_per_frame[heavy].sum() / max(1, runs_per_frame[heavy].sum())):.1f}")
+                f"平均ラン長{(run_colds_per_frame[heavy].sum() / max(1, runs_per_frame[heavy].sum())):.1f}")
     print(msg)
     print(f"  source patterns: Prg={int(prg_per_frame.sum())} "
           f"Wr0={int(wr_per_frame[::2].sum())} Wr1={int(wr_per_frame[1::2].sum())} "
-          f"Dic={int(dic_per_frame.sum())}")
-    # O_LOADS stores four bytes per run and only Prg patterns inline. Wr/Dic
-    # runs point at their persistent preload instead of copying pattern bytes.
+          f"Dic={int(dic_per_frame.sum())} BootSidecar={sidecar_count}")
+    # O_LOADS stores four bytes per run and only ordinary Prg patterns inline.
+    # Wr/Dic runs point at their persistent preload instead of copying bytes.
     loads_bytes = prg_per_frame * PAT + runs_per_frame * 4
     O_LOADS_CAP = 0x9800 - 0x84
     if int(loads_bytes.max()) > O_LOADS_CAP:
@@ -884,7 +923,9 @@ def schedule(per, n_load, blocks):
         raise SystemExit(f"pack: {exc}") from exc
 
 
-def decode_verify(log, per, blocks, supply_plan, sc, compare_dir=None, sample_dir=None):
+def decode_verify(
+        log, per, blocks, supply_plan, sc, compare_dir=None, sample_dir=None,
+        boot_sidecar=()):
     """Simulate the current control-first player and compare it with sim output.
 
     A frame consumes its already-armed cold patterns before that frame's BODY
@@ -906,12 +947,24 @@ def decode_verify(log, per, blocks, supply_plan, sc, compare_dir=None, sample_di
     # (これを分けないと frame0 のパターンをリングから食い、末尾で nl0 個ぶん枯渇して見える。)
     f0h = bool(sc.get("f0_header", False))
     nl0 = int(sc.get("f0_cold", 0)) if f0h else 0
+    sidecar_count = sum(bool(item[1]) for item in boot_sidecar)
+    f0_inline = nl0 - sidecar_count
+    if f0_inline < 0:
+        raise ValueError("boot sidecar exceeds frame-0 pattern payload")
     prg_patterns = supply_plan.prg_patterns
-    f0_ring = deque(prg_patterns[:nl0])
+    f0_ring = deque(prg_patterns[:f0_inline])
     ring = deque(prg_patterns[nl0:nl0 + B]); pc = nl0 + B; cc = 0
     word = [deque(supply_plan.wr0_patterns), deque(supply_plan.wr1_patterns)]
     dic = tuple(supply_plan.dic_patterns)
     tile = [None] * (POOL + BASE + 2)
+    sidecar_patterns = prg_patterns[f0_inline:nl0]
+    if len(sidecar_patterns) != sidecar_count:
+        raise ValueError("boot sidecar pattern stream is truncated")
+    for item, pattern in zip(boot_sidecar, sidecar_patterns):
+        slot = int(item[0])
+        if not 0 <= slot < POOL:
+            raise ValueError(f"boot sidecar slot {slot} is outside the pool")
+        tile[slot + BASE] = pattern
     nt_slot = np.zeros(C_CELLS, np.int64); nt_pal = np.zeros(C_CELLS, np.int64)
     diffs = []; ring_peak = len(ring); bad = 0
     for i in range(len(per)):
@@ -1027,11 +1080,13 @@ def _decode_control_chunk(chunk):
     return ima_adpcm.pcm16_to_sign_magnitude(decoded)
 
 
-def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL):
-    """Write the v12 split stream and a combined tooling container.
+def write_stream(
+        path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL,
+        boot_sidecar=()):
+    """Write the v13 split stream and a combined tooling container.
 
     HEADER.DAT:
-      Header(1sec) | PALTAB | [ADPCM_TABLE] | [WR0] | [WR1] | [MAIN]
+      Header(1sec) | BOOT_STAGE | [ADPCM_TABLE] | [WR0] | [WR1] | [MAIN]
                    | STARTUP_AUDIO
                    | FRAME0(control+patterns)
                    | ROUTING(0..N-1,[0]=0,0) | PREBUF1(frame1用RING_CAP)
@@ -1041,8 +1096,8 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
 
     frame0 はストリーミングのリングを経由せず boot 中に VRAM 直ロードするので、リングは
     常に RING_CAP 以下=back-pressure非接触。frame1以降が満タンリングで始まる。
-    PALTAB = 全区間パレット(n_seg×128B, セクタ整列)。実機はboot時にWord-RAM経由で
-    Main-RAM表へコピーし、以降のpalバイト(区間番号+1)で表を引く(in-stream CRAM廃止)。"""
+    BOOT_STAGE = 全区間パレット(n_seg×128B)と任意の裏VRAMパターン。
+    Mainはboot時に前者をMain-RAM表へ、後者をVRAMの指定slotへコピーする。"""
     n_pay_sec = sc["n_pay_sec"]; n_ctrl_sec = sc["n_ctrl_sec"]
     Bpat = int(sc["prebuf_pat"])
     frame_seg = np.asarray(log["frame_seg"], np.int64)
@@ -1054,6 +1109,10 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
             "routing table; split or shorten the source")
     f0_header = bool(sc.get("f0_header", False))
     nl0 = int(sc.get("f0_cold", 0))
+    sidecar_count = sum(bool(item[1]) for item in boot_sidecar)
+    f0_inline = nl0 - sidecar_count
+    if f0_inline < 0:
+        raise SystemExit("pack: boot sidecar exceeds frame-0 pattern payload")
     f0_ctrl_len = int(sc.get("f0_ctrl_len", 0))
     payload = b"".join(supply_plan.prg_patterns)
     wr0_blob = b"".join(supply_plan.wr0_patterns)
@@ -1106,7 +1165,7 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
     # frame0の control/patterns をストリームから切り出す(ヘッダ側へ)
     if f0_header:
         f0_ctrl = control[:f0_ctrl_len]
-        f0_pat = payload[:nl0 * PAT]
+        f0_pat = payload[:f0_inline * PAT]
         stream_ctrl = control[f0_ctrl_len:]          # frames1+ の control連結
         stream_pay = payload[nl0 * PAT:]             # frames1+ の payload連結
         f0_ctrl_sec = -(-len(f0_ctrl) // SECTOR)
@@ -1147,9 +1206,58 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
     if mode_name not in {"H32", "H40", "MODE4"}:
         raise SystemExit(f"pack: unsupported display mode in decision log: {mode_name!r}")
     _mode = {"H32": 0, "H40": 1, "MODE4": 2}[mode_name]
-    # PALTAB: 全区間パレットをヘッダ直後に一括配置(セクタ整列)。boot時にMain-RAM表へ。
-    paltab = b"".join(pals_to_bytes_128(p) for p in log["seg_pals"])
-    paltab_sec = -(-len(paltab) // SECTOR)
+    # v13 stages one 24KiB boot image at Word-RAM +0xA000. The palette remains
+    # at +0xB000. Sidecar records occupy three holes that survive frame-0
+    # expansion and the later +0xD000..+0xF000 Dic staging.
+    palette_table = b"".join(
+        pals_to_bytes_128(p) for p in log["seg_pals"])
+    sidecar_patterns = supply_plan.prg_patterns[f0_inline:nl0]
+    if len(sidecar_patterns) != sidecar_count:
+        raise SystemExit("pack: boot sidecar pattern stream is truncated")
+    stage_bytes = av_config.PALTAB_STAGE_KB * 1024
+    paltab = bytearray(stage_bytes)
+    palette_offset = 0x1000
+    paltab[palette_offset:palette_offset + len(palette_table)] = palette_table
+    region_offsets = (
+        0x0000,
+        palette_offset + len(palette_table),
+        0x5000,
+    )
+    region_capacities = (
+        av_config.BOOT_VRAM_REGION_A_BYTES
+        // av_config.BOOT_VRAM_SIDECAR_ENTRY_BYTES,
+        (av_config.BOOT_VRAM_REGION_B_BYTES - len(palette_table))
+        // av_config.BOOT_VRAM_SIDECAR_ENTRY_BYTES,
+        av_config.BOOT_VRAM_REGION_C_BYTES
+        // av_config.BOOT_VRAM_SIDECAR_ENTRY_BYTES,
+    )
+    if sum(region_capacities) < sidecar_count:
+        raise SystemExit(
+            f"pack: boot sidecar needs {sidecar_count} records, preserved "
+            f"Word-RAM regions hold {sum(region_capacities)}")
+    region_counts = []
+    source_index = 0
+    for offset, capacity in zip(region_offsets, region_capacities):
+        count = min(capacity, sidecar_count - source_index)
+        region_counts.append(count)
+        cursor = offset
+        for item, pattern in zip(
+                boot_sidecar[source_index:source_index + count],
+                sidecar_patterns[source_index:source_index + count]):
+            slot = int(item[0])
+            if not 0 <= slot < POOL:
+                raise SystemExit(
+                    f"pack: boot sidecar slot {slot} is outside pool {POOL}")
+            record = struct.pack(">H", slot) + pattern
+            paltab[cursor:cursor + len(record)] = record
+            cursor += len(record)
+        source_index += count
+    if source_index != sidecar_count:
+        raise AssertionError("boot sidecar region split lost records")
+    if sidecar_count:
+        struct.pack_into(
+            ">4sHHH", paltab, 0x0FC0, b"BVRM", *region_counts)
+    paltab_sec = len(paltab) // SECTOR
     # One reconstructed PCM chunk per sector lets the Sub write each chunk without
     # cross-sector staging. Offset 58 now carries the RF5C164 frequency delta;
     # offset 60 tells the player how many HEADER sectors to queue before PCM starts.
@@ -1165,7 +1273,7 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
     fps_int = int(round(FPS))                         # 名目fps。FEATURE_FIXED_N2時はplayerが1001/400を選ぶ
     audio_fd = av_config.rf5c164_fd(AUDIO_PCM, PLAYBACK_FPS)
     if not f0_header:
-        raise SystemExit("pack v12 requires frame0 in HEADER.DAT")
+        raise SystemExit("pack v13 requires frame0 in HEADER.DAT")
     features = FEATURE_COLD_RUNS | FEATURE_DICBUF_INDEXED_RUNS
     if av_config.uses_fixed_n2_cadence(FPS):
         features |= FEATURE_FIXED_N2
@@ -1178,13 +1286,15 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
         features |= FEATURE_SHADOW_UPDATE_LISTS
     if bool((log.get("raw_prefetch") or {}).get("enabled", False)):
         features |= FEATURE_VRAM_RAW_PREFETCH
+    if sidecar_count:
+        features |= FEATURE_BOOT_VRAM_SIDECAR
     header = struct.pack(">4sHHHHHHHHH", MAGIC, VERSION, nfr, TCOLS, TROWS, C_CELLS,
                          POOL, BASE, FRAME_SECTORS, len(log["seg_pals"]))
     header += struct.pack(">LLLL", Bpat, routing_sec, prebuf_sec, ring_peak)
     header += bytes([_mode])                          # offset 38: display mode
     header += b"\0"                                   # offset 39: pad
     header += struct.pack(">LL", f0_ctrl_sec, f0_pat_sec)  # offset 40,44: frame0ブロック
-    header += struct.pack(">L", paltab_sec)          # offset 48: PALTABセクタ数(v3)
+    header += struct.pack(">L", paltab_sec)          # offset 48: boot-stage sectors(v13)
     # offset 54 is always the decoded RF5C164 byte/sample count.  PCM stores
     # the same number in controls; FEATURE_ADPCM22 derives control bytes as
     # checkpoint(4) + AUDIO_PCM/2 without expanding the fixed 64-byte header.
@@ -1206,6 +1316,10 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
             wr0_sec, wr1_sec, dic_sec,
         )
     header = player_constants.stamp_header_sector(header)
+    # Staging at +0xA000 crosses O_HDR (+0xAF80). Restore the exact first
+    # 64-byte copy as part of the immutable stage image; Main reads it after
+    # the final bank handoff.
+    paltab[0x0F80:0x0FC0] = header[:64]
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
                   + f0_pat.ljust(f0_pat_sec * SECTOR, b"\0"))
     adpcm_table_blob = (
@@ -1305,9 +1419,9 @@ def write_stream(path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POO
           f"startup_audio prefetch {audio_prefetch_frames}f "
           f"preload Wr0/Wr1/Dic={len(supply_plan.wr0_patterns)}/"
           f"{len(supply_plan.wr1_patterns)}/{len(supply_plan.dic_patterns)} "
-          f"frame0 {f0_ctrl_sec}+{f0_pat_sec} "
+          f"frame0 {f0_ctrl_sec}+{f0_pat_sec} backside={sidecar_count} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v12 N={vsync_n}"
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v13 N={vsync_n}"
           f"(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO_KIND} "
           f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B FD=0x{audio_fd:04X}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
@@ -1392,6 +1506,8 @@ def main():
     POOL = args.pool_slots or int(log["vram_tiles"])
     (per, prefetch_per, transfer_orders, n_load, n_upd, pal_w,
      Plist, tearing) = resolve(log, POOL, mode=args.alloc)
+    inline_prefetch_per, boot_sidecar = split_boot_prefetch(
+        log, prefetch_per)
     print(f"resolve[{args.alloc}]: tearing={tearing} M(payload)={len(Plist)} frames={len(per)}")
     supply_enabled = bool(args.pattern_supply and FPS >= 24.0)
     if args.pattern_supply and not supply_enabled:
@@ -1403,7 +1519,7 @@ def main():
     if supply_enabled and int((log.get("pattern_supply") or {}).get(
             "schema_version", 0)) != 2:
         raise SystemExit(
-            "pack v12 requires a current DicBuf decision log; re-run sim")
+            "pack v13 requires a current DicBuf decision log; re-run sim")
     print(f"  pattern supply: enabled={int(supply_plan.enabled)} "
           f"Prg={len(supply_plan.prg_patterns)} "
           f"Wr0={len(supply_plan.wr0_patterns)}/{pattern_supply.WORD_BUF_PATTERNS} "
@@ -1430,9 +1546,20 @@ def main():
     print(f"  realized cold: max={realized_max} <= {stream_mode}/{stream_active_tiles} "
           f"active tiles cap {cold_ceiling} (measured at "
           f"{cold_qualification.active_tiles} tiles, 共有割り当て)")
+    if len(n_load) and int(n_load[0]) > POOL:
+        raise SystemExit(
+            f"pack: frame0 exact+prefetch cold={int(n_load[0])} exceeds "
+            f"the player's {POOL}-slot resident pool")
+    inline_f0 = (
+        sum(bool(cold) for cold in per[0][2])
+        + sum(bool(item[1]) for item in inline_prefetch_per[0]))
+    if inline_f0 > C_CELLS:
+        raise SystemExit(
+            f"pack: frame0 inline cold={inline_f0} exceeds the "
+            f"{C_CELLS}-pattern O_LOADS path")
     packed_tiles, packed_runs = run_stats(
-        per, supply_plan.sources, prefetch_per, supply_plan.dic_indices,
-        transfer_orders)
+        per, supply_plan.sources, inline_prefetch_per,
+        supply_plan.dic_indices, transfer_orders, boot_sidecar)
     if not np.array_equal(packed_tiles, n_load):
         frame = int(np.flatnonzero(packed_tiles != n_load)[0])
         raise SystemExit(
@@ -1446,8 +1573,12 @@ def main():
         raise SystemExit("pack: frozen shadow update-list flags have wrong frame count")
     if len(update_lists) and bool(update_lists[0]):
         raise SystemExit("pack: frame 0 must retain the legacy bitmap format")
-    if update_lists.any() and not supply_plan.enabled:
-        raise SystemExit("pack: shadow update lists require the cold-run/pattern-supply path")
+    raw_prefetch_enabled = bool(
+        (log.get("raw_prefetch") or {}).get("enabled", False))
+    if update_lists.any() and not (
+            supply_plan.enabled or raw_prefetch_enabled):
+        raise SystemExit(
+            "pack: shadow update lists require the cold-run/pattern-supply path")
     frozen_legacy = np.asarray(shadow_meta.get("legacy_cycles", ()), np.int64)
     frozen_list = np.asarray(shadow_meta.get("list_cycles", ()), np.int64)
     recomputed_costs = tuple(
@@ -1466,7 +1597,7 @@ def main():
         raise SystemExit(f"pack: selected shadow list is not faster at frame {frame}")
     blocks, source_pcm_chunks = build_control(
         log, per, n_upd, pal_w, audio_path, supply_plan.sources, update_lists,
-        prefetch_per, supply_plan.dic_indices, transfer_orders)
+        inline_prefetch_per, supply_plan.dic_indices, transfer_orders)
     print(
         f"  shadow updates: list={int(update_lists.sum())}/{len(update_lists)} "
         f"Main saved={int(((recomputed_legacy - recomputed_list) * update_lists).sum())} cycles "
@@ -1514,10 +1645,12 @@ def main():
             f"rate_lead_end={sc.get('rate_lead_end', 0)})")
     if args.verify:
         decode_verify(log, per, blocks, supply_plan, sc, compare_dir=compare or None,
-                      sample_dir=Path(output).parent / "decoded")
+                      sample_dir=Path(output).parent / "decoded",
+                      boot_sidecar=boot_sidecar)
     if not args.no_write:
         write_stream(
-            output, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL)
+            output, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL,
+            boot_sidecar=boot_sidecar)
 
 
 if __name__ == "__main__":

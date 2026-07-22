@@ -83,6 +83,10 @@
    容量はav_config.PALTAB_MAX_SEGと一致必須(check_player_ring.pyがビルド時検証)。 */
 .equ PALTAB_OFF, 0xB000			/* Word-RAM内ステージ位置(sp.sと一致必須) */
 .equ PALTAB_MAX_SEG, 64			/* Main-RAM表の容量(区間数)。64*128B=8KB */
+.equ PALTAB_STAGE_OFF, 0xA000
+.equ PALTAB_STAGE_BYTES, 0x6000
+.equ BOOT_VRAM_DIR_OFF, 0xAFC0
+.equ BOOT_VRAM_MAGIC, 0x4256524D		/* "BVRM" */
 .equ PALTAB_RAM, 0x00FFB000		/* 表本体 0xFFB000..0xFFD000; high BSS follows */
 /* 1VBLANKで安全に転送できる語数はモード別(md_vbudget)。実測(dmabench)に基づき保守的に。
    これを超える転送はランをまたいで次VBLANKへ分割=active表示中へのはみ出し防止(ares対策)。 */
@@ -93,6 +97,7 @@
 				   VRAM-slot bound, not issue-mechanism bound) */
 .equ FEATURE_FIXED_N2_BIT, 1	/* header features bit 1 */
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
+.equ FEATURE_BOOT_VRAM_SIDECAR_BIT, 7
 .equ SHADOW_UPDATE_LIST_BIT, 15
 .equ SHADOW_UPDATE_COUNT_MASK, 0x7FFF
 .equ SHADOW_OFFSET_MASK, 0x0FFE	/* 4KB physical shadow, even word offsets */
@@ -251,6 +256,7 @@ ip_entry:
 .else
 	bsr	cmd_wait_ready
 .endif
+	bsr	load_boot_vram_sidecar
 
 	/* frame0準備完了=バンクにヘッダ写し(O_HDR)がある。mode/tcols/trows/pool/base を読み
 	   モード依存のVDP設定と実行時変数を確定する(汎用化: H32/H40, mode4は将来) */
@@ -439,6 +445,7 @@ movie_end_md:
 	dbra	d2, 1b
 	move.w	#CMD_STREAM, d0			/* SPを再ストリーム開始させる */
 	bsr	cmd_wait_ready			/* SPのframe0準備完了(STAT_READY)まで待つ */
+	bsr	load_boot_vram_sidecar
 	clr.w	frame_no
 	clr.w	started
 	clr.w	dbg_seg
@@ -1603,6 +1610,80 @@ cmd_wait_ready:
 2:
 	tst.w	(GA_COMSTAT0).l
 	bne	2b
+	rts
+/* v13 boot-stage directory at +0xAFC0:
+     "BVRM", count_A.w, count_B.w, count_C.w
+   Records are [zero-based physical_slot.w, packed_pattern[32]] in three holes
+   that survive frame-0 expansion and Dic staging: +A000..AF00,
+   palette_end..D000, and +F000..10000. */
+load_boot_vram_sidecar:
+	movem.l	d0-d7/a0-a2, -(sp)
+	lea	(PROBE_BANK+0xAF80).l, a0
+	btst	#FEATURE_BOOT_VRAM_SIDECAR_BIT, 63(a0)
+	beq	9f
+	lea	(PROBE_BANK+BOOT_VRAM_DIR_OFF).l, a2
+	cmpi.l	#BOOT_VRAM_MAGIC, (a2)
+	bne	9f
+	move.w	4(a2), d7
+	cmpi.w	#0x0F00/34, d7
+	bls.s	1f
+	move.w	#0x0F00/34, d7
+1:
+	lea	(PROBE_BANK+PALTAB_STAGE_OFF).l, a1
+	bsr	load_boot_vram_records
+
+	moveq	#0, d0
+	move.w	20(a0), d0			/* n_seg */
+	cmpi.w	#PALTAB_MAX_SEG, d0
+	bls.s	1f
+	move.w	#PALTAB_MAX_SEG, d0
+1:
+	lsl.l	#7, d0				/* palette bytes */
+	lea	(PROBE_BANK+PALTAB_OFF).l, a1
+	adda.l	d0, a1
+	move.l	#0x2000, d1
+	sub.l	d0, d1
+	divu.w	#34, d1				/* maximum complete records */
+	move.w	6(a2), d7
+	cmp.w	d1, d7
+	bls.s	2f
+	move.w	d1, d7
+2:
+	bsr	load_boot_vram_records
+	move.w	8(a2), d7
+	cmpi.w	#0x1000/34, d7
+	bls.s	3f
+	move.w	#0x1000/34, d7
+3:
+	lea	(PROBE_BANK+0xF000).l, a1
+	bsr	load_boot_vram_records
+9:
+	movem.l	(sp)+, d0-d7/a0-a2
+	rts
+
+/* a1=record cursor, d7=count, a0=O_HDR. */
+load_boot_vram_records:
+	tst.w	d7
+	beq.s	8f
+	subq.w	#1, d7
+4:
+	moveq	#0, d0
+	move.w	(a1)+, d0			/* zero-based physical slot */
+	cmp.w	14(a0), d0
+	bhs.s	6f
+	add.w	16(a0), d0			/* + resident pool base */
+	lsl.l	#5, d0
+	bsr	set_vram_write
+	moveq	#8-1, d1
+5:
+	move.l	(a1)+, (VDP_DATA).l
+	dbra	d1, 5b
+	bra.s	7f
+6:
+	adda.w	#32, a1
+7:
+	dbra	d7, 4b
+8:
 	rts
 
 /* CMD_SWAP送信 → STAT_READY(通常) か STAT_END(映画終端) を待つ。d0=受けたSTAT */
