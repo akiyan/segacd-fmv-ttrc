@@ -11,6 +11,16 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e85 : Repeat slot-locality accounting when a newly optimized final map
+#        improves the worst 85%-cap-or-heavier frame but moves run-control
+#        bytes into an unfunded frame. Finalization accepts only a
+#        display-equivalent map whose full frozen decision trace is funded;
+#        the 30-run value remains the optimizer's minimax target rather than a
+#        universal per-source gate. Sort the appended raw-prefetch payload by
+#        physical slot and model it as a separate Prg run group, eliminating
+#        request-order fragmentation that the former locality estimate omitted.
+#        These changes close the full Bad Apple H40/cap185 finalization failure
+#        without changing cold/reuse or prefetch-target decisions.
 #   e84 : Raise the qualified H40/30fps/1,120-active-tile cold cap from 175
 #        to 185 after e83 reduced every 85%-cap-or-heavier frame to at most 30
 #        source-aware runs. The full Sonic pack reconstructs all 2,714 frames
@@ -603,5 +613,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
-e=84
+e=85
 p=76

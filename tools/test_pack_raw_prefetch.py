@@ -57,6 +57,49 @@ class PackRawPrefetchTests(unittest.TestCase):
         np.testing.assert_array_equal(packed_loads, loads)
         np.testing.assert_array_equal(packed_runs, [1, 1, 0])
 
+    def test_prefetch_payload_is_sorted_by_physical_slot(self):
+        key_a = bytes([1] * 64)
+        key_b = bytes([2] * 64)
+        key_c = bytes([3] * 64)
+        log = {
+            "frames": [
+                [(0, 0, key_a)],
+                [],
+                [(0, 0, key_b), (1, 0, key_c)],
+            ],
+            "frame_seg": np.zeros(3, np.int64),
+            "raw_prefetch": {
+                "schema_version": 1,
+                "enabled": True,
+                # Request order is descending, but payload/run order must be
+                # the contiguous physical 2,3 sequence.
+                "requests": [[], [(key_b, 2, 3), (key_c, 2, 2)], []],
+                "cold": np.array([0, 2, 0], np.uint16),
+            },
+        }
+
+        old_cells = pack_stream.C_CELLS
+        pack_stream.C_CELLS = 2
+        try:
+            (per, prefetch, transfer_orders, loads, _updates, _pal,
+             patterns, tearing) = pack_stream.resolve(log, 8, mode="contig")
+        finally:
+            pack_stream.C_CELLS = old_cells
+
+        self.assertEqual(tearing, 0)
+        self.assertEqual([item[0] for item in prefetch[1]], [2, 3])
+        self.assertEqual(
+            patterns[-2:],
+            [pack_stream.pack_key(key_c), pack_stream.pack_key(key_b)],
+        )
+        sources = tuple(
+            tuple(pattern_supply.SOURCE_PRG for _ in entries)
+            for _cells, entries, _colds in per)
+        packed_loads, packed_runs = pack_stream.run_stats(
+            per, sources, prefetch, transfer_orders=transfer_orders)
+        np.testing.assert_array_equal(packed_loads, loads)
+        np.testing.assert_array_equal(packed_runs, [1, 1, 0])
+
 
 if __name__ == "__main__":
     unittest.main()
