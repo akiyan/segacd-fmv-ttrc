@@ -11,6 +11,12 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p79 : Move the DEBUG HUD font from directly above the resident pool to the
+#        fixed unused VRAM gap at 0xD000 (tiles 1664..1679). The pool may now
+#        run right up to NT0, and DEBUG and release share one pool shape.
+#   e87 : Raise the resident VRAM pool ceiling from 1,518 to 1,535 slots; the
+#        relocated HUD font and the removed guard tile free 17 tiles between
+#        the pool and the first movie name table.
 #   p78 : Add a boot-only Word-RAM handoff before BODY.DAT starts. Main installs
 #        the v13 backside-VRAM sidecar while no timed CD read exists, then Sub
 #        starts the unchanged continuous BODY path. This prevents the sidecar's
@@ -630,5 +636,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
-e=86
-p=78
+e=87
+p=79
