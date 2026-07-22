@@ -74,9 +74,13 @@
 .equ CG_OP_MOVE_L_A1_ABS,      0x23D9	/* move.l (a1)+,(VDP_DATA).l */
 .equ CG_OP_MOVE_W_A1_ABS,      0x33D9	/* move.w (a1)+,(VDP_DATA).l */
 .equ CG_OP_RTS,                0x4E75
-/* DEBUG HUD: only hexadecimal glyphs, directly above the resident pool. */
+/* DEBUG HUD: only hexadecimal glyphs.  Fixed at VRAM 0xD000 (tiles 1664..1679)
+   in the otherwise-unused 0xD000-0xDFFF gap between NT0 and NT1.  Same location
+   in DEBUG and release, generic and specialized builds, so the resident pool is
+   free to grow right up to NT0 (0xC000) without a font reservation. */
 .equ DBGFONT_N, 16
-/* フォントVRAM位置はヘッダの base+pool 直上を実行時に計算(md_font_vtile/md_font_addr) */
+.equ HUD_FONT_ADDR, 0xD000
+.equ HUD_FONT_VTILE, HUD_FONT_ADDR/32	/* = 1664; name-table tile index (11-bit, fits) */
 /* リリースビルドが既定。make movieplay DEBUG=1 でオーバーレイ一式を有効化
    (ストリーム側は CBRSIM_PACK_DEBUG=1 でデバッグ欄ありを生成) */
 /* CRAM pre-load: 全区間パレット表。boot時にWord-RAM(PALTAB_OFF, frame0バンク)から一度だけ
@@ -267,13 +271,8 @@ ip_entry:
 	move.w	12(a0), d0			/* cells; supported grids are multiples of 8 */
 	lsr.w	#3, d0
 	move.w	d0, md_bmbytes
-	move.w	14(a0), d1			/* pool */
-	add.w	16(a0), d1			/* +base */
-	move.w	d1, md_font_vtile
-	moveq	#0, d0
-	move.w	d1, d0
-	lsl.l	#5, d0
-	move.l	d0, md_font_addr		/* フォントVRAM = (base+pool)*32 */
+	/* HUD font is fixed at 0xD000 (HUD_FONT_ADDR/HUD_FONT_VTILE); no runtime
+	   base+pool computation needed. */
 	moveq	#0, d0
 	move.b	38(a0), d0			/* mode: 0=H32 1=H40 (2=mode4将来) */
 	move.w	d0, md_mode
@@ -373,7 +372,7 @@ ip_entry:
 	   here. Specialized DEBUG/release builds already uploaded it at startup. */
 .ifdef DEBUG
 .ifndef PLAYER_SPECIALIZED
-	PC_MOVE_L md_font_addr, PC_FONT_ADDR, d0
+	move.l	#HUD_FONT_ADDR, d0
 	bsr	set_vram_write
 	lea	dbgfont, a0
 	move.w	#DBGFONT_N*16-1, d1
@@ -1512,7 +1511,7 @@ load_movie_palette:
 draw_startup:
 	movem.l	d0-d2/a0, -(sp)
 	bsr	load_movie_palette
-	move.l	#PC_FONT_ADDR, d0
+	move.l	#HUD_FONT_ADDR, d0
 	bsr	set_vram_write
 	lea	dbgfont, a0
 	move.w	#DBGFONT_N*16-1, d1
@@ -1550,20 +1549,20 @@ startup_write_hex:
 	move.w	d4, d0
 	rol.w	#4, d0
 	andi.w	#0x000F, d0
-	addi.w	#PC_FONT_VTILE, d0
+	addi.w	#HUD_FONT_VTILE, d0
 	move.w	d0, (VDP_DATA).l
 	move.w	d4, d0
 	lsr.w	#8, d0
 	andi.w	#0x000F, d0
-	addi.w	#PC_FONT_VTILE, d0
+	addi.w	#HUD_FONT_VTILE, d0
 	move.w	d0, (VDP_DATA).l
 	move.w	d4, d0
 	lsr.w	#4, d0
 	andi.w	#0x000F, d0
-	addi.w	#PC_FONT_VTILE, d0
+	addi.w	#HUD_FONT_VTILE, d0
 	move.w	d0, (VDP_DATA).l
 	andi.w	#0x000F, d4
-	addi.w	#PC_FONT_VTILE, d4
+	addi.w	#HUD_FONT_VTILE, d4
 	move.w	d4, (VDP_DATA).l
 	movem.l	(sp)+, d0-d2/d4
 	rts
@@ -1882,11 +1881,11 @@ dbg_put4:
 dbg_put2:
 	move.w	d4, d0
 	andi.w	#0xF, d0
-	PC_ADD_W md_font_vtile, PC_FONT_VTILE, d0
+	addi.w	#HUD_FONT_VTILE, d0
 	move.w	d0, 2(a0)			/* low nibble */
 	lsr.w	#4, d4
 	andi.w	#0xF, d4
-	PC_ADD_W md_font_vtile, PC_FONT_VTILE, d4
+	addi.w	#HUD_FONT_VTILE, d4
 	move.w	d4, (a0)			/* high nibble */
 	addq.l	#4, a0
 	rts
@@ -1904,15 +1903,14 @@ dbgfont:
 dbg_hex_pairs:
 	.set dbg_hex_byte, 0
 	.rept 256
-	.word PC_FONT_VTILE + ((dbg_hex_byte >> 4) & 0x0F)
-	.word PC_FONT_VTILE + (dbg_hex_byte & 0x0F)
+	.word HUD_FONT_VTILE + ((dbg_hex_byte >> 4) & 0x0F)
+	.word HUD_FONT_VTILE + (dbg_hex_byte & 0x0F)
 	.set dbg_hex_byte, dbg_hex_byte + 1
 	.endr
 .endif
-.ifdef PLAYER_SPECIALIZED
-.if PC_FONT_VTILE + DBGFONT_N > NT0/32
-	.error "hexadecimal font overlaps the movie name table"
-.endif
+/* The HUD font must fit entirely inside the 0xD000-0xDFFF gap (NT0..NT1). */
+.if (HUD_FONT_VTILE < NT0/32) || (HUD_FONT_VTILE + DBGFONT_N > NT1/32)
+	.error "hexadecimal font must fit in the 0xD000-0xDFFF gap"
 .endif
 
 	.bss
@@ -1948,10 +1946,6 @@ md_col0:
 	.space 2
 md_vbudget:
 	.space 2
-md_font_vtile:
-	.space 2
-md_font_addr:
-	.space 4
 .endif
 back_idx:
 	.space 2

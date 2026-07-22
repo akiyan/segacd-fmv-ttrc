@@ -153,7 +153,8 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "video.active_tiles"):
                 load_profile(path)
 
-    def test_vram_pool_must_leave_room_for_hud_font_and_guard(self) -> None:
+    def test_vram_pool_must_stay_below_movie_name_table(self) -> None:
+        self.assertEqual(MAX_RESIDENT_VRAM_TILES, 1535)
         with tempfile.TemporaryDirectory() as tmp:
             valid = Path(tmp) / "valid-vram.toml"
             valid.write_text(PROFILE.replace(
@@ -165,7 +166,7 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             invalid.write_text(PROFILE.replace(
                 "[palette]",
                 f"[encoder]\nvram_tiles = {MAX_RESIDENT_VRAM_TILES + 1}\n\n[palette]"))
-            with self.assertRaisesRegex(ValueError, "HUD font and guard"):
+            with self.assertRaisesRegex(ValueError, "vram_tiles must be within"):
                 load_profile(invalid)
 
     def test_profile_without_measured_cold_cap_is_rejected(self) -> None:

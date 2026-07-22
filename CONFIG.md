@@ -251,7 +251,7 @@ values in this document.
 
 | Name | Default | Meaning |
 |---|---|---|
-| `encoder.vram_tiles` | 1518 | Resident tile pool size (LRU), shared by H32 and H40. The standard even-sized maximum uses tiles 1-1518. The common 16-glyph hexadecimal font uses tiles 1519-1534 in both DEBUG and release, tile 1535 is deliberately left as a guard, and the first movie name table starts at tile 1536 (`0xC000`). |
+| `encoder.vram_tiles` | 1518 | Resident tile pool size (LRU), shared by H32 and H40. The pool starts at tile 1 and may run right up to the first movie name table at tile 1536 (`0xC000`), so the maximum is 1535 tiles (1-1535). The common 16-glyph hexadecimal font no longer sits above the pool: it is fixed at tile 1664 (`0xD000`) in the unused `0xD000`-`0xDFFF` gap between the two name tables, identical in DEBUG and release. Existing profiles keep 1518; raise `vram_tiles` toward 1535 to spend the freed slots. |
 | `CBRSIM_COA_DETAIL` / `_MEAN` / `_MAX` / `_K` | 0.7 / 4 / 8 / 24 | Coa = reuse a resident tile whose low-frequency look matches a flat cold tile (detail below DETAIL; 2x2 mean color diff within MEAN/MAX; check K newest candidates). |
 | `CBRSIM_NEAR_YM` / `_YP` / `_C` | 10 / 28 / 24 | Near = reuse an almost-identical resident tile (mean/max luma diff, mean chroma diff). |
 | `CBRSIM_FLBK_IMPROVE_ONLY` / `_MIN_IMPROVE` | 1 / 0 | Flbk = fill a Miss with a resident tile only if it improves the picture. |

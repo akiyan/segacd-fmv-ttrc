@@ -28,17 +28,17 @@ ARTIFACT_ROOT = Path("out")
 TEMP_ROOT = Path("tmp")
 _ARTIFACT_STEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
-# VRAM tile 0 is clear, then the resident movie pool starts at tile 1.  The
-# shared hexadecimal font occupies 16 tiles immediately above the pool in both
-# DEBUG and release builds.  Keep one guard tile before the first movie name
-# table at tile 1536 (0xC000), giving a deliberately even 1518-slot pool.
+# VRAM tile 0 is clear, then the resident movie pool starts at tile 1 and runs
+# right up to the first movie name table at tile 1536 (0xC000).  The shared
+# hexadecimal HUD font no longer sits above the pool: it is fixed in the unused
+# 0xD000-0xDFFF gap between NT0 and NT1 (VRAM_HUD_FONT_TILE), so the pool ceiling
+# is a full 1535 slots in both DEBUG and release builds.
 VRAM_PATTERN_BASE_TILE = 1
 VRAM_FIRST_MOVIE_NT_TILE = 0xC000 // 32
 HUD_FONT_TILES = 16
-VRAM_GUARD_TILES = 1
+VRAM_HUD_FONT_TILE = 0xD000 // 32  # fixed font base, tiles 1664..1679
 MAX_RESIDENT_VRAM_TILES = (
-    VRAM_FIRST_MOVIE_NT_TILE - VRAM_PATTERN_BASE_TILE
-    - HUD_FONT_TILES - VRAM_GUARD_TILES)
+    VRAM_FIRST_MOVIE_NT_TILE - VRAM_PATTERN_BASE_TILE)
 
 # (section, key): legacy internal variable.  Keeping this table in one place is
 # deliberate: TOML is the user interface; CBRSIM_* is an implementation detail.
@@ -211,8 +211,8 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
     if not 1 <= vram_tiles <= MAX_RESIDENT_VRAM_TILES:
         raise ValueError(
             f"{profile_path}: encoder.vram_tiles must be within "
-            f"1..{MAX_RESIDENT_VRAM_TILES} so the shared HUD font and guard "
-            "tile stay below the movie name table")
+            f"1..{MAX_RESIDENT_VRAM_TILES} so the resident pool stays below "
+            "the movie name table at tile 1536")
     try:
         source_fps = float(Fraction(str(data["source"]["fps"])))
         av_config.cold_cap_for_fps(source_fps, mode, active_tiles)

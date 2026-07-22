@@ -4,8 +4,11 @@ This document is the complete reference for the values-only playback HUD drawn
 by `boot/movieplay_ip.s` in `DEBUG=1` builds. It covers the runtime movie HUD,
 not the minimal four-digit boot preload counter and not the offline analysis
 overlay documented in [`ANALYSIS.md`](ANALYSIS.md). The boot counter reuses the
-same 16 hexadecimal glyphs; their VRAM remains reserved in both DEBUG and
-release builds.
+same 16 hexadecimal glyphs; their VRAM is fixed at `0xD000` (tiles 1664..1679)
+in the unused `0xD000`-`0xDFFF` gap between the two name tables, identical in
+DEBUG and release builds. Because the font no longer sits above the resident
+pool, the pool can grow to a full 1535 slots and DEBUG and release share exactly
+the same pool shape.
 
 The HUD answers three different questions at once:
 
@@ -340,8 +343,11 @@ Each 8x8 glyph has:
   first;
 - a compact 6x7 human-readable hexadecimal glyph below it.
 
-The player expands source colour 0 to P0/index1 and source colour 1 to
-P0/index15 when uploading the font. The encoder and packer canonicalize these
+The 16 font patterns are uploaded once at startup to VRAM `0xD000` (tiles
+1664..1679); the name-table cells reference those fixed tile indices directly
+(11-bit indices reach the whole 2048-tile space). The player expands source
+colour 0 to P0/index1 and source colour 1 to P0/index15 when uploading the
+font. The encoder and packer canonicalize these
 as the globally darkest and brightest usable colours across every palette
 segment. Consequently CRAM switches do not recolour or blink the HUD, and no
 font scan, recolour, DMA, or extra VBlank wait is needed per frame.
