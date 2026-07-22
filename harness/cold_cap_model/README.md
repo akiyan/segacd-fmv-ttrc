@@ -200,7 +200,45 @@ J within gate:
   artifact not excluded.  A fourth probe (do_flip arrival time) can
   bracket it if it recurs.
 
-## Transfer-cliff fix (next implementation)
+## Phase 3 results: what actually bounds the transfer (p76 experiments)
+
+Full-length A/B recordings falsified two mechanisms and confirmed one:
+
+- **RUN_TABLE pre-swizzle** (kept): moves the per-run register arithmetic
+  into Pass1.  Helpful but small — plateau U barely moved.
+- **CPU_DIRECT_MAX_WORDS 32 -> 128** (rejected): no improvement at all.
+  Together these prove the transfer is **VRAM-access-slot bound, not
+  issue-mechanism bound**: past the VBlank, both DMA and CPU writes crawl
+  at the active-display slot rate (~9 words/line vs ~102 in blank).
+- **build_frame reorder (Pass2 first)** (rejected): strictly worse — the
+  pre-work naturally fills the time before field-1's blank; fronting the
+  transfer just converts that overlap into idle waiting and pushes the
+  blit against the flip deadline (19 breaks, S=5, J=22).
+- **NT_DMA_FLIP** (kept): re-stage the 40-pitch shadow to 64-entry pitch
+  in active time (~1.5 ms RAM copy) and copy the whole back name table
+  with ONE linear Main-RAM DMA inside the flip VBlank, replacing the
+  ~8 ms FIFO-throttled blit.  HUD E median fell 12.7 ms -> 7.1 ms; flips
+  now sit at V=EE with 14 lines of guard margin.  (First attempt DMAed
+  the 40-pitch shadow directly and scrambled the 64-wide plane — caught
+  by frame comparison, fixed by the staging buffer.)
+
+**The remaining bottleneck is encoder-side run fragmentation.** The v12
+encoder produces 85-95 cold runs of 1-2 patterns (gaps of 1-3 slots) at
+the plateau, versus 15-30 runs for the same content in the v10-era
+stream.  At ~40 us of unavoidable per-run boundary cost plus the data,
+95 runs cannot fit the available blank time no matter how they are
+issued, so the plateau transfer stays ~16 ms and caps 185+ keep losing
+exactly one plateau frame per run.  With v10-level run counts the same
+math fits field-1's blank with a wide margin, and the player-side
+improvements above then pay off fully.  Next work item: restore cold-slot
+locality in the allocator (`tools/tile_alloc.py` / sim slot assignment) —
+an encoder (e-bump) change — then re-run this ladder.
+
+Open minor items: the movie-end frame 2712 held 3 fields in both
+NT_DMA_FLIP runs (end-of-stream special path, not a plateau issue), and
+the rare cap-independent freeze-type slip from Phase 2 remains unexplained.
+
+## Transfer-cliff fix (superseded analysis)
 
 Move the per-run DMA arithmetic out of the blank: Pass1 (`bf_stage`,
 active-display time) emits pre-swizzled records — 0x93/94 length words,
