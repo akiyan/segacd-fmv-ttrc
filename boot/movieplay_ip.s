@@ -44,7 +44,7 @@
    Keep this range for boot-time Main-CPU code generation, then use the gap up
    to RUN_TABLE as the immutable DicBuf pattern dictionary. */
 .equ MAIN_CODEGEN_BASE,  0x00FF2000
-.equ RUN_TABLE,          0x00FF8600	/* (dst.w,len.w,src.l) cold-run records; 0x2A00B capacity */
+.equ RUN_TABLE,          0x00FF8600	/* pre-swizzled 22B cold-run records; 0x2A00B capacity */
 .equ DIC_BUF,            0x00FF6600	/* persistent dictionary; direct Main-RAM VDP DMA */
 .equ DIC_BUF_END,        RUN_TABLE
 .equ DIC_BUF_PATTERNS,   256
@@ -662,32 +662,56 @@ bf_stage:
 	andi.w	#0x07FF, d0			/* discard Dic index high bits */
 	addq.w	#1, d0				/* tile index=1+slot */
 	lsl.w	#5, d0				/* dst=(1+slot)*0x20 */
-	move.w	d0, (a2)+			/* 表: dst */
+	/* Pre-swizzled record: every VDP register value and the VRAM command
+	   are computed here in active-display time, so Pass2 only pops words
+	   into the control port.  Layout (22 bytes):
+	     +0 len.w  +2 reg93.w  +4 reg94.w  +6 cmd.l  +10 dst.w
+	     +12 reg95.w  +14 reg96.w  +16 reg97.w  +18 src.l */
 	move.w	d6, d1
 	lsl.w	#4, d1				/* len words = count*16 */
-	move.w	d1, (a2)+			/* 表: len */
+	move.w	d1, (a2)+			/* +0 len */
+	move.w	#0x9300, d2
+	move.b	d1, d2
+	move.w	d2, (a2)+			/* +2 reg93 = 0x9300|len.lo */
+	move.w	d1, d2
+	lsr.w	#8, d2
+	ori.w	#0x9400, d2
+	move.w	d2, (a2)+			/* +4 reg94 = 0x9400|len.hi */
+	move.l	d0, d2				/* ordinary VRAM-write command for dst */
+	andi.l	#0x0000FFFF, d2
+	move.l	d2, d1
+	andi.l	#0x00003FFF, d2
+	swap	d2
+	ori.l	#0x40000000, d2
+	lsr.w	#7, d1
+	lsr.w	#7, d1
+	andi.w	#0x0003, d1
+	or.w	d1, d2
+	move.l	d2, (a2)+			/* +6 cmd (no CD5) */
+	move.w	d0, (a2)+			/* +10 dst (split fallback) */
 	moveq	#0, d2				/* source bytes = count*32 */
 	move.w	d6, d2
 	lsl.l	#5, d2
 	tst.w	d3
 	bne	bf_stage_preload
-	move.l	a0, (a2)+			/* Prg: Sub copied inline bytes into O_LOADS */
+	movea.l	a0, a3				/* Prg: Sub copied inline bytes into O_LOADS */
 	adda.l	d2, a0
+	bsr	bf_emit_src_wr
 	bra	bf_stage_recorded
 bf_stage_preload:
 	cmpi.w	#0x4000, d3
 	bne	bf_stage_dic
-	move.w	frame_no, d1			/* Wr0 on even frames, Wr1 on odd frames */
-	andi.w	#1, d1
-	lsl.w	#2, d1
+	move.w	frame_no, d3			/* Wr0 on even frames, Wr1 on odd frames */
+	andi.w	#1, d3
+	lsl.w	#2, d3
 	lea	wr_ptr0, a1
-	movea.l	(a1,d1.w), a3
-	move.l	a3, d0
-	add.l	d2, d0
-	cmpi.l	#PROBE_BANK+WORD_BUF_END, d0
+	movea.l	(a1,d3.w), a3
+	move.l	a3, d5
+	add.l	d2, d5
+	cmpi.l	#PROBE_BANK+WORD_BUF_END, d5
 	bhi	bf_stage_done			/* corrupt cache count: do not walk into routing */
-	move.l	a3, (a2)+
-	move.l	d0, (a1,d1.w)
+	move.l	d5, (a1,d3.w)
+	bsr	bf_emit_src_wr
 	bra	bf_stage_recorded
 bf_stage_dic:
 	cmpi.w	#0x8000, d3
@@ -695,11 +719,11 @@ bf_stage_dic:
 	lsl.w	#5, d5				/* DicBuf index * 32 */
 	lea	DIC_BUF, a3
 	adda.w	d5, a3
-	move.l	a3, d0
-	add.l	d2, d0
-	cmpi.l	#DIC_BUF_END, d0
+	move.l	a3, d3
+	add.l	d2, d3
+	cmpi.l	#DIC_BUF_END, d3
 	bhi	bf_stage_done
-	move.l	a3, (a2)+
+	bsr	bf_emit_src_dic
 bf_stage_recorded:
 	addq.w	#1, d4
 	sub.w	d6, d7
@@ -707,6 +731,33 @@ bf_stage_recorded:
 bf_stage_done:
 bf_none:
 	move.w	d4, n_runs			/* cold-run record数(0可、物理DMA発行数ではない) */
+	bra	bf_upd
+
+/* Emit the source-derived record half: +12 reg95/96/97 (DMA source words,
+   +2-adjusted for Word-RAM sources per the measured first-word rule, plain
+   for Main-RAM DicBuf) and +18 the raw source for repair/short/split.
+   a3 = src.  Trashes d2, d3. */
+bf_emit_src_wr:
+	move.l	a3, d2
+	addq.l	#2, d2				/* Word-RAM fetch is one word late */
+	bra.s	bf_emit_src
+bf_emit_src_dic:
+	move.l	a3, d2
+bf_emit_src:
+	lsr.l	#1, d2
+	move.w	#0x9500, d3
+	move.b	d2, d3
+	move.w	d3, (a2)+			/* +12 reg95 */
+	lsr.l	#8, d2
+	move.w	#0x9600, d3
+	move.b	d2, d3
+	move.w	d3, (a2)+			/* +14 reg96 */
+	lsr.l	#8, d2
+	move.w	#0x9700, d3
+	move.b	d2, d3
+	move.w	d3, (a2)+			/* +16 reg97 */
+	move.l	a3, (a2)+			/* +18 src */
+	rts
 bf_upd:
 	/* Read bitmap+entries directly from the linear control block in the swapped
 	   Word-RAM bank.  The Sub already walks them to build cold runs; rewriting
@@ -884,15 +935,48 @@ bf_dma:
 .endif
 	PC_MOVE_W md_vbudget, PC_VBUDGET, d7	/* d7 = 残VBLANK予算(語) */
 bf_run_lp:
-	move.w	(a2)+, d3			/* dst(VRAMバイト) */
-	move.w	(a2)+, d1			/* len(語, このランの残) */
-	movea.l	(a2)+, a3			/* src(Word-RAM) */
+	/* Pre-swizzled record (see bf_stage): pop the ready register values
+	   straight into the control port.  A whole run is issued per VBlank;
+	   only a run longer than one full budget takes the split fallback. */
+	move.w	(a2)+, d1			/* +0 len(語) */
 .ifdef DMA_RUN_FASTPATH
 	/* A one-time run branch is much cheaper than programming a DMA for one or
 	   two tiles.  Test the original run length here, never a budget-split tail. */
 	cmpi.w	#CPU_DIRECT_MAX_WORDS, d1
-	bls.s	bf_short_run
+	bls	bf_short_run
 .endif
+	cmp.w	d7, d1				/* whole run fits the remaining budget? */
+	bls.s	1f
+	PC_MOVE_W md_vbudget, PC_VBUDGET, d0
+	cmp.w	d0, d1
+	bhi	bf_split_run			/* longer than one full budget (e.g. H40/15) */
+	bsr	wait_vb_start
+	PC_MOVE_W md_vbudget, PC_VBUDGET, d7
+1:
+	move.w	#0x8F02, (VDP_CTRL).l		/* autoinc=2 (reassert before every DMA) */
+	move.w	(a2)+, (VDP_CTRL).l		/* +2 reg93 */
+	move.w	(a2)+, (VDP_CTRL).l		/* +4 reg94 */
+	move.l	(a2)+, d0			/* +6 cmd */
+	addq.l	#2, a2				/* skip +10 dst */
+	move.w	(a2)+, (VDP_CTRL).l		/* +12 reg95 */
+	move.w	(a2)+, (VDP_CTRL).l		/* +14 reg96 */
+	move.w	(a2)+, (VDP_CTRL).l		/* +16 reg97 */
+	move.l	d0, d2
+	ori.w	#0x0080, d0			/* CD5 in the second control word */
+	move.l	d0, (VDP_CTRL).l		/* high word, then CD5 trigger word */
+	bsr	wait_dma_done
+	move.l	d2, (VDP_CTRL).l		/* restore ordinary destination */
+	movea.l	(a2)+, a3			/* +18 src */
+	move.w	(a3), (VDP_DATA).l		/* repair dst[0] (redundant-correct for DicBuf) */
+	sub.w	d1, d7
+	bra	bf_run_done
+
+bf_split_run:
+	/* Rare: one run exceeds a full VBlank budget.  Fall back to the
+	   on-the-fly chunk walk using the record's raw dst/len/src. */
+	move.w	8(a2), d3			/* +10 dst (a2 is at +2) */
+	movea.l	16(a2), a3			/* +18 src */
+	adda.w	#20, a2				/* advance to the next record */
 bf_chunk:
 	tst.w	d7				/* 予算切れなら次vblank開始まで待って補充 */
 	bgt	1f
@@ -916,14 +1000,9 @@ bf_chunk:
 	add.w	d6, d6				/* chunk*2 = バイト */
 	adda.w	d6, a3				/* src += バイト */
 	add.w	d6, d3				/* dst += バイト */
-.ifdef DMA_RUN_FASTPATH
-	tst.w	d1
-	beq	bf_run_done			/* usual one-chunk run avoids an extra BRA */
-	bra	bf_chunk
-.else
 	tst.w	d1
 	bne	bf_chunk
-.endif
+	bra	bf_run_done
 
 .ifdef DMA_RUN_FASTPATH
 bf_short_run:
@@ -934,8 +1013,11 @@ bf_short_run:
 	bsr	wait_vb_start
 	PC_MOVE_W md_vbudget, PC_VBUDGET, d7
 1:
-	move.w	d3, d0
-	bsr	set_vram_write
+	addq.l	#4, a2				/* skip reg93/94 */
+	move.l	(a2)+, d0			/* +6 cmd = ordinary VRAM write address */
+	addq.l	#8, a2				/* skip dst + reg95/96/97 */
+	move.l	d0, (VDP_CTRL).l
+	movea.l	(a2)+, a3			/* +18 src */
 	cmpi.w	#16, d1				/* two tiles write one extra 32-byte block */
 	beq.s	2f
 	.rept 8

@@ -11,6 +11,14 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p76 : Pre-swizzle the cold-run RUN_TABLE in Pass1: each record carries
+#        ready 0x93-0x97 register words (+2-adjusted Word-RAM source) and the
+#        VRAM command, so Pass2 pops them straight into the control port.
+#        Whole runs issue per VBlank; only a run above one full budget takes
+#        the old chunk split. Measured per-run Pass2 cost drops from ~300 us
+#        to ~130 us (the remainder is the per-DMA completion quantum, not
+#        register programming). A build_frame reorder experiment (Pass2
+#        before the bitmap/blit) was measured strictly worse and reverted.
 #   p75 : Rebase HUD O to the flip-to-flip interval excess over 1024 ticks
 #        (the arm-point base of p74 saturated on every normal frame) and add
 #        E, the Pass2 entry delay since the previous flip in 4-tick units,
@@ -575,4 +583,4 @@
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
 e=82
-p=75
+p=76
