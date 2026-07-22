@@ -238,6 +238,9 @@ _SLOT_LOCALITY_STAGE = os.environ.get(
 # needs enough reweighting rounds to bring every near-cap Sonic frame to the
 # 30-run target.  The broad exact-target predictor keeps the faster default.
 SLOT_LOCALITY_FINAL_ITERATIONS = 160
+SLOT_LOCALITY_HEAVY_RUN_TARGET = 30
+SLOT_LOCALITY_RETRY_EXIT = 75
+SLOT_LOCALITY_MAX_ACCOUNTING_PASSES = 4
 # PRG-RAM先読みバッファ: 再生前にPRGへ載せた静的タイル集合(pickle set of pattern keys)。
 # ここにあるパターンは再生中いつでもCD 0バイト(RAM→VRAM DMAのみ)で出せる=Fill扱い。
 PRG_PRELOAD_PATH = os.environ.get("CBRSIM_PRG_PRELOAD", "")
@@ -663,10 +666,14 @@ def _source_run_groups(
                     f"frame {frame} update {update} has invalid source {source}")
         if frame == 0 and boot_inline_requests is not None:
             prefetch_slots = prefetch_slots[:int(boot_inline_requests)]
-        prg.extend(int(slot) for slot in prefetch_slots)
         groups = []
         if prg:
             groups.append(tuple(prg))
+        # Prefetch payload follows all visible cold payload in the stream.
+        # Count it as its own physically sorted Prg group; merging it into the
+        # visible group would assume a transfer order the packer cannot use.
+        if prefetch_slots:
+            groups.append(tuple(int(slot) for slot in prefetch_slots))
         if word:
             groups.append(tuple(word))
         groups.extend(dic)
@@ -1607,6 +1614,7 @@ def main():
             demand_prediction.cold_slots,
             VRAM_TILES,
             cold_cap=MAX_COLD,
+            target_heavy_runs=SLOT_LOCALITY_HEAVY_RUN_TARGET,
         )
     physical_by_logical = np.asarray(
         slot_locality.physical_by_logical, np.int64)
@@ -2462,6 +2470,10 @@ def main():
                     if len(frame_prefetch_requests) >= capacity:
                         break
 
+        # Visible cold payload is already in physical-slot order. Prefetch is
+        # appended after it, so sort that suffix independently to avoid turning
+        # one contiguous speculative batch into request-order one-tile runs.
+        prefetch_cold_slots.sort()
         dma_slots = [
             int(placements[index][0]) for index in transfer_order
         ] + prefetch_cold_slots
@@ -2806,14 +2818,34 @@ def main():
         if replay.tearing:
             raise AssertionError(
                 f"final slot-locality logical replay tore {replay.tearing} patterns")
+        run_groups = _source_run_groups(
+            replay, supply_sources_log,
+            boot_inline_requests=boot_inline_requests)
+        accounted_mapping = np.asarray(physical_by_logical, np.int64)
+        accounted_locality = evaluate_slot_locality(
+            replay.cold_slots,
+            VRAM_TILES,
+            accounted_mapping,
+            cold_cap=MAX_COLD,
+            run_groups_by_frame=run_groups,
+        )
+        accounted_proof = verify_display_equivalence(
+            decision_key_frames,
+            C_CELLS,
+            VRAM_TILES,
+            accounted_mapping,
+            prefetch_requests=prefetch_requests_log,
+        )
+        if accounted_proof["cold"] != int(np.sum(transfer_tiles_log)):
+            raise AssertionError(
+                "accounted slot-locality proof changed the frozen cold total")
         final_locality = optimize_slot_locality(
             _run_accounted_cold_slots(replay, boot_inline_requests),
             VRAM_TILES,
             cold_cap=MAX_COLD,
             iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
-            run_groups_by_frame=_source_run_groups(
-                replay, supply_sources_log,
-                boot_inline_requests=boot_inline_requests),
+            target_heavy_runs=SLOT_LOCALITY_HEAVY_RUN_TARGET,
+            run_groups_by_frame=run_groups,
         )
         final_mapping = np.asarray(
             final_locality.physical_by_logical, np.int64)
@@ -2847,8 +2879,9 @@ def main():
             run_prefetch_slots = (
                 prefetch_slots[:boot_inline_requests]
                 if frame_index == 0 else prefetch_slots)
-            slots.extend(
+            mapped_prefetch_slots = sorted(
                 int(final_mapping[slot]) for slot in run_prefetch_slots)
+            slots.extend(mapped_prefetch_slots)
             sources.extend(
                 [pattern_supply.SOURCE_PRG] * len(run_prefetch_slots))
             dic_indices.extend([-1] * len(run_prefetch_slots))
@@ -2862,43 +2895,106 @@ def main():
             final_runs.append(pattern_supply.count_source_runs(
                 slots, sources, dic_indices))
 
-        # The second pass paid for its own map.  The delivered map may move
-        # run control between frames, so replay the whole quality budget and
-        # require every frozen decision to remain funded before accepting it.
-        final_quality_budget = []
-        budget_after = QUALITY_BUDGET_BYTES if QUALITY_BUDGET_ON else 0
-        minimum_budget = budget_after
-        for frame_index, runs in enumerate(final_runs):
-            if frame_index == 0:
-                budget_after = QUALITY_BUDGET_BYTES
-            elif QUALITY_BUDGET_ON:
-                pal_swap = (
-                    SEGPAL_ON
-                    and int(frame_seg[frame_index])
-                    != int(frame_seg[frame_index - 1])
-                )
-                frame_supply = max(
-                    int(body_variable_supply_bytes[frame_index])
-                    - (PAL_WRITE_BYTES if pal_swap else 0),
-                    0,
-                )
-                variable_work = (
-                    int(name_records_log[frame_index]) * NAME_BYTES
-                    + int(prg_loads_log[frame_index]) * PATTERN_BYTES
-                    + int(runs) * stream_schedule.RUN_DESCRIPTOR_BYTES
-                )
-                available = budget_after + frame_supply
-                if variable_work > available:
-                    raise SystemExit(
-                        "final slot-locality map is not funded: "
-                        f"frame {frame_index} needs {variable_work}B with "
-                        f"{available}B available")
-                budget_after = min(
-                    QUALITY_BUDGET_BYTES, available - variable_work)
-                minimum_budget = min(minimum_budget, budget_after)
-            if QUALITY_BUDGET_ON:
-                final_quality_budget.append(budget_after // PATTERN_BYTES)
+        old_runs = np.asarray(transfer_runs_log, np.int64)
+        final_runs_array = np.asarray(final_runs, np.int64)
 
+        def replay_quality_budget(runs_by_frame):
+            """Return the exact budget trace, floor, and first failure."""
+            trace = []
+            budget_after = QUALITY_BUDGET_BYTES if QUALITY_BUDGET_ON else 0
+            minimum = budget_after
+            failure = None
+            for frame_index, runs in enumerate(runs_by_frame):
+                if frame_index == 0:
+                    budget_after = QUALITY_BUDGET_BYTES
+                elif QUALITY_BUDGET_ON:
+                    pal_swap = (
+                        SEGPAL_ON
+                        and int(frame_seg[frame_index])
+                        != int(frame_seg[frame_index - 1])
+                    )
+                    frame_supply = max(
+                        int(body_variable_supply_bytes[frame_index])
+                        - (PAL_WRITE_BYTES if pal_swap else 0),
+                        0,
+                    )
+                    variable_work = (
+                        int(name_records_log[frame_index]) * NAME_BYTES
+                        + int(prg_loads_log[frame_index]) * PATTERN_BYTES
+                        + int(runs) * stream_schedule.RUN_DESCRIPTOR_BYTES
+                    )
+                    available = budget_after + frame_supply
+                    if variable_work > available:
+                        failure = (frame_index, variable_work, available)
+                        break
+                    budget_after = min(
+                        QUALITY_BUDGET_BYTES, available - variable_work)
+                    minimum = min(minimum, budget_after)
+                if QUALITY_BUDGET_ON:
+                    trace.append(budget_after // PATTERN_BYTES)
+            return trace, minimum, failure
+
+        final_quality_budget, minimum_budget, final_failure = (
+            replay_quality_budget(final_runs_array))
+        accounted_quality_budget, accounted_minimum, accounted_failure = (
+            replay_quality_budget(old_runs))
+        if accounted_failure is not None:
+            frame_index, variable_work, available = accounted_failure
+            raise SystemExit(
+                "accounted slot-locality map became unfunded: "
+                f"frame {frame_index} needs {variable_work}B with "
+                f"{available}B available")
+
+        final_risk = np.asarray(final_locality.risk_frames, bool)
+        final_risk_max = int(
+            final_runs_array[final_risk].max(initial=0))
+        accounted_risk = np.asarray(accounted_locality.risk_frames, bool)
+        accounted_risk_max = int(
+            old_runs[accounted_risk].max(initial=0))
+        final_ok = final_failure is None
+        candidate_issues = []
+        if final_failure is not None:
+            frame_index, variable_work, available = final_failure
+            candidate_issues.append(
+                f"frame {frame_index} needs {variable_work}B with "
+                f"{available}B available")
+        candidate_issue = "; ".join(candidate_issues) or "none"
+
+        if not final_ok:
+            retry_allowed = os.environ.get(
+                "CBRSIM_SLOT_LOCALITY_RETRY_ALLOWED", "0").strip().lower()
+            retry_allowed = retry_allowed not in {
+                "", "0", "false", "no", "off",
+            }
+            retry_path = os.environ.get(
+                "CBRSIM_SLOT_LOCALITY_RETRY_MAP", "").strip()
+            if (retry_allowed and retry_path
+                    and final_risk_max < accounted_risk_max):
+                retry_path = Path(retry_path)
+                retry_path.parent.mkdir(parents=True, exist_ok=True)
+                np.save(retry_path, np.asarray(final_mapping, np.uint16))
+                print(
+                    "slot locality requests another accounting pass: "
+                    f"candidate {candidate_issue}; deadline-heavy max "
+                    f"{accounted_risk_max}->{final_risk_max} runs",
+                    flush=True,
+                )
+                raise SystemExit(SLOT_LOCALITY_RETRY_EXIT)
+            print(
+                "slot locality final candidate rejected: "
+                f"{candidate_issue}; retaining the already-accounted "
+                f"map (deadline-heavy max {accounted_risk_max} runs; "
+                f"candidate {final_risk_max})",
+                flush=True,
+            )
+            final_locality = accounted_locality
+            final_mapping = accounted_mapping
+            proof = accounted_proof
+            final_runs_array = old_runs
+            final_quality_budget = accounted_quality_budget
+            minimum_budget = accounted_minimum
+
+        for frame_index, runs in enumerate(final_runs_array):
             if frame_index == 0:
                 frame_bytes_log[frame_index] = 0
             else:
@@ -2912,8 +3008,6 @@ def main():
             row[25] = int(runs)
             stat_rows[frame_index] = tuple(row)
 
-        old_runs = np.asarray(transfer_runs_log, np.int64)
-        final_runs_array = np.asarray(final_runs, np.int64)
         final_risk = np.asarray(final_locality.risk_frames, bool)
         print(
             "slot locality final: frozen-decision map; "
@@ -2922,7 +3016,7 @@ def main():
             f"->{int(final_runs_array[1:].max(initial=0))}; "
             f"deadline-heavy source-aware runs "
             f"{int(final_locality.baseline_runs[final_risk].max(initial=0))}"
-            f"->{int(final_locality.optimized_runs[final_risk].max(initial=0))}; "
+            f"->{int(final_runs_array[final_risk].max(initial=0))}; "
             f"quality floor={minimum_budget}B",
             flush=True,
         )
@@ -2932,7 +3026,7 @@ def main():
         predicted_local_runs = np.asarray(
             final_locality.optimized_runs, np.int64)
         predicted_risk = final_risk
-        transfer_runs_log = final_runs
+        transfer_runs_log = final_runs_array.tolist()
         if QUALITY_BUDGET_ON:
             quality_budget_log = final_quality_budget
 
@@ -3445,6 +3539,7 @@ def _derive_completed_slot_map(decision_log, output_path):
         int(log["vram_tiles"]),
         cold_cap=int(log.get("max_cold", 0)),
         iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
+        target_heavy_runs=SLOT_LOCALITY_HEAVY_RUN_TARGET,
         run_groups_by_frame=_source_run_groups(
             replay, (log.get("pattern_supply") or {}).get("sources", ()),
             boot_inline_requests=int(
@@ -3474,7 +3569,7 @@ def _derive_completed_slot_map(decision_log, output_path):
 
 
 def _run_slot_locality_pipeline():
-    """Run decision seeding, then one accounting pass with its frozen map."""
+    """Seed logical decisions, then account maps until one is publishable."""
     import subprocess
 
     command = [sys.executable, *_ORIGINAL_ARGV]
@@ -3483,24 +3578,53 @@ def _run_slot_locality_pipeline():
     seed_env["CBRSIM_NOPANELS"] = "1"
     seed_env.pop("CBRSIM_SLOT_LOCALITY_MAP", None)
     seed_env.pop("CBRSIM_SLOT_LOCALITY_REUSE", None)
-    print("slot locality pass 1/2: seed logical decisions", flush=True)
+    print("slot locality seed pass: logical decisions", flush=True)
     subprocess.run(command, env=seed_env, check=True)
 
     map_path = Path("tmp") / f"slot_locality_seed_{os.getpid()}.npy"
+    retry_path = Path("tmp") / f"slot_locality_retry_{os.getpid()}.npy"
     try:
         _derive_completed_slot_map(EMIT_DEC, map_path)
-        final_env = os.environ.copy()
-        final_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "final"
-        final_env["CBRSIM_SLOT_LOCALITY_MAP"] = str(map_path.resolve())
-        final_env["CBRSIM_SLOT_LOCALITY_REUSE"] = "1"
-        print(
-            "slot locality pass 2/2: account frozen seed map, then "
-            "finalize from completed decisions",
-            flush=True,
-        )
-        subprocess.run(command, env=final_env, check=True)
+        for accounting_pass in range(
+                1, SLOT_LOCALITY_MAX_ACCOUNTING_PASSES + 1):
+            retry_path.unlink(missing_ok=True)
+            final_env = os.environ.copy()
+            final_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "final"
+            final_env["CBRSIM_SLOT_LOCALITY_MAP"] = str(map_path.resolve())
+            final_env["CBRSIM_SLOT_LOCALITY_RETRY_MAP"] = str(
+                retry_path.resolve())
+            final_env["CBRSIM_SLOT_LOCALITY_RETRY_ALLOWED"] = (
+                "1" if accounting_pass < SLOT_LOCALITY_MAX_ACCOUNTING_PASSES
+                else "0")
+            final_env["CBRSIM_SLOT_LOCALITY_REUSE"] = "1"
+            print(
+                "slot locality accounting pass "
+                f"{accounting_pass}/{SLOT_LOCALITY_MAX_ACCOUNTING_PASSES}: "
+                "pay frozen map, then validate completed decisions",
+                flush=True,
+            )
+            result = subprocess.run(command, env=final_env, check=False)
+            if result.returncode == 0:
+                break
+            if result.returncode != SLOT_LOCALITY_RETRY_EXIT:
+                result.check_returncode()
+            if not retry_path.is_file():
+                raise SystemExit(
+                    "slot-locality accounting requested a retry without a map")
+            current = np.load(map_path)
+            retry = np.load(retry_path)
+            if np.array_equal(current, retry):
+                raise SystemExit(
+                    "slot-locality accounting cannot progress: retry map "
+                    "equals the current map")
+            retry_path.replace(map_path)
+        else:
+            raise SystemExit(
+                "slot-locality accounting did not converge within "
+                f"{SLOT_LOCALITY_MAX_ACCOUNTING_PASSES} passes")
     finally:
         map_path.unlink(missing_ok=True)
+        retry_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -319,11 +319,16 @@ def resolve(log, POOL, mode="lru"):
                 logical_slot, cold = result
                 physical_slot = int(physical_by_logical[logical_slot])
                 if cold:
-                    Plist.append(pack_key(key))
                     n_load[i] += 1
                     physical_patterns[physical_slot] = key
                 frame_prefetch.append(
                     (physical_slot, bool(cold), key, int(deadline)))
+        # The prefetch suffix is independent of visible name updates. Emit its
+        # payload in physical-slot order so its run descriptors describe the
+        # same long transfers modeled by sim.
+        frame_prefetch.sort(key=lambda item: int(item[0]))
+        Plist.extend(
+            pack_key(item[2]) for item in frame_prefetch if bool(item[1]))
         for (cell, _pal, key), (physical_slot, _cold) in zip(fr, results):
             displayed_slots[int(cell)] = int(physical_slot)
             expected_patterns[int(cell)] = key
@@ -407,15 +412,19 @@ def sourced_transfer_runs(
         int(sources[index])
         for index in transfer_order
     ]
-    slots.extend(int(item[0]) for item in prefetch if bool(item[1]))
+    cold_prefetch = sorted(
+        (item for item in prefetch if bool(item[1])),
+        key=lambda item: int(item[0]),
+    )
+    slots.extend(int(item[0]) for item in cold_prefetch)
     item_sources.extend(
-        pattern_supply.SOURCE_PRG for item in prefetch if bool(item[1]))
+        pattern_supply.SOURCE_PRG for _item in cold_prefetch)
     if dic_indices is None:
         dic_indices = (-1,) * len(entries)
     run_dic_indices = [
         int(dic_indices[index]) for index in transfer_order
     ]
-    run_dic_indices.extend(-1 for item in prefetch if bool(item[1]))
+    run_dic_indices.extend(-1 for _item in cold_prefetch)
     # Reuse the authoritative source-aware grouping by presenting synthetic
     # entries whose low 11 bits contain the allocated slot.
     synthetic = [BASE + slot for slot in slots]
