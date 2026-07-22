@@ -135,7 +135,45 @@ decides *which* marginal frame slips is invisible to the current HUD:
 the flip phase inside the blank, the Sub's READY micro-timing, or CDC
 service alignment.
 
-## Next: targeted HUD measurement (Phase 2)
+## Phase 2 first measurements (cap-175 control, HUD p75 with V/O/E)
+
+Recording `SonicJamOp_H40_flipdiag175` (full length, S=D=R=0, J=00)
+validated the new fields and immediately restructured the model:
+
+- **Flips land at the VBlank start.** V=`E0` on 2,693/2,714 frames: the
+  flip-phase-ratchet hypothesis is dead for normal frames.  The only
+  mid-blank flips (V=`E1..E7`) are the palette frames (CRAM before flip)
+  and the heaviest section (frames ~1960-1995), which the slack model
+  below explains exactly.
+- **O behaves**: median = 62 ticks = the nominal 1086-tick N2 interval
+  minus the 1024 base; a slipped frame saturates at 255.
+- **The pre-transfer phase is far larger than the planning envelope.**
+  E (Pass2 entry since previous flip) has median 104 (12.8 ms) and p99
+  140 (17.2 ms) — parse + bitmap walk + name-table blit plus the swap
+  wait cost 12-14 ms even on ordinary frames, versus the ~8.5 ms
+  STREAMING.md planning envelope.  The VDP FIFO throttling of the
+  1,120-word name-table blit during active display is the likely gap.
+- **Two measured cliffs.** (1) Entry cliff: E*4 must stay below the
+  field-1 blank end (~622 ticks, E≈155); observed max 147. (2) Transfer
+  cliff: reconstructing transfer end as `max(E*4, 543) + U` and slack
+  against the flip blank at 1086 ticks puts the heavy 1960-1995 frames at
+  -17..+60 ticks of slack — precisely the frames whose flips appear
+  mid-blank (V=`E1..E5`), surviving on the do_flip mid-blank acceptance.
+- **An unexplained ~8.5 ms delay causes the actual break.** The one
+  cadence slip (frame 471 held 3 fields; the late flip is frame 472's,
+  O=255 in row 473) has slack +277 ticks and modest E/U/W — the measured
+  Main path cannot account for the lost field.  Every observable says the
+  flip should have been on time.  The deciding term is still outside
+  V/O/E/U/W: candidates are a Sub-side stall inside the swap handshake
+  after `W` was sampled, VDP FIFO backpressure on the HUD publish, or an
+  emulator-level artifact.  Break location also moved p74→p75 (1107 →
+  471), confirming build-level phase sensitivity of marginal frames.
+
+Next: the realized-180 diagnostic stream (CBRSIM_COLD_CAP_DIAG=180,
+profile `configs/sonic-jam-op-h40-cold180.toml`) should produce several
+breaks in one recording, enough to pattern-match the unexplained term.
+
+## Phase 2 measurement design (as built)
 
 The missing per-frame observables, each cheap (a stopwatch/HV read plus
 a stored word):
