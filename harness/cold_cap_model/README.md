@@ -20,9 +20,11 @@ timeline model and targeted re-measurements.
 - `verify_slot_locality.py` — replays the shared logical allocator, applies
   the frozen logical-to-physical VRAM slot permutation, and models every cold
   transfer and displayed cell. It proves that the permutation changes neither
-  cold/reuse decisions nor displayed patterns. The report deliberately treats
-  total run count as informational: the optimizer may add runs to light frames
-  when that lowers the worst per-frame `cold + run-boundary` deadline cost.
+  cold/reuse decisions nor displayed patterns. The source-aware optimizer
+  protects every frame at 85% or more of the measured cold cap and includes
+  Prg/Wr/Dic boundaries in its minimax run target. The report deliberately
+  treats total run count as informational: the optimizer may add runs to light
+  frames when that lowers the worst heavy-frame deadline cost.
 
 ```sh
 tools/python.sh harness/cold_cap_model/extract_frames.py \
@@ -231,17 +233,20 @@ Full-length A/B recordings falsified two mechanisms and confirmed one:
   the 40-pitch shadow directly and scrambled the 64-wide plane — caught
   by frame comparison, fixed by the staging buffer.)
 
-**The remaining bottleneck is encoder-side run fragmentation.** The v12
-encoder produces 85-95 cold runs of 1-2 patterns (gaps of 1-3 slots) at
-the plateau, versus 15-30 runs for the same content in the v10-era
-stream.  At ~40 us of unavoidable per-run boundary cost plus the data,
+**The remaining bottleneck was encoder-side run fragmentation.** The former
+v12 encoder produced 85-95 cold runs of 1-2 patterns (gaps of 1-3 slots) at
+the plateau. The initial issue report's 15-30 v10 comparison was incorrect:
+re-parsing the actual v10 pack showed that it was fragmented there too. At
+~40 us of unavoidable per-run boundary cost plus the data,
 95 runs cannot fit the available blank time no matter how they are
 issued, so the plateau transfer stays ~16 ms and caps 185+ keep losing
-exactly one plateau frame per run.  With v10-level run counts the same
-math fits field-1's blank with a wide margin, and the player-side
-improvements above then pay off fully.  Next work item: restore cold-slot
-locality in the allocator (`tools/tile_alloc.py` / sim slot assignment) —
-an encoder (e-bump) change — then re-run this ladder.
+exactly one plateau frame per run. The e83 two-pass physical-slot optimizer is
+a new fix rather than a v10 restoration: its cold180 measurement pack keeps
+all 208 frames at 153 or more cold patterns to at most 30 source-aware runs,
+with the plateau at 25-29. It proves all 2,714 displayed frames exact, leaves
+the finalized quality budget at least 3,244 bytes above zero, and packs with no
+Prg underrun. The 180/185/190 hardware ladder remains the next qualification
+step.
 
 Open minor items: the movie-end frame 2712 held 3 fields in both
 NT_DMA_FLIP runs (end-of-stream special path, not a plateau issue), and

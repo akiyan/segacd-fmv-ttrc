@@ -287,9 +287,12 @@ display truncation). Reuse entries do not break a run; a slot discontinuity
 does, including a wrap from the end of the slot pool to slot zero.
 Cold payload order follows the movie-wide physical slot permutation and is
 independent of cell/name-update order. The optimizer targets the worst
-per-frame cold plus run-boundary deadline cost; total runs over the whole movie
+source-aware run count among frames at 85% or more of the measured cold cap;
+Prg/Wr/Dic boundaries are part of that count. Total runs over the whole movie
 are not constrained, so a light frame can gain runs when a heavy frame loses
-more expensive fragmentation.
+more expensive fragmentation. The two-pass encoder freezes logical decisions
+before deriving the delivered map and rechecks display identity plus the
+whole-movie quality budget afterwards.
 
 This is deliberately **not the number of VDP DMA commands**. With the p45
 player, a one- or two-tile run is copied directly by the CPU, while a longer

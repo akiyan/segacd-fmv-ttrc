@@ -480,7 +480,11 @@ allocator onto physical slots, then cold patterns are consumed in ascending
 physical-slot order. This transfer order is intentionally independent of the
 cell/name-update order; the final name entries already contain their physical
 tile indices. The permutation is a bijection, so resident reuse and displayed
-pattern identity are unchanged.
+pattern identity are unchanged. A seed pass freezes logical decisions, a
+second pass pays the seed map's exact run-control cost, and the delivered map
+is then derived from those completed decisions. The finalizer replays the
+whole quality budget with the delivered source-aware run counts and rejects a
+map that would make any frozen decision unfunded.
 The first word stores the zero-based VRAM slot in bits 0-10 and DicBuf index
 bits 3-7 in bits 11-15. The second word stores count in bits 0-10, DicBuf index
 bits 0-2 in bits 11-13, and source in bits 14-15. Source values are 0=Prg,
