@@ -140,12 +140,18 @@ category.
 ## Implementation
 
 - `tools/sim.py`: the offline encoder simulator — makes every per-tile
-  decision and emits the decision log plus analysis data.
+  decision and emits the decision log plus analysis data. Its seed and
+  accounting passes share one invocation-local, identity-checked cache for
+  palette/quantization/future-planning results; the cache is deleted when that
+  invocation exits.
 - `tools/pack_stream.py`: packs the decisions into `HEADER.DAT` and `BODY.DAT`,
   and writes the matching canonical segment-0 `palettes.bin` used to build the
   Main CPU player. It also writes their concatenation as an off-disc
   `MOVIE.DAT` compatibility file for analysis and regression tools.
 - `tools/render_analysis.py` + `tools/layout_preview.py`: the analysis overlay.
+  Disposable sim PNG/MP4 data lives in managed tmpfs behind the familiar
+  `videos/` paths. Per-frame TSVs remain persistent below `logs/`, uniquely
+  named by time, profile, short profile checksum, and encoder version.
 - `boot/`: the Sub/Main CPU playback runtime for real hardware. DEBUG builds
   keep a values-only hexadecimal HUD in the top row of the inactive VDP Plane A
   movie table. H32 and H40 share the same 30-cell internal order

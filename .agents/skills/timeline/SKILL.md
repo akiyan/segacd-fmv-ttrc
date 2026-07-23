@@ -23,7 +23,7 @@ and include the settings that explain the result.
 
 ```sh
 tools/python.sh .agents/skills/timeline/scripts/render_timeline.py \
-  videos/STEM_ADJUSTMENT_analysis.tsv \
+  logs/YYYYMMDD-HHMMSS-ffffff_PROFILE_SHA10_eNN.tsv \
   --config configs/PROFILE.toml \
   --sim-out videos/STEM/ADJUSTMENT \
   --label "short adjustment label" \

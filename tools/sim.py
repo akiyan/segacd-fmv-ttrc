@@ -52,7 +52,9 @@ import pattern_supply  # noqa: E402
 import raw_prefetch  # noqa: E402
 import stream_schedule  # noqa: E402
 import shadow_updates  # noqa: E402
+import sim_pass_cache  # noqa: E402
 import ttrc_routing  # noqa: E402
+import tmpfs_workspace  # noqa: E402
 import upgrade_planner  # noqa: E402
 
 from quantize_md_video import (  # noqa: E402
@@ -620,6 +622,9 @@ def segment_and_train(frames, frame_cache=None):
 
 
 OUT = sim_work_dir()
+_PASS_CACHE_PATH = os.environ.get("CBRSIM_PASS_CACHE", "").strip()
+_PASS_CACHE_INVOCATION = os.environ.get(
+    "CBRSIM_PASS_CACHE_INVOCATION", "").strip()
 # 実機TTRCエンコード用の決定ログ出力先。既定off(mp4出力に一切影響しない・追加のみ)。
 # 毎フレームの「更新セル(cell,pal,key)」＋区間パレットを吐き、pack_streamが再生してTTRC化する。
 _EMIT_DEC_ENV = os.environ.get("CBRSIM_EMIT_DEC", "").strip()
@@ -1279,6 +1284,37 @@ def main():
     _t = _mark("展開(reuse)" if cached else "抽出(ffmpeg)", _t)
     frames = sorted(master_dir.glob("*.png"))
     n = len(frames)
+    pass_cache_payload = None
+    pass_cache_metadata = None
+    if _PASS_CACHE_PATH:
+        if CONFIG_PROFILE is None or not _PASS_CACHE_INVOCATION:
+            raise SystemExit(
+                "sim pass cache requires a profile and invocation identity")
+        pass_cache_metadata = sim_pass_cache.expected_metadata(
+            profile=CONFIG_PROFILE,
+            source=SRC,
+            width=W,
+            height=H,
+            cells=C_CELLS,
+            active_tiles=ACTIVE_TILES,
+            fps=FPS_STR,
+            frame_count=n,
+            invocation=_PASS_CACHE_INVOCATION,
+        )
+        cache_path = Path(_PASS_CACHE_PATH)
+        if cache_path.is_file():
+            pass_cache_payload = sim_pass_cache.load(
+                cache_path, pass_cache_metadata)
+            print(
+                f"sim pass cache: hit {cache_path} "
+                f"({cache_path.stat().st_size / 1024**2:.1f} MiB)",
+                flush=True,
+            )
+        elif _SLOT_LOCALITY_STAGE == "final":
+            raise SystemExit(
+                f"accounting pass cache is missing: {cache_path}")
+        else:
+            print(f"sim pass cache: seed will create {cache_path}", flush=True)
     pack_config = dict(CONFIG_PROFILE.section("pack") if CONFIG_PROFILE else {})
     body_fresh = stream_schedule.body_fresh_byte_supply(
         n,
@@ -1352,19 +1388,36 @@ def main():
         print(f"  PRG先読み(patch): {len(prg_patch)}カット, distinct {uniq} tiles "
               f"({uniq*PATTERN_BYTES/1024:.0f}KB) をロード時バッファ")
 
-    print(f"training palettes ({PAL_ALGO})  DITHER={DITHER_ON} SEGPAL={SEGPAL_ON} NEAR={NEAR_ON} ...")
-    frame_cache = FrameFeatureCache(frames) if PAL_ALGO == MOSAIC_GM else None
-    _global_pals, seg_pals, frame_seg, seg_bounds, palette_stats = segment_and_train(
-        frames, frame_cache=frame_cache)
-    palette_stats["spatial_assignment"] = {
-        "enabled": bool(PAL_ALGO == MOSAIC_GM and PAL_SEAM_WEIGHT > 0),
-        "seam_weight": float(PAL_SEAM_WEIGHT),
-        "iterations": int(PAL_SEAM_ITERATIONS),
-    }
-    if SEGPAL_ON:
-        print(f"  per-segment palettes: {len(seg_pals)}区間, CRAM差替 {len(seg_bounds)}点 "
-              f"(candidates={palette_stats['candidate_segments']})")
-    _t = _mark("パレット学習", _t)
+    cached_precompute = (
+        pass_cache_payload.get("precompute")
+        if pass_cache_payload is not None else None)
+    if cached_precompute is not None:
+        frame_cache = None
+        _global_pals = None
+        seg_pals = cached_precompute["seg_pals"]
+        frame_seg = cached_precompute["frame_seg"]
+        seg_bounds = cached_precompute["seg_bounds"]
+        palette_stats = cached_precompute["palette_stats"]
+        print(
+            f"training palettes: pass-cache hit "
+            f"({len(seg_pals)} segments, {len(seg_bounds)} CRAM switches)",
+            flush=True,
+        )
+        _t = _mark("パレット学習(cache)", _t)
+    else:
+        print(f"training palettes ({PAL_ALGO})  DITHER={DITHER_ON} SEGPAL={SEGPAL_ON} NEAR={NEAR_ON} ...")
+        frame_cache = FrameFeatureCache(frames) if PAL_ALGO == MOSAIC_GM else None
+        _global_pals, seg_pals, frame_seg, seg_bounds, palette_stats = segment_and_train(
+            frames, frame_cache=frame_cache)
+        palette_stats["spatial_assignment"] = {
+            "enabled": bool(PAL_ALGO == MOSAIC_GM and PAL_SEAM_WEIGHT > 0),
+            "seam_weight": float(PAL_SEAM_WEIGHT),
+            "iterations": int(PAL_SEAM_ITERATIONS),
+        }
+        if SEGPAL_ON:
+            print(f"  per-segment palettes: {len(seg_pals)}区間, CRAM差替 {len(seg_bounds)}点 "
+                  f"(candidates={palette_stats['candidate_segments']})")
+        _t = _mark("パレット学習", _t)
 
     main_dir = OUT / "preview"      # SEGA-CD 実出力(ゴースト有り)
     catmap_dir = OUT / "catmap"     # category borders; Raw has none, Miss is overlaid later
@@ -1502,23 +1555,36 @@ def main():
     quality_budget = QUALITY_BUDGET_BYTES if QUALITY_BUDGET_ON else 0
     quality_budget_log = []
 
-    # DEBUG色はCRAMに既にある色だけを並べ替えて固定する。異なるパレット行との
-    # 入替があり得るので、全フレームを最終的な行構成に対して量子化する前に行う。
-    seg_pals, pal_extreme_stats = pin_p0_debug_extremes(seg_pals)
-    print(f"  P0 DEBUG colours pinned: index1 darkest swaps "
-          f"{pal_extreme_stats['dark_swapped_segments']}/{pal_extreme_stats['segments']}, "
-          f"index15 brightest swaps "
-          f"{pal_extreme_stats['bright_swapped_segments']}/{pal_extreme_stats['segments']}")
+    if cached_precompute is not None:
+        pal_extreme_stats = cached_precompute["pal_extreme_stats"]
+        pal15_stats = cached_precompute["pal15_stats"]
+        Q_detail = cached_precompute["Q_detail"]
+        Q_assign = cached_precompute["Q_assign"]
+        Q_pidx = cached_precompute["Q_pidx"]
+        print(
+            f"precompute quantization: pass-cache hit ({n} frames)",
+            flush=True,
+        )
+        _t = _mark("量子化(cache)", _t)
+    else:
+        # DEBUG色はCRAMに既にある色だけを並べ替えて固定する。異なるパレット行との
+        # 入替があり得るので、全フレームを最終的な行構成に対して量子化する前に行う。
+        seg_pals, pal_extreme_stats = pin_p0_debug_extremes(seg_pals)
+        print(f"  P0 DEBUG colours pinned: index1 darkest swaps "
+              f"{pal_extreme_stats['dark_swapped_segments']}/{pal_extreme_stats['segments']}, "
+              f"index15 brightest swaps "
+              f"{pal_extreme_stats['bright_swapped_segments']}/{pal_extreme_stats['segments']}")
 
-    # フレーム独立の割当/索引を並列で前計算(実行時間の大半)。以降のループは逐次(状態依存)。
-    Q_detail, Q_assign, Q_pidx = precompute_quant(
-        frames, seg_pals, frame_seg, frame_cache=frame_cache)
-    del frame_cache
-    # The older lossless index-15 canonicalizer is now a no-op for current
-    # palettes because both DEBUG extremes were pinned before quantisation.
-    # Keep the proof here while older palette inputs remain supported.
-    seg_pals, pal15_stats = canonicalize_p0_index15(
-        seg_pals, frame_seg, Q_assign, Q_pidx)
+        # フレーム独立の割当/索引を並列で前計算(実行時間の大半)。以降のループは逐次(状態依存)。
+        Q_detail, Q_assign, Q_pidx = precompute_quant(
+            frames, seg_pals, frame_seg, frame_cache=frame_cache)
+        del frame_cache
+        # The older lossless index-15 canonicalizer is now a no-op for current
+        # palettes because both DEBUG extremes were pinned before quantisation.
+        # Keep the proof here while older palette inputs remain supported.
+        seg_pals, pal15_stats = canonicalize_p0_index15(
+            seg_pals, frame_seg, Q_assign, Q_pidx)
+        _t = _mark("量子化", _t)
     # palettes.bin is the legacy fallback CRAM image.  In segmented mode the
     # separately trained global palette was never the actual initial CRAM, so
     # write canonical segment 0 and keep every consumer aligned with PALTAB.
@@ -1532,7 +1598,6 @@ def main():
           f"RGB identity verified for {pal15_stats['verified_pixels']} pixels "
           f"({pal15_stats['reassigned_tiles']} tile assignments and "
           f"{pal15_stats['reindexed_pixels']} indices remapped, frame0 included)")
-    _t = _mark("量子化", _t)
 
     # Optional quality upgrades use a whole-movie reserve plan. The dry run
     # follows the exact quantized target with the shared VRAM allocator. A
@@ -1545,84 +1610,58 @@ def main():
             if int(frame_seg[i]) != int(frame_seg[i - 1]):
                 upgrade_supply[i] = max(
                     0, int(upgrade_supply[i]) - PAL_WRITE_BYTES)
-    # Normal exact updates need a narrower risk reserve. Changes that fit Coa
-    # can degrade gracefully to a resident approximation; only changes beyond
-    # Coa are likely to become Flbk or Miss and justify moving budget capacity
-    # away from an earlier frame.
-    main_protected = np.zeros((n, C_CELLS), bool)
-    previous_target_rgb = None
-    coa_bounds = dict(
-        Ym=MIDFAR_TIERS[1][1],
-        Yp=MIDFAR_TIERS[1][2],
-        C=MIDFAR_TIERS[1][3],
-    )
-    for i in range(n):
-        target_pals = seg_pals[int(frame_seg[i])]
-        target_rgb = render_cells(Q_pidx[i], Q_assign[i], target_pals)
-        if i == 0:
-            main_protected[i] = True
-        else:
-            if int(frame_seg[i]) == int(frame_seg[i - 1]):
-                previous_display_rgb = previous_target_rgb
-            else:
-                previous_display_rgb = render_cells(
-                    Q_pidx[i - 1], Q_assign[i - 1], target_pals)
-            target_changed = (
-                np.any(Q_pidx[i] != Q_pidx[i - 1], axis=1)
-                | (Q_assign[i] != Q_assign[i - 1])
-            )
-            graceful = f3_mask_eval(
-                previous_display_rgb, target_rgb, target_changed, coa_bounds)
-            main_protected[i] = target_changed & ~graceful
-        previous_target_rgb = target_rgb
-    baseline_demand_prediction = upgrade_planner.predict_update_demand_details(
-        Q_pidx,
-        Q_assign,
-        vram_tiles=VRAM_TILES,
-        name_bytes=NAME_BYTES,
-        pattern_bytes=PATTERN_BYTES,
-        max_cold=MAX_COLD,
-        protected_frames=main_protected,
-    )
-    baseline_prefetch_forecast = raw_prefetch.forecast_requests(
-        Q_pidx,
-        Q_assign,
-        main_protected,
-        vram_tiles=VRAM_TILES,
-        max_cold=MAX_COLD,
-    )
-    frame0_keys = tuple(dict.fromkeys(
-        Q_pidx[0][cell].tobytes() for cell in range(C_CELLS)))
-    frame0_inline_pattern_limit = min(
-        C_CELLS,
-        VRAM_TILES,
-        av_config.FRAME0_PATTERN_STAGING_KB * 1024 // PATTERN_BYTES,
-    )
-    boot_inline_capacity = max(
-        0, frame0_inline_pattern_limit - len(frame0_keys))
-    boot_sidecar_capacity = av_config.boot_vram_sidecar_capacity(
-        len(seg_pals))
-    boot_prefetch_capacity = min(
-        max(0, VRAM_TILES - len(frame0_keys)),
-        boot_inline_capacity + boot_sidecar_capacity,
-    )
-    boot_prefetch_plan = (
-        raw_prefetch.plan_boot_requests(
-            baseline_demand_prediction,
-            baseline_prefetch_forecast,
-            frame0_keys,
-            capacity=boot_prefetch_capacity,
+    cached_future = (
+        pass_cache_payload.get("future")
+        if pass_cache_payload is not None else None)
+    if cached_future is not None:
+        main_protected = cached_future["main_protected"]
+        baseline_demand_prediction = cached_future[
+            "baseline_demand_prediction"]
+        baseline_prefetch_forecast = cached_future[
+            "baseline_prefetch_forecast"]
+        frame0_keys = cached_future["frame0_keys"]
+        frame0_inline_pattern_limit = cached_future[
+            "frame0_inline_pattern_limit"]
+        boot_inline_capacity = cached_future["boot_inline_capacity"]
+        boot_sidecar_capacity = cached_future["boot_sidecar_capacity"]
+        boot_prefetch_capacity = cached_future["boot_prefetch_capacity"]
+        boot_prefetch_plan = cached_future["boot_prefetch_plan"]
+        demand_prediction = cached_future["demand_prediction"]
+        supply_budget = cached_future["supply_budget"]
+        prefetch_forecast = cached_future["prefetch_forecast"]
+        print("future demand plan: pass-cache hit", flush=True)
+    else:
+        # Normal exact updates need a narrower risk reserve. Changes that fit Coa
+        # can degrade gracefully to a resident approximation; only changes beyond
+        # Coa are likely to become Flbk or Miss and justify moving budget capacity
+        # away from an earlier frame.
+        main_protected = np.zeros((n, C_CELLS), bool)
+        previous_target_rgb = None
+        coa_bounds = dict(
+            Ym=MIDFAR_TIERS[1][1],
+            Yp=MIDFAR_TIERS[1][2],
+            C=MIDFAR_TIERS[1][3],
         )
-        if BOOT_VRAM_PREFETCH_ON else ()
-    )
-    boot_inline_requests = min(
-        len(boot_prefetch_plan), boot_inline_capacity)
-    boot_sidecar_requests = len(boot_prefetch_plan) - boot_inline_requests
-    # Re-run the cheap exact-target trace with the boot residency installed so
-    # pattern-supply credits, quality reserves, and runtime prefetch forecasts
-    # all see the same initial VRAM state as the real encoder pass.
-    demand_prediction = (
-        upgrade_planner.predict_update_demand_details(
+        for i in range(n):
+            target_pals = seg_pals[int(frame_seg[i])]
+            target_rgb = render_cells(Q_pidx[i], Q_assign[i], target_pals)
+            if i == 0:
+                main_protected[i] = True
+            else:
+                if int(frame_seg[i]) == int(frame_seg[i - 1]):
+                    previous_display_rgb = previous_target_rgb
+                else:
+                    previous_display_rgb = render_cells(
+                        Q_pidx[i - 1], Q_assign[i - 1], target_pals)
+                target_changed = (
+                    np.any(Q_pidx[i] != Q_pidx[i - 1], axis=1)
+                    | (Q_assign[i] != Q_assign[i - 1])
+                )
+                graceful = f3_mask_eval(
+                    previous_display_rgb, target_rgb, target_changed, coa_bounds)
+                main_protected[i] = target_changed & ~graceful
+            previous_target_rgb = target_rgb
+        baseline_demand_prediction = upgrade_planner.predict_update_demand_details(
             Q_pidx,
             Q_assign,
             vram_tiles=VRAM_TILES,
@@ -1630,10 +1669,110 @@ def main():
             pattern_bytes=PATTERN_BYTES,
             max_cold=MAX_COLD,
             protected_frames=main_protected,
-            boot_prefetch_requests=boot_prefetch_plan,
         )
-        if boot_prefetch_plan else baseline_demand_prediction
-    )
+        baseline_prefetch_forecast = raw_prefetch.forecast_requests(
+            Q_pidx,
+            Q_assign,
+            main_protected,
+            vram_tiles=VRAM_TILES,
+            max_cold=MAX_COLD,
+        )
+        frame0_keys = tuple(dict.fromkeys(
+            Q_pidx[0][cell].tobytes() for cell in range(C_CELLS)))
+        frame0_inline_pattern_limit = min(
+            C_CELLS,
+            VRAM_TILES,
+            av_config.FRAME0_PATTERN_STAGING_KB * 1024 // PATTERN_BYTES,
+        )
+        boot_inline_capacity = max(
+            0, frame0_inline_pattern_limit - len(frame0_keys))
+        boot_sidecar_capacity = av_config.boot_vram_sidecar_capacity(
+            len(seg_pals))
+        boot_prefetch_capacity = min(
+            max(0, VRAM_TILES - len(frame0_keys)),
+            boot_inline_capacity + boot_sidecar_capacity,
+        )
+        boot_prefetch_plan = (
+            raw_prefetch.plan_boot_requests(
+                baseline_demand_prediction,
+                baseline_prefetch_forecast,
+                frame0_keys,
+                capacity=boot_prefetch_capacity,
+            )
+            if BOOT_VRAM_PREFETCH_ON else ()
+        )
+        # Re-run the exact-target trace with boot residency installed so every
+        # future source and reserve sees the same initial VRAM state.
+        demand_prediction = (
+            upgrade_planner.predict_update_demand_details(
+                Q_pidx,
+                Q_assign,
+                vram_tiles=VRAM_TILES,
+                name_bytes=NAME_BYTES,
+                pattern_bytes=PATTERN_BYTES,
+                max_cold=MAX_COLD,
+                protected_frames=main_protected,
+                boot_prefetch_requests=boot_prefetch_plan,
+            )
+            if boot_prefetch_plan else baseline_demand_prediction
+        )
+        supply_budget = pattern_supply.plan_frame_budgets(
+            demand_prediction, enabled=PATTERN_SUPPLY_ON)
+        if RAW_PREFETCH_ON:
+            prefetch_forecast = raw_prefetch.forecast_requests(
+                Q_pidx,
+                Q_assign,
+                main_protected,
+                vram_tiles=VRAM_TILES,
+                max_cold=MAX_COLD,
+                boot_prefetch_requests=boot_prefetch_plan,
+            )
+        else:
+            prefetch_forecast = raw_prefetch.PrefetchForecast(
+                requests=tuple(() for _ in range(n)),
+                protected_cold=np.zeros(n, np.int64),
+                requested_patterns=np.zeros(n, np.int64),
+            )
+        if _PASS_CACHE_PATH:
+            cache_payload = {
+                "precompute": {
+                    "seg_pals": seg_pals,
+                    "frame_seg": frame_seg,
+                    "seg_bounds": seg_bounds,
+                    "palette_stats": palette_stats,
+                    "pal_extreme_stats": pal_extreme_stats,
+                    "pal15_stats": pal15_stats,
+                    "Q_detail": Q_detail,
+                    "Q_assign": Q_assign,
+                    "Q_pidx": Q_pidx,
+                },
+                "future": {
+                    "main_protected": main_protected,
+                    "baseline_demand_prediction": baseline_demand_prediction,
+                    "baseline_prefetch_forecast": baseline_prefetch_forecast,
+                    "frame0_keys": frame0_keys,
+                    "frame0_inline_pattern_limit": frame0_inline_pattern_limit,
+                    "boot_inline_capacity": boot_inline_capacity,
+                    "boot_sidecar_capacity": boot_sidecar_capacity,
+                    "boot_prefetch_capacity": boot_prefetch_capacity,
+                    "boot_prefetch_plan": boot_prefetch_plan,
+                    "demand_prediction": demand_prediction,
+                    "supply_budget": supply_budget,
+                    "prefetch_forecast": prefetch_forecast,
+                },
+            }
+            cache_path = Path(_PASS_CACHE_PATH)
+            sim_pass_cache.save(
+                cache_path, pass_cache_metadata, cache_payload)
+            print(
+                f"sim pass cache: saved {cache_path} "
+                f"({cache_path.stat().st_size / 1024**2:.1f} MiB)",
+                flush=True,
+            )
+    boot_inline_requests = min(
+        len(boot_prefetch_plan), boot_inline_capacity)
+    boot_sidecar_requests = len(boot_prefetch_plan) - boot_inline_requests
+
     slot_locality_map = os.environ.get("CBRSIM_SLOT_LOCALITY_MAP", "").strip()
     if slot_locality_map:
         slot_locality = evaluate_slot_locality(
@@ -1666,8 +1805,6 @@ def main():
         f"->{int(predicted_local_runs[predicted_risk].max(initial=0))}",
         flush=True,
     )
-    supply_budget = pattern_supply.plan_frame_budgets(
-        demand_prediction, enabled=PATTERN_SUPPLY_ON)
     dic_dictionary_keys = set(supply_budget.dic_dictionary)
     dic_dictionary_index = {
         key: index for index, key in enumerate(supply_budget.dic_dictionary)
@@ -1676,21 +1813,6 @@ def main():
     protected_credit_bytes = (
         np.minimum(supply_budget.total, demand_prediction.protected_cold)
         * PATTERN_BYTES)
-    if RAW_PREFETCH_ON:
-        prefetch_forecast = raw_prefetch.forecast_requests(
-            Q_pidx,
-            Q_assign,
-            main_protected,
-            vram_tiles=VRAM_TILES,
-            max_cold=MAX_COLD,
-            boot_prefetch_requests=boot_prefetch_plan,
-        )
-    else:
-        prefetch_forecast = raw_prefetch.PrefetchForecast(
-            requests=tuple(() for _ in range(n)),
-            protected_cold=np.zeros(n, np.int64),
-            requested_patterns=np.zeros(n, np.int64),
-        )
     # A boot-preloaded cold pattern still needs its two-byte name entry but no
     # BODY payload.  Remove only that 32-byte payload from the future reserve
     # traces; the live encoder below applies the same charge to actual work.
@@ -3675,22 +3797,31 @@ def _run_slot_locality_pipeline():
     import subprocess
 
     command = [sys.executable, *_ORIGINAL_ARGV]
-    seed_env = os.environ.copy()
-    seed_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "seed"
-    seed_env["CBRSIM_NOPANELS"] = "1"
-    seed_env.pop("CBRSIM_SLOT_LOCALITY_MAP", None)
-    seed_env.pop("CBRSIM_SLOT_LOCALITY_REUSE", None)
-    print("slot locality seed pass: logical decisions", flush=True)
-    subprocess.run(command, env=seed_env, check=True)
-
     map_path = Path("tmp") / f"slot_locality_seed_{os.getpid()}.npy"
     retry_path = Path("tmp") / f"slot_locality_retry_{os.getpid()}.npy"
+    workspace_lease = _activate_sim_tmpfs()
+    cache_lease = None
     try:
+        cache_lease = tmpfs_workspace.create_run_directory(
+            _tmpfs_key(), required_bytes=_pass_cache_required_bytes())
+        cache_path = cache_lease.entry / "pass-cache.pkl"
+        common_env = os.environ.copy()
+        common_env["CBRSIM_TMPFS_PREPARED"] = "1"
+        common_env["CBRSIM_PASS_CACHE"] = str(cache_path)
+        common_env["CBRSIM_PASS_CACHE_INVOCATION"] = cache_lease.entry.name
+        seed_env = common_env.copy()
+        seed_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "seed"
+        seed_env["CBRSIM_NOPANELS"] = "1"
+        seed_env.pop("CBRSIM_SLOT_LOCALITY_MAP", None)
+        seed_env.pop("CBRSIM_SLOT_LOCALITY_REUSE", None)
+        print("slot locality seed pass: logical decisions", flush=True)
+        subprocess.run(command, env=seed_env, check=True)
+
         _derive_completed_slot_map(EMIT_DEC, map_path)
         for accounting_pass in range(
                 1, SLOT_LOCALITY_MAX_ACCOUNTING_PASSES + 1):
             retry_path.unlink(missing_ok=True)
-            final_env = os.environ.copy()
+            final_env = common_env.copy()
             final_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "final"
             final_env["CBRSIM_SLOT_LOCALITY_MAP"] = str(map_path.resolve())
             final_env["CBRSIM_SLOT_LOCALITY_RETRY_MAP"] = str(
@@ -3727,6 +3858,57 @@ def _run_slot_locality_pipeline():
     finally:
         map_path.unlink(missing_ok=True)
         retry_path.unlink(missing_ok=True)
+        if cache_lease is not None:
+            tmpfs_workspace.remove_run_directory(cache_lease)
+        if workspace_lease is not None:
+            workspace_lease.release()
+
+
+def _tmpfs_key():
+    profile_name = CONFIG_PROFILE.path.stem if CONFIG_PROFILE else "no-profile"
+    profile_hash = CONFIG_PROFILE.sha256[:10] if CONFIG_PROFILE else "unprofiled"
+    return f"{profile_name}-{profile_hash}-{W}x{H}-{FPS_STR}fps"
+
+
+def _estimated_frame_count():
+    return max(1, int(math.ceil(float(DURATION) * FPS)) + 2)
+
+
+def _sim_tmpfs_required_bytes():
+    # PNG compression varies substantially by source. This estimate covers the
+    # two extracted inputs, the three sim panels, and ordinary sidecars while
+    # retaining a fixed headroom for palettes, decisions, and audio.
+    pixels = _estimated_frame_count() * W * H
+    return pixels * 10 + 1024 ** 3
+
+
+def _pass_cache_required_bytes():
+    # Quantized targets are compact, but palette details and future-planning
+    # objects vary with the source. Reserve roughly four indexed frame copies.
+    pixels = _estimated_frame_count() * W * H
+    return pixels * 4 + 512 * 1024 ** 2
+
+
+def _activate_sim_tmpfs():
+    if os.environ.get("CBRSIM_TMPFS_PREPARED") == "1":
+        return None
+    videos = (Path(__file__).resolve().parents[1] / "videos").absolute()
+    try:
+        OUT.absolute().relative_to(videos)
+    except ValueError:
+        print(
+            f"tmpfs artifacts: CBRSIM_OUT is outside videos/, keeping {OUT}",
+            flush=True,
+        )
+        return None
+    lease = tmpfs_workspace.activate_directory(
+        OUT,
+        kind="sim",
+        key=_tmpfs_key(),
+        required_bytes=_sim_tmpfs_required_bytes(),
+    )
+    print(f"tmpfs sim workspace: {OUT} -> {lease.entry / 'data'}", flush=True)
+    return lease
 
 
 if __name__ == "__main__":
@@ -3736,6 +3918,11 @@ if __name__ == "__main__":
         }
     if (_SLOT_LOCALITY_STAGE or locality_disabled or not EMIT_DEC
             or os.environ.get("CBRSIM_SLOT_LOCALITY_MAP", "").strip()):
-        main()
+        _standalone_lease = _activate_sim_tmpfs()
+        try:
+            main()
+        finally:
+            if _standalone_lease is not None:
+                _standalone_lease.release()
     else:
         _run_slot_locality_pipeline()

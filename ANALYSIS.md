@@ -6,12 +6,14 @@ This document defines, exactly and completely, every element drawn in the
 `tools/layout_preview.py` (dummy data); `render_analysis` runs the same drawing
 functions on real encoder output.
 
-Every render also writes a machine-readable, one-row-per-frame TSV beside the
-video: `videos/<stem>_analysis.tsv`. It is generated from the same
-`frame_data()` values used by the overlay, before PNG rendering begins, so
-numeric comparisons do not require OCR. A frame-range render still refreshes
-the complete TSV. Set `ANALYSIS_TSV` only when a different output path is
-required.
+Every render also writes a machine-readable, one-row-per-frame TSV under
+`logs/`. Its unique filename contains local date/time, profile name, a
+10-character profile checksum, and the encoder version. It is generated from
+the same `frame_data()` values used by the overlay, before PNG rendering
+begins, so numeric comparisons do not require OCR. A frame-range render still
+writes the complete TSV. `videos/<stem>_analysis.tsv` is a compatibility
+symlink to the newest matching log; `ANALYSIS_TSV` changes that symlink path,
+not the persistent log location.
 
 Keep this file in sync whenever the layout changes (the `/analysis` skill
 automates: update layout -> update this file -> notify).
@@ -36,9 +38,9 @@ corresponding encoder values remain available in the `stat_*` columns.
 | `quality_budget_remaining_bytes` | Encoder-only whole-movie quality allowance remaining after the frame. This is diagnostic state, not a physical meter. |
 | `stat_frame` through the remaining `stat_*` columns | Every column from `stats.npz`, preserved with a `stat_` prefix and in its original order. These raw columns may grow when the simulator gains a new statistic. |
 
-The default path follows `ANALYSIS_OUT`: changing
-`videos/example_analysis.mp4` produces `videos/example_analysis.tsv` unless
-`ANALYSIS_TSV` is explicitly set.
+The compatibility alias follows `ANALYSIS_OUT`: changing
+`videos/example_analysis.mp4` produces a timestamped `logs/*.tsv` and updates
+`videos/example_analysis.tsv` unless `ANALYSIS_TSV` selects another alias.
 
 ## Layout map
 

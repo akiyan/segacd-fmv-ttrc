@@ -289,9 +289,18 @@ ffmpeg -y -hide_banner -loglevel error -ss "$TRIM" -i "$RAW_MKV" \
   -t "$REC_SECS" -map 0:v:0 -map '0:a:0?' -c copy "$BOUNDED_MKV"
 
 echo ">> transcoding verification preview -> $OUT"
-ffmpeg -y -hide_banner -loglevel error -i "$BOUNDED_MKV" \
-  -c:v libx264 -crf 18 -pix_fmt yuv420p \
-  -c:a aac -b:a 128k -movflags +faststart "$OUT"
+OUT_ABS="$(realpath -m "$OUT")"
+if [[ "$OUT_ABS" == "$ROOT/videos/"* ]]; then
+  "$PYTHON" tools/tmpfs_workspace.py run-file \
+    --output "$OUT" --kind record-preview-mp4 --required-gb 1 -- \
+    ffmpeg -y -hide_banner -loglevel error -i "$BOUNDED_MKV" \
+      -c:v libx264 -crf 18 -pix_fmt yuv420p \
+      -c:a aac -b:a 128k -movflags +faststart '{output}'
+else
+  ffmpeg -y -hide_banner -loglevel error -i "$BOUNDED_MKV" \
+    -c:v libx264 -crf 18 -pix_fmt yuv420p \
+    -c:a aac -b:a 128k -movflags +faststart "$OUT"
+fi
 
 if [ -n "$PIPELINE_WALL_START_NS" ]; then
   PIPELINE_WALL_END_NS="$(date +%s%N)"

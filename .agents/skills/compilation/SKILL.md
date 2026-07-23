@@ -70,14 +70,16 @@ H32とH40は異なるドット幅で同じ64:49の表示領域を表す。YouTub
 2. **起動画面を残したまま配信用ファイルを作る**
 
    ```sh
-   ffmpeg -i videos/INPUT_lossless.mkv \
-     -vf "scale=2048:1568:flags=neighbor,setsar=1" \
-     -c:v libx264 -crf 10 -preset slow -pix_fmt yuv420p \
-     -c:a aac -b:a 192k -movflags +faststart \
-     videos/STEM_emu.mp4
+   tools/python.sh tools/tmpfs_workspace.py run-file \
+     --output videos/STEM_emu.mp4 --kind compilation-mp4 --required-gb 8 -- \
+     ffmpeg -i videos/INPUT_lossless.mkv \
+       -vf "scale=2048:1568:flags=neighbor,setsar=1" \
+       -c:v libx264 -crf 10 -preset slow -pix_fmt yuv420p \
+       -c:a aac -b:a 192k -movflags +faststart '{output}'
    ```
 
-   `INPUT_lossless.mkv`と`STEM`は実値へ置き換える。nearest拡大そのものは
+   `INPUT_lossless.mkv`と`STEM`は実値へ置き換える。`{output}` はtmpfs wrapperが
+   実体パスへ置き換え、成功後に `videos/STEM_emu.mp4` symlinkを公開する。nearest拡大そのものは
    新しい色を作らず、H32では8x7の完全な整数拡大になる。ただしYouTubeは必ず
    再エンコードするため、最終配信までロスレスとは呼ばない。CRF 10の高品質な
    入力を渡し、YouTube側の高解像度配信を使う。`-ss`、`-t`、fps filter、`-r`は

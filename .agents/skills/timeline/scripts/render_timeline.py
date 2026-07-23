@@ -24,6 +24,7 @@ REPO = SCRIPT.parents[4]
 TOOLS = REPO / "tools"
 sys.path.insert(0, str(TOOLS))
 import layout_preview as layout  # noqa: E402
+import tmpfs_workspace  # noqa: E402
 
 
 BG = (12, 12, 14)
@@ -570,7 +571,8 @@ def main() -> None:
     tsv = args.tsv.resolve()
     config_path = args.config.resolve() if args.config else None
     sim_out = args.sim_out.resolve() if args.sim_out else None
-    output = (args.output or tsv.with_name(tsv.stem + "_timeline.png")).resolve()
+    output = (args.output or (
+        REPO / "videos" / (tsv.stem + "_timeline.png"))).absolute()
     rows, data = load_tsv(tsv)
     n = len(rows)
     ppf = args.pixels_per_frame or max(1, min(4, math.ceil(4200 / n)))
@@ -623,8 +625,33 @@ def main() -> None:
         fill=DIM, font=font(18),
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    image.convert("RGB").save(output, optimize=True)
-    print(output)
+    sim_lease = (
+        tmpfs_workspace.lease_managed_alias(sim_out)
+        if sim_out is not None else None)
+    png_lease = None
+    actual_output = output
+    try:
+        videos = (REPO / "videos").absolute()
+        try:
+            output.relative_to(videos)
+        except ValueError:
+            pass
+        else:
+            actual_output, png_lease = tmpfs_workspace.allocate_file(
+                output,
+                kind="timeline-png",
+                key=f"{tsv.stem}-{hashlib.sha256(tsv.read_bytes()).hexdigest()[:10]}",
+                required_bytes=max(width * height * 4, 128 * 1024 ** 2),
+            )
+        image.convert("RGB").save(actual_output, optimize=True)
+        if png_lease is not None:
+            tmpfs_workspace.publish_alias(output, actual_output)
+        print(output)
+    finally:
+        if png_lease is not None:
+            png_lease.release()
+        if sim_lease is not None:
+            sim_lease.release()
 
 
 if __name__ == "__main__":

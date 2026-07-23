@@ -222,12 +222,15 @@ ANALYSIS_OUT=videos/<stem>_analysis.mp4 \
 tools/python.sh --gpu tools/render_analysis.py configs/<source>-<mode>.toml
 ```
 
-Every invocation first writes the complete per-frame numeric sidecar to
-`videos/<stem>_analysis.tsv` (or `ANALYSIS_TSV` when explicitly set) from the
-same values used by the overlay. Use it for maxima, totals, and frame-to-frame
-comparisons instead of OCR. The full render then generates all PNG frames in
-parallel (`nproc-2`) and calls FFmpeg, usually with `h264_nvenc`, `-r 60`, and
-audio.
+Every invocation first writes the complete per-frame numeric sidecar to a
+unique persistent file below `logs/`. Its filename includes local date/time,
+the profile name, the first 10 profile-SHA characters, and the encoder version.
+`videos/<stem>_analysis.tsv` (or `ANALYSIS_TSV` when explicitly set) is only a
+compatibility symlink to that permanent log. Use the `logs/` file for maxima,
+totals, and frame-to-frame comparisons instead of OCR. The full render then
+generates all PNG frames in parallel (`nproc-2`) and calls FFmpeg, usually with
+`h264_nvenc`, `-r 60`, and audio. Disposable PNG/MP4 bytes live in the managed
+tmpfs workspace even though their public symlinks remain below `videos/`.
 
 Frame-range check only:
 

@@ -5,6 +5,7 @@
 /work/
 /tmp/
 /videos/
+/logs/
 .venv/
 .venv-gpu/
 __pycache__/
