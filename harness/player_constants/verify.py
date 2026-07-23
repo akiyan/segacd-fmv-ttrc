@@ -28,21 +28,16 @@ class Case:
     name: str
     mode: int
     fps: int
-    adpcm22: bool = False
     pattern_supply: bool = False
 
 
 CASES = (
     Case("h32-15", 0, 15),
-    Case("h32-24", 0, 24),
-    Case("h32-30", 0, 30),
+    Case("h32-24-supply", 0, 24, True),
+    Case("h32-30-supply", 0, 30, True),
     Case("h40-15", 1, 15),
-    Case("h40-24", 1, 24),
-    Case("h40-30", 1, 30),
-    Case("h40-15-adpcm", 1, 15, True),
-    Case("h40-30-adpcm", 1, 30, True),
-    Case("h32-30-supply", 0, 30, False, True),
-    Case("h40-30-adpcm-supply", 1, 30, True, True),
+    Case("h40-24-supply", 1, 24, True),
+    Case("h40-30-supply", 1, 30, True),
 )
 
 
@@ -64,12 +59,7 @@ def make_header(case: Case) -> bytes:
     features = ttrc_routing.FEATURE_COLD_RUNS
     if av_config.uses_fixed_n2_cadence(case.fps):
         features |= ttrc_routing.FEATURE_FIXED_N2
-    if case.adpcm22:
-        _rate, audio, _control = av_config.audio_frame_layout(
-            "adpcm22", case.fps)
-        features |= ttrc_routing.FEATURE_ADPCM22
-    else:
-        audio = av_config.pcm_frame_bytes(case.fps, 13_300)
+    _rate, audio, _control = av_config.audio_frame_layout(case.fps)
     if case.pattern_supply:
         features |= (
             ttrc_routing.FEATURE_PATTERN_SUPPLY
@@ -247,7 +237,7 @@ def build_case(
         str(linker), "-nostdlib", "--oformat", "binary",
         "-T", str(ROOT / "cfg/sp.ld"), "-o", str(sp_bin), str(sp_obj),
     ])
-    if specialized and case.adpcm22:
+    if specialized:
         verify_adpcm_decode_pump(
             objdump, sp_obj, expected=case.fps < 24)
 

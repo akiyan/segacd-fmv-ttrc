@@ -20,10 +20,9 @@ from pathlib import Path
 
 SECTOR = 2048
 PATTERN_BYTES = 32
-VERSION = 14
+VERSION = 15
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
-FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
 FEATURE_SHADOW_UPDATE_LISTS = 0x0010
 FEATURE_VRAM_RAW_PREFETCH = 0x0020
@@ -241,7 +240,7 @@ def main() -> None:
         raise SystemExit("shadow update lists require pattern supply")
     if vsync_n <= 0 or fps < 24:
         raise SystemExit(f"invalid supply timing N={vsync_n} fps={fps}")
-    audio_bytes = 4 + decoded_audio // 2 if features & FEATURE_ADPCM22 else decoded_audio
+    audio_bytes = 4 + decoded_audio // 2
     signature = struct.unpack_from(">L", header, 192)[0]
     expected_signature = zlib.crc32(header[:64]) & 0xFFFFFFFF
     if signature != expected_signature:
@@ -265,8 +264,7 @@ def main() -> None:
     cursor = SECTOR
     _paltab, cursor = take_region(
         header, cursor, paltab_sectors, nseg * 128, "PALTAB")
-    adpcm_sectors = 5 if features & FEATURE_ADPCM22 else 0
-    cursor += adpcm_sectors * SECTOR
+    cursor += 5 * SECTOR
     wr0, cursor = take_region(header, cursor, wr0_sec, wr0_count * 32, "Wr0")
     wr1, cursor = take_region(header, cursor, wr1_sec, wr1_count * 32, "Wr1")
     dic_blob, cursor = take_region(

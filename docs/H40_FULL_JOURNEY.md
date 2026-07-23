@@ -161,8 +161,8 @@ Canonical build (reproducible):
 CBRSIM_W=320 CBRSIM_H=224 CBRSIM_MODE=H40 \
 CBRSIM_RING_CAP_KB=380 CBRSIM_PACK_MAXCOLD=200 \
 tools/python.sh tools/pack_stream.py \
-  --dec-log videos/machi_ed_H40_320x224_pcm13/decisions.pkl \
-  --audio  videos/machi_ed_H40_320x224_pcm13/audio_13k3_u8_mono.wav \
+  --dec-log videos/machi_ed_H40_320x224_adpcm22/decisions.pkl \
+  --audio  videos/machi_ed_H40_320x224_adpcm22/audio_22k05_s16_mono.wav \
   --output out/movieplay/MOVIE.DAT
 make disc DEBUG=1
 ```
@@ -329,8 +329,8 @@ cold cap を直接指した。
 CBRSIM_W=320 CBRSIM_H=224 CBRSIM_MODE=H40 \
 CBRSIM_RING_CAP_KB=380 CBRSIM_PACK_MAXCOLD=200 \
 tools/python.sh tools/pack_stream.py \
-  --dec-log videos/machi_ed_H40_320x224_pcm13/decisions.pkl \
-  --audio  videos/machi_ed_H40_320x224_pcm13/audio_13k3_u8_mono.wav \
+  --dec-log videos/machi_ed_H40_320x224_adpcm22/decisions.pkl \
+  --audio  videos/machi_ed_H40_320x224_adpcm22/audio_22k05_s16_mono.wav \
   --output out/movieplay/MOVIE.DAT
 make disc DEBUG=1
 ```

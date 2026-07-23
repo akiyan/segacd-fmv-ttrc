@@ -5,10 +5,10 @@ from __future__ import annotations
 import operator
 
 
-VERSION = 14
+VERSION = 15
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
-FEATURE_ADPCM22 = 0x0004
+# 0x0004 was the removed optional-audio-codec flag. TTRC v15 is ADPCM-only.
 FEATURE_PATTERN_SUPPLY = 0x0008
 FEATURE_SHADOW_UPDATE_LISTS = 0x0010
 FEATURE_VRAM_RAW_PREFETCH = 0x0020

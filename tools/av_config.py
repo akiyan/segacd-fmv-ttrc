@@ -189,8 +189,8 @@ def cd_sector_rate(fps):
     return 75, nominal
 
 
-def pcm_frame_bytes(fps, audio_rate=13_300):
-    """Fixed mono u8 PCM bytes per frame, rounded up to avoid underrun."""
+def audio_frame_samples(fps, audio_rate):
+    """Fixed mono samples per frame, rounded up to avoid underrun."""
     return int(math.ceil(int(audio_rate) / playback_fps_for_content(fps)))
 
 
@@ -199,20 +199,14 @@ IMA_CHECKPOINT_BYTES = 4
 
 def adpcm_frame_samples(fps, audio_rate=22_050):
     """Fixed decoded samples per IMA chunk, rounded up to an even count."""
-    count = pcm_frame_bytes(fps, audio_rate)
+    count = audio_frame_samples(fps, audio_rate)
     return count + (count & 1)
 
 
-def audio_frame_layout(kind, fps):
-    """Return ``(rate, decoded_samples, control_bytes)`` for one audio chunk."""
-    name = str(kind).strip().lower()
-    if name == "pcm13":
-        samples = pcm_frame_bytes(fps, 13_300)
-        return 13_300, samples, samples
-    if name == "adpcm22":
-        samples = adpcm_frame_samples(fps, 22_050)
-        return 22_050, samples, IMA_CHECKPOINT_BYTES + samples // 2
-    raise ValueError(f"unsupported audio kind: {kind!r}")
+def audio_frame_layout(fps):
+    """Return the ADPCM ``(rate, decoded_samples, control_bytes)`` layout."""
+    samples = adpcm_frame_samples(fps, 22_050)
+    return 22_050, samples, IMA_CHECKPOINT_BYTES + samples // 2
 
 # --- Realized cold matches the sim and never exceeds the cap ---
 # The sim (tools/sim.py) and the pack (tools/pack_stream.py) now share ONE tile-slot

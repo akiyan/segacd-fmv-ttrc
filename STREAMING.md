@@ -44,7 +44,7 @@ The live throughput reference is the largest current fixed-cadence raster:
 | Sub clock and frame budget | 12,500,000 Hz; 417,083 cycles |
 | Timed cold cap | 185 patterns/frame |
 | Maximum updates | 1,120 entries/frame |
-| Audio | PCM13: 444 direct bytes/frame; ADPCM22: 372 control bytes -> 736 decoded samples |
+| Audio | 372 ADPCM control bytes -> 736 decoded RF5C164 samples |
 | Maximum BODY routing slot | 5 sectors |
 | Build | specialized DEBUG player, Main code generation and short-run fast path enabled |
 
@@ -132,8 +132,8 @@ The fixed all-playback total in one bank is:
 ```
 
 The H40/N2 steady-stream total substitutes a 6,660-byte worst load block
-(`185 * 32 + 185 * 4`) and a 3,596-byte worst control block (the larger PCM13
-control case). After boot, the temporary 8 KiB DicBuf stage is also reusable.
+(`185 * 32 + 185 * 4`) and a 3,524-byte worst ADPCM control block. After boot,
+the temporary 8 KiB DicBuf stage is also reusable.
 Together these produce **48.418 KiB per bank** after subtracting the persistent
 27.5 KiB WordBuf. It is not replay-safe because frame 0 overwrites most of the
 load-tail gain and reuses the DicBuf stage.
@@ -203,7 +203,7 @@ sequenceDiagram
         S->>W: Drain to 2 KiB stage, then APPLY / PrgBuf
         Note right of S: S1 55k-cycle planning envelope for routing and five stage copies<br/>BIOS wait/retry cycles excluded; remaining before waits about 362k
         S->>S: Fetch control, decode ADPCM, write 736 reconstructed samples
-        Note right of S: S2 PCM13 baseline 30k cycles plus 95k-101k measured decode<br/>the extra 292 RF5C164 writes are not modeled; remaining before waits is less than 231k
+        Note right of S: S2 measured ADPCM decode is about 95k-101k cycles<br/>RF5C164 writes and bus wait states are not included in that stopwatch
         S->>W: Walk up to 1,120 entries and copy up to 185 cold patterns
         Note right of S: S3 75k-cycle planning envelope<br/>remaining before waits is less than 156k
         S->>S: Bookkeeping, polls, next READY preparation
@@ -263,27 +263,22 @@ remains zero.
 
 ### Sub cycle basis
 
-The rounded 170,000-cycle Sub subtotal is the PCM13 baseline for visible
-assembly instructions in the H40/N2 path:
+The following planning table covers the visible non-decoder assembly in the
+H40/N2 path. ADPCM decode and RF5C164 output are separate mandatory work:
 
 | Sub phase | Rounded instruction subtotal | Important exclusion |
 |---|---:|---|
 | Routing plus up to five 2 KiB stage copies | 55,000 cycles | time inside `CDC_STAT`, `CDC_READ`, `CDC_TRN`, and `CDC_ACK` |
-| Maximum 3,596-byte APPLY-to-control copy plus 444-byte PCM13 write | 30,000 cycles | Word-RAM and RF5C164 wait states |
+| Maximum 3,524-byte APPLY-to-control copy | within the shared frame envelope | Word-RAM wait states |
 | 1,120-entry legacy walk, 185 cold copies, run construction | 75,000 cycles | asynchronous CD work reached by polls |
 | Fixed bookkeeping and reserve | 10,000 cycles | bank-settle polling |
-| **Visible subtotal** | **170,000 cycles** | all exclusions above |
-| **Raw remainder before waits** | **247,083 cycles / 19.77 ms** | not safe spendable time |
+| ADPCM table decode | about 95,000-101,000 cycles | RF5C164 output writes and bus waits |
 
-For specialized H40/N2, the ADPCM22 stopwatch surrounds only the table decode,
-not the following 736-byte RF5C164 write. In the 2,714-frame H40 Sonic capture it reported 62-66
-display units. One unit is four 30.72 microsecond ticks, giving 7.62-8.11 ms or
-about 95,000-101,000 Sub cycles. Adding that to the PCM13 baseline already
-raises visible work to roughly 265,000-271,000 cycles, and ADPCM writes 292
-more RF5C164 samples than PCM13; that extra writer cost is not included in this
-number. Thus the pre-wait arithmetic remainder is less than about 146,000
-cycles, not 247,083. Both cap185 captures nevertheless complete with `S=0`,
-`D=0`, `R=0`, `C=0`, and a 12 KiB PrgBuf jitter-reserve high-water mark.
+For specialized H40/N2, the ADPCM stopwatch surrounds only the table decode,
+not the following 736-byte RF5C164 write. It has measured about 7.62-8.11 ms,
+or roughly 95,000-101,000 Sub cycles. Because the writer, BIOS calls, CDC
+readiness, Word-RAM access, and bank timing remain outside that measurement,
+the arithmetic remainder is not a safe spendable allowance.
 
 At H40/15, the 1,472-sample decode is about 16 ms and crosses a 13.3 ms
 CD-sector interval. Player p56 therefore performs non-blocking CDC polls during

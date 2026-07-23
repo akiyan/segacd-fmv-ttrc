@@ -10,7 +10,7 @@ recordings.
 ## Tools
 
 - `extract_frames.py` — parses a packed `HEADER.DAT` + `BODY.DAT` pair
-  (TTRC v10-v12) and emits one CSV row per frame: cell updates, physical
+  (TTRC v15) and emits one CSV row per frame: cell updates, physical
   pattern loads by source (Prg/Wr/Dic), cold-run descriptor structure
   (count, short runs, max run length), Pass2 word total, palette-switch
   flag, control bytes, and the CD slot schedule (control/payload sectors,

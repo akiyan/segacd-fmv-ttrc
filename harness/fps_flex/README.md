@@ -40,14 +40,11 @@ wanted anyway, and each frame shows for exactly 2 vsyncs (no judder). “15fps�
 
 ## Audio
 
-At 13.3 kHz the per-frame audio chunk = `13300 x N / 59.94`: N=4 → 887.5 B,
-N=2 → 443.8 B — **never a clean integer** (59.94 is fractional), and nudging the
-rate (13320, 13290) doesn't fix it. That's fine: audio is a **continuous PCM
-stream**, delivered in per-frame chunks that round ±1 to track the average, and
-the existing write-ahead **SYNC** (lead / resync) already absorbs the sub-byte
-drift. So AUDIO becomes **fps-derived** (`round(audio_rate x N / 59.94)`, ±1 per
-frame to average), not a fixed 887. The sample rate can stay ~13.3 kHz; a small
-adjustment is optional, not required.
+At 22.05 kHz, the decoded sample count is derived from the actual playback
+cadence and rounded up to an even value for two-samples-per-byte IMA packing.
+The existing write-ahead **SYNC** absorbs the small difference between source
+timing and the fixed per-frame chunk. Each live control stores a four-byte
+checkpoint plus one nibble per decoded sample.
 
 ## Implementation plan (branch `fps-flex`)
 

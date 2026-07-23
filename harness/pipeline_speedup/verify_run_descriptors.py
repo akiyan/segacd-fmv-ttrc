@@ -7,7 +7,7 @@ absolute-address alignment pad:
     n_runs:u16, repeated v12 indexed four-byte descriptors
 
 This checker does not import the packer.  It independently reads the real split
-TTRC v12-v14 files and reconstructs every current control and payload byte.  The
+TTRC v15 files and reconstructs every current control and payload byte. The
 display entries remain in cell order, while the p39 suffix and physical pattern
 payload independently follow ascending VRAM-slot order.  The checker proves both
 views against the same decisions and proves the suffix consumes each physical
@@ -31,7 +31,6 @@ SECTOR = 2048
 PATTERN_BYTES = 32
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
-FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
 FEATURE_SHADOW_UPDATE_LISTS = 0x0010
 FEATURE_VRAM_RAW_PREFETCH = 0x0020
@@ -51,7 +50,7 @@ RUN_COUNT_MASK = 0x07FF
 SHADOW_UPDATE_LIST_TAG = 0x8000
 SHADOW_UPDATE_COUNT_MASK = 0x7FFF
 DEFAULT_DECISIONS = Path(
-    "videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl"
+    "videos/sonic_H32_256x224_adpcm22_geometry_pad_4by3/decisions.pkl"
 )
 
 
@@ -246,9 +245,9 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, pool, base = struct.unpack_from(
         ">4sHHHHHHH", header
     )
-    if magic != b"TTRC" or not 12 <= version <= 14:
+    if magic != b"TTRC" or version != 15:
         raise AssertionError(
-            f"expected split TTRC v12-v14, got {magic!r} v{version}")
+            f"expected split TTRC v15, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -264,7 +263,7 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     audio_preload_sectors = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
     unknown_features = features & ~(
-        FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_ADPCM22
+        FEATURE_COLD_RUNS | FEATURE_FIXED_N2
         | FEATURE_PATTERN_SUPPLY | FEATURE_SHADOW_UPDATE_LISTS
         | FEATURE_VRAM_RAW_PREFETCH | FEATURE_DICBUF_INDEXED_RUNS
         | FEATURE_BOOT_VRAM_SIDECAR)
@@ -272,13 +271,9 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
         raise AssertionError(f"unsupported header feature bits 0x{unknown_features:04X}")
     if features & FEATURE_SHADOW_UPDATE_LISTS and not features & FEATURE_PATTERN_SUPPLY:
         raise AssertionError("shadow update lists require pattern supply")
-    audio_bytes = (
-        4 + decoded_audio_bytes // 2
-        if features & FEATURE_ADPCM22
-        else decoded_audio_bytes
-    )
+    audio_bytes = 4 + decoded_audio_bytes // 2
 
-    table_sectors = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
+    table_sectors = ADPCM_TABLE_SECTORS
     wr0_patterns = wr1_patterns = dic_patterns = 0
     wr0_sectors = wr1_sectors = dic_sectors = 0
     if features & FEATURE_PATTERN_SUPPLY:

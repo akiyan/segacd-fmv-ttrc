@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "tools"))
 import sim  # noqa: E402
 from quantize_global4_tiles import build_palettes  # noqa: E402
 
-OUT = os.environ.get("CBRSIM_OUT", "videos/machi_ed_H40_320x224_pcm13")
+OUT = os.environ.get("CBRSIM_OUT", "videos/machi_ed_H40_320x224_adpcm22")
 W = int(os.environ.get("WIN", "40"))            # forward window (frames)
 log = pickle.load(open(f"{OUT}/decisions.pkl", "rb"))
 frames = sorted(glob.glob(f"{OUT}/master/*.png"))

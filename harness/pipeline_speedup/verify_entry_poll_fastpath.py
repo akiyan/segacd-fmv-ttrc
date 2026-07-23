@@ -27,7 +27,6 @@ POLL_CHUNK_30FPS = 1024
 MAX_H40_CELLS = 40 * 28
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
-FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
 SHADOW_UPDATE_LIST_TAG = 0x8000
 SHADOW_UPDATE_COUNT_MASK = 0x7FFF
@@ -111,12 +110,12 @@ def decode_routes(
 
 
 def pattern_supply_sectors(header: bytes, version: int, features: int) -> int:
-    """Return the validated v10 boot-preload sector total."""
-    if version < 10 or not features & FEATURE_PATTERN_SUPPLY:
+    """Return the validated current boot-preload sector total."""
+    if not features & FEATURE_PATTERN_SUPPLY:
         return 0
     values = struct.unpack_from(">4s8H", header, PATTERN_SUPPLY_OFFSET)
     magic, supply_version, reserved = values[:3]
-    if magic != b"PSUP" or supply_version != 1 or reserved:
+    if magic != b"PSUP" or supply_version != 2 or reserved:
         raise AssertionError(f"invalid pattern-supply extension: {values!r}")
     return sum(values[-3:])
 
@@ -170,8 +169,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, _cols, _rows, cells = struct.unpack_from(
         ">4sHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10, 11):
-        raise AssertionError(f"expected split TTRC v6-v11, got {magic!r} v{version}")
+    if magic != b"TTRC" or version != 15:
+        raise AssertionError(f"expected split TTRC v15, got {magic!r} v{version}")
 
     routing_sec = struct.unpack_from(">L", header, 26)[0]
     prebuf_sec = struct.unpack_from(">L", header, 30)[0]
@@ -180,7 +179,7 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     fps = struct.unpack_from(">H", header, 56)[0] or 15
     audio_preload_sec = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
-    table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
+    table_sec = ADPCM_TABLE_SECTORS
     supply_sec = pattern_supply_sectors(header, version, features)
 
     frame0_offset = (

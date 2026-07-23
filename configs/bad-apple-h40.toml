@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 
 [source]
 path = "assets/BadApple.mp4"
@@ -18,9 +18,6 @@ fit = "crop"
 # Final Bad Apple choice: preserve hard silhouette edges without Lanczos ringing.
 resize_filter = "area"
 master_denoise = false
-
-[audio]
-kind = "adpcm22"
 
 [output]
 directory = "videos/BadApple_H40_320x224_adpcm22/tmp"
@@ -48,4 +45,3 @@ segment_validate_frames = 60
 [pack]
 fill = true
 startup_audio_frames = 30
-output = "out/movieplay/MOVIE.DAT"

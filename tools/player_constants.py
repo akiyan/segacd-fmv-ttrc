@@ -162,15 +162,26 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
             f"0x{expected_signature:08X}")
 
     fixed_n2 = bool(features & ttrc_routing.FEATURE_FIXED_N2)
-    adpcm22 = bool(features & ttrc_routing.FEATURE_ADPCM22)
+    known_features = (
+        ttrc_routing.FEATURE_COLD_RUNS
+        | ttrc_routing.FEATURE_FIXED_N2
+        | ttrc_routing.FEATURE_PATTERN_SUPPLY
+        | ttrc_routing.FEATURE_SHADOW_UPDATE_LISTS
+        | ttrc_routing.FEATURE_VRAM_RAW_PREFETCH
+        | ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS
+        | ttrc_routing.FEATURE_BOOT_VRAM_SIDECAR
+    )
+    unknown_features = features & ~known_features
+    if unknown_features:
+        raise ValueError(
+            f"HEADER.DAT uses reserved feature bits 0x{unknown_features:04X}")
     pattern_supply_enabled = bool(features & ttrc_routing.FEATURE_PATTERN_SUPPLY)
     indexed_dicbuf = bool(features & ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS)
-    if adpcm22 and audio_bytes & 1:
+    if audio_bytes & 1:
         raise ValueError(f"ADPCM decoded audio_bytes must be even, got {audio_bytes}")
-    audio_control_bytes = (
-        ima_adpcm.encoded_bytes(audio_bytes) if adpcm22 else audio_bytes)
+    audio_control_bytes = ima_adpcm.encoded_bytes(audio_bytes)
     adpcm_table_sectors = (
-        (ima_adpcm.FULL_TABLE_BYTES + SECTOR - 1) // SECTOR if adpcm22 else 0)
+        ima_adpcm.FULL_TABLE_BYTES + SECTOR - 1) // SECTOR
     sec_num, sec_mod = (1001, 400) if fixed_n2 else (75, fps_int)
     sec_base, sec_rem = divmod(sec_num, sec_mod)
     fast_poll = fps_int >= 24

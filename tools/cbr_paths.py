@@ -10,13 +10,7 @@ def _clean_part(value):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_") or "unknown"
 
 
-def audio_tag(kind=None):
-    kind = (kind or os.environ.get("CBRSIM_AUDIO", "pcm13")).strip()
-    return {"pcm13": "pcm", "pcm": "pcm", "adpcm22": "adpcm22", "adpcm": "adpcm"}.get(
-        kind, _clean_part(kind))
-
-
-def sim_stem(src=None, mode=None, width=None, height=None, audio=None):
+def sim_stem(src=None, mode=None, width=None, height=None):
     src = src or os.environ.get("CBRSIM_SRC", "movies/disc1/061.mp4")
     mode = mode or os.environ.get("CBRSIM_MODE", "H32")
     width = int(width or os.environ.get("CBRSIM_W", "256"))
@@ -26,7 +20,7 @@ def sim_stem(src=None, mode=None, width=None, height=None, audio=None):
         _clean_part(mode),
         width,
         height,
-        audio_tag(audio),
+        "adpcm22",
     )
 
 

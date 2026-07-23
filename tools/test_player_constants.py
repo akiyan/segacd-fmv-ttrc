@@ -17,7 +17,7 @@ def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x3
     cells = tcols * trows
     frames = 2714
     if audio_bytes is None:
-        audio_bytes = 444 if fps == 30 else 888
+        audio_bytes = 736 if fps == 30 else 1472
     prefix = struct.pack(
         ">4s9H4LBB3L6H",
         b"TTRC", ttrc_routing.VERSION, frames, tcols, trows, cells,
@@ -57,7 +57,7 @@ class PlayerConstantsTest(unittest.TestCase):
         self.assertEqual(values.col0, 0)
         self.assertEqual(values.row0, 0)
         self.assertEqual(values.vbudget, 2800)
-        self.assertEqual(values.audio_bytes, 444)
+        self.assertEqual(values.audio_bytes, 736)
         self.assertEqual(values.audio_fd, 0x345)
         self.assertEqual((values.sec_num, values.sec_mod), (1001, 400))
         self.assertEqual((values.sec_base, values.sec_rem), (2, 201))
@@ -69,7 +69,7 @@ class PlayerConstantsTest(unittest.TestCase):
             make_header(mode=1, fps=15, features=ttrc_routing.FEATURE_COLD_RUNS))
         self.assertEqual(values.screen_cols, 40)
         self.assertEqual(values.vbudget, 3400)
-        self.assertEqual(values.audio_bytes, 888)
+        self.assertEqual(values.audio_bytes, 1472)
         self.assertEqual((values.sec_num, values.sec_mod), (75, 15))
         self.assertEqual((values.sec_base, values.sec_rem), (5, 0))
         self.assertEqual(values.pump_mask, 0x003F)
@@ -84,13 +84,18 @@ class PlayerConstantsTest(unittest.TestCase):
     def test_adpcm_derives_control_and_table_sizes(self):
         values = player_constants.parse_header_sector(make_header(
             features=(ttrc_routing.FEATURE_COLD_RUNS
-                      | ttrc_routing.FEATURE_FIXED_N2
-                      | ttrc_routing.FEATURE_ADPCM22),
+                      | ttrc_routing.FEATURE_FIXED_N2),
             audio_bytes=736,
         ))
         self.assertEqual(values.audio_bytes, 736)
         self.assertEqual(values.audio_control_bytes, 372)
         self.assertEqual(values.adpcm_table_sectors, 5)
+
+    def test_removed_audio_feature_bit_is_reserved(self):
+        with self.assertRaisesRegex(ValueError, "reserved feature bits"):
+            player_constants.parse_header_sector(make_header(
+                features=(ttrc_routing.FEATURE_COLD_RUNS | 0x0004),
+            ))
 
     def test_pattern_supply_extension(self):
         values = player_constants.parse_header_sector(make_header(
@@ -127,7 +132,8 @@ class PlayerConstantsTest(unittest.TestCase):
             self.assertEqual(output.read_bytes(), first)
             self.assertEqual(output.stat().st_mtime_ns, first_mtime)
             text = first.decode()
-            self.assertIn(".equ PC_AUDIO_BYTES, 0x01BC", text)
+            self.assertIn(".equ PC_AUDIO_BYTES, 0x02E0", text)
+            self.assertIn(".equ PC_AUDIO_CONTROL_BYTES, 0x0174", text)
             self.assertIn(".equ PC_AUDIO_FD, 0x0345", text)
             self.assertIn(".equ PC_SEC_REM, 0x00C9", text)
 

@@ -22,7 +22,6 @@ from pathlib import Path
 SECTOR = 2048
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
-FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
 ADPCM_TABLE_SECTORS = 5
 PATTERN_SUPPLY_OFFSET = 196
@@ -113,12 +112,12 @@ def runs(entries: list[int]) -> list[tuple[int, int, int]]:
 
 
 def pattern_supply_sectors(header: bytes, version: int, features: int) -> int:
-    """Return the validated v10 boot-preload sector total."""
-    if version < 10 or not features & FEATURE_PATTERN_SUPPLY:
+    """Return the validated current boot-preload sector total."""
+    if not features & FEATURE_PATTERN_SUPPLY:
         return 0
     values = struct.unpack_from(">4s8H", header, PATTERN_SUPPLY_OFFSET)
     magic, supply_version, reserved = values[:3]
-    if magic != b"PSUP" or supply_version != 1 or reserved:
+    if magic != b"PSUP" or supply_version != 2 or reserved:
         raise AssertionError(f"invalid pattern-supply extension: {values!r}")
     return sum(values[-3:])
 
@@ -242,8 +241,8 @@ def main() -> None:
     magic, version, nfr, _cols, _rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", data, 0
     )
-    if magic != b"TTRC" or version not in (4, 5, 6, 7, 8, 9, 10, 11):
-        raise SystemExit(f"expected TTRC v4-v11, got {magic!r} v{version}")
+    if magic != b"TTRC" or version != 15:
+        raise SystemExit(f"expected TTRC v15, got {magic!r} v{version}")
     prebuf_pat = struct.unpack_from(">L", data, 22)[0]
     routing_sec = struct.unpack_from(">L", data, 26)[0]
     prebuf_sec = struct.unpack_from(">L", data, 30)[0]
@@ -253,10 +252,8 @@ def main() -> None:
     audio_preload_sec = struct.unpack_from(">H", data, 60)[0]
     features = struct.unpack_from(">H", data, 62)[0]
     decoded_audio_bytes = struct.unpack_from(">H", data, 54)[0]
-    audio_bytes = (
-        4 + decoded_audio_bytes // 2
-        if features & FEATURE_ADPCM22 else decoded_audio_bytes)
-    table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
+    audio_bytes = 4 + decoded_audio_bytes // 2
+    table_sec = ADPCM_TABLE_SECTORS
     supply_sec = pattern_supply_sectors(data, version, features)
 
     f0_off = (

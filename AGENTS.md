@@ -174,24 +174,18 @@ frame 0) and `BODY.DAT` (frame 1 onward) using the TTRC layout. The packer also
 writes a concatenated `MOVIE.DAT` compatibility container for offline tools;
 the player does not read it.
 
-Resolution, aspect, frame rate, and audio are **per-source encoder settings**
+Resolution, aspect, and frame rate are **per-source encoder settings**
 within Sega CD limits, not fixed presets:
 
 - Display mode / resolution / aspect (H32 / H40 / mode4), tile grid sized to the
   per-frame DMA budget.
 - Frame rate = the source's native rate.
-- Audio = per-profile `pcm13` or `adpcm22`; **ADPCM22 is the default**.
-  **PCM13** (RF5C164, 13.3 kHz mono 8-bit) is the conservative
-  physical-hardware-qualified fallback. **ADPCM22** is
-  the completed checkpointed 22.05 kHz mono IMA path, decoded directly by the
-  Sub CPU through full lookup tables duplicated in both physical 1M Word-RAM
-  banks. H40 Sonic is full-length emulator- and listening-qualified; H40/15
-  Machi OP with 720 active tiles, Machi ED with 1,040 active tiles, and v10
-  H40/30 Bad Apple with 1,120 active tiles completed full recording, HUD,
-  stream, and replay-equivalence checks. Physical hardware and the remaining modes are
-  broader compatibility checks rather than implementation blockers (see
-  [ADPCM.md](ADPCM.md)). Z80 offload remains shelved because BUSREQ-based
-  feeding contends with Main CPU video work.
+- Audio = checkpointed 22.05 kHz mono IMA ADPCM, decoded directly by the Sub
+  CPU through full lookup tables duplicated in both physical 1M Word-RAM
+  banks. It is the only TTRC v15 audio format. Physical hardware and additional
+  modes/cadences are broader compatibility checks rather than implementation
+  blockers (see [ADPCM.md](ADPCM.md)). Z80 offload remains shelved because
+  BUSREQ-based feeding contends with Main CPU video work.
 
 The old `OP.STR` / RLE and `PROBE.BIN` bring-up paths have been removed.
 `make disc CONFIG=configs/PROFILE.toml` builds the `HEADER.DAT` + `BODY.DAT`
@@ -214,7 +208,7 @@ every run persistently under git-ignored `logs/`. Use one stem per encode:
 
 ```
 stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
-       e.g. OP1_ps2_H32_256x144_pcm
+       e.g. OP1_ps2_H32_256x144_adpcm22
 ```
 
 | Artifact | Path |
@@ -230,8 +224,7 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 - `<input-basename>`: the source file name without extension.
 - `<display-mode>`: `H32` / `H40` / `mode4`.
 - `<resolution>`: the Sega CD output resolution in pixels, `WxH` (e.g. `256x144`).
-- `<audio-format>`: `pcm` for `pcm13`, or `adpcm22` for the completed Sub-CPU
-  IMA path (see [ADPCM.md](ADPCM.md)).
+- `<audio-format>`: always `adpcm22` (see [ADPCM.md](ADPCM.md)).
 
 ## Hardware Facts
 

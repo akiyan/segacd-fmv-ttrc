@@ -54,7 +54,7 @@ validation set:
 ```sh
 tools/python.sh --gpu \
   harness/palette_algo/sample_convergence.py \
-  videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/master
+  videos/sonic_H32_256x224_adpcm22_geometry_pad_4by3/master
 ```
 
 ## Training speed result (2026-07-21)
@@ -112,9 +112,9 @@ how much quantization residual changes specifically across 8x8 boundaries:
 
 ```sh
 tools/python.sh harness/palette_algo/compare_decisions.py \
-  videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/master \
-  videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl \
-  videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/decisions.pkl
+  videos/sonic_H32_256x224_adpcm22_geometry_pad_4by3/master \
+  videos/sonic_H32_256x224_adpcm22_geometry_pad_4by3/decisions.pkl \
+  videos/SonicJamOp_H32_256x224_adpcm22_mosaic_gm/decisions.pkl
 ```
 
 On the fixed 240-frame validation set, full Bad Apple improved from pixel /
@@ -131,8 +131,8 @@ re-learning the palettes:
 
 ```sh
 tools/python.sh harness/palette_algo/compare_decisions.py \
-  videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/master \
-  videos/SonicJamOp_H32_256x224_pcm13_mosaic_gm/decisions.pkl \
+  videos/SonicJamOp_H32_256x224_adpcm22_mosaic_gm/master \
+  videos/SonicJamOp_H32_256x224_adpcm22_mosaic_gm/decisions.pkl \
   --coherent-weight 0 0.25 1 4 8 \
   --coherent-iterations 1 2 4
 ```

@@ -51,8 +51,8 @@ Everything else is shaped by Sega CD hardware, not by video theory:
 - **DMA-limited refresh.** How many tiles can be written to VRAM per frame is
   bounded by the VBLANK DMA window for the screen mode and fps, so the tile grid
   size is chosen to fit that budget.
-- **RF5C164 audio, interleaved.** PCM13 bytes or checkpointed ADPCM22 controls
-  share the same CD stream. The Sub CPU reconstructs ADPCM into the same
+- **RF5C164 audio, interleaved.** Checkpointed 22.05 kHz mono IMA ADPCM controls
+  share the same CD stream. The Sub CPU reconstructs them into the
   wave-RAM writer, with a persistent startup lead keeping audio aligned. The
   analysis and straight sim videos audition the same reconstructed IMA and
   RF5C164-quantized samples, not the clean extraction used as packer input.
@@ -61,24 +61,18 @@ Everything else is shaped by Sega CD hardware, not by video theory:
 
 ## Configurable within Sega CD limits
 
-Resolution, aspect, frame rate, and audio are **encoder settings**, chosen per
+Resolution, aspect, and frame rate are **encoder settings**, chosen per
 source within what the hardware allows — not fixed project constants:
 
 - **Display mode / resolution / aspect:** H32, H40, or mode4, with the tile grid
   sized to the per-frame DMA budget and the source's display aspect.
 - **Frame rate:** the source's native rate is kept (15 / 24 / 30 fps, etc.).
-- **Audio format:** **ADPCM22** is the default: checkpointed 22.05 kHz mono IMA
-  decoded directly by the Sub CPU. **PCM13** (RF5C164), 13.3 kHz mono 8-bit,
-  remains supported as the physical-console-qualified fallback. ADPCM22
-  implementation is complete in the current v11 player. H40 Sonic is
-  full-length emulator- and listening-qualified; H40/15 Machi OP (720 active
-  tiles) and Machi ED (1,040 active tiles), plus the v10 four-supply H40/30 Bad
-  Apple profile (1,120 active tiles), completed their full recording, HUD,
-  stream, and replay-equivalence checks. Routine recording verifies audio
-  stream structure but does not apply content-dependent waveform thresholds.
-  PCM13 remains the conservative choice when physical-console qualification is
-  required; real hardware and the remaining ADPCM cadence profiles are broader
-  compatibility checks, not implementation blockers. See [ADPCM.md](ADPCM.md).
+- **Audio:** checkpointed 22.05 kHz mono IMA ADPCM, decoded directly by the Sub
+  CPU and written to the RF5C164. It is the sole TTRC v15 audio format. Routine
+  recording verifies audio stream structure but does not apply
+  content-dependent waveform thresholds. Real hardware and additional
+  cadence/display combinations are broader compatibility checks. See
+  [ADPCM.md](ADPCM.md).
   The separate Z80-offload experiment remains shelved because BUSREQ feeding
   contends with Main CPU video work.
 
@@ -104,8 +98,8 @@ Sega CD-specific compression is the "Encode" step.
    near / fallback residents where possible and spend only the
    whole-movie quality allowance not reserved for a harder future burst. Exact
    cold loads are then assigned to Prg, Wr0, Wr1, or Dic.
-6. **Pack** video control, tile payload, palettes, and the selected PCM13 or
-   ADPCM22 audio into the two-file CD stream: an armed startup `HEADER.DAT` and
+6. **Pack** video control, tile payload, palettes, and ADPCM audio into the
+   two-file CD stream: an armed startup `HEADER.DAT` and
    a continuously read `BODY.DAT`.
 
 ## Analysis

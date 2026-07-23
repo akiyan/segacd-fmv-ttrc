@@ -77,9 +77,7 @@ def main():
     p.add_argument("--colors", type=int, default=58)
     p.add_argument("--audio", action="store_true",
                    help="mux the input audio degraded through <rate>Hz mono target format")
-    p.add_argument("--audio-format", choices=["adpcm", "pcm8"], default="adpcm",
-                   help="adpcm = 4-bit IMA ADPCM; pcm8 = 8-bit PCM (RF5C164-style)")
-    p.add_argument("--audio-rate", default="13300")
+    p.add_argument("--audio-rate", default="22050")
     p.add_argument("--audio-bitrate", default="64k")
     p.add_argument("--keep-work", action="store_true")
     args = p.parse_args()
@@ -124,10 +122,7 @@ def main():
         # preview carries the target sound, then store it as AAC for mp4 player
         # compatibility (the container can't hold IMA ADPCM cleanly). The .wav is
         # the raw ADPCM-degraded reference and is kept alongside the mp4.
-        if args.audio_format == "pcm8":
-            acodec, alabel, atag = "pcm_u8", "8-bit PCM", "pcm8"
-        else:
-            acodec, alabel, atag = "adpcm_ima_wav", "4-bit IMA ADPCM", "adpcm"
+        acodec, alabel, atag = "adpcm_ima_wav", "4-bit IMA ADPCM", "adpcm"
         print(f"adding audio ({args.audio_rate}Hz mono {alabel} -> AAC) ...")
         wav = out_dir / f"audio_{args.audio_rate}_mono_{atag}.wav"
         run([

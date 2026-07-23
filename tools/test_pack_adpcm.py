@@ -11,7 +11,6 @@ import pack_stream
 
 class PackAdpcmTest(unittest.TestCase):
     def setUp(self):
-        pack_stream.AUDIO_KIND = "adpcm22"
         pack_stream.AUDIO_RATE = 22_050
         pack_stream.AUDIO_PCM = 736
         pack_stream.AUDIO_CONTROL = 372
@@ -44,8 +43,7 @@ class PackAdpcmTest(unittest.TestCase):
             self.assertEqual(expected_pcm[-1], pcm_chunks[frame])
 
     def test_audio_layout_matches_codec_chunk(self):
-        rate, pcm_bytes, control_bytes = pack_stream.av_config.audio_frame_layout(
-            "adpcm22", 30)
+        rate, pcm_bytes, control_bytes = pack_stream.av_config.audio_frame_layout(30)
         self.assertEqual((rate, pcm_bytes, control_bytes), (22_050, 736, 372))
         chunk, _ = ima_adpcm.encode_chunk(np.zeros(pcm_bytes, np.int16))
         self.assertEqual(len(chunk), control_bytes)
