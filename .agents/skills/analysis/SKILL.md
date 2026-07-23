@@ -7,11 +7,15 @@ keeps the code, the reference doc, and the user notification in lockstep so the
 
 The analysis frame is 1920x1080, drawn by `tools/render_analysis.py` using the
 drawing functions and layout constants in `tools/layout_preview.py`
-(the layout source of truth). The reference for every element is `ANALYSIS.md`.
+(the layout source of truth). Semantic colours and category-border styles live
+only in `tools/analysis_style.py` and are shared with the sim category map and
+the whole-movie timeline. The reference for every element is `ANALYSIS.md`.
 
 ## The set (do all four, in order)
 
 1. **Change the layout in `tools/layout_preview.py`** (the source of truth).
+   Change semantic colours or category-border styles in
+   `tools/analysis_style.py`, never as renderer-local constants.
    Then propagate the same change to `tools/render_analysis.py`, which reuses
    `layout_preview`'s drawing helpers on real encoder data. Anything the real
    renderer needs that the encoder must supply (a new per-frame value, etc.)
@@ -46,9 +50,9 @@ drawing functions and layout constants in `tools/layout_preview.py`
 
 ## Then
 
-- Commit `tools/layout_preview.py`, `tools/render_analysis.py`, any
-  `tools/sim.py` change, and `ANALYSIS.md` together (Japanese commit
-  message per AGENTS.md). Push only if asked.
+- Commit `tools/analysis_style.py`, `tools/layout_preview.py`,
+  `tools/render_analysis.py`, any `tools/sim.py` change, and `ANALYSIS.md`
+  together (Japanese commit message per AGENTS.md). Push only if asked.
 
 ## Notes
 

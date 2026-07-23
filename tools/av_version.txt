@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e99 : Centralize analysis category, source, status-bar, and timeline colours
+#        in tools/analysis_style.py. Render Flbk borders in canonical yellow
+#        without blending, and render Prg/Wrd/Dic as thin colour-and-black
+#        dashed borders consistently in sim maps and legends.
 #   e98 : Give Flbk a bounded adjacent mean-colour search when the target
 #        bucket's best resident cannot improve the display. Compare the newest
 #        eligible pattern from each of the 26 neighbouring buckets and retain
@@ -698,5 +702,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260723
-e=98
+e=99
 p=81

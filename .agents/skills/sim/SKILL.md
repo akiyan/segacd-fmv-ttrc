@@ -262,7 +262,7 @@ Important rendering notes:
   - Same uses the original light/dark checker legend swatch but no
     category-map tile border
   - Raw uses a thin black/white dashed border in both legend and category map
-  - Dic/Prg/Wr use a thin colour-and-transparent dashed border; both Wr banks
+  - Dic/Prg/Wr use a thin colour-and-black dashed border; both Wr banks
     use the Wr1 cyan display colour
   - scrolling audio waveform with +/-2 seconds and now centered
   - status uses Req / Cold / Band / DMA / Run / Prg / Wrd / Pre

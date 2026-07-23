@@ -46,6 +46,7 @@ _ORIGINAL_ARGV = tuple(sys.argv)
 CONFIG_PROFILE = consume_config_arg(
     sys.argv, required=__name__ == "__main__")
 import av_config  # noqa: E402
+import analysis_style as analysis_style  # noqa: E402
 import ima_adpcm  # noqa: E402
 import pattern_supply  # noqa: E402
 import raw_prefetch  # noqa: E402
@@ -167,19 +168,19 @@ def update_age_pressure(age_press, cell_tier, diff):
     )
 
 
-# Comp(same=dedup)を表す色。Update tiles パネルのdedupタイル枠に使う。
-COL_SAME = (0, 190, 175)      # teal
-# カテゴリマップ(catmap)の縁取り色。status/凡例と一致させること。
-CAT_RAW = (205, 205, 205)     # Raw = same-frame exact load (black/white dashed frame)
-CAT_SAME = (150, 150, 158)    # Same = exact resident reuse (legend only; no tile frame)
-CAT_DEDUP = (0, 190, 175)     # Dedup = VRAM流用 (teal, 互換用)
-CAT_MISS = (220, 70, 70)      # Miss = 取りこぼし (red, 塗りつぶし)
-CAT_NEAR = (128, 134, 144)    # Near = resident approximation (neutral gray)
-CAT_FLBK = (225, 185, 25)     # Flbk = resident fallback (deep yellow, thin frame)
-CAT_PRG = (165, 105, 225)     # old Buf exact load, physically supplied by PrgBuf
-CAT_WR1 = (65, 205, 195)      # exact load supplied by WordBuf0/1 (shared display colour)
-CAT_WR0 = CAT_WR1             # WordBuf banks remain separate data, unified visually
-CAT_DIC = (220, 120, 30)      # exact load supplied by persistent DicBuf
+# Compatibility aliases for diagnostics importing sim constants.  The
+# canonical values and border semantics live in analysis_style.py.
+COL_SAME = analysis_style.CAT_DEDUP
+CAT_RAW = analysis_style.CAT_RAW
+CAT_SAME = analysis_style.CAT_SAME
+CAT_DEDUP = analysis_style.CAT_DEDUP
+CAT_MISS = analysis_style.CAT_MISS
+CAT_NEAR = analysis_style.CAT_NEAR
+CAT_FLBK = analysis_style.CAT_FLBK
+CAT_PRG = analysis_style.COL_PRG
+CAT_WR1 = analysis_style.COL_WR1
+CAT_WR0 = analysis_style.COL_WR0
+CAT_DIC = analysis_style.COL_DIC
 # Resident candidate search narrows by rendered mean colour before the full
 # F3 comparison. This is search acceleration only; it does not accept a quality
 # tier by itself.
@@ -3090,59 +3091,25 @@ def main():
         if not NO_PANELS:
             _r0 = time.perf_counter()
             _save_png(cells_to_image(cur_rgb), main_dir / f"{i:05d}.png")
-            no_update = ~changed
-            A = 0.5   # 枠線の不透明度(下地とブレンド=細く・暗く見せる)
-
-            def border(base_rgb, mask, col, wpx=1):
-                ii = np.where(mask)[0]
-                if not ii.size:
-                    return
-                c = np.array(col, np.float64)
-                for k in range(wpx):                       # wpx=太さ(px)。Flbkは太枠
-                    for s in (np.s_[ii, k, :, :], np.s_[ii, TILE - 1 - k, :, :],
-                              np.s_[ii, :, k, :], np.s_[ii, :, TILE - 1 - k, :]):
-                        base_rgb[s] = A * c + (1 - A) * base_rgb[s]
-
-            def dashed_raw_border(base_rgb, mask):
-                """Draw a one-pixel alternating black/white Raw perimeter."""
-                ii = np.where(mask)[0]
-                if not ii.size:
-                    return
-                white = np.array((235, 235, 235), np.float64)
-                black = np.array((15, 15, 15), np.float64)
-                for p in range(TILE):
-                    a, b = (white, black) if p % 2 == 0 else (black, white)
-                    base_rgb[ii, 0, p, :] = a
-                    base_rgb[ii, TILE - 1, p, :] = b
-                    base_rgb[ii, p, 0, :] = b
-                    base_rgb[ii, p, TILE - 1, :] = a
-
-            def dashed_color_border(base_rgb, mask, col):
-                """Blend a one-pixel colour dash; leave each gap untouched."""
-                ii = np.where(mask)[0]
-                if not ii.size:
-                    return
-                c = np.array(col, np.float64)
-                for p in range(TILE):
-                    if (p // 2) & 1:
-                        continue
-                    for s in (np.s_[ii, 0, p, :], np.s_[ii, TILE - 1, p, :],
-                              np.s_[ii, p, 0, :], np.s_[ii, p, TILE - 1, :]):
-                        base_rgb[s] = A * c + (1 - A) * base_rgb[s]
 
             # Category map: Raw=thin dashed frame; Same=no frame;
             # Near/Flbk use thin frames.
-            # Dic/Prg/Wr use thin colour-and-transparent dashed frames.
+            # Dic/Prg/Wr use thin colour-and-black dashed frames.
             # Miss becomes a red fill in the renderer.
             cat = cur_rgb.astype(np.float64)
             cat[stale] = 0
-            dashed_raw_border(cat, raw_display_mask)
-            border(cat, near_eff, CAT_NEAR)
-            border(cat, flbk_mask, CAT_FLBK)
-            dashed_color_border(cat, prg_source_mask, CAT_PRG)
-            dashed_color_border(cat, wr0_source_mask, CAT_WR1)
-            dashed_color_border(cat, wr1_source_mask, CAT_WR1)
-            dashed_color_border(cat, dic_source_mask, CAT_DIC)
+            analysis_style.apply_numpy_category_border(
+                cat, raw_display_mask, "Raw")
+            analysis_style.apply_numpy_category_border(cat, near_eff, "Near")
+            analysis_style.apply_numpy_category_border(cat, flbk_mask, "Flbk")
+            analysis_style.apply_numpy_category_border(
+                cat, prg_source_mask, "Prg")
+            analysis_style.apply_numpy_category_border(
+                cat, wr0_source_mask, "Wr0")
+            analysis_style.apply_numpy_category_border(
+                cat, wr1_source_mask, "Wr1")
+            analysis_style.apply_numpy_category_border(
+                cat, dic_source_mask, "Dic")
             _save_png(cells_to_image(cat.clip(0, 255).astype(np.uint8)), catmap_dir / f"{i:05d}.png")
 
             _t_render += time.perf_counter() - _r0
