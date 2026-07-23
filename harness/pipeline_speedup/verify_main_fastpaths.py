@@ -148,7 +148,7 @@ def parse_control(raw: bytes, seq: int, cells: int) -> ControlBlock:
     if n_upd > cells:
         raise AssertionError(f"frame {seq}: {n_upd} updates exceed {cells} cells")
 
-    bitmap_start = 8 + (22 if raw[7] else 0)
+    bitmap_start = 8
     bitmap_len = (cells + 7) // 8
     entries_start = bitmap_start + bitmap_len
     entries_end = entries_start + n_upd * 2

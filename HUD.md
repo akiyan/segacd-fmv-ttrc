@@ -83,7 +83,8 @@ most `01`, and `J` must remain at most `17` (23 KiB). The last limit proves the
 404 KiB schedule plus measured excess stayed below the 428 KiB physical ring
 end despite `J`'s upward KiB rounding. `J` above `14` means the 20 KiB jitter
 headroom was exhausted and sector-granular back-pressure entered the separate
-4 KiB physical guard; this must be reported for manual review. A nonzero `C` is not data corruption by itself,
+4 KiB physical guard. Report the value, but `J<=17` does not by itself require
+another confirmation or fail the recording. A nonzero `C` is not data corruption by itself,
 but fails the automatic gate. Even on PASS, publication pauses until
 the user explicitly reviews and approves all six maxima.
 

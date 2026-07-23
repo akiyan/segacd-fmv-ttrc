@@ -254,7 +254,7 @@ COLD_CAP_QUALIFICATIONS = (
     ColdCapQualification("H40", 15.0, 720, 400),
     ColdCapQualification("H40", 15.0, 1040, 400),
     ColdCapQualification("H40", 24.0, 1120, 200),
-    ColdCapQualification("H40", 30.0, 1120, 185),
+    ColdCapQualification("H40", 30.0, 1120, 180),
 )
 
 

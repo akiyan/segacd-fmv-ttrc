@@ -182,7 +182,7 @@ if [ "$OFFLINE_RECORD" -eq 1 ] && [ -z "$REPLAY_FILE" ]; then
   echo ">> generating input replay ($REPLAY_MAX_FRAMES frames) -> $REPLAY_FILE"
   OUTDIR="$REPLAY_DIR" tools/run_headless.sh "$DISC" --tag "${TAG}_replay" \
     --record-replay "$REPLAY_FILE" --max-frames "$REPLAY_MAX_FRAMES" \
-    --boot-wait 0.5 --presses 30 --press-gap 0.1 --display "$DISPLAY_NUM"
+    --boot-wait 1 --presses 20 --press-gap 1 --display "$DISPLAY_NUM"
   [ -s "$REPLAY_FILE" ] || { echo "input replay not produced: $REPLAY_FILE" >&2; exit 1; }
 fi
 
@@ -289,9 +289,18 @@ ffmpeg -y -hide_banner -loglevel error -ss "$TRIM" -i "$RAW_MKV" \
   -t "$REC_SECS" -map 0:v:0 -map '0:a:0?' -c copy "$BOUNDED_MKV"
 
 echo ">> transcoding verification preview -> $OUT"
-ffmpeg -y -hide_banner -loglevel error -i "$BOUNDED_MKV" \
-  -c:v libx264 -crf 18 -pix_fmt yuv420p \
-  -c:a aac -b:a 128k -movflags +faststart "$OUT"
+OUT_ABS="$(realpath -m "$OUT")"
+if [[ "$OUT_ABS" == "$ROOT/videos/"* ]]; then
+  "$PYTHON" tools/tmpfs_workspace.py run-file \
+    --output "$OUT" --kind record-preview-mp4 --required-gb 1 -- \
+    ffmpeg -y -hide_banner -loglevel error -i "$BOUNDED_MKV" \
+      -c:v libx264 -crf 18 -pix_fmt yuv420p \
+      -c:a aac -b:a 128k -movflags +faststart '{output}'
+else
+  ffmpeg -y -hide_banner -loglevel error -i "$BOUNDED_MKV" \
+    -c:v libx264 -crf 18 -pix_fmt yuv420p \
+    -c:a aac -b:a 128k -movflags +faststart "$OUT"
+fi
 
 if [ -n "$PIPELINE_WALL_START_NS" ]; then
   PIPELINE_WALL_END_NS="$(date +%s%N)"

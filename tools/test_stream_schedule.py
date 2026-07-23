@@ -17,7 +17,7 @@ class ControlLengthTests(unittest.TestCase):
     def test_lengths_mix_bitmap_and_shadow_lists(self) -> None:
         lengths = schedule.control_block_lengths(
             np.array([3, 3]), np.array([0, 0]), cells=1120,
-            audio_frame_bytes=372, debug=True,
+            audio_frame_bytes=372,
             update_lists=np.array([False, True]))
         # The list replaces a 140-byte bitmap plus six entry bytes with 12B.
         self.assertEqual(int(lengths[0] - lengths[1]), 134)
@@ -34,7 +34,7 @@ class ControlLengthTests(unittest.TestCase):
         plan = schedule.select_shadow_update_lists(
             cells, np.zeros(5, np.int64), np.zeros(5, np.int64),
             cells=1120, fps=30, ring_capacity_patterns=64,
-            frame_sectors=3, audio_frame_bytes=16, debug=False, fill=True)
+            frame_sectors=3, audio_frame_bytes=16, fill=True)
         self.assertFalse(bool(plan["selected"][0]))
         self.assertGreaterEqual(
             int(plan["schedule"]["ring_min"]),
@@ -50,35 +50,26 @@ class ControlLengthTests(unittest.TestCase):
 
     def test_lengths_match_the_packed_layout_formula(self) -> None:
         lengths = schedule.control_block_lengths(
-            [0, 17], [0, 3], cells=1120, audio_frame_bytes=888, debug=False)
+            [0, 17], [0, 3], cells=1120, audio_frame_bytes=888)
         self.assertEqual(lengths.tolist(), [1038, 1084])
-
-    def test_debug_block_is_included(self) -> None:
-        normal = schedule.control_block_lengths(
-            [4], [2], cells=576, audio_frame_bytes=444, debug=False)
-        debug = schedule.control_block_lengths(
-            [4], [2], cells=576, audio_frame_bytes=444, debug=True)
-        self.assertEqual(int(debug[0] - normal[0]), pack.DBG_LEN)
 
     def test_body_supply_reserves_fixed_control_before_variable_work(self) -> None:
         supply = schedule.body_fresh_byte_supply(
             5, 30,
             cells=1120,
             audio_frame_bytes=736,
-            debug=True,
         )
         self.assertEqual(supply["gross"].tolist(), [0, 4096, 6144, 4096, 6144])
-        self.assertEqual(supply["fixed_control"].tolist(), [0, 908, 908, 908, 908])
-        self.assertEqual(supply["variable"].tolist(), [0, 3188, 5236, 3188, 5236])
+        self.assertEqual(supply["fixed_control"].tolist(), [0, 886, 886, 886, 886])
+        self.assertEqual(supply["variable"].tolist(), [0, 3210, 5258, 3210, 5258])
 
     def test_funded_work_includes_all_control_and_prg_patterns(self) -> None:
         useful = schedule.body_funded_work_bytes(
             [0, 10], [0, 4], [0, 2],
             cells=1120,
             audio_frame_bytes=736,
-            debug=True,
         )
-        self.assertEqual(useful.tolist(), [0, 1244])
+        self.assertEqual(useful.tolist(), [0, 1222])
 
     def test_run_control_reservation_uses_cold_cap_or_active_tiles(self) -> None:
         self.assertEqual(schedule.max_run_control_reservation(178, 1120), 712)
@@ -152,6 +143,23 @@ class PayloadRingScheduleTests(unittest.TestCase):
         self.assertEqual(result["ring_occupancy"].tolist(), [128, 64, 0, 0, 0])
         self.assertEqual(result["n_pay_sec"].tolist(), [0, 0, 0, 0, 0])
         self.assertTrue(result["feasible"])
+
+    def test_terminal_drain_is_excluded_only_from_comparison_minimum(self) -> None:
+        result = schedule.schedule_payload_ring(
+            [0, 96, 96, 96, 96, 96, 96, 96, 96, 0, 0],
+            [0] * 11,
+            fps=30,
+            ring_capacity_patterns=128,
+            frame_sectors=3,
+            fill=True,
+        )
+        end = int(result["evaluation_end_frame"])
+        self.assertLess(end, len(result["ring_occupancy"]))
+        self.assertEqual(
+            int(result["ring_min_evaluation"]),
+            int(result["ring_occupancy"][1:end].min()))
+        self.assertLessEqual(
+            int(result["ring_min"]), int(result["ring_min_evaluation"]))
 
     def test_last_sector_padding_is_real_ring_occupancy(self) -> None:
         result = schedule.schedule_payload_ring(

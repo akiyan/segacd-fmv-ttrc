@@ -11,20 +11,17 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v13): HEADER.DAT = Header(1sec) + BOOT_STAGE(全区間パレット
+TTRCレイアウト(v14): HEADER.DAT = Header(1sec) + BOOT_STAGE(全区間パレット
               n_seg×128B + optional boot-VRAM sidecar) + [WR0/WR1/Dic pattern preloads]
               + startup audio prefetch(1 sector/frame)
               + frame0(control+patterns) + routing(1B/frame: total<<3 | n_ctrl_sec)
               + prebuffer(payload先頭Bpat)
               BODY.DAT = frame1以降の [control][payload][rate pad]
 MOVIE.DAT はツール互換用の HEADER.DAT || BODY.DAT 連結コンテナ。
-control block: >H total_len >H frame_seq >H n_upd >B pal >B dbg [DEBUG if dbg]
+control block: >H total_len >H frame_seq >H n_upd >H pal
                ceil(cells/8) bitmap n_upd*(>H entry) audio [even pad]
                >H n_runs n_runs*(>H slot_start >H count)
   pal = 区間番号+1(0=切替なし)。実機はMain-RAMのPALTAB表を引く(in-stream CRAM廃止)。
-  dbg=1 のとき諸元ヘッダ直後に固定長DEBUGブロック(前方固定=新プレイヤーは固定offsetで一発読み):
-  7×>H カテゴリ数[raw,same,near,coa,flbk,buf,miss] + 4×>H 予約 = 22B(偶数)。
-  既定OFF。TOML の pack.debug=true でデバッグ時だけ載せる。
 """
 import argparse
 import math
@@ -78,7 +75,6 @@ AUDIO_RATE = 0
 AUDIO_PCM = 0
 AUDIO_CONTROL = 0
 STARTUP_AUDIO_FRAMES = 30
-PACK_DEBUG = False
 PACK_FILL = True
 PCM_SYNC_LEAD = 0x3000
 PCM_SYNC_MAX = 0x6800
@@ -91,11 +87,6 @@ RING_SIZE_KB = av_config.RING_SIZE_KB
 RING_CAP_KB = av_config.RING_CAP_KB
 RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
 
-# --- デバッグブロック(control先頭ヘッダ直後・固定長) ---
-DBG_NCAT = 7                 # カテゴリ数 [raw,same,near,coa,flbk,buf,miss]
-DBG_RESERVED = 4             # 予約u16スロット(将来の16bitデバッグ値用)
-DBG_LEN = (DBG_NCAT + DBG_RESERVED) * 2   # = 22B(偶数)
-assert DBG_LEN == stream_schedule.DEBUG_BLOCK_BYTES
 FEATURE_COLD_RUNS = ttrc_routing.FEATURE_COLD_RUNS
 FEATURE_FIXED_N2 = ttrc_routing.FEATURE_FIXED_N2
 FEATURE_ADPCM22 = ttrc_routing.FEATURE_ADPCM22
@@ -106,13 +97,6 @@ FEATURE_DICBUF_INDEXED_RUNS = ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS
 FEATURE_BOOT_VRAM_SIDECAR = ttrc_routing.FEATURE_BOOT_VRAM_SIDECAR
 ADPCM_TABLE_SECTORS = math.ceil(ima_adpcm.FULL_TABLE_BYTES / SECTOR)
 ROUTING_MAX_FRAMES = ttrc_routing.MAX_FRAMES
-
-
-def debug_block(cats):
-    """カテゴリ数タプル(len==DBG_NCAT)+予約 を固定長DBG_LENへ。各値0xFFFFクランプ。"""
-    vals = list(cats)[:DBG_NCAT] + [0] * DBG_RESERVED
-    return struct.pack(">%dH" % (DBG_NCAT + DBG_RESERVED),
-                       *[min(int(v), 0xFFFF) for v in vals])
 
 
 def pack_key(key):
@@ -129,7 +113,7 @@ def load_log(path):
         return pickle.load(f)
 
 
-def configure_from_log(log, *, debug=None, fill=None, startup_audio_frames=None):
+def configure_from_log(log, *, fill=None, startup_audio_frames=None):
     """Populate pack constants from one frozen decision log.
 
     Legacy logs are accepted through their existing top-level fields.  No
@@ -138,7 +122,7 @@ def configure_from_log(log, *, debug=None, fill=None, startup_audio_frames=None)
     global TCOLS, TROWS, C_CELLS, TILE, PATTERN_BYTES
     global FPS, VSYNC_N, PLAYBACK_FPS, AUDIO_KIND, AUDIO_RATE
     global AUDIO_PCM, AUDIO_CONTROL
-    global STARTUP_AUDIO_FRAMES, PACK_DEBUG, PACK_FILL
+    global STARTUP_AUDIO_FRAMES, PACK_FILL
 
     cfg = log.get("config") or {}
     video = cfg.get("video") or {}
@@ -208,7 +192,6 @@ def configure_from_log(log, *, debug=None, fill=None, startup_audio_frames=None)
             f"decision log prg_buf_kb={sim_prg_buf} != "
             f"hardware PrgBuf cap={RING_CAP_KB}; "
             "re-run sim with the current tools/av_config.py")
-    PACK_DEBUG = bool(pack.get("debug", False)) if debug is None else bool(debug)
     PACK_FILL = bool(pack.get("fill", True)) if fill is None else bool(fill)
     startup = pack.get("startup_audio_frames", 30)
     if startup_audio_frames is not None:
@@ -220,21 +203,21 @@ def require_canonical_p0_debug_colours(log):
     """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
     if not seg_pals:
-        raise SystemExit("pack v13: decision log has no segment palettes; re-run sim")
+        raise SystemExit("pack v14: decision log has no segment palettes; re-run sim")
     for seg, pals in enumerate(seg_pals):
         a = np.asarray(pals, np.uint8)
         if a.shape != (4, 15, 3):
             raise SystemExit(
-                f"pack v13: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
+                f"pack v14: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
                 "re-run sim")
         brightness = a.astype(np.int16).sum(axis=2)
         if int(brightness[0, 0]) != int(brightness.min()):
             raise SystemExit(
-                f"pack v13: decision log segment {seg} P0 index1 is not tied for globally "
+                f"pack v14: decision log segment {seg} P0 index1 is not tied for globally "
                 "darkest usable CRAM colour (RGB sum); re-run sim with the current encoder")
         if int(brightness[0, 14]) != int(brightness.max()):
             raise SystemExit(
-                f"pack v13: decision log segment {seg} P0 index15 is not tied for globally "
+                f"pack v14: decision log segment {seg} P0 index15 is not tied for globally "
                 "brightest usable CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
@@ -761,12 +744,9 @@ def build_control(
     """Build control blocks and return their reconstructed source PCM chunks."""
     seg_cram = [pals_to_bytes_128(p) for p in log["seg_pals"]]
     frame_seg = np.asarray(log["frame_seg"], np.int64)
-    cats_list = log.get("cats")                     # per-frame [raw,same,near,coa,flbk,buf,miss]
-    # デバッグ欄: decision log に固定された pack.debug を使う。
-    dbg_on = bool(cats_list) and PACK_DEBUG
     audio_chunks, pcm_chunks = build_audio_chunks(audio_path, len(per))
     # CRAM pre-load(PALTAB): パレット本体はヘッダ直後のPALTAB領域で一括配送し、実機は
-    # boot時にMain-RAM表へコピー済み。ストリームのpalバイトは「区間番号+1」(0=切替なし)の
+    # boot時にMain-RAM表へコピー済み。ストリームのpalワードは「区間番号+1」(0=切替なし)の
     # 参照だけにし、in-streamの128B CRAM payloadは廃止(切替コマの予算が空く+到着タイミング
     # 非依存=スリップ回復に強い)。区間数は av_config.PALTAB_MAX_SEG が上限(実機表の容量)。
     n_seg = len(seg_cram)
@@ -801,9 +781,7 @@ def build_control(
         use_list = bool(update_lists[i])
         body += struct.pack(">H", shadow_updates.encode_count(n_upd[i], use_list))
         pal_ref = (int(frame_seg[i]) + 1) if pal_w[i] else 0
-        body += struct.pack(">BB", pal_ref, 1 if dbg_on else 0)
-        if dbg_on:
-            body += debug_block(cats_list[i])       # 固定長DEBUGブロック(Miss含む7カテゴリ+予約)
+        body += struct.pack(">H", pal_ref)
         sourced_entries = []
         for e, cold, source in zip(entries, colds, frame_sources):
             sourced_entry = pattern_supply.encode_entry_source(
@@ -842,11 +820,10 @@ def control_audio_bounds(block):
     """Return the fixed-size on-disc audio slice in one control block."""
     n_upd, use_list = shadow_updates.decode_count(
         struct.unpack_from(">H", block, 4)[0])
-    dbg = block[7]
     update_bytes = (
         n_upd * shadow_updates.LIST_ITEM_BYTES if use_list
         else ((C_CELLS + 7) // 8) + n_upd * shadow_updates.SHADOW_ENTRY_BYTES)
-    pos = 8 + (DBG_LEN if dbg else 0) + update_bytes
+    pos = 8 + update_bytes
     return pos, pos + AUDIO_CONTROL
 
 
@@ -984,9 +961,7 @@ def decode_verify(
         p += 2                                        # skip frame_seq(同期マーカー)
         nupd, use_list = shadow_updates.decode_count(
             struct.unpack(">H", blk[p:p + 2])[0]); p += 2
-        palw = blk[p]; dbg = blk[p + 1]; p += 2
-        if dbg:
-            p += DBG_LEN                              # skip debug block
+        palw = struct.unpack_from(">H", blk, p)[0]; p += 2
         # v3: palw = 区間番号+1 の参照のみ(in-stream CRAMは無い)。PALTAB表と一致するか検証。
         if palw and (palw - 1) != int(frame_seg[i]):
             print(f"  !! palref mismatch frame {i}: pal={palw - 1} != seg={int(frame_seg[i])}")
@@ -1092,7 +1067,7 @@ def _decode_control_chunk(chunk):
 def write_stream(
         path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL,
         boot_sidecar=()):
-    """Write the v13 split stream and a combined tooling container.
+    """Write the v14 split stream and a combined tooling container.
 
     HEADER.DAT:
       Header(1sec) | BOOT_STAGE | [ADPCM_TABLE] | [WR0] | [WR1] | [MAIN]
@@ -1282,7 +1257,7 @@ def write_stream(
     fps_int = int(round(FPS))                         # 名目fps。FEATURE_FIXED_N2時はplayerが1001/400を選ぶ
     audio_fd = av_config.rf5c164_fd(AUDIO_PCM, PLAYBACK_FPS)
     if not f0_header:
-        raise SystemExit("pack v13 requires frame0 in HEADER.DAT")
+        raise SystemExit("pack v14 requires frame0 in HEADER.DAT")
     features = FEATURE_COLD_RUNS | FEATURE_DICBUF_INDEXED_RUNS
     if av_config.uses_fixed_n2_cadence(FPS):
         features |= FEATURE_FIXED_N2
@@ -1430,7 +1405,7 @@ def write_stream(
           f"{len(supply_plan.wr1_patterns)}/{len(supply_plan.dic_patterns)} "
           f"frame0 {f0_ctrl_sec}+{f0_pat_sec} backside={sidecar_count} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v13 N={vsync_n}"
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v14 N={vsync_n}"
           f"(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO_KIND} "
           f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B FD=0x{audio_fd:04X}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
@@ -1451,8 +1426,6 @@ def main():
     ap.add_argument("--audio", default="")
     ap.add_argument("--verify", action="store_true")
     ap.add_argument("--compare", default="")
-    ap.add_argument("--debug", action=argparse.BooleanOptionalAction, default=None,
-                    help="override the frozen pack.debug value")
     ap.add_argument("--fill", action=argparse.BooleanOptionalAction, default=None,
                     help="override the frozen pack.fill value")
     ap.add_argument("--startup-audio-frames", type=int, default=None,
@@ -1481,8 +1454,7 @@ def main():
                 f"{dec_log}: profile hash mismatch; the TOML changed after sim. "
                 "Re-run sim before packing.")
     configure_from_log(
-        log, debug=args.debug, fill=args.fill,
-        startup_audio_frames=args.startup_audio_frames)
+        log, fill=args.fill, startup_audio_frames=args.startup_audio_frames)
     require_canonical_p0_debug_colours(log)
     # The frozen PrgBuf capacity and the packer's physical schedule cap must be
     # identical. A mismatch means the stream was simulated against another
@@ -1493,7 +1465,7 @@ def main():
           f"PrgBuf={sim_prg_buf}KB  "
           f"pack cap={RING_CAP_KB}KB (physical ring {RING_SIZE_KB}KB)  "
           f"{TCOLS*8}x{TROWS*8} {FPS:g}fps AUDIO={AUDIO_KIND} "
-          f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B DEBUG={int(PACK_DEBUG)}")
+          f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B")
     # A configured build is always namespaced by the TOML filename.  The old
     # pack.output value remains readable in schema v1 decision logs, but it no
     # longer controls configured output and cannot mix two profiles in one dir.
@@ -1528,7 +1500,7 @@ def main():
     if supply_enabled and int((log.get("pattern_supply") or {}).get(
             "schema_version", 0)) != 2:
         raise SystemExit(
-            "pack v13 requires a current DicBuf decision log; re-run sim")
+            "pack v14 requires a current DicBuf decision log; re-run sim")
     print(f"  pattern supply: enabled={int(supply_plan.enabled)} "
           f"Prg={len(supply_plan.prg_patterns)} "
           f"Wr0={len(supply_plan.wr0_patterns)}/{pattern_supply.WORD_BUF_PATTERNS} "
@@ -1610,7 +1582,7 @@ def main():
     print(
         f"  shadow updates: list={int(update_lists.sum())}/{len(update_lists)} "
         f"Main saved={int(((recomputed_legacy - recomputed_list) * update_lists).sum())} cycles "
-        f"control delta={sum(len(block) for block in blocks) - int(stream_schedule.control_block_lengths(n_upd, packed_runs, cells=C_CELLS, audio_frame_bytes=AUDIO_CONTROL, debug=PACK_DEBUG).sum())}B")
+        f"control delta={sum(len(block) for block in blocks) - int(stream_schedule.control_block_lengths(n_upd, packed_runs, cells=C_CELLS, audio_frame_bytes=AUDIO_CONTROL).sum())}B")
     sc = schedule(per, supply_plan.prg_loads, blocks)
     if supply_plan.enabled and log.get("pattern_supply") is None:
         frozen_lengths = np.asarray(
@@ -1630,8 +1602,11 @@ def main():
           f"rate_lead_end {sc.get('rate_lead_end', 0)})")
     Pb = sum(len(b) for b in blocks)
     under = sc.get("under", 0)
+    evaluation_end = int(sc.get("evaluation_end_frame", len(per)))
     print(f"schedule[{st}] prebuf {sc['prebuf_pat']*PAT/1024:.0f}KB ring_peak {sc['ring_peak']*PAT/1024:.0f}KB "
-          f"ring_min {sc.get('ring_min',0)*PAT/1024:.0f}KB (cap {RING_CAP_KB}KB)  under(枯渇) {under} "
+          f"ring_min eval {sc.get('ring_min_evaluation', sc.get('ring_min', 0))*PAT/1024:.1f}KB "
+          f"(f1..{max(1, evaluation_end - 1)}, full {sc.get('ring_min',0)*PAT/1024:.1f}KB, "
+          f"tail starts f{evaluation_end}, cap {RING_CAP_KB}KB)  under(枯渇) {under} "
           f"({100.0*under/max(1,len(per)):.1f}%)  n_pay_sec avg {sc['n_pay_sec'].mean():.2f}  "
           f"control-first ready_min {sc['ready_min']}pat ctrl_min {sc['ctrl_min']}B  "
           f"rate_lead peak/end {sc['rate_lead_peak']}/{sc['rate_lead_end']}sec")

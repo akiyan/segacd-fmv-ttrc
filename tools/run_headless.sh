@@ -52,7 +52,9 @@
 #
 # Env overrides:
 #   CORE         libretro core .so (default: system genesis_plus_gx)
-#   SYSTEM_DIR   RetroArch system dir holding bios_CD_J.bin
+#   BIOS_IMAGE  Japanese Mega-CD BIOS staged as bios_CD_J.bin
+#               (default: original/jp_mcd2_9212.bin)
+#   SYSTEM_DIR  RetroArch system dir receiving bios_CD_J.bin
 #   OUTDIR       capture output dir (default: <repo>/tmp/<disc-stem>/record)
 #
 # Outputs: $OUTDIR/<tag>_NN.png, $OUTDIR/<tag>_sheet.jpg, plus retroarch/xvfb logs.
@@ -176,6 +178,7 @@ if [ "$RECORD" -eq 1 ]; then
 fi
 
 CORE="${CORE:-/usr/lib/x86_64-linux-gnu/libretro/genesis_plus_gx_libretro.so}"
+BIOS_IMAGE="${BIOS_IMAGE:-$ROOT/original/jp_mcd2_9212.bin}"
 SYSTEM_DIR="${SYSTEM_DIR:-$HOME/.config/retroarch/system}"
 OUTDIR="${OUTDIR:-$ROOT/tmp/$DISC_STEM/record}"
 mkdir -p "$OUTDIR"
@@ -187,8 +190,14 @@ if [ "$RECORD" -eq 1 ]; then
   command -v ffprobe >/dev/null 2>&1 || { echo "missing required tool for --record: ffprobe" >&2; exit 1; }
 fi
 [ -f "$CORE" ] || { echo "core not found: $CORE (set CORE=)" >&2; exit 1; }
-ls "$SYSTEM_DIR"/bios_CD_*.bin >/dev/null 2>&1 || \
-  echo "warning: no bios_CD_*.bin in $SYSTEM_DIR" >&2
+[ -f "$BIOS_IMAGE" ] || {
+  echo "Japanese Mega-CD BIOS not found: $BIOS_IMAGE (set BIOS_IMAGE=)" >&2
+  exit 1
+}
+install -d -m 700 "$SYSTEM_DIR"
+install -m 600 "$BIOS_IMAGE" "$SYSTEM_DIR/bios_CD_J.bin"
+BIOS_SHA="$(sha256sum "$BIOS_IMAGE" | awk '{print $1}')"
+echo "BIOS: $BIOS_IMAGE sha256=$BIOS_SHA -> $SYSTEM_DIR/bios_CD_J.bin"
 
 # Portable RetroArch config generated at run time (no absolute paths committed).
 CFG="$OUTDIR/retroarch_${TAG}.cfg"

@@ -97,7 +97,7 @@ ALLOWED = {
     "output": {key for section, key in ENV_MAP if section == "output"},
     "encoder": {key for section, key in ENV_MAP if section == "encoder"},
     "palette": {key for section, key in ENV_MAP if section == "palette"},
-    "pack": {"debug", "fill", "startup_audio_frames", "output"},
+    "pack": {"fill", "startup_audio_frames", "output"},
 }
 REQUIRED = {
     "source": {"path", "fps", "duration"},

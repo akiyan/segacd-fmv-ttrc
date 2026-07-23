@@ -45,7 +45,7 @@ can schedule.
 | `WordBuf0` / `WordBuf1` | 880 patterns each (27.5 KB each) | sp / ip / sim / pack | Different boot-preloaded sequences in the two physical Word-RAM banks at offset `+0x15200..+0x1C000`. Wr0 serves even timed frames and Wr1 odd timed frames; they are not duplicated copies. |
 | `DicBuf` | 256 patterns (8 KB) | ip / sim / pack | Persistent dictionary boot-staged at Word-RAM `+0xD000`, then copied once to Main RAM `0xFF6600..0xFF8600`. Either frame parity may reuse entries by 8-bit index without consuming them. |
 | `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. The Prg schedule ceiling must stay below it. |
-| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v13 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
+| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v14 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | Prg prebuffer | up to `PRG_BUF_CAP_KB` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both usable Prg capacity and the clip's future Prg load total. |
 | frame-0 inline staging | 36 KB max | sp | Boot-only PRG region `0x71000..0x7A000` plus the ordinary `O_LOADS` path. It holds every exact frame-0 display pattern and as much future preload as still fits the grid-sized path. The additional boot sidecar below fills otherwise-free resident VRAM slots, so total frame-0 exact plus prefetch is capped by the resident pool rather than by visible cells. |
@@ -256,7 +256,10 @@ values in this document.
 | `CBRSIM_NEAR_YM` / `_YP` / `_C` | 10 / 28 / 24 | Near = reuse an almost-identical resident tile (mean/max luma diff, mean chroma diff). |
 | `CBRSIM_FLBK_IMPROVE_ONLY` / `_MIN_IMPROVE` | 1 / 0 | Flbk = fill a Miss with a resident tile only if it improves the picture. |
 | `CBRSIM_TFLBK_YM` / `_YP` / `_C` | 120 / 252 / 200 | Flbk match thresholds (loose — a coarse fill beats a hole). |
-| `AGING_ALPHA` / `WAIT_CAP` | 0.6 / 10 | Priority boost per waited frame, saturating at WAIT_CAP frames. |
+| `CBRSIM_DETAIL_ALPHA` | 0.0 | Extra priority for detailed tiles. Zero keeps it off by default; 1.5 reproduces the legacy weighting. |
+| `AGING_ALPHA` / `WAIT_CAP` | 0.6 / 10 | Multiplier for distance-weighted `age_press`, saturating at 7x. Integer Miss wait/age reporting is separate. |
+| `CBRSIM_AGING_DIST_REF` / `_STEP_CAP` | 24 / 2.0 | Miss/Flbk/Coa pressure: mean RGB error 24 adds 1 per frame; any one frame adds at most 2. Near and exact tiles reset pressure to zero. |
+| `CBRSIM_GHOST_ESCALATE_SEC` | 0.2 | Promote a continuously approximate tile to Miss severity after `floor(seconds * fps)` frames (minimum 1): 6 at 30 fps, 4 at 24 fps, 3 at 15 fps. |
 | `encoder.dither` / `encoder.segment_palettes` | on / on | Dithering / per-segment palette swaps. |
 | `palette.algorithm` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. A selected one-line candidate receives a complete flattened-RGB333 histogram refinement and all-frame error proof before segment palettes are considered. |
 | `palette.map_weight` | 1.0 | MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |
@@ -301,6 +304,14 @@ reserve are stored as separate byte traces in `buffer_remaining.npz`. The
 physical PrgBuf
 sector schedule remains a separate exact proof in `stream_schedule.py`. See
 [`BUEFFERING.md`](BUEFFERING.md) for the complete planning flow and validation.
+
+The exact schedule and decoder verification always cover every frame. Summary
+comparisons use a separate automatic evaluation boundary: the first frame
+after the final BODY Prg payload delivery. The terminal suffix after that
+boundary can only drain remaining PrgBuf data and is therefore excluded from
+reported comparison minima such as `ring_min eval`. The full-movie minimum is
+still emitted as `full` for proof and diagnosis; no frame is removed from the
+feasibility, underrun, or display-equivalence checks.
 
 Schema-5 `buffer_remaining.npz` records `prg_remaining`, `wr0_remaining`,
 `wr1_remaining`, and `dic_remaining` plus the matching capacities and
@@ -392,10 +403,10 @@ build skips this profile-derived counter.
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when it reduces that count, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel and adds bars when the displayed aspects differ. `fit="crop"` is an explicit object-fit-cover conversion: it fills the complete output raster while preserving displayed aspect, so it may discard active pixels at the outer source edges. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
 | `[audio]` | `kind` | Write `adpcm22` for the default 22.05 kHz Sub-CPU IMA path. Use `pcm13` for the physical-console-qualified 13.3 kHz fallback. The strict profile keeps this choice explicit. |
-| `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. Normal hardware work sets `emit_decisions=true`. |
+| `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. A directory below `videos/` is exposed as a symlink to managed tmpfs and reset for each invocation, so cross-invocation `reuse` is not expected there. The seed/accounting passes within one invocation share an identity-checked tmpfs cache and delete it on exit. Normal hardware work sets `emit_decisions=true`. |
 | `[encoder]` | `gpu`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `coa`, `boot_vram_prefetch`, `raw_prefetch` | Common codec controls. `boot_vram_prefetch` defaults to true: after exact Raw/Same-only frame 0 is installed, the encoder fills otherwise-free resident VRAM with future exact patterns. The grid-sized inline path is used first; a boot-only sidecar can then use backside slots up to the resident-pool limit. It prioritizes early cold-cap relief, then other protected and exact demand. Less urgent patterns receive the slots reclaimed first, and visible work may always reclaim speculative residency. `raw_prefetch` is the separate timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the measured cap. There is no fixed current-cold threshold: the exact remaining cold and BODY allowances are authoritative. A runtime batch needs room for at least four patterns and is capped at 32. GPU is the default; CPU fallback remains automatic. BODY supply comes from the exact CD-1x sector cadence after reserving control data and is not configurable per source. |
 | `[palette]` | `algorithm`, sampling/validation keys, MOSAIC-GM seam keys | Palette-selection algorithm and its training controls. |
-| `[pack]` | `debug`, `fill`, `startup_audio_frames` | Disc-generation choices frozen with the encode. `debug=true` is the normal recording build. `fill=true` replaces CD-1x padding with useful future payload where proven safe. Output paths are derived from the TOML filename. |
+| `[pack]` | `fill`, `startup_audio_frames` | Disc-generation choices frozen with the encode. `fill=true` replaces CD-1x padding with useful future payload where proven safe. The DEBUG HUD is a player build choice and does not add stream data. Output paths are derived from the TOML filename. |
 
 Schema v1 still accepts the old `pack.output` key so existing authenticated
 profiles and decision logs remain usable, but configured pack runs ignore its

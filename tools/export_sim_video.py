@@ -26,15 +26,42 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 import layout_preview as L
+import tmpfs_workspace
 from cbr_paths import artifact_path, sim_work_dir
 
 SIM = str(sim_work_dir())
 MODE = os.environ.get("CBRSIM_MODE", "H32")
 SCALE = int(os.environ.get("STRAIGHT_SCALE", "4"))
-OUT = os.environ.get("STRAIGHT_OUT", str(artifact_path("sim", sim_dir=SIM)))
+OUT = Path(os.environ.get(
+    "STRAIGHT_OUT", str(artifact_path("sim", sim_dir=SIM))))
 
 
 def main():
+    sim_lease = tmpfs_workspace.lease_managed_alias(Path(SIM))
+    actual_out = None
+    out_lease = None
+    try:
+        if tmpfs_workspace.is_video_alias(OUT):
+            actual_out, out_lease = tmpfs_workspace.allocate_file(
+                OUT,
+                kind="straight-sim-mp4",
+                required_bytes=512 * 1024 ** 2,
+            )
+        else:
+            actual_out = OUT
+            actual_out.parent.mkdir(parents=True, exist_ok=True)
+        _export(actual_out)
+        if out_lease is not None:
+            tmpfs_workspace.publish_alias(OUT, actual_out)
+        print("done", OUT, flush=True)
+    finally:
+        if out_lease is not None:
+            out_lease.release()
+        if sim_lease is not None:
+            sim_lease.release()
+
+
+def _export(actual_out: Path):
     z = np.load(f"{SIM}/stats.npz", allow_pickle=True)
     fps = int(z["fps"])
     pv = sorted(glob.glob(f"{SIM}/preview/*.png"))
@@ -65,11 +92,10 @@ def main():
     cmd += ["-vf", vf, "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-r", str(fps)]
     if audio is not None and audio.exists():
         cmd += ["-c:a", "aac", "-b:a", "160k", "-shortest"]
-    cmd += [OUT]
+    cmd += [str(actual_out)]
     print("straight sim -> %s  (%dx%d @ %dfps, mode=%s, content=%dx%d screen=%dx%d)"
           % (OUT, outw, outh, fps, MODE, W, H, SW, SH), flush=True)
     subprocess.run(cmd, check=True)
-    print("done", OUT, flush=True)
 
 
 if __name__ == "__main__":

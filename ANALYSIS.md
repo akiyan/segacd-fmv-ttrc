@@ -6,12 +6,14 @@ This document defines, exactly and completely, every element drawn in the
 `tools/layout_preview.py` (dummy data); `render_analysis` runs the same drawing
 functions on real encoder output.
 
-Every render also writes a machine-readable, one-row-per-frame TSV beside the
-video: `videos/<stem>_analysis.tsv`. It is generated from the same
-`frame_data()` values used by the overlay, before PNG rendering begins, so
-numeric comparisons do not require OCR. A frame-range render still refreshes
-the complete TSV. Set `ANALYSIS_TSV` only when a different output path is
-required.
+Every render also writes a machine-readable, one-row-per-frame TSV under
+`logs/`. Its unique filename contains local date/time, profile name, a
+10-character profile checksum, and the encoder version. It is generated from
+the same `frame_data()` values used by the overlay, before PNG rendering
+begins, so numeric comparisons do not require OCR. A frame-range render still
+writes the complete TSV. `videos/<stem>_analysis.tsv` is a compatibility
+symlink to the newest matching log; `ANALYSIS_TSV` changes that symlink path,
+not the persistent log location.
 
 Keep this file in sync whenever the layout changes (the `/analysis` skill
 automates: update layout -> update this file -> notify).
@@ -36,9 +38,9 @@ corresponding encoder values remain available in the `stat_*` columns.
 | `quality_budget_remaining_bytes` | Encoder-only whole-movie quality allowance remaining after the frame. This is diagnostic state, not a physical meter. |
 | `stat_frame` through the remaining `stat_*` columns | Every column from `stats.npz`, preserved with a `stat_` prefix and in its original order. These raw columns may grow when the simulator gains a new statistic. |
 
-The default path follows `ANALYSIS_OUT`: changing
-`videos/example_analysis.mp4` produces `videos/example_analysis.tsv` unless
-`ANALYSIS_TSV` is explicitly set.
+The compatibility alias follows `ANALYSIS_OUT`: changing
+`videos/example_analysis.mp4` produces a timestamped `logs/*.tsv` and updates
+`videos/example_analysis.tsv` unless `ANALYSIS_TSV` selects another alias.
 
 ## Layout map
 
@@ -207,8 +209,19 @@ Notes: `Same/Near/Coa/Flbk` use a resident 32-byte pattern and require at most
 a 2-byte name-table entry. A `Raw` or `Prg` load costs 34 bytes in the
 encoder model. A Wr0/Wr1 boot-preloaded load or DicBuf hit already owns its pattern
 bytes and therefore costs only the 2-byte name entry during playback. A persistent
-approximation (a tile stuck in Near/Coa/Flbk for >= 0.3s) is escalated to
-Miss-priority so it gets an accurate reload when budget allows.
+approximation (a tile stuck in Near/Coa/Flbk for at least 0.2 seconds) is
+escalated to Miss severity so it gets an accurate reload when budget allows.
+The frame threshold is `floor(0.2 * fps)`, with a minimum of one frame: 6 at
+30 fps, 4 at 24 fps, and 3 at 15 fps.
+
+Before the selection cascade, changed tiles are ordered by current visual RGB
+error, optional detail weight (off by default), distance-weighted aging, and
+the screen-edge discount. Aging pressure accumulates only while the displayed
+class is Miss, Flbk, or Coa; a mean RGB error of 24 adds one pressure unit per
+frame, one frame adds at most two, and the multiplier saturates at 7x. Near is
+excluded. The TSV `carry` and `age` fields use a separate integer Miss wait
+counter and do not affect update or upgrade priority. Approximation upgrades
+sort by severity, then aging pressure, then the same base score.
 
 ## Status bar (bottom-left)
 
@@ -372,6 +385,13 @@ playhead:
 3. **BODY Band** - useful payload (Raw light grey) plus useful control (dim
    blue-grey) as a fraction of the physical bytes in each delivery slot. Pad
    remains blank and a horizontal line at the top marks CD 1x (150 KiB/sec).
+
+The detailed whole-movie timeline automatically marks the first frame after
+the final Prg payload delivery as the evaluation boundary. Its terminal
+no-refill suffix remains visible with red shading but is excluded from EVAL
+totals and minima. FULL totals remain alongside EVAL for diagnosis. This
+changes reporting only: simulation, packing, and playback verification still
+cover the complete movie.
 
 ## Colours (RGB)
 

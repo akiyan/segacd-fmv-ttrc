@@ -24,6 +24,7 @@ REPO = SCRIPT.parents[4]
 TOOLS = REPO / "tools"
 sys.path.insert(0, str(TOOLS))
 import layout_preview as layout  # noqa: E402
+import tmpfs_workspace  # noqa: E402
 
 
 BG = (12, 12, 14)
@@ -59,7 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label", default="")
     parser.add_argument(
         "--evaluation-end-frame", type=int,
-        help="first excluded frame; the complete tail remains visible")
+        help=("first excluded frame; defaults to the terminal suffix after "
+              "the final Prg payload delivery"))
     parser.add_argument("--pixels-per-frame", type=int)
     return parser.parse_args()
 
@@ -102,6 +104,18 @@ def load_npz(path: Path) -> dict[str, np.ndarray]:
         return {}
     with np.load(path, allow_pickle=True) as data:
         return {key: data[key].copy() for key in data.files}
+
+
+def infer_evaluation_end(buffer: dict[str, np.ndarray], frames: int) -> int | None:
+    """Exclude the terminal no-refill suffix from comparison aggregates."""
+    payload = np.asarray(buffer.get("payload_sectors", ()), np.int64)
+    if payload.shape != (frames,):
+        return None
+    delivered = np.flatnonzero(payload > 0)
+    if not delivered.size:
+        return None
+    first_excluded = min(frames, int(delivered[-1]) + 1)
+    return first_excluded if first_excluded < frames else None
 
 
 def load_miss_masks(
@@ -178,7 +192,7 @@ def code_settings(
         "CBRSIM_TFLBK_YM", "CBRSIM_TFLBK_YP", "CBRSIM_TFLBK_C"))
     ghost_seconds = float(env_default(
         sim_text, "CBRSIM_GHOST_ESCALATE_SEC", "0"))
-    ghost_frames = max(1, round(ghost_seconds * fps)) if ghost_seconds else 0
+    ghost_frames = max(1, math.floor(ghost_seconds * fps)) if ghost_seconds else 0
     run_bytes = literal_value(schedule_text, "RUN_DESCRIPTOR_BYTES")
     run_accounting = None
     if buffer and "run_selection_worst_case" in buffer:
@@ -225,10 +239,12 @@ def code_settings(
             env_default(sim_text, "CBRSIM_COA_K"),
             literal_value(sim_text, "COA_BW"),
         ),
-        "Priority detail=%s aging=%s wait-cap=%s edge=%stiles x%s" % (
-            literal_value(sim_text, "DETAIL_ALPHA"),
+        "Priority detail=%s; aging=%s cap=%s dist-ref=%s step-cap=%s; edge=%stiles x%s" % (
+            env_default(sim_text, "CBRSIM_DETAIL_ALPHA", "?"),
             literal_value(sim_text, "AGING_ALPHA"),
             literal_value(sim_text, "WAIT_CAP"),
+            env_default(sim_text, "CBRSIM_AGING_DIST_REF", "?"),
+            env_default(sim_text, "CBRSIM_AGING_STEP_CAP", "?"),
             literal_value(sim_text, "BORDER_TILES"),
             literal_value(sim_text, "BORDER_WEIGHT"),
         ),
@@ -570,7 +586,8 @@ def main() -> None:
     tsv = args.tsv.resolve()
     config_path = args.config.resolve() if args.config else None
     sim_out = args.sim_out.resolve() if args.sim_out else None
-    output = (args.output or tsv.with_name(tsv.stem + "_timeline.png")).resolve()
+    output = (args.output or (
+        REPO / "videos" / (tsv.stem + "_timeline.png"))).absolute()
     rows, data = load_tsv(tsv)
     n = len(rows)
     ppf = args.pixels_per_frame or max(1, min(4, math.ceil(4200 / n)))
@@ -580,6 +597,9 @@ def main() -> None:
         raise SystemExit("evaluation end frame must be greater than frame 1")
     config = load_toml(config_path)
     buffer = load_npz(sim_out / "buffer_remaining.npz") if sim_out else {}
+    evaluation_end = args.evaluation_end_frame
+    if evaluation_end is None:
+        evaluation_end = infer_evaluation_end(buffer, n)
     decisions = load_decisions(sim_out / "decisions.pkl") if sim_out else {}
     miss_masks = load_miss_masks(
         sim_out / "miss_masks.npy",
@@ -592,7 +612,7 @@ def main() -> None:
     probe = ffprobe_metadata(source_path)
     source, internals, totals = metadata_lines(
         data, config, config_path, sim_out, buffer, decisions, probe, miss_masks,
-        args.evaluation_end_frame,
+        evaluation_end,
     )
 
     left = 220
@@ -615,7 +635,7 @@ def main() -> None:
     draw_text_block(draw, (24 + 2 * column_width, 108), "TOTALS", totals, column_width - 20)
     draw_legend(draw, left, timeline_top - 42)
     _, bottom = draw_timeline(
-        image, data, left, timeline_top, ppf, args.evaluation_end_frame)
+        image, data, left, timeline_top, ppf, evaluation_end)
     draw = ImageDraw.Draw(image)
     draw.text(
         (left, bottom + 69),
@@ -623,8 +643,33 @@ def main() -> None:
         fill=DIM, font=font(18),
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    image.convert("RGB").save(output, optimize=True)
-    print(output)
+    sim_lease = (
+        tmpfs_workspace.lease_managed_alias(sim_out)
+        if sim_out is not None else None)
+    png_lease = None
+    actual_output = output
+    try:
+        videos = (REPO / "videos").absolute()
+        try:
+            output.relative_to(videos)
+        except ValueError:
+            pass
+        else:
+            actual_output, png_lease = tmpfs_workspace.allocate_file(
+                output,
+                kind="timeline-png",
+                key=f"{tsv.stem}-{hashlib.sha256(tsv.read_bytes()).hexdigest()[:10]}",
+                required_bytes=max(width * height * 4, 128 * 1024 ** 2),
+            )
+        image.convert("RGB").save(actual_output, optimize=True)
+        if png_lease is not None:
+            tmpfs_workspace.publish_alias(output, actual_output)
+        print(output)
+    finally:
+        if png_lease is not None:
+            png_lease.release()
+        if sim_lease is not None:
+            sim_lease.release()
 
 
 if __name__ == "__main__":

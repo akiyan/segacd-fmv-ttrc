@@ -31,7 +31,6 @@ from pathlib import Path
 
 SECTOR = 2048
 PATTERN_BYTES = 32
-DEBUG_BYTES = 22
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_ADPCM22 = 0x0004
@@ -185,7 +184,7 @@ def parse_control(
     if n_upd > cells:
         raise AssertionError(f"frame {seq}: n_upd {n_upd} exceeds {cells}")
 
-    bitmap_start = 8 + (DEBUG_BYTES if raw[7] else 0)
+    bitmap_start = 8
     bitmap_bytes = (cells + 7) // 8
     entries_start = bitmap_start + bitmap_bytes
     entries_end = entries_start + 2 * n_upd
@@ -561,18 +560,17 @@ def expanded_slots(
 def verify_descriptor_alignment() -> None:
     """Prove the assembly's absolute alignment for even and odd audio starts."""
     for bitmap_bytes in range(1, 141):
-        for debug_bytes in (0, DEBUG_BYTES):
-            for audio_bytes in (372, 443, 887, 444, 888):
-                audio_start = 8 + debug_bytes + bitmap_bytes + 2 * 17
-                packed_suffix = (audio_start + audio_bytes + 1) & ~1
-                player_suffix = audio_start + audio_bytes
-                if player_suffix & 1:
-                    player_suffix += 1
-                if player_suffix != packed_suffix or player_suffix & 1:
-                    raise AssertionError(
-                        "descriptor alignment differs for "
-                        f"bitmap={bitmap_bytes}, debug={debug_bytes}, audio={audio_bytes}"
-                    )
+        for audio_bytes in (372, 443, 887, 444, 888):
+            audio_start = 8 + bitmap_bytes + 2 * 17
+            packed_suffix = (audio_start + audio_bytes + 1) & ~1
+            player_suffix = audio_start + audio_bytes
+            if player_suffix & 1:
+                player_suffix += 1
+            if player_suffix != packed_suffix or player_suffix & 1:
+                raise AssertionError(
+                    "descriptor alignment differs for "
+                    f"bitmap={bitmap_bytes}, audio={audio_bytes}"
+                )
 
 
 def print_range_stats(

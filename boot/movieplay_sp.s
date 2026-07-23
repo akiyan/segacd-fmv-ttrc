@@ -94,8 +94,8 @@
 
 .equ SUB_BANK_1M, 0x000C0000
 
-/* --- TTRC v13 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
-.equ ROUTING_VERSION,       13
+/* --- TTRC v14 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
+.equ ROUTING_VERSION,       14
 .equ ROUTING_BYTES,         16384
 .equ ROUTING_MAX_FRAMES,    16384
 .equ ROUTING_SECTOR_BYTES,  2048
@@ -1322,7 +1322,7 @@ fc_copy_even:
 	rts
 
 /* CTRL_SCR(線形 control block) を Word-RAM へ展開。cold は ring pop。
-   block = >H total_len >H frame_seq >H n_upd >B pal >B dbg [22B DEBUG if dbg]
+   block = >H total_len >H frame_seq >H n_upd >H pal
            72 bitmap n_upd*(entry) h_audio_bytes audio [even pad]   (MOVIE.md 準拠)
    v3: pal = 区間番号+1(0=切替なし)。CRAM本体はboot時にMain-RAM表へ渡し済み(PALTAB)。
    loads はラン形式: [slot_start.w count.w pattern(count*32B)] の列。エンコーダが
@@ -1339,13 +1339,7 @@ expand_frame:
 	bls	1f
 	move.w	d1, d5
 1:
-	move.w	(a0)+, d0			/* pal(hi) dbg(lo) */
-	tst.b	d0				/* packed debug counts are offline-only */
-	beq	ef_pal
-	adda.w	#22, a0				/* preserve control layout without copying unused counts */
-ef_pal:
-	move.w	d0, d4
-	lsr.w	#8, d4				/* pal = 区間番号+1(0=切替なし) — MDはMain-RAM表を引く */
+	move.w	(a0)+, d4			/* pal = 区間番号+1(0=切替なし) — MDはMain-RAM表を引く */
 	move.w	d4, (O_PALW).l
 ef_bm:
 .equ ISO_DUMP_OFF, 0

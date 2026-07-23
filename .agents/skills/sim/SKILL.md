@@ -193,7 +193,6 @@ After completion:
 - Output appears under `videos/<stem>/`:
   - `preview/`
   - `catmap/`
-  - `misscarry/`
   - `stats.npz`
   - `audio_13k3_u8_mono.wav`, or for ADPCM22 both the packer input
     `audio_22k05_s16_mono.wav` and the analysis/straight-video playback model
@@ -206,10 +205,7 @@ by filename order; that would silently restore the clean source audio.
 
 ### 4. Render the Analysis Video
 
-Use the new layout pipeline: `tools/render_analysis.py` directly.
-
-Do not use the old `make_base`, `render_statusline`, or `compose_*.sh` path for
-this analysis video.
+Use `tools/render_analysis.py` directly.
 
 The canonical layout source is `tools/layout_preview.py`. Run it alone to
 generate a dummy one-second preview at `tmp/layout_preview.png`. If the layout
@@ -222,12 +218,15 @@ ANALYSIS_OUT=videos/<stem>_analysis.mp4 \
 tools/python.sh --gpu tools/render_analysis.py configs/<source>-<mode>.toml
 ```
 
-Every invocation first writes the complete per-frame numeric sidecar to
-`videos/<stem>_analysis.tsv` (or `ANALYSIS_TSV` when explicitly set) from the
-same values used by the overlay. Use it for maxima, totals, and frame-to-frame
-comparisons instead of OCR. The full render then generates all PNG frames in
-parallel (`nproc-2`) and calls FFmpeg, usually with `h264_nvenc`, `-r 60`, and
-audio.
+Every invocation first writes the complete per-frame numeric sidecar to a
+unique persistent file below `logs/`. Its filename includes local date/time,
+the profile name, the first 10 profile-SHA characters, and the encoder version.
+`videos/<stem>_analysis.tsv` (or `ANALYSIS_TSV` when explicitly set) is only a
+compatibility symlink to that permanent log. Use the `logs/` file for maxima,
+totals, and frame-to-frame comparisons instead of OCR. The full render then
+generates all PNG frames in parallel (`nproc-2`) and calls FFmpeg, usually with
+`h264_nvenc`, `-r 60`, and audio. Disposable PNG/MP4 bytes live in the managed
+tmpfs workspace even though their public symlinks remain below `videos/`.
 
 Frame-range check only:
 
@@ -309,8 +308,6 @@ ps -eo pid,etimes,args | grep -E "sim\\.py|render_analysis\\.py" | grep -v grep
   - `tools/layout_preview.py`: canonical layout
   - `tools/render_analysis.py`: render real data using that layout
 - Change the layout in `layout_preview.py`; `render_analysis.py` imports it.
-- The old `make_base`, `render_statusline`, `render_palstate`, and
-  `compose_*.sh` path is not needed for this new pipeline.
 - Use `tools/sim.py` unchanged as the simulation core.
 - Never use `CBRSIM_REUSE=1` for `/sim`. Clean the profile-specific simulation
   output directory and re-extract master/raw/audio from the configured source.

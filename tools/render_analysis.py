@@ -4,7 +4,6 @@
 新レイアウトの『正』は tools/layout_preview.py(ダミー値で秒プレビュー)。本スクリプトは
 その描画関数を実データで回して1920x1080/全フレームを描き、ffmpegでmp4(音声付き)にする。
 動画へ焼き込む数値と元statsの全列は、同じ実データから1フレーム1行のTSVにも出力する。
-sim 側(sim.py)や旧 compose(make_base/render_statusline/compose_*.sh)は使わない。
 
 入力(env):
   CBRSIM_OUT       sim出力ディレクトリ(preview/raw/catmap/stats.npz/miss_masks.npy/
@@ -12,7 +11,7 @@ sim 側(sim.py)や旧 compose(make_base/render_statusline/compose_*.sh)は使わ
   CBRSIM_SRCLABEL  右Sourceパネル見出し(既定 "Source")
   CBRSIM_MODE      画面モード H32/H40 (既定 H32。DMA理論値に使う)
   ANALYSIS_OUT     出力mp4パス (既定 videos/<stem>_analysis.mp4)
-  ANALYSIS_TSV     出力TSVパス (既定 ANALYSIS_OUT の拡張子を .tsv に変更)
+  ANALYSIS_TSV     永続logs/ TSVを指す互換symlink (既定 ANALYSIS_OUT の .tsv)
   ANALYSIS_CQ      h264_nvenc cq (既定 23)
 W/H/タイル数/表示アスペクト/諸元は sim 出力から自動導出。
 
@@ -39,6 +38,8 @@ CONFIG_PROFILE = consume_config_arg(
 
 import layout_preview as L
 import stream_schedule
+import analysis_logs
+import tmpfs_workspace
 from cbr_paths import artifact_path, sim_work_dir
 
 SIM = str(sim_work_dir())
@@ -75,8 +76,10 @@ def _source_spec():
 
 SRC_SPEC = _source_spec()
 MODE = os.environ.get("CBRSIM_MODE", "H32")
-OUT_MP4 = os.environ.get("ANALYSIS_OUT", str(artifact_path("analysis", sim_dir=SIM)))
-OUT_TSV = os.environ.get("ANALYSIS_TSV", str(Path(OUT_MP4).with_suffix(".tsv")))
+OUT_MP4 = Path(os.environ.get(
+    "ANALYSIS_OUT", str(artifact_path("analysis", sim_dir=SIM))))
+OUT_TSV = Path(os.environ.get(
+    "ANALYSIS_TSV", str(OUT_MP4.with_suffix(".tsv"))))
 CQ = os.environ.get("ANALYSIS_CQ", "23")
 FRAMES_DIR = f"{SIM}/analysis_frames"
 AUDIO_STR = "13.3kHz mono 8bit PCM"          # 既定。sim出力(stats)にラベルがあればそれを使う
@@ -674,8 +677,8 @@ def analysis_tsv_row(i):
 
 
 def write_analysis_tsv():
-    """Atomically write the full per-frame analysis sidecar."""
-    path = Path(OUT_TSV)
+    """Write one permanent, uniquely named TSV and update the old alias."""
+    path = analysis_logs.unique_tsv_path(CONFIG_PROFILE)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     with tmp.open("w", encoding="utf-8", newline="") as fh:
@@ -686,6 +689,7 @@ def write_analysis_tsv():
         for i in range(NF):
             writer.writerow(analysis_tsv_row(i))
     tmp.replace(path)
+    analysis_logs.publish_alias(OUT_TSV, path)
     return path
 
 
@@ -750,7 +754,7 @@ def render(i):
     return i
 
 
-def mux():
+def mux(output: Path):
     audio = str(AUDIO_PATH)
     vcodec = ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr",
               "-cq", CQ, "-b:v", "0"]
@@ -761,31 +765,61 @@ def mux():
     cmd += vcodec + ["-pix_fmt", "yuv420p", "-r", "60"]
     if Path(audio).exists():
         cmd += ["-c:a", "aac", "-ar", "22050", "-b:a", "96k", "-shortest"]  # 音声の標本化を保つ(ADPCM 22kHz対応)
-    cmd += ["-fps_mode", "cfr", OUT_MP4]
+    cmd += ["-fps_mode", "cfr", str(output)]
     subprocess.run(cmd, check=True)
 
 
 if __name__ == "__main__":
     from multiprocessing import get_context
-    os.makedirs(FRAMES_DIR, exist_ok=True)
-    print(f"analysis data -> {write_analysis_tsv()}", flush=True)
     rng = None
     if len(sys.argv) == 3:                     # 範囲指定(検証用): PNGのみ, mp4化しない
         rng = list(range(int(sys.argv[1]), int(sys.argv[2])))
     frames = rng if rng is not None else list(range(NF))
-    print(f"render {len(frames)} frames @ {W}x{H} ({TCOLS}x{TROWS}) fps={FPS} -> {FRAMES_DIR}", flush=True)
-    nw = min(max(1, len(frames)), max(1, (os.cpu_count() or 2) - 2))
-    # Python 3.14 changed POSIX's default from fork to forkserver.  This renderer
-    # deliberately loads its large read-only frame/stat tables before starting
-    # workers; Linux fork shares those pages and is the proven project path.
-    mp = get_context("fork") if sys.platform.startswith("linux") else get_context()
-    with mp.Pool(nw) as p:
-        for k, _ in enumerate(p.imap_unordered(render, frames, chunksize=8)):
-            if k % 300 == 0:
-                print(f"  {k}/{len(frames)}", flush=True)
-    if rng is None:
-        print(f"mux -> {OUT_MP4}", flush=True)
-        mux()
-        print("done", OUT_MP4, flush=True)
-    else:
-        print("done (frames only)", len(frames), flush=True)
+    sim_lease = tmpfs_workspace.lease_managed_alias(Path(SIM))
+    mp4_lease = None
+    mp4_actual = None
+    try:
+        # A rendered 1080p PNG is commonly around 2 MiB. Leave room for PNGs,
+        # the muxed video, and normal compression variance before workers start.
+        required = len(frames) * (5 * 1024 ** 2 // 2) + 1024 ** 3
+        tmpfs_workspace.evict_old_entries(required)
+        if rng is None:
+            if tmpfs_workspace.is_video_alias(OUT_MP4):
+                mp4_actual, mp4_lease = tmpfs_workspace.allocate_file(
+                    OUT_MP4,
+                    kind="analysis-mp4",
+                    key=(f"{CONFIG_PROFILE.path.stem}-"
+                         f"{CONFIG_PROFILE.sha256[:10]}"),
+                    required_bytes=512 * 1024 ** 2,
+                )
+            else:
+                mp4_actual = OUT_MP4
+                mp4_actual.parent.mkdir(parents=True, exist_ok=True)
+        os.makedirs(FRAMES_DIR, exist_ok=True)
+        print(f"analysis data -> {write_analysis_tsv()}", flush=True)
+        print(f"render {len(frames)} frames @ {W}x{H} ({TCOLS}x{TROWS}) fps={FPS} -> {FRAMES_DIR}", flush=True)
+        nw = min(max(1, len(frames)), max(1, (os.cpu_count() or 2) - 2))
+        # Python 3.14 changed POSIX's default from fork to forkserver.  This renderer
+        # deliberately loads its large read-only frame/stat tables before starting
+        # workers; Linux fork shares those pages and is the proven project path.
+        mp = get_context("fork") if sys.platform.startswith("linux") else get_context()
+        with mp.Pool(nw) as p:
+            for k, _ in enumerate(p.imap_unordered(render, frames, chunksize=8)):
+                if k % 300 == 0:
+                    print(f"  {k}/{len(frames)}", flush=True)
+        if rng is None:
+            location = (
+                f"tmpfs {mp4_actual}" if mp4_lease is not None
+                else str(mp4_actual))
+            print(f"mux -> {OUT_MP4} ({location})", flush=True)
+            mux(mp4_actual)
+            if mp4_lease is not None:
+                tmpfs_workspace.publish_alias(OUT_MP4, mp4_actual)
+            print("done", OUT_MP4, flush=True)
+        else:
+            print("done (frames only)", len(frames), flush=True)
+    finally:
+        if mp4_lease is not None:
+            mp4_lease.release()
+        if sim_lease is not None:
+            sim_lease.release()

@@ -44,7 +44,6 @@ emit_decisions = true
 algorithm = "mosaic-gm"
 
 [pack]
-debug = true
 output = "out/movieplay/MOVIE.DAT"
 """
 

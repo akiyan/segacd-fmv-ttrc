@@ -206,7 +206,6 @@ $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).cue: $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).iso
 movieplay: check-tools $(MOVIEPLAY_ISO) $(MOVIEPLAY_CUE)
 
 # 既定はリリースビルド。DEBUG=1 でデバッグオーバーレイを有効化する。
-# ストリーム側のデバッグ欄は CBRSIM_PACK_DEBUG=1 で pack した時だけ載せる。
 DEBUG ?= 0
 ISO_HOLD_N ?= 0
 # Issue #27 Main-CPU straight-line bitmap handlers and fixed-geometry NT

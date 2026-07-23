@@ -19,9 +19,8 @@ CD_SECTORS_PER_SECOND = av_config.CD_SECTORS_PER_SECOND
 CD_BYTES_PER_SECOND = av_config.CD_BYTES_PER_SECOND
 PATTERN_BYTES = 32
 PATTERNS_PER_SECTOR = SECTOR_BYTES // PATTERN_BYTES
-DEBUG_BLOCK_BYTES = 22
 RUN_DESCRIPTOR_BYTES = 4
-STREAM_SCHEDULE_SCHEMA_VERSION = 2
+STREAM_SCHEDULE_SCHEMA_VERSION = 3
 
 
 class ScheduleError(ValueError):
@@ -61,8 +60,7 @@ def average_body_delivery_rate_bps(useful_bytes, physical_bytes):
 
 
 def control_block_lengths(
-        updates, runs, *, cells, audio_frame_bytes, debug=False,
-        debug_bytes=DEBUG_BLOCK_BYTES, update_lists=None):
+        updates, runs, *, cells, audio_frame_bytes, update_lists=None):
     """Return the exact packed control length for every frame.
 
     This mirrors ``pack_stream.build_control`` without constructing audio or
@@ -87,20 +85,16 @@ def control_block_lengths(
         n_upd * shadow_updates.LIST_ITEM_BYTES,
         bitmap_bytes + n_upd * shadow_updates.SHADOW_ENTRY_BYTES,
     )
-    # body prefix: frame_seq, n_upd, pal and dbg = 6 bytes.  Entry words and
-    # the run suffix are even-sized; only the pre-suffix body may need a byte.
-    pre_suffix = (
-        6 + (int(debug_bytes) if debug else 0) + update_bytes
-        + int(audio_frame_bytes)
-    )
+    # body prefix: frame_seq, n_upd and pal:u16 = 6 bytes. Entry words and the
+    # run suffix are even-sized; only the pre-suffix body may need a byte.
+    pre_suffix = 6 + update_bytes + int(audio_frame_bytes)
     pre_suffix += pre_suffix & 1
     # total_len word + aligned body + n_runs word + four bytes per run.
     return (2 + pre_suffix + 2 + n_runs * RUN_DESCRIPTOR_BYTES).astype(np.int64)
 
 
 def body_fresh_byte_supply(
-        frame_count, fps, *, cells, audio_frame_bytes, debug=False,
-        debug_bytes=DEBUG_BLOCK_BYTES):
+        frame_count, fps, *, cells, audio_frame_bytes):
     """Return BODY bytes left after reserving fixed control data first.
 
     The gross allowance follows the player's exact integer sector cadence, not
@@ -117,8 +111,6 @@ def body_fresh_byte_supply(
         zeros, zeros,
         cells=cells,
         audio_frame_bytes=audio_frame_bytes,
-        debug=debug,
-        debug_bytes=debug_bytes,
     )
     if count:
         fixed[0] = 0
@@ -152,7 +144,7 @@ def max_run_control_reservation(max_cold, active_tiles):
 
 def body_funded_work_bytes(
         pattern_loads, updates, runs, *, cells, audio_frame_bytes,
-        debug=False, debug_bytes=DEBUG_BLOCK_BYTES, update_lists=None):
+        update_lists=None):
     """Return exact control plus Prg-pattern work attributed to each frame.
 
     This is encoder funding demand, not the physical BODY delivery trace: the
@@ -171,8 +163,6 @@ def body_funded_work_bytes(
         n_upd, n_runs,
         cells=cells,
         audio_frame_bytes=audio_frame_bytes,
-        debug=debug,
-        debug_bytes=debug_bytes,
         update_lists=update_lists,
     )
     useful = control + n_load * PATTERN_BYTES
@@ -183,7 +173,7 @@ def body_funded_work_bytes(
 
 def select_shadow_update_lists(
         cell_lists, runs, pattern_loads, *, cells, fps, ring_capacity_patterns,
-        frame_sectors, audio_frame_bytes, debug=False, fill=True,
+        frame_sectors, audio_frame_bytes, fill=True,
         max_control_bytes=0x2000, allow_control_growth=False):
     """Select faster lists without reducing physical delivery margins.
 
@@ -200,11 +190,10 @@ def select_shadow_update_lists(
 
     costs = tuple(shadow_updates.frame_cost(frame, cells) for frame in frames)
     legacy_lengths = control_block_lengths(
-        n_upd, n_runs, cells=cells, audio_frame_bytes=audio_frame_bytes,
-        debug=debug)
+        n_upd, n_runs, cells=cells, audio_frame_bytes=audio_frame_bytes)
     all_list_lengths = control_block_lengths(
         n_upd, n_runs, cells=cells, audio_frame_bytes=audio_frame_bytes,
-        debug=debug, update_lists=np.ones(n_upd.shape, np.bool_))
+        update_lists=np.ones(n_upd.shape, np.bool_))
     eligible = np.asarray([
         index > 0 and cost.saved_cycles > 0
         and int(all_list_lengths[index]) <= int(max_control_bytes)
@@ -214,7 +203,7 @@ def select_shadow_update_lists(
     def run_schedule(flags):
         lengths = control_block_lengths(
             n_upd, n_runs, cells=cells, audio_frame_bytes=audio_frame_bytes,
-            debug=debug, update_lists=flags)
+            update_lists=flags)
         scheduled = schedule_payload_ring(
             loads, lengths, fps=fps,
             ring_capacity_patterns=ring_capacity_patterns,
@@ -464,6 +453,15 @@ def schedule_payload_ring(
     n_pay_sec[0] = delivered[0] - prebuffer_sec
     n_pay_sec[1:] = delivered[1:] - delivered[:-1]
     occupancy = delivered * PATTERNS_PER_SECTOR - consumed
+    payload_frames = np.flatnonzero(n_pay_sec > 0)
+    # Once the final payload sector has arrived, the terminal suffix can only
+    # consume what remains.  Keep that suffix in the feasibility proof, but do
+    # not let the intentional end-of-stream drain define comparison minima.
+    evaluation_end_frame = (
+        min(nfr, int(payload_frames[-1]) + 1) if payload_frames.size else nfr
+    )
+    evaluation_occupancy = occupancy[
+        1:evaluation_end_frame] if evaluation_end_frame > 1 else occupancy[:1]
     under = int((occupancy < 0).sum())
     over = int((n_pay_sec + nc > int(frame_sectors)).sum())
 
@@ -524,6 +522,8 @@ def schedule_payload_ring(
         "prebuf_pat": prebuffer_sec * PATTERNS_PER_SECTOR,
         "ring_peak": int(occupancy.max()),
         "ring_min": int(occupancy.min()),
+        "ring_min_evaluation": int(evaluation_occupancy.min()),
+        "evaluation_end_frame": int(evaluation_end_frame),
         "ring_occupancy": occupancy,
         "ready_min": ready_min,
         "ctrl_min": ctrl_min,

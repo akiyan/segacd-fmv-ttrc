@@ -17,7 +17,7 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 13              (bump for an incompatible stream interpretation)
+VERSION        = 14              (bump for an incompatible stream interpretation)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
 AUDIO          = decoded header field (PCM: 888 B at N4 / 444 B at N2;
@@ -86,6 +86,10 @@ prefetch that fits that path. Additional future patterns are stored in a
 boot-stage sidecar and written directly to otherwise-unreferenced resident VRAM
 slots by the Main CPU. The sidecar changes startup only; it adds no timed-frame
 control record or playback-loop work.
+**v14** removes the unused per-frame `dbg` byte and optional 22-byte diagnostic
+block. The palette reference now occupies the complete `u16` at the same
+mini-header position, so the header remains 8 bytes and all following words
+remain evenly aligned.
 
 ## File layout
 
@@ -456,7 +460,7 @@ including the old 2.5-sector average at 30fps.
 light frames omit padding until that temporary lead is repaid. The complete
 stream converges to the CD 1x display-rate total without overflowing PrgBuf.
 Historical v2/v3 players defaulted `fps_int = 0` to 15, yielding the constant 5
-and reproducing the old fixed-slot behaviour. The current player accepts only v13 and
+and reproducing the old fixed-slot behaviour. The current player accepts only v14 and
 rejects a zero nominal fps before entering this schedule.
 
 The v6-and-later packer first spends that frame's allowance on control, then replaces
@@ -510,9 +514,7 @@ pixels `(hi<<4)|lo`.
 | 2    | total_len   | total block length **including these 2 bytes**; always even |
 | 2    | frame_seq   | frame sequence number (low 16 bits). The player checks this against the frame it expects; a mismatch means the stream desynced (e.g. a dropped CD sector) — the frame's updates are discarded (previous frame held) and the desync counter increments. |
 | 2    | n_upd/format | bits 0-14 = number of cell updates; bit 15 = v11 completed-list layout |
-| 1    | pal         | v3: `segment index + 1` = switch CRAM this frame to that entry of the pre-loaded PALTAB; `0` = no change. (v1/v2 used a 0/1 flag followed by a 128-byte in-stream CRAM payload.) |
-| 1    | dbg         | 1 = a debug block follows immediately (see below), else 0 |
-| 22   | debug       | **present only if `dbg==1`**: fixed-length debug block (below) |
+| 2    | pal         | v14 stores the v3 palette reference as a `u16`: `segment index + 1` switches CRAM this frame to that entry of the pre-loaded PALTAB; `0` means no change. (v1/v2 used a 0/1 flag followed by a 128-byte in-stream CRAM payload.) |
 | variable | shadow updates | legacy: `ceil(cells/8)` bitmap then `n_upd x 2` source-coded entries; completed list: `n_upd x 4` offset/final-entry pairs (see below) |
 | PCM: audio_bytes; ADPCM22: 4 + audio_bytes/2 | audio | PCM stores RF5C164 sign-magnitude bytes directly. ADPCM22 stores `s16 predictor, u8 step_index, u8 reserved_zero`, then low-nibble-first IMA codes. Current prefetched streams carry this logical source chunk `audio_preload_sec` frames ahead. |
 | 0/1  | audio pad   | zero byte when needed to align the optional suffix to a word boundary and keep the legacy block end even |
@@ -545,28 +547,6 @@ loads and may additionally include Prg raw prefetch loads. Each run stays
 within the header's `pool` slots. The Main CPU can therefore
 build its source-aware transfer table without walking all update entries a
 second time.
-
-**Debug block** (a fixed 22 bytes, present only when `dbg==1`). It sits at a
-**fixed position right after the 8-byte mini-header**, so a player reads it at a
-constant offset — no `total_len` arithmetic needed. Every value is a big-endian
-`u16`, clamped to `0xFFFF`. It is diagnostic only; the player skips it (advance
-by 22) if it does not use it.
-
-| Off | Size | Field     | Meaning |
-|-----|------|-----------|---------|
-| 0   | 2    | raw       | Raw cells this frame (exact cold load funded by current-frame allowance) |
-| 2   | 2    | same      | Same cells (unchanged or exact resident reuse, 0 B) |
-| 4   | 2    | near      | Near cells (near-perfect resident reuse) |
-| 6   | 2    | coa       | Coa cells (coarse resident reuse) |
-| 8   | 2    | flbk      | Flbk cells (wide fallback resident reuse) |
-| 10  | 2    | buf       | Buf cells (exact cold load funded by saved quality allowance or a boot-preload credit) |
-| 12  | 2    | miss      | Miss cells (changed but not updated this frame) |
-| 14  | 8    | reserved  | 4 x u16 reserved for future 16-bit debug values (zero) |
-
-The seven category counts always sum to the cell count. Whether the block is
-emitted is an encoder setting (`tools/pack_stream.py`: off by default, on with
-`CBRSIM_PACK_DEBUG=1`); release streams omit it to save CD bandwidth
-(22 bytes/frame).
 
 **Update entry** (2 bytes each), one per set bit in the bitmap, in ascending
 cell order:
@@ -632,15 +612,8 @@ the brief re-seek is cheap; the `frame_seq` check is the backstop (a mismatched
 frame is dropped, holding the previous frame). The debug HUD shows `S` =
 slip/re-seek count and `D` = residual desyncs (normally 0).
 
-Two forward-compatible ways to extend the format:
-
-1. **The `dbg` flag + debug block.** The debug block is opt-in per frame via the
-   `dbg` byte and lives at a fixed offset right after the mini-header, so a
-   player that wants the counts reads them at a constant position, and one that
-   does not simply advances past them (`+22` when `dbg==1`). Its 8 reserved
-   bytes (4 x u16) are the room to add more 16-bit debug metrics without moving
-   anything.
-2. **Appending within `total_len`.** Feature bit 0 uses this extension point for
+The forward-compatible extension point is **appending within `total_len`**.
+Feature bit 0 uses this extension point for
    the cold-run suffix. Because the player advances by `total_len`, trailing
    bytes remain skippable by a player that does not know them. Any future
    suffix must stay inside `total_len`, follow the selected update

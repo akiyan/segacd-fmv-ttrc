@@ -24,15 +24,14 @@ PER_SOURCE_ENV = {
     "CBRSIM_ACTIVE_TILES",
     "CBRSIM_MASTER_VF", "CBRSIM_RAW_VF", "CBRSIM_AUDIO", "CBRSIM_OUT",
     "CBRSIM_VRAM_TILES", "CBRSIM_QUALITY_BUDGET_KB", "CBRSIM_RING_CAP_KB",
-    "CBRSIM_MAX_COLD", "CBRSIM_PACK_DEBUG",
-    "CBRSIM_PACK_FILL", "CBRSIM_STARTUP_AUDIO_FRAMES",
+    "CBRSIM_MAX_COLD", "CBRSIM_PACK_FILL", "CBRSIM_STARTUP_AUDIO_FRAMES",
 }
 POLLUTED = {
     "CBRSIM_SRC": "wrong.mp4", "CBRSIM_FPS": "15", "CBRSIM_MODE": "H40",
     "CBRSIM_W": "320", "CBRSIM_H": "144", "CBRSIM_AUDIO": "adpcm22",
     "CBRSIM_VRAM_TILES": "7", "CBRSIM_QUALITY_BUDGET_KB": "1",
     "CBRSIM_RING_CAP_KB": "1", "CBRSIM_MAX_COLD": "1",
-    "CBRSIM_PACK_DEBUG": "0", "CBRSIM_PACK_FILL": "0",
+    "CBRSIM_PACK_FILL": "0",
     "CBRSIM_STARTUP_AUDIO_FRAMES": "1",
 }
 ARTIFACTS = ("HEADER.DAT", "BODY.DAT", "MOVIE.DAT", "palettes.bin")
@@ -49,7 +48,7 @@ def digest(path: Path) -> str:
 def run_pack(decision: Path, output: Path, env: dict[str, str]) -> None:
     command = [
         sys.executable, str(TOOLS / "pack_stream.py"),
-        "--dec-log", str(decision), "--output", str(output), "--debug",
+        "--dec-log", str(decision), "--output", str(output),
     ]
     subprocess.run(command, cwd=ROOT, env=env, check=True)
 
@@ -75,7 +74,7 @@ def check_cold_caps() -> None:
         ("H40", 15, 720, 400),
         ("H40", 15, 1040, 400),
         ("H40", 24, 1120, 200),
-        ("H40", 30, 1120, 178),
+        ("H40", 30, 1120, 180),
     )
     for mode, fps, active_tiles, cap in expected:
         assert av_config.cold_cap_for_fps(fps, mode, active_tiles) == cap

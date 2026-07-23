@@ -20,10 +20,9 @@
 - BODYの物理2/3セクタ配送を先に置き、固定controlを差し引いた残りを更新entry、
   run descriptor、Prg pattern payloadで共有する。軽いフレームの余りは有限の
   全編画質予算へ残し、重いフレームへ回す。
-- ゴースト対策(キャリーオーバー型エージング): 予算負けで未更新のまま待たされた
-  (dirtyが継続する)タイルほど優先度を累積的に底上げ(1+AGING_ALPHA*wait)し、必ず
-  いつか拾われるようにする(この判断では物理由来のfresh予算を超えない)。内容が変わって
-  不要になったタイルは changed から外れ wait=0 に戻り自然消滅する。
+- ゴースト対策(距離加重エージング): Miss/Flbk/Coa のまま残るタイルは、
+  target と現在表示のRGB平均誤差に応じた age_press を累積して優先度を上げる。
+  Near/正確表示になれば圧力は0に戻る。整数 wait はTSVのMiss継続観測だけに使う。
 - 音声: pcm13 または adpcm22 (TOML指定)。Plane B オーバーレイは無し。
 """
 import json
@@ -52,7 +51,9 @@ import pattern_supply  # noqa: E402
 import raw_prefetch  # noqa: E402
 import stream_schedule  # noqa: E402
 import shadow_updates  # noqa: E402
+import sim_pass_cache  # noqa: E402
 import ttrc_routing  # noqa: E402
+import tmpfs_workspace  # noqa: E402
 import upgrade_planner  # noqa: E402
 
 from quantize_md_video import (  # noqa: E402
@@ -130,24 +131,49 @@ NAME_BYTES = 2                  # ネームテーブル1エントリ(tile index 
 VRAM_TILES = int(os.environ.get("CBRSIM_VRAM_TILES", "1518"))   # VRAM常駐パターン数(LRU)。
 # デバッグオーバーレイのフォント予約分だけ実機側で減らす(例 1360)ときは env で指定。
 FLATTEN_STD = 0.12              # rgb333(0-7)タイル内std平均。ディザ除去済みなので低め
-DETAIL_ALPHA = 1.5
+DETAIL_ALPHA = float(os.environ.get("CBRSIM_DETAIL_ALPHA", "0.0"))
 BORDER_TILES = 2
 BORDER_WEIGHT = 0.4
-# キャリーオーバー型エージング: 予算負けで未更新のまま待たされた(dirtyが継続する)
-# タイルほど優先度を累積的に引き上げ、必ずいつか拾われるようにする(飢餓/ゴースト対策)。
-# 内容が変わって不要になったタイルは changed から外れて自然消滅する。
-AGING_ALPHA = 0.6              # 待ちフレーム数あたりの優先度加点(乗算 1+α*wait)
-WAIT_CAP = 10                 # エージング加点の飽和上限(フレーム)
-NBINS = 12                    # MissCarry年齢分布のビン数(1..11, 12+)
-# Comp(same=dedup)を表す色。status帯のCompバー Cs 部と Update tiles パネルの
-# dedupタイル枠で共有する(render_statusline.py の COL_SAME と一致させること)。
+# Miss/Flbk/Coa にだけ、targetと現在表示の距離に応じた圧力を積む。
+# RGB平均誤差 AGING_DIST_REF で1.0/frame、急変時の単フレーム加算はSTEP_CAPまで。
+AGING_ALPHA = 0.6
+WAIT_CAP = 10.0
+AGING_DIST_REF = float(os.environ.get("CBRSIM_AGING_DIST_REF", "24"))
+AGING_STEP_CAP = float(os.environ.get("CBRSIM_AGING_STEP_CAP", "2.0"))
+if AGING_DIST_REF <= 0:
+    raise SystemExit("CBRSIM_AGING_DIST_REF must be greater than zero")
+if AGING_STEP_CAP < 0:
+    raise SystemExit("CBRSIM_AGING_STEP_CAP must be zero or greater")
+
+
+def distance_aging_step(diff, dist_ref=AGING_DIST_REF,
+                        step_cap=AGING_STEP_CAP):
+    """Return one frame's age pressure from per-tile summed RGB error."""
+    mean_rgb_error = np.asarray(diff, dtype=np.float64) / (TILE * TILE * 3)
+    return np.minimum(mean_rgb_error / float(dist_ref), float(step_cap))
+
+
+def priority_aging(age_press):
+    """Convert accumulated age pressure to the bounded priority multiplier."""
+    return 1.0 + AGING_ALPHA * np.minimum(age_press, WAIT_CAP)
+
+
+def update_age_pressure(age_press, cell_tier, diff):
+    """Accumulate pressure for Miss/Flbk/Coa and reset Near/exact cells."""
+    return np.where(
+        np.asarray(cell_tier) < 3,
+        np.asarray(age_press, dtype=np.float64) + distance_aging_step(diff),
+        0.0,
+    )
+
+
+# Comp(same=dedup)を表す色。Update tiles パネルのdedupタイル枠に使う。
 COL_SAME = (0, 190, 175)      # teal
 # カテゴリマップ(catmap)の縁取り色。status/凡例と一致させること。
 CAT_RAW = (205, 205, 205)     # Raw = same-frame exact load (black/white dashed frame)
 CAT_SAME = (150, 150, 158)    # Same = exact resident reuse (legend only; no tile frame)
 CAT_DEDUP = (0, 190, 175)     # Dedup = VRAM流用 (teal, 互換用)
 CAT_MISS = (220, 70, 70)      # Miss = 取りこぼし (red, 塗りつぶし)
-CAT_CARRY = (235, 160, 70)    # MissCarry = 繰越Miss (amber)
 CAT_NEAR = (95, 115, 215)     # Near = ほぼ同一の常駐を流用 (blue)  ※色巡回
 CAT_COA = (45, 240, 70)       # Coa metric colour; category frame uses CAT_NEAR
 CAT_FLBK = CAT_MISS            # Flbk = resident fallback (red, thin frame)
@@ -286,8 +312,12 @@ PATTERN_SUPPLY_ON = FPS >= 24.0
 # 近似流用(Near/Coa/Flbk)が「この秒数」以上そのまま居座ったら、格上げ優先度を Miss級(sev=0)へ
 # 昇格させる。一過性の近似は目に見えないが、居座った近似は静的なゴースト=視線が固定される。時間で切る
 # のは知覚(何秒出続けたか)がfps非依存だから(重み付けaging=予算コンテストのフレーム数とは別軸)。0で無効。
-GHOST_ESCALATE_SEC = float(os.environ.get("CBRSIM_GHOST_ESCALATE_SEC", "0.3"))
-GHOST_ESCALATE_N = max(1, round(GHOST_ESCALATE_SEC * FPS)) if GHOST_ESCALATE_SEC > 0 else 0
+def ghost_escalate_frames(seconds, fps):
+    return max(1, math.floor(seconds * fps)) if seconds > 0 else 0
+
+
+GHOST_ESCALATE_SEC = float(os.environ.get("CBRSIM_GHOST_ESCALATE_SEC", "0.2"))
+GHOST_ESCALATE_N = ghost_escalate_frames(GHOST_ESCALATE_SEC, FPS)
 # issue #10: near_keep(現在表示がほぼ同一なら0Bで維持)を「現在表示が正確(cell_tier==9)」なセルに限定。
 # 近似表示(Coa/Flbk)を入力に Near 判定すると近似が居座る(ゴースト)ため。0で旧挙動(近似表示も維持可)。
 NEAR_KEEP_ACCURATE_ONLY = os.environ.get("CBRSIM_NEAR_ACCURATE_ONLY", "1") != "0"
@@ -620,6 +650,9 @@ def segment_and_train(frames, frame_cache=None):
 
 
 OUT = sim_work_dir()
+_PASS_CACHE_PATH = os.environ.get("CBRSIM_PASS_CACHE", "").strip()
+_PASS_CACHE_INVOCATION = os.environ.get(
+    "CBRSIM_PASS_CACHE_INVOCATION", "").strip()
 # 実機TTRCエンコード用の決定ログ出力先。既定off(mp4出力に一切影響しない・追加のみ)。
 # 毎フレームの「更新セル(cell,pal,key)」＋区間パレットを吐き、pack_streamが再生してTTRC化する。
 _EMIT_DEC_ENV = os.environ.get("CBRSIM_EMIT_DEC", "").strip()
@@ -1279,13 +1312,43 @@ def main():
     _t = _mark("展開(reuse)" if cached else "抽出(ffmpeg)", _t)
     frames = sorted(master_dir.glob("*.png"))
     n = len(frames)
+    pass_cache_payload = None
+    pass_cache_metadata = None
+    if _PASS_CACHE_PATH:
+        if CONFIG_PROFILE is None or not _PASS_CACHE_INVOCATION:
+            raise SystemExit(
+                "sim pass cache requires a profile and invocation identity")
+        pass_cache_metadata = sim_pass_cache.expected_metadata(
+            profile=CONFIG_PROFILE,
+            source=SRC,
+            width=W,
+            height=H,
+            cells=C_CELLS,
+            active_tiles=ACTIVE_TILES,
+            fps=FPS_STR,
+            frame_count=n,
+            invocation=_PASS_CACHE_INVOCATION,
+        )
+        cache_path = Path(_PASS_CACHE_PATH)
+        if cache_path.is_file():
+            pass_cache_payload = sim_pass_cache.load(
+                cache_path, pass_cache_metadata)
+            print(
+                f"sim pass cache: hit {cache_path} "
+                f"({cache_path.stat().st_size / 1024**2:.1f} MiB)",
+                flush=True,
+            )
+        elif _SLOT_LOCALITY_STAGE == "final":
+            raise SystemExit(
+                f"accounting pass cache is missing: {cache_path}")
+        else:
+            print(f"sim pass cache: seed will create {cache_path}", flush=True)
     pack_config = dict(CONFIG_PROFILE.section("pack") if CONFIG_PROFILE else {})
     body_fresh = stream_schedule.body_fresh_byte_supply(
         n,
         FPS,
         cells=C_CELLS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        debug=bool(pack_config.get("debug", False)),
     )
     body_gross_bytes = np.asarray(body_fresh["gross"], np.int64)
     body_fixed_control_bytes = np.asarray(
@@ -1352,25 +1415,41 @@ def main():
         print(f"  PRG先読み(patch): {len(prg_patch)}カット, distinct {uniq} tiles "
               f"({uniq*PATTERN_BYTES/1024:.0f}KB) をロード時バッファ")
 
-    print(f"training palettes ({PAL_ALGO})  DITHER={DITHER_ON} SEGPAL={SEGPAL_ON} NEAR={NEAR_ON} ...")
-    frame_cache = FrameFeatureCache(frames) if PAL_ALGO == MOSAIC_GM else None
-    _global_pals, seg_pals, frame_seg, seg_bounds, palette_stats = segment_and_train(
-        frames, frame_cache=frame_cache)
-    palette_stats["spatial_assignment"] = {
-        "enabled": bool(PAL_ALGO == MOSAIC_GM and PAL_SEAM_WEIGHT > 0),
-        "seam_weight": float(PAL_SEAM_WEIGHT),
-        "iterations": int(PAL_SEAM_ITERATIONS),
-    }
-    if SEGPAL_ON:
-        print(f"  per-segment palettes: {len(seg_pals)}区間, CRAM差替 {len(seg_bounds)}点 "
-              f"(candidates={palette_stats['candidate_segments']})")
-    _t = _mark("パレット学習", _t)
+    cached_precompute = (
+        pass_cache_payload.get("precompute")
+        if pass_cache_payload is not None else None)
+    if cached_precompute is not None:
+        frame_cache = None
+        _global_pals = None
+        seg_pals = cached_precompute["seg_pals"]
+        frame_seg = cached_precompute["frame_seg"]
+        seg_bounds = cached_precompute["seg_bounds"]
+        palette_stats = cached_precompute["palette_stats"]
+        print(
+            f"training palettes: pass-cache hit "
+            f"({len(seg_pals)} segments, {len(seg_bounds)} CRAM switches)",
+            flush=True,
+        )
+        _t = _mark("パレット学習(cache)", _t)
+    else:
+        print(f"training palettes ({PAL_ALGO})  DITHER={DITHER_ON} SEGPAL={SEGPAL_ON} NEAR={NEAR_ON} ...")
+        frame_cache = FrameFeatureCache(frames) if PAL_ALGO == MOSAIC_GM else None
+        _global_pals, seg_pals, frame_seg, seg_bounds, palette_stats = segment_and_train(
+            frames, frame_cache=frame_cache)
+        palette_stats["spatial_assignment"] = {
+            "enabled": bool(PAL_ALGO == MOSAIC_GM and PAL_SEAM_WEIGHT > 0),
+            "seam_weight": float(PAL_SEAM_WEIGHT),
+            "iterations": int(PAL_SEAM_ITERATIONS),
+        }
+        if SEGPAL_ON:
+            print(f"  per-segment palettes: {len(seg_pals)}区間, CRAM差替 {len(seg_bounds)}点 "
+                  f"(candidates={palette_stats['candidate_segments']})")
+        _t = _mark("パレット学習", _t)
 
     main_dir = OUT / "preview"      # SEGA-CD 実出力(ゴースト有り)
     catmap_dir = OUT / "catmap"     # category borders; Raw has none, Miss is overlaid later
-    misscarry_dir = OUT / "misscarry"  # Miss(赤)/MissCarry(amber) を縁取り
     if not NO_PANELS:
-        for d in (main_dir, catmap_dir, misscarry_dir):
+        for d in (main_dir, catmap_dir):
             prepare_dir(d, clean=True)
 
     border_mask = border_weight_mask()
@@ -1457,7 +1536,8 @@ def main():
         cur_rgb[c] = rgb                                     # 暫定(このフレーム末に引き直す)
         touch(key, fi)
 
-    wait = np.zeros(C_CELLS, np.int32)         # 未更新のdirtyが継続したフレーム数(エージング/滞留)
+    wait = np.zeros(C_CELLS, np.int32)         # TSVのMiss carry/age用。優先度には使わない
+    age_press = np.zeros(C_CELLS, np.float64)  # Miss/Flbk/Coaの距離加重優先度圧力
     cell_tier = np.zeros(C_CELLS, np.int8)     # 現在の表示劣化度(0=Miss,1=Flbk,2=Coa,3=Near,9=正確)
     approx_carry = np.zeros(C_CELLS, np.int32)  # 近似(tier<9)のまま持ち越した連続コマ数(格上げ/正確化で0)
     upgrade_log = []                            # 毎コマ: 格上げ枚数 / まだ近似のセル数(指標)
@@ -1485,7 +1565,6 @@ def main():
     }
     stat_rows = []             # per-frame status line 用の実測値
     stale_rows = []            # per-frame の Miss(stale)マスク(packbits, 72B/frame)
-    wait_hist_rows = []        # per-frame の繰越年齢分布(MissCarryバー用)
     starved_frames = 0
     dec_frames = []            # 実機決定ログ: 各要素 = そのフレームの [(cell, pal, key), ...]
     dec_miss = []              # per-frame Miss数(デバッグオーバーレイ用。デコード側では算出不能)
@@ -1502,23 +1581,36 @@ def main():
     quality_budget = QUALITY_BUDGET_BYTES if QUALITY_BUDGET_ON else 0
     quality_budget_log = []
 
-    # DEBUG色はCRAMに既にある色だけを並べ替えて固定する。異なるパレット行との
-    # 入替があり得るので、全フレームを最終的な行構成に対して量子化する前に行う。
-    seg_pals, pal_extreme_stats = pin_p0_debug_extremes(seg_pals)
-    print(f"  P0 DEBUG colours pinned: index1 darkest swaps "
-          f"{pal_extreme_stats['dark_swapped_segments']}/{pal_extreme_stats['segments']}, "
-          f"index15 brightest swaps "
-          f"{pal_extreme_stats['bright_swapped_segments']}/{pal_extreme_stats['segments']}")
+    if cached_precompute is not None:
+        pal_extreme_stats = cached_precompute["pal_extreme_stats"]
+        pal15_stats = cached_precompute["pal15_stats"]
+        Q_detail = cached_precompute["Q_detail"]
+        Q_assign = cached_precompute["Q_assign"]
+        Q_pidx = cached_precompute["Q_pidx"]
+        print(
+            f"precompute quantization: pass-cache hit ({n} frames)",
+            flush=True,
+        )
+        _t = _mark("量子化(cache)", _t)
+    else:
+        # DEBUG色はCRAMに既にある色だけを並べ替えて固定する。異なるパレット行との
+        # 入替があり得るので、全フレームを最終的な行構成に対して量子化する前に行う。
+        seg_pals, pal_extreme_stats = pin_p0_debug_extremes(seg_pals)
+        print(f"  P0 DEBUG colours pinned: index1 darkest swaps "
+              f"{pal_extreme_stats['dark_swapped_segments']}/{pal_extreme_stats['segments']}, "
+              f"index15 brightest swaps "
+              f"{pal_extreme_stats['bright_swapped_segments']}/{pal_extreme_stats['segments']}")
 
-    # フレーム独立の割当/索引を並列で前計算(実行時間の大半)。以降のループは逐次(状態依存)。
-    Q_detail, Q_assign, Q_pidx = precompute_quant(
-        frames, seg_pals, frame_seg, frame_cache=frame_cache)
-    del frame_cache
-    # The older lossless index-15 canonicalizer is now a no-op for current
-    # palettes because both DEBUG extremes were pinned before quantisation.
-    # Keep the proof here while older palette inputs remain supported.
-    seg_pals, pal15_stats = canonicalize_p0_index15(
-        seg_pals, frame_seg, Q_assign, Q_pidx)
+        # フレーム独立の割当/索引を並列で前計算(実行時間の大半)。以降のループは逐次(状態依存)。
+        Q_detail, Q_assign, Q_pidx = precompute_quant(
+            frames, seg_pals, frame_seg, frame_cache=frame_cache)
+        del frame_cache
+        # The older lossless index-15 canonicalizer is now a no-op for current
+        # palettes because both DEBUG extremes were pinned before quantisation.
+        # Keep the proof here while older palette inputs remain supported.
+        seg_pals, pal15_stats = canonicalize_p0_index15(
+            seg_pals, frame_seg, Q_assign, Q_pidx)
+        _t = _mark("量子化", _t)
     # palettes.bin is the legacy fallback CRAM image.  In segmented mode the
     # separately trained global palette was never the actual initial CRAM, so
     # write canonical segment 0 and keep every consumer aligned with PALTAB.
@@ -1532,7 +1624,6 @@ def main():
           f"RGB identity verified for {pal15_stats['verified_pixels']} pixels "
           f"({pal15_stats['reassigned_tiles']} tile assignments and "
           f"{pal15_stats['reindexed_pixels']} indices remapped, frame0 included)")
-    _t = _mark("量子化", _t)
 
     # Optional quality upgrades use a whole-movie reserve plan. The dry run
     # follows the exact quantized target with the shared VRAM allocator. A
@@ -1545,84 +1636,58 @@ def main():
             if int(frame_seg[i]) != int(frame_seg[i - 1]):
                 upgrade_supply[i] = max(
                     0, int(upgrade_supply[i]) - PAL_WRITE_BYTES)
-    # Normal exact updates need a narrower risk reserve. Changes that fit Coa
-    # can degrade gracefully to a resident approximation; only changes beyond
-    # Coa are likely to become Flbk or Miss and justify moving budget capacity
-    # away from an earlier frame.
-    main_protected = np.zeros((n, C_CELLS), bool)
-    previous_target_rgb = None
-    coa_bounds = dict(
-        Ym=MIDFAR_TIERS[1][1],
-        Yp=MIDFAR_TIERS[1][2],
-        C=MIDFAR_TIERS[1][3],
-    )
-    for i in range(n):
-        target_pals = seg_pals[int(frame_seg[i])]
-        target_rgb = render_cells(Q_pidx[i], Q_assign[i], target_pals)
-        if i == 0:
-            main_protected[i] = True
-        else:
-            if int(frame_seg[i]) == int(frame_seg[i - 1]):
-                previous_display_rgb = previous_target_rgb
-            else:
-                previous_display_rgb = render_cells(
-                    Q_pidx[i - 1], Q_assign[i - 1], target_pals)
-            target_changed = (
-                np.any(Q_pidx[i] != Q_pidx[i - 1], axis=1)
-                | (Q_assign[i] != Q_assign[i - 1])
-            )
-            graceful = f3_mask_eval(
-                previous_display_rgb, target_rgb, target_changed, coa_bounds)
-            main_protected[i] = target_changed & ~graceful
-        previous_target_rgb = target_rgb
-    baseline_demand_prediction = upgrade_planner.predict_update_demand_details(
-        Q_pidx,
-        Q_assign,
-        vram_tiles=VRAM_TILES,
-        name_bytes=NAME_BYTES,
-        pattern_bytes=PATTERN_BYTES,
-        max_cold=MAX_COLD,
-        protected_frames=main_protected,
-    )
-    baseline_prefetch_forecast = raw_prefetch.forecast_requests(
-        Q_pidx,
-        Q_assign,
-        main_protected,
-        vram_tiles=VRAM_TILES,
-        max_cold=MAX_COLD,
-    )
-    frame0_keys = tuple(dict.fromkeys(
-        Q_pidx[0][cell].tobytes() for cell in range(C_CELLS)))
-    frame0_inline_pattern_limit = min(
-        C_CELLS,
-        VRAM_TILES,
-        av_config.FRAME0_PATTERN_STAGING_KB * 1024 // PATTERN_BYTES,
-    )
-    boot_inline_capacity = max(
-        0, frame0_inline_pattern_limit - len(frame0_keys))
-    boot_sidecar_capacity = av_config.boot_vram_sidecar_capacity(
-        len(seg_pals))
-    boot_prefetch_capacity = min(
-        max(0, VRAM_TILES - len(frame0_keys)),
-        boot_inline_capacity + boot_sidecar_capacity,
-    )
-    boot_prefetch_plan = (
-        raw_prefetch.plan_boot_requests(
-            baseline_demand_prediction,
-            baseline_prefetch_forecast,
-            frame0_keys,
-            capacity=boot_prefetch_capacity,
+    cached_future = (
+        pass_cache_payload.get("future")
+        if pass_cache_payload is not None else None)
+    if cached_future is not None:
+        main_protected = cached_future["main_protected"]
+        baseline_demand_prediction = cached_future[
+            "baseline_demand_prediction"]
+        baseline_prefetch_forecast = cached_future[
+            "baseline_prefetch_forecast"]
+        frame0_keys = cached_future["frame0_keys"]
+        frame0_inline_pattern_limit = cached_future[
+            "frame0_inline_pattern_limit"]
+        boot_inline_capacity = cached_future["boot_inline_capacity"]
+        boot_sidecar_capacity = cached_future["boot_sidecar_capacity"]
+        boot_prefetch_capacity = cached_future["boot_prefetch_capacity"]
+        boot_prefetch_plan = cached_future["boot_prefetch_plan"]
+        demand_prediction = cached_future["demand_prediction"]
+        supply_budget = cached_future["supply_budget"]
+        prefetch_forecast = cached_future["prefetch_forecast"]
+        print("future demand plan: pass-cache hit", flush=True)
+    else:
+        # Normal exact updates need a narrower risk reserve. Changes that fit Coa
+        # can degrade gracefully to a resident approximation; only changes beyond
+        # Coa are likely to become Flbk or Miss and justify moving budget capacity
+        # away from an earlier frame.
+        main_protected = np.zeros((n, C_CELLS), bool)
+        previous_target_rgb = None
+        coa_bounds = dict(
+            Ym=MIDFAR_TIERS[1][1],
+            Yp=MIDFAR_TIERS[1][2],
+            C=MIDFAR_TIERS[1][3],
         )
-        if BOOT_VRAM_PREFETCH_ON else ()
-    )
-    boot_inline_requests = min(
-        len(boot_prefetch_plan), boot_inline_capacity)
-    boot_sidecar_requests = len(boot_prefetch_plan) - boot_inline_requests
-    # Re-run the cheap exact-target trace with the boot residency installed so
-    # pattern-supply credits, quality reserves, and runtime prefetch forecasts
-    # all see the same initial VRAM state as the real encoder pass.
-    demand_prediction = (
-        upgrade_planner.predict_update_demand_details(
+        for i in range(n):
+            target_pals = seg_pals[int(frame_seg[i])]
+            target_rgb = render_cells(Q_pidx[i], Q_assign[i], target_pals)
+            if i == 0:
+                main_protected[i] = True
+            else:
+                if int(frame_seg[i]) == int(frame_seg[i - 1]):
+                    previous_display_rgb = previous_target_rgb
+                else:
+                    previous_display_rgb = render_cells(
+                        Q_pidx[i - 1], Q_assign[i - 1], target_pals)
+                target_changed = (
+                    np.any(Q_pidx[i] != Q_pidx[i - 1], axis=1)
+                    | (Q_assign[i] != Q_assign[i - 1])
+                )
+                graceful = f3_mask_eval(
+                    previous_display_rgb, target_rgb, target_changed, coa_bounds)
+                main_protected[i] = target_changed & ~graceful
+            previous_target_rgb = target_rgb
+        baseline_demand_prediction = upgrade_planner.predict_update_demand_details(
             Q_pidx,
             Q_assign,
             vram_tiles=VRAM_TILES,
@@ -1630,10 +1695,110 @@ def main():
             pattern_bytes=PATTERN_BYTES,
             max_cold=MAX_COLD,
             protected_frames=main_protected,
-            boot_prefetch_requests=boot_prefetch_plan,
         )
-        if boot_prefetch_plan else baseline_demand_prediction
-    )
+        baseline_prefetch_forecast = raw_prefetch.forecast_requests(
+            Q_pidx,
+            Q_assign,
+            main_protected,
+            vram_tiles=VRAM_TILES,
+            max_cold=MAX_COLD,
+        )
+        frame0_keys = tuple(dict.fromkeys(
+            Q_pidx[0][cell].tobytes() for cell in range(C_CELLS)))
+        frame0_inline_pattern_limit = min(
+            C_CELLS,
+            VRAM_TILES,
+            av_config.FRAME0_PATTERN_STAGING_KB * 1024 // PATTERN_BYTES,
+        )
+        boot_inline_capacity = max(
+            0, frame0_inline_pattern_limit - len(frame0_keys))
+        boot_sidecar_capacity = av_config.boot_vram_sidecar_capacity(
+            len(seg_pals))
+        boot_prefetch_capacity = min(
+            max(0, VRAM_TILES - len(frame0_keys)),
+            boot_inline_capacity + boot_sidecar_capacity,
+        )
+        boot_prefetch_plan = (
+            raw_prefetch.plan_boot_requests(
+                baseline_demand_prediction,
+                baseline_prefetch_forecast,
+                frame0_keys,
+                capacity=boot_prefetch_capacity,
+            )
+            if BOOT_VRAM_PREFETCH_ON else ()
+        )
+        # Re-run the exact-target trace with boot residency installed so every
+        # future source and reserve sees the same initial VRAM state.
+        demand_prediction = (
+            upgrade_planner.predict_update_demand_details(
+                Q_pidx,
+                Q_assign,
+                vram_tiles=VRAM_TILES,
+                name_bytes=NAME_BYTES,
+                pattern_bytes=PATTERN_BYTES,
+                max_cold=MAX_COLD,
+                protected_frames=main_protected,
+                boot_prefetch_requests=boot_prefetch_plan,
+            )
+            if boot_prefetch_plan else baseline_demand_prediction
+        )
+        supply_budget = pattern_supply.plan_frame_budgets(
+            demand_prediction, enabled=PATTERN_SUPPLY_ON)
+        if RAW_PREFETCH_ON:
+            prefetch_forecast = raw_prefetch.forecast_requests(
+                Q_pidx,
+                Q_assign,
+                main_protected,
+                vram_tiles=VRAM_TILES,
+                max_cold=MAX_COLD,
+                boot_prefetch_requests=boot_prefetch_plan,
+            )
+        else:
+            prefetch_forecast = raw_prefetch.PrefetchForecast(
+                requests=tuple(() for _ in range(n)),
+                protected_cold=np.zeros(n, np.int64),
+                requested_patterns=np.zeros(n, np.int64),
+            )
+        if _PASS_CACHE_PATH:
+            cache_payload = {
+                "precompute": {
+                    "seg_pals": seg_pals,
+                    "frame_seg": frame_seg,
+                    "seg_bounds": seg_bounds,
+                    "palette_stats": palette_stats,
+                    "pal_extreme_stats": pal_extreme_stats,
+                    "pal15_stats": pal15_stats,
+                    "Q_detail": Q_detail,
+                    "Q_assign": Q_assign,
+                    "Q_pidx": Q_pidx,
+                },
+                "future": {
+                    "main_protected": main_protected,
+                    "baseline_demand_prediction": baseline_demand_prediction,
+                    "baseline_prefetch_forecast": baseline_prefetch_forecast,
+                    "frame0_keys": frame0_keys,
+                    "frame0_inline_pattern_limit": frame0_inline_pattern_limit,
+                    "boot_inline_capacity": boot_inline_capacity,
+                    "boot_sidecar_capacity": boot_sidecar_capacity,
+                    "boot_prefetch_capacity": boot_prefetch_capacity,
+                    "boot_prefetch_plan": boot_prefetch_plan,
+                    "demand_prediction": demand_prediction,
+                    "supply_budget": supply_budget,
+                    "prefetch_forecast": prefetch_forecast,
+                },
+            }
+            cache_path = Path(_PASS_CACHE_PATH)
+            sim_pass_cache.save(
+                cache_path, pass_cache_metadata, cache_payload)
+            print(
+                f"sim pass cache: saved {cache_path} "
+                f"({cache_path.stat().st_size / 1024**2:.1f} MiB)",
+                flush=True,
+            )
+    boot_inline_requests = min(
+        len(boot_prefetch_plan), boot_inline_capacity)
+    boot_sidecar_requests = len(boot_prefetch_plan) - boot_inline_requests
+
     slot_locality_map = os.environ.get("CBRSIM_SLOT_LOCALITY_MAP", "").strip()
     if slot_locality_map:
         slot_locality = evaluate_slot_locality(
@@ -1666,8 +1831,6 @@ def main():
         f"->{int(predicted_local_runs[predicted_risk].max(initial=0))}",
         flush=True,
     )
-    supply_budget = pattern_supply.plan_frame_budgets(
-        demand_prediction, enabled=PATTERN_SUPPLY_ON)
     dic_dictionary_keys = set(supply_budget.dic_dictionary)
     dic_dictionary_index = {
         key: index for index, key in enumerate(supply_budget.dic_dictionary)
@@ -1676,21 +1839,6 @@ def main():
     protected_credit_bytes = (
         np.minimum(supply_budget.total, demand_prediction.protected_cold)
         * PATTERN_BYTES)
-    if RAW_PREFETCH_ON:
-        prefetch_forecast = raw_prefetch.forecast_requests(
-            Q_pidx,
-            Q_assign,
-            main_protected,
-            vram_tiles=VRAM_TILES,
-            max_cold=MAX_COLD,
-            boot_prefetch_requests=boot_prefetch_plan,
-        )
-    else:
-        prefetch_forecast = raw_prefetch.PrefetchForecast(
-            requests=tuple(() for _ in range(n)),
-            protected_cold=np.zeros(n, np.int64),
-            requested_patterns=np.zeros(n, np.int64),
-        )
     # A boot-preloaded cold pattern still needs its two-byte name entry but no
     # BODY payload.  Remove only that 32-byte payload from the future reserve
     # traces; the live encoder below applies the same charge to actual work.
@@ -1846,9 +1994,11 @@ def main():
 
         diff = np.abs(plain_rgb.astype(np.int32) - cur_rgb.astype(np.int32)).sum(axis=(1, 2, 3))
         detail_norm = detail / (detail.max() + 1e-6)
-        # キャリーオーバー型エージング: 待たされたdirtyタイルほど優先度を底上げ(乗算)。
-        aging = 1.0 + AGING_ALPHA * np.minimum(wait, WAIT_CAP)
-        # 優先度 = RGB総和の変化量 × タイル内の細かさ × エージング × 枠重み
+        # Miss/Flbk/Coaだけが前フレームまでに積んだ、距離加重圧力で
+        # 優先度を底上げする。Nearは短時間なら許容できるため対象外。
+        age_press = update_age_pressure(age_press, cell_tier, diff)
+        aging = priority_aging(age_press)
+        # 優先度 = RGB総和の変化量 × 任意の細かさ項 × 距離加重エージング × 枠重み
         score = diff.astype(np.float64) * (1.0 + DETAIL_ALPHA * detail_norm) * aging * border_mask
         # Near: 変化タイルのうち見た目ほぼ同じ(F3)は先に省略(old表示を維持)。買い戻し(Raw更新)は
         # 準備金を食い潰すので入れない(=配給とセットでしか成立しないため今は無し)。
@@ -2346,7 +2496,7 @@ def main():
                 if GHOST_ESCALATE_N:
                     sev[(approx_carry >= GHOST_ESCALATE_N) & cand_mask] = 0
                 for c in sorted((int(x) for x in np.where(cand_mask)[0]),
-                                key=lambda c: (int(sev[c]), -int(approx_carry[c]), -score[c])):
+                                key=lambda c: (int(sev[c]), -float(age_press[c]), -score[c])):
                     raw_upgrade(c, upgrade_limit)
         if _loop_profile:
             _lp_t = _lp_mark("upgrade", _lp_t, _lp_frame)
@@ -2719,14 +2869,10 @@ def main():
             dec_cats.append((
                 raw_count, same_count, near_count, coa_count, flbk_count,
                 source_count, miss))
-        # MissCarry = 前フレームでMissして今も未解決(=stale かつ wait>=1)。旧waitで判定。
-        carry_mask = stale & (wait >= 1)
-        carry = int(carry_mask.sum())
+        # waitはTSVのMiss継続観測専用。優先度のage_pressとは独立。
+        carry = int((stale & (wait >= 1)).sum())
         # 滞留 = 待たされた連続フレーム数(=wait)。今フレームも未更新なので+1
         age_max = int(wait[stale].max()) + 1 if stale.any() else 0
-        # MissCarryバー用: stale タイルの繰越年齢(=wait+1)分布
-        ages = np.clip(wait[stale] + 1, 1, NBINS)
-        wait_hist_rows.append(np.bincount(ages, minlength=NBINS + 1)[1:NBINS + 1])
         # F = every cold tile forming its own runでもfresh supplyで払える
         # 最低保証Raw更新数。実runが連結すれば差分はquality budgetへ戻る。
         f_fixed = budget // (
@@ -2741,7 +2887,7 @@ def main():
             len(u_same), len(u_near), len(u_coa), len(u_flbk), dma_tiles, dma_runs,
             len(prefetch_cold_slots)))
 
-        # エージングの待ちカウンタ更新: 未更新のdirtyは+1、更新済み/変化なしは0へ
+        # TSV観測用のMiss待ちカウンタを更新。NearはMissではない。
         wait = np.where(changed & ~updated & ~near_eff, wait + 1, 0)   # Nearは滞留させない
         if _loop_profile:
             _lp_t = _lp_mark("accounting", _lp_t, _lp_frame)
@@ -2805,11 +2951,6 @@ def main():
             dashed_color_border(cat, dic_source_mask, CAT_DIC)
             _save_png(cells_to_image(cat.clip(0, 255).astype(np.uint8)), catmap_dir / f"{i:05d}.png")
 
-            # Miss/Carry マップ: Miss/Carryタイルだけ内容表示+縁取り(fresh=赤/繰越=amber)。他は黒。
-            mc = np.zeros((C_CELLS, TILE, TILE, 3), np.float64)
-            mc[stale] = cur_rgb[stale]
-            border(mc, stale & ~carry_mask, CAT_MISS); border(mc, carry_mask, CAT_CARRY)
-            _save_png(cells_to_image(mc.clip(0, 255).astype(np.uint8)), misscarry_dir / f"{i:05d}.png")
             _t_render += time.perf_counter() - _r0
 
         if _loop_profile:
@@ -3162,7 +3303,6 @@ def main():
             av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
         frame_sectors=ttrc_routing.FRAME_SECTORS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        debug=bool(pack_config.get("debug", False)),
         fill=bool(pack_config.get("fill", True)),
     ) if PATTERN_SUPPLY_ON else None
     shadow_list_flags = (
@@ -3176,7 +3316,6 @@ def main():
             np.asarray(transfer_runs_log, np.int64),
             cells=C_CELLS,
             audio_frame_bytes=AUDIO_CONTROL_BYTES,
-            debug=bool(pack_config.get("debug", False)),
         )
     )
     exact_body_work = stream_schedule.body_funded_work_bytes(
@@ -3185,7 +3324,6 @@ def main():
         np.asarray(transfer_runs_log, np.int64),
         cells=C_CELLS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        debug=bool(pack_config.get("debug", False)),
         update_lists=shadow_list_flags,
     )
     legacy_lengths = stream_schedule.control_block_lengths(
@@ -3193,7 +3331,6 @@ def main():
         np.asarray(transfer_runs_log, np.int64),
         cells=C_CELLS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        debug=bool(pack_config.get("debug", False)),
     )
     fb = fb_baseline + control_lengths - legacy_lengths
     if not np.array_equal(fb.astype(np.int64), exact_body_work):
@@ -3299,8 +3436,12 @@ def main():
          f"control_delta={int((control_lengths - legacy_lengths).sum())}B "
          f"threshold="
          f"{'schedule' if shadow_plan['control_growth_enabled'] else 'no-control-growth'} "
-         f"baseline/selected ring_min="
-         f"{shadow_plan['baseline_schedule']['ring_min']}/{physical_schedule['ring_min']} "
+         f"baseline/selected ring_min eval="
+         f"{shadow_plan['baseline_schedule']['ring_min_evaluation']}/"
+         f"{physical_schedule['ring_min_evaluation']} "
+         f"(full {shadow_plan['baseline_schedule']['ring_min']}/"
+         f"{physical_schedule['ring_min']}, "
+         f"tail f{physical_schedule['evaluation_end_frame']}..) "
          f"ready_min={shadow_plan['baseline_schedule']['ready_min']}/{physical_schedule['ready_min']}"
          if shadow_plan is not None else "shadow_update_lists=0 (pattern supply disabled)"),
         (f"upgrade(格上げ): 余剰でRaw化 avg {np.mean([u for u, _ in upgrade_log]):.1f}/コマ, "
@@ -3337,8 +3478,7 @@ def main():
              audio_source_file=AUDIO_FILE,
              audio_playback_file=AUDIO_PLAYBACK_FILE,
              audio_playback_rate=AUDIO_PLAYBACK_RATE,
-             budget_tiles=budget_tiles,
-             wait_hist=np.array(wait_hist_rows), nbins=NBINS)
+             budget_tiles=budget_tiles)
     np.save(OUT / "miss_masks.npy", np.array(stale_rows, np.uint8))   # (n,72) packbits
     if QUALITY_BUDGET_ON:
         # Schema 4 exposes every physical pattern source independently.  The
@@ -3395,7 +3535,7 @@ def main():
             body_fixed_control_bytes=body_fixed_control_bytes,
             body_variable_supply_bytes=body_variable_supply_bytes,
         )
-    print(f"wrote {main_dir}, {catmap_dir}, {misscarry_dir}; stats.npz + miss_masks.npy saved")
+    print(f"wrote {main_dir}, {catmap_dir}; stats.npz + miss_masks.npy saved")
 
     # 実機TTRCエンコード用の決定ログ(既定off)。品質決定(区間パレット/ディザ/Near/Coa/画質予算/fill)は
     # すべてこのログに畳み込まれる=pack_streamは再生するだけでmp4と同じ画を出せる(唯一の真実源)。
@@ -3448,6 +3588,13 @@ def main():
                 "max_cold": int(MAX_COLD),
             },
             "encoder": {
+                "detail_alpha": float(DETAIL_ALPHA),
+                "aging_alpha": float(AGING_ALPHA),
+                "aging_dist_ref": float(AGING_DIST_REF),
+                "aging_step_cap": float(AGING_STEP_CAP),
+                "aging_press_cap": float(WAIT_CAP),
+                "ghost_escalate_sec": float(GHOST_ESCALATE_SEC),
+                "ghost_escalate_frames": int(GHOST_ESCALATE_N),
                 "boot_vram_prefetch": bool(BOOT_VRAM_PREFETCH_ON),
                 "raw_prefetch": bool(RAW_PREFETCH_ON),
                 "raw_prefetch_lookahead": int(RAW_PREFETCH_LOOKAHEAD),
@@ -3549,6 +3696,11 @@ def main():
                 "ring_occupancy": prg_remaining,
                 "payload_sectors": np.asarray(
                     physical_schedule["n_pay_sec"], np.int64),
+                "evaluation_end_frame": int(
+                    physical_schedule["evaluation_end_frame"]),
+                "ring_min_evaluation": int(
+                    physical_schedule["ring_min_evaluation"]),
+                "ring_min_full": int(physical_schedule["ring_min"]),
                 "control_sectors": np.asarray(
                     physical_schedule["n_ctrl_sec"], np.int64),
                 "body_useful_payload_bytes": body_payload_bytes,
@@ -3572,10 +3724,18 @@ def main():
                 "baseline_ring_min": (
                     int(shadow_plan["baseline_schedule"]["ring_min"])
                     if shadow_plan is not None else int(physical_schedule["ring_min"])),
+                "baseline_ring_min_evaluation": (
+                    int(shadow_plan["baseline_schedule"]["ring_min_evaluation"])
+                    if shadow_plan is not None
+                    else int(physical_schedule["ring_min_evaluation"])),
                 "baseline_ready_min": (
                     int(shadow_plan["baseline_schedule"]["ready_min"])
                     if shadow_plan is not None else int(physical_schedule["ready_min"])),
                 "selected_ring_min": int(physical_schedule["ring_min"]),
+                "selected_ring_min_evaluation": int(
+                    physical_schedule["ring_min_evaluation"]),
+                "evaluation_end_frame": int(
+                    physical_schedule["evaluation_end_frame"]),
                 "selected_ready_min": int(physical_schedule["ready_min"]),
                 "control_growth_enabled": (
                     bool(shadow_plan["control_growth_enabled"])
@@ -3675,22 +3835,31 @@ def _run_slot_locality_pipeline():
     import subprocess
 
     command = [sys.executable, *_ORIGINAL_ARGV]
-    seed_env = os.environ.copy()
-    seed_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "seed"
-    seed_env["CBRSIM_NOPANELS"] = "1"
-    seed_env.pop("CBRSIM_SLOT_LOCALITY_MAP", None)
-    seed_env.pop("CBRSIM_SLOT_LOCALITY_REUSE", None)
-    print("slot locality seed pass: logical decisions", flush=True)
-    subprocess.run(command, env=seed_env, check=True)
-
     map_path = Path("tmp") / f"slot_locality_seed_{os.getpid()}.npy"
     retry_path = Path("tmp") / f"slot_locality_retry_{os.getpid()}.npy"
+    workspace_lease = _activate_sim_tmpfs()
+    cache_lease = None
     try:
+        cache_lease = tmpfs_workspace.create_run_directory(
+            _tmpfs_key(), required_bytes=_pass_cache_required_bytes())
+        cache_path = cache_lease.entry / "pass-cache.pkl"
+        common_env = os.environ.copy()
+        common_env["CBRSIM_TMPFS_PREPARED"] = "1"
+        common_env["CBRSIM_PASS_CACHE"] = str(cache_path)
+        common_env["CBRSIM_PASS_CACHE_INVOCATION"] = cache_lease.entry.name
+        seed_env = common_env.copy()
+        seed_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "seed"
+        seed_env["CBRSIM_NOPANELS"] = "1"
+        seed_env.pop("CBRSIM_SLOT_LOCALITY_MAP", None)
+        seed_env.pop("CBRSIM_SLOT_LOCALITY_REUSE", None)
+        print("slot locality seed pass: logical decisions", flush=True)
+        subprocess.run(command, env=seed_env, check=True)
+
         _derive_completed_slot_map(EMIT_DEC, map_path)
         for accounting_pass in range(
                 1, SLOT_LOCALITY_MAX_ACCOUNTING_PASSES + 1):
             retry_path.unlink(missing_ok=True)
-            final_env = os.environ.copy()
+            final_env = common_env.copy()
             final_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "final"
             final_env["CBRSIM_SLOT_LOCALITY_MAP"] = str(map_path.resolve())
             final_env["CBRSIM_SLOT_LOCALITY_RETRY_MAP"] = str(
@@ -3727,6 +3896,57 @@ def _run_slot_locality_pipeline():
     finally:
         map_path.unlink(missing_ok=True)
         retry_path.unlink(missing_ok=True)
+        if cache_lease is not None:
+            tmpfs_workspace.remove_run_directory(cache_lease)
+        if workspace_lease is not None:
+            workspace_lease.release()
+
+
+def _tmpfs_key():
+    profile_name = CONFIG_PROFILE.path.stem if CONFIG_PROFILE else "no-profile"
+    profile_hash = CONFIG_PROFILE.sha256[:10] if CONFIG_PROFILE else "unprofiled"
+    return f"{profile_name}-{profile_hash}-{W}x{H}-{FPS_STR}fps"
+
+
+def _estimated_frame_count():
+    return max(1, int(math.ceil(float(DURATION) * FPS)) + 2)
+
+
+def _sim_tmpfs_required_bytes():
+    # PNG compression varies substantially by source. This estimate covers the
+    # two extracted inputs, the three sim panels, and ordinary sidecars while
+    # retaining a fixed headroom for palettes, decisions, and audio.
+    pixels = _estimated_frame_count() * W * H
+    return pixels * 10 + 1024 ** 3
+
+
+def _pass_cache_required_bytes():
+    # Quantized targets are compact, but palette details and future-planning
+    # objects vary with the source. Reserve roughly four indexed frame copies.
+    pixels = _estimated_frame_count() * W * H
+    return pixels * 4 + 512 * 1024 ** 2
+
+
+def _activate_sim_tmpfs():
+    if os.environ.get("CBRSIM_TMPFS_PREPARED") == "1":
+        return None
+    videos = (Path(__file__).resolve().parents[1] / "videos").absolute()
+    try:
+        OUT.absolute().relative_to(videos)
+    except ValueError:
+        print(
+            f"tmpfs artifacts: CBRSIM_OUT is outside videos/, keeping {OUT}",
+            flush=True,
+        )
+        return None
+    lease = tmpfs_workspace.activate_directory(
+        OUT,
+        kind="sim",
+        key=_tmpfs_key(),
+        required_bytes=_sim_tmpfs_required_bytes(),
+    )
+    print(f"tmpfs sim workspace: {OUT} -> {lease.entry / 'data'}", flush=True)
+    return lease
 
 
 if __name__ == "__main__":
@@ -3736,6 +3956,11 @@ if __name__ == "__main__":
         }
     if (_SLOT_LOCALITY_STAGE or locality_disabled or not EMIT_DEC
             or os.environ.get("CBRSIM_SLOT_LOCALITY_MAP", "").strip()):
-        main()
+        _standalone_lease = _activate_sim_tmpfs()
+        try:
+            main()
+        finally:
+            if _standalone_lease is not None:
+                _standalone_lease.release()
     else:
         _run_slot_locality_pipeline()

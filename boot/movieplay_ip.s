@@ -82,7 +82,7 @@
 .equ HUD_FONT_ADDR, 0xD000
 .equ HUD_FONT_VTILE, HUD_FONT_ADDR/32	/* = 1664; name-table tile index (11-bit, fits) */
 /* リリースビルドが既定。make movieplay DEBUG=1 でオーバーレイ一式を有効化
-   (ストリーム側は CBRSIM_PACK_DEBUG=1 でデバッグ欄ありを生成) */
+   (画面表示専用。ストリームにDEBUG専用データは持たない) */
 /* CRAM pre-load: 全区間パレット表。boot時にWord-RAM(PALTAB_OFF, frame0バンク)から一度だけ
    コピーし、以降の区間切替はO_PALWの区間番号+1でこの表を引く(ストリーム到着に依存しない)。
    容量はav_config.PALTAB_MAX_SEGと一致必須(check_player_ring.pyがビルド時検証)。 */
@@ -786,11 +786,7 @@ bf_upd:
 	move.w	d7, d6			/* preserve format tag */
 	andi.w	#SHADOW_UPDATE_COUNT_MASK, d7
 	beq	bf_blit
-	move.w	(a0)+, d0			/* pal(hi), dbg flag(lo) */
-	tst.b	d0
-	beq	1f
-	adda.w	#22, a0				/* optional debug block */
-1:
+	move.w	(a0)+, d0			/* skip pal:u16 */
 	btst	#SHADOW_UPDATE_LIST_BIT, d6
 	bne	bf_update_list
 	movea.l	a0, a2				/* bitmap */

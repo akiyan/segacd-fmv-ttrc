@@ -200,11 +200,17 @@ packed stream files live under `out/PROFILE/`, transient build, disc-staging,
 and direct-emulator scratch files live under `tmp/PROFILE/`, and the bootable
 pair is `out/PROFILE.iso` + `out/PROFILE.cue`.
 
-## Output Paths (videos/)
+## Output Paths (videos/ and logs/)
 
-All generated video artifacts go under `videos/` (git-ignored, never committed —
-they embed source frames). Do not accumulate video output in `tmp/`. Use one
-stem per encode:
+Generated media paths stay under `videos/` (git-ignored, never committed — they
+embed source frames). Disposable sim directories, derived MP4s (analysis,
+straight-sim, verification preview, and upload compilation), and timeline PNGs
+are symlinks into the project-managed tmpfs workspace under
+`/dev/shm/segacd-fmv-ttrc`; inactive oldest entries are evicted when the next
+run needs room, while active leases are never removed. Native lossless emulator
+captures remain ordinary disk files because compilation reuses them. Do not
+accumulate video output in `tmp/`. Analysis TSVs are the other exception: keep
+every run persistently under git-ignored `logs/`. Use one stem per encode:
 
 ```
 stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
@@ -214,9 +220,9 @@ stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
 | Artifact | Path |
 |---|---|
 | Analysis-frame video (from `sim`) | `videos/<stem>_analysis.mp4` |
-| Per-frame analysis data (same values as the overlay) | `videos/<stem>_analysis.tsv` |
+| Per-frame analysis data (same values as the overlay) | `logs/<datetime>_<profile>_<sha10>_<encoder>.tsv` (`videos/<stem>_analysis.tsv` is a latest-run symlink) |
 | Straight sim output, video+audio, no overlay (`export_sim_video.py`) | `videos/<stem>_sim.mp4` |
-| PNGs, logs, stats for that encode  | `videos/<stem>/tmp/` (the sim working dir) |
+| Sim PNGs, stats, and decision data | `videos/<stem>/tmp/` (tmpfs-backed sim working-dir symlink) |
 | Lossless emulator capture (`record`) | `videos/<stem>_emu_lossless.mkv` |
 | Verification preview (`record`) | `videos/<stem>_emu_preview.mp4` |
 | Upload compilation (`compilation`) | `videos/<stem>_emu.mp4` |
@@ -326,10 +332,12 @@ leave a non-square SAR for YouTube to rescale: bake the mode's pixel aspect into
 a high-resolution square-pixel raster with nearest-neighbour scaling:
 
 ```sh
-ffmpeg -i videos/<stem>_emu_lossless.mkv \
-  -vf "scale=2048:1568:flags=neighbor,setsar=1" \
-  -c:v libx264 -crf 10 -preset slow -pix_fmt yuv420p \
-  -c:a aac -b:a 192k -movflags +faststart videos/<stem>_emu.mp4
+tools/python.sh tools/tmpfs_workspace.py run-file \
+  --output videos/<stem>_emu.mp4 --kind compilation-mp4 --required-gb 8 -- \
+  ffmpeg -i videos/<stem>_emu_lossless.mkv \
+    -vf "scale=2048:1568:flags=neighbor,setsar=1" \
+    -c:v libx264 -crf 10 -preset slow -pix_fmt yuv420p \
+    -c:a aac -b:a 192k -movflags +faststart '{output}'
 ```
 
 - H32: 256x224 PAR 8:7 becomes 2048x1568 SAR 1:1. This is exact 8x horizontal

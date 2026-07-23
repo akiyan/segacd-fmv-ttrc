@@ -29,7 +29,11 @@ explicitly asks for a movie-only clip.
 ## Preconditions
 
 Require `retroarch`, the Genesis Plus GX libretro core, `Xvfb`, `xdotool`, ImageMagick,
-`ffmpeg`, `ffprobe`, and the locked `.venv`. Keep the Sega CD BIOS in RetroArch's system directory.
+`ffmpeg`, `ffprobe`, and the locked `.venv`. The harness stages the default
+Japanese Mega-CD BIOS from `original/jp_mcd2_9212.bin` into RetroArch's system
+directory and prints its SHA-256. Replay generation spans the BIOS/CD-player
+transition with one START press per second; do not replace it with a
+revision-specific fixed head cue.
 Use these overrides only when needed:
 
 ```sh
@@ -63,7 +67,9 @@ Defaults and rules:
   harness build to `make disc CONFIG=configs/PROFILE.toml DEBUG=0`.
 - Keep the startup sequence. The default is `--trim 0`; omitting `--trim` has the same result.
 - Treat `--seconds` as the final duration from emulator launch. Include enough time for the
-  startup screens, the full movie, and a short tail.
+  startup screens, the full movie, and a short tail. With the default
+  `jp_mcd2_9212.bin`, reserve at least 30 seconds beyond the source duration;
+  the verified Sonic smoke reached visible movie content at about 21 seconds.
 - Use `--trim SEC` or `--auto-audio-trim` only when the user explicitly requests a
   movie-only clip. Neither mode may be used for a normal `compilation` input.
 - Use `--no-build` only after confirming in the current work that the disc represents the
@@ -219,8 +225,10 @@ Check the raw MKV and reports before trusting a capture:
    404 KiB cap plus the complete 24 KiB tail: `17` is 23 KiB and proves the
    circular ring never became completely full. `J` above `14` means the 20 KiB
    jitter headroom was exhausted and sector-granular back-pressure entered the
-   separate physical guard; report this explicitly for manual review. `C` is not
-   corruption by itself, but any nonzero critical-path CD work fails the gate.
+   separate physical guard; report this explicitly, but a value at or below
+   the passing `17` limit does not by itself require another confirmation or
+   fail the recording. `C` is not corruption by itself, but any nonzero
+   critical-path CD work fails the gate.
    Do not waive, hand-edit, or reuse a gate JSON from another recording.
 
    Even on PASS, report all six maxima and **stop before compilation or upload**.
