@@ -8,8 +8,8 @@
  * During the timed read, each frame places control sectors first, then payload
  * sectors, then rate padding.  Control feeds the apply ring and payload feeds
  * the PRG-RAM pattern ring.  Each control
- * block is linearized in Word RAM, expanded to Main-CPU output, paired with PCM
- * audio and handed over by a 1M Word-RAM bank swap.
+ * block is linearized in Word RAM, expanded to Main-CPU output, paired with
+ * decoded ADPCM audio and handed over by a 1M Word-RAM bank swap.
  */
 
 .equ CDBIOS,      0x00005F22
@@ -25,14 +25,9 @@
 
 .ifdef PLAYER_SPECIALIZED
 	.include "player_constants.inc"
-.if (PC_FEATURES & 0x0004)
-.equ INCLUDE_ADPCM_DECODER, 1
-.endif
 .if (PC_FEATURES & 0x0008)
 .equ INCLUDE_PATTERN_SUPPLY, 1
 .endif
-.else
-.equ INCLUDE_ADPCM_DECODER, 1
 .endif
 
 /* The packed cold-run parser is used by every pattern-supply stream and by
@@ -110,8 +105,8 @@
 
 .equ SUB_BANK_1M, 0x000C0000
 
-/* --- TTRC v14 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
-.equ ROUTING_VERSION,       14
+/* --- TTRC v15 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
+.equ ROUTING_VERSION,       15
 .equ ROUTING_BYTES,         16384
 .equ ROUTING_MAX_FRAMES,    16384
 .equ ROUTING_SECTOR_BYTES,  2048
@@ -122,7 +117,6 @@
 .equ ROUTING_MAX_ENTRY,     0x002D
 .equ FEATURE_COLD_RUNS_BIT, 0
 .equ FEATURE_FIXED_N2_BIT,  1
-.equ FEATURE_ADPCM22_BIT,   2
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
 .equ FEATURE_SHADOW_UPDATE_LISTS_BIT, 4
 .equ FEATURE_VRAM_RAW_PREFETCH_BIT, 5
@@ -192,8 +186,7 @@
 .equ DIC_STAGE, SUB_BANK_1M+0xD000 /* frame0 bank: DicBuf boot handoff, max 256 patterns */
 .equ DIC_STAGE_PATTERNS, 256
 
-/* --- RF5C164 PCM output (PCM13 direct or ADPCM22 reconstructed) --- */
-.equ AUDIO_BYTES, 887
+/* --- RF5C164 output reconstructed from ADPCM --- */
 .equ PCM_ENV,   0x00FF0001
 .equ PCM_PAN,   0x00FF0003
 .equ PCM_FDL,   0x00FF0005
@@ -221,7 +214,7 @@
 
 .equ HEADER_SECTORS,  1
 /* frames/tcols/trows/cells/pool/base/prebuf/routing/mode は HEADER.DAT の
-   v10ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
+   v15ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
@@ -395,7 +388,9 @@ pm_set:
 	tst.w	d1
 	beq	bad_header
 	move.w	d1, h_audio_fd
-	move.w	62(a0), h_features		/* bits0..6: includes indexed DicBuf runs */
+	move.w	62(a0), h_features		/* v15 optional stream features */
+	btst	#2, h_features+1
+	bne	bad_header			/* removed audio-codec flag is reserved in v15 */
 	move.w	h_features, d1
 	andi.w	#0x0010, d1
 	beq.s	1f
@@ -405,13 +400,10 @@ pm_set:
 	btst	#FEATURE_PATTERN_SUPPLY_BIT, 63(a0)
 	bne	bad_header			/* supply needs generated preload counts/addresses */
 	move.w	d0, d1
-	btst	#FEATURE_ADPCM22_BIT, 63(a0)
-	beq	1f
 	btst	#0, d1				/* two decoded samples per packed byte */
 	bne	bad_header
 	lsr.w	#1, d1
 	addq.w	#4, d1				/* predictor.w + index.b + reserved.b */
-1:
 	move.w	d1, h_audio_control_bytes
 	/* v9: feature bit 1なら2 NTSC VBlankに正確な1001/400 sectors/frame
 	   (base=2, rem=201, mod=400)。bit clearの24/15fpsは従来の75/fpsを維持する。
@@ -448,15 +440,9 @@ pm_set:
 	lea	(O_PALTAB_STAGE).l, a0
 	bsr	drain_lin_staged		/* CDC_TRN直行を避けSTAGE経由(スリップ防止) */
 1:
-	/* v9 ADPCM full lookup tables follow the v13 boot stage. Stage one immutable 8,800B
+	/* ADPCM full lookup tables follow the v13 boot stage. Stage one immutable 8,800B
 	   image in boot-only PRG RAM, then duplicate it into the same offset of both
 	   physical 1M banks.  Two toggles return to the frame-0/PALTAB bank. */
-.ifdef INCLUDE_ADPCM_DECODER
-.ifndef PLAYER_SPECIALIZED
-	PC_MOVE_W h_features, PC_FEATURES, d0
-	btst	#FEATURE_ADPCM22_BIT, d0
-	beq	adpcm_table_done
-.endif
 	move.w	#ADPCM_TABLE_SECTORS, d0
 	lea	ROUTING_TMP, a0
 	bsr	drain_lin_staged
@@ -472,8 +458,7 @@ adpcm_table_copy:
 	bsr	swap_settle
 	dbra	d1, adpcm_table_bank
 adpcm_table_done:
-.endif
-	/* v12 pattern supply follows the optional ADPCM table. Wr0 is the
+	/* v12 pattern supply follows the ADPCM table. Wr0 is the
 	   physical frame-0 bank, Wr1 is the other bank, and DicBuf is staged in
 	   Wr0 for the Main CPU to copy once after the first handoff.  The two
 	   toggles restore the original frame-0 bank phase. */
@@ -1380,8 +1365,6 @@ ef_list_audio:
 	adda.w	d0, a5				/* audio start */
 ef_audio_positioned:
 	movea.l	a0, a6				/* preserve entries cursor across audio */
-.ifdef PLAYER_SPECIALIZED
-.if (PC_FEATURES & 0x0004)
 .ifdef DEBUG
 	move.w	(GA_STOPWATCH).l, -(sp)
 .endif
@@ -1394,36 +1377,6 @@ ef_audio_positioned:
 	move.w	d0, (O_AUDIOLEFT).l
 .endif
 	lea	PCM_DEC_BUF, a0
-.else
-.ifdef DEBUG
-	move.w	#0, (O_AUDIOLEFT).l
-.endif
-	movea.l	a5, a0
-.endif
-.else
-	PC_MOVE_W h_features, PC_FEATURES, d0
-	btst	#FEATURE_ADPCM22_BIT, d0
-	beq.s	ef_pcm_audio
-.ifdef DEBUG
-	move.w	(GA_STOPWATCH).l, -(sp)
-.endif
-	movea.l	a5, a0
-	bsr	decode_adpcm_chunk
-.ifdef DEBUG
-	move.w	(GA_STOPWATCH).l, d0
-	sub.w	(sp)+, d0
-	andi.w	#0x0FFF, d0
-	move.w	d0, (O_AUDIOLEFT).l
-.endif
-	lea	PCM_DEC_BUF, a0
-	bra.s	ef_audio_ready
-ef_pcm_audio:
-.ifdef DEBUG
-	move.w	#0, (O_AUDIOLEFT).l
-.endif
-	movea.l	a5, a0
-ef_audio_ready:
-.endif
 	bsr	write_wave_chunk
 	movea.l	a6, a0
 	lea	(O_LOADS).l, a1
@@ -1807,7 +1760,6 @@ pcm_on:
 	move.b	#0xFE, (PCM_ONOFF).l
 	rts
 
-.ifdef INCLUDE_ADPCM_DECODER
 /* Decode one checkpointed IMA chunk from a0 to PCM_DEC_BUF.  The full table is
    resident at the same offset of both physical 1M banks, so no pointer or state
    changes are required after a swap.  Each checkpoint records the continuous
@@ -1907,7 +1859,6 @@ adpcm_decode_no_pump:
 adpcm_decode_done:
 	movem.l	(sp)+, d0-d7/a0-a4
 	rts
-.endif
 
 write_wave_chunk:
 	movem.l	d0-d5/a0-a1, -(sp)

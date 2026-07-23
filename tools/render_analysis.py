@@ -83,7 +83,7 @@ OUT_TSV = Path(os.environ.get(
     "ANALYSIS_TSV", str(OUT_MP4.with_suffix(".tsv"))))
 CQ = os.environ.get("ANALYSIS_CQ", "23")
 FRAMES_DIR = f"{SIM}/analysis_frames"
-AUDIO_STR = "13.3kHz mono 8bit PCM"          # 既定。sim出力(stats)にラベルがあればそれを使う
+AUDIO_STR = "22.05kHz mono IMA ADPCM"       # 既定。sim出力(stats)にラベルがあればそれを使う
 
 # ---- フォント(layout_preview のグローバルへ) ----
 L.f_head = ImageFont.truetype(L.FONT, 33)
@@ -104,7 +104,7 @@ COLD_CAP = (int(z["max_cold"]) if "max_cold" in z else
             L.av_config.cold_cap_for_fps(FPS, MODE, ACTIVE_TILES))
 NF = len(S)
 if "audio_label" in z:
-    AUDIO_STR = str(z["audio_label"])        # sim側の音声形式(13.3kHz PCM / 22.05kHz ADPCM 等)
+    AUDIO_STR = str(z["audio_label"])        # sim側のADPCM音声ラベル
 if "audio_playback_file" in z:
     AUDIO_PATH = Path(SIM) / str(z["audio_playback_file"])
     if not AUDIO_PATH.is_file():
@@ -354,7 +354,7 @@ try:
     else:
         raise ValueError(f"unsupported waveform sample width: {_audio_width}")
 except Exception as _e:
-    AUDIO_RATE = 13300; _araw = np.zeros(1, np.int16); print("waveform: 音声wav 無し ->", _e)
+    AUDIO_RATE = 22050; _araw = np.zeros(1, np.int16); print("waveform: 音声wav 無し ->", _e)
 _PPS = WAVE_BW / (2 * WAVE_WIN_S)                         # pixels/秒
 _BIN = max(1, int(round(AUDIO_RATE / _PPS)))             # samples/pixel(1px=1bin)
 _nb = len(_araw) // _BIN

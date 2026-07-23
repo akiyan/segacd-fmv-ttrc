@@ -188,8 +188,7 @@ With the current constants, normal re-sync placement uses `SYNC_LEAD=0x3000`,
 which appears near `L=30`. `SYNC_MAX=0x6800`, which appears near `L=68`.
 Approaching `00` means the reserve is draining; approaching or exceeding the
 upper boundary means the writer has run too far ahead. Convert bytes to time
-using the profile's effective playback sample rate: ADPCM22 and PCM13 do not
-represent the same duration per displayed unit.
+using the profile's effective playback sample rate.
 
 ### `C`: blocking CD work on the Sub critical path
 
@@ -240,8 +239,8 @@ low byte:
 one A unit = 4 * 30.72 us = approximately 0.12288 ms
 ```
 
-For example, `A=40` means about 7.86 ms. PCM13 builds display `00`. At low frame
-rates, the longer ADPCM decoder periodically services the CDC, so `A` can also
+For example, `A=40` means about 7.86 ms. At low frame rates, the longer ADPCM
+decoder periodically services the CDC, so `A` can also
 include that intentionally interleaved pump work. It does not measure the
 subsequent RF5C164 wave-RAM write phase.
 

@@ -48,7 +48,6 @@ routing_equ_contract = {
     "ROUTING_MAX_ENTRY": ttrc_routing.MAX_ENTRY,
     "FEATURE_COLD_RUNS_BIT": ttrc_routing.FEATURE_COLD_RUNS.bit_length() - 1,
     "FEATURE_FIXED_N2_BIT": ttrc_routing.FEATURE_FIXED_N2.bit_length() - 1,
-    "FEATURE_ADPCM22_BIT": ttrc_routing.FEATURE_ADPCM22.bit_length() - 1,
     "FEATURE_PATTERN_SUPPLY_BIT": (
         ttrc_routing.FEATURE_PATTERN_SUPPLY.bit_length() - 1),
     "FEATURE_SHADOW_UPDATE_LISTS_BIT": (

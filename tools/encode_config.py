@@ -23,7 +23,7 @@ from typing import Any, MutableMapping
 import av_config
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ARTIFACT_ROOT = Path("out")
 TEMP_ROOT = Path("tmp")
 _ARTIFACT_STEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -56,7 +56,6 @@ ENV_MAP = {
     ("video", "master_denoise"): "CBRSIM_MASTER_DENOISE",
     ("video", "master_filter"): "CBRSIM_MASTER_VF",
     ("video", "raw_filter"): "CBRSIM_RAW_VF",
-    ("audio", "kind"): "CBRSIM_AUDIO",
     ("output", "directory"): "CBRSIM_OUT",
     ("output", "reuse"): "CBRSIM_REUSE",
     ("output", "emit_decisions"): "CBRSIM_EMIT_DEC",
@@ -92,16 +91,14 @@ ALLOWED = {
     "source": ({key for section, key in ENV_MAP if section == "source"}
                | {"preprocess"}),
     "video": {key for section, key in ENV_MAP if section == "video"},
-    "audio": {key for section, key in ENV_MAP if section == "audio"},
     "output": {key for section, key in ENV_MAP if section == "output"},
     "encoder": {key for section, key in ENV_MAP if section == "encoder"},
     "palette": {key for section, key in ENV_MAP if section == "palette"},
-    "pack": {"fill", "startup_audio_frames", "output"},
+    "pack": {"fill", "startup_audio_frames"},
 }
 REQUIRED = {
     "source": {"path", "fps", "duration"},
     "video": {"mode", "width", "height", "fit"},
-    "audio": {"kind"},
     "output": {"directory", "emit_decisions"},
     "palette": {"algorithm"},
 }
@@ -219,10 +216,6 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         raise ValueError(f"{profile_path}: {exc}") from exc
     if str(data["video"]["fit"]).lower() not in {"pad", "crop"}:
         raise ValueError(f"{profile_path}: video.fit must be 'pad' or 'crop'")
-    audio_kind = str(data["audio"]["kind"]).lower()
-    if audio_kind not in {"pcm13", "adpcm22"}:
-        raise ValueError(
-            f"{profile_path}: audio.kind must be 'pcm13' or 'adpcm22'")
     resize_filter = str(data["video"].get("resize_filter", "lanczos")).lower()
     if resize_filter not in {"area", "bicubic", "bilinear", "lanczos", "neighbor"}:
         raise ValueError(

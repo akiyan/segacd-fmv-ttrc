@@ -93,8 +93,8 @@ def main() -> int:
     )
     args = parser.parse_args()
     cases = args.case or [
-        ("Bad Apple H32", "videos/BadApple_H32_256x224_pcm13/master"),
-        ("Sonic H32", "videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/master"),
+        ("Bad Apple H32", "videos/BadApple_H32_256x224_adpcm22/master"),
+        ("Sonic H32", "videos/sonic_H32_256x224_adpcm22_geometry_pad_4by3/master"),
     ]
     for label, path in cases:
         compare(label, Path(path), args.frames)

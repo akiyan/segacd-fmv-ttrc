@@ -11,7 +11,7 @@ B方式の狙い: 連続CD読み(シーク無し=絶対ルール)を保ったま
   control: 毎フレーム apply-list+audio 可変長ブロック連続 -> apply-bufferへDMA(CPUはカーソルで処理)
 control連続化でセクタ整列の無駄を回避 -> 149フル画質でPRGに収まる(A方式のセクタ整列は256/枚<消費で不可)。
 
-TTRCレイアウト(v14): HEADER.DAT = Header(1sec) + BOOT_STAGE(全区間パレット
+TTRCレイアウト(v15): HEADER.DAT = Header(1sec) + BOOT_STAGE(全区間パレット
               n_seg×128B + optional boot-VRAM sidecar) + [WR0/WR1/Dic pattern preloads]
               + startup audio prefetch(1 sector/frame)
               + frame0(control+patterns) + routing(1B/frame: total<<3 | n_ctrl_sec)
@@ -70,7 +70,6 @@ PATTERN_BYTES = 32
 FPS = 0.0
 VSYNC_N = 0
 PLAYBACK_FPS = 0.0
-AUDIO_KIND = "pcm13"
 AUDIO_RATE = 0
 AUDIO_PCM = 0
 AUDIO_CONTROL = 0
@@ -89,7 +88,6 @@ RING_CAP_PAT = RING_CAP_KB * 1024 // PAT
 
 FEATURE_COLD_RUNS = ttrc_routing.FEATURE_COLD_RUNS
 FEATURE_FIXED_N2 = ttrc_routing.FEATURE_FIXED_N2
-FEATURE_ADPCM22 = ttrc_routing.FEATURE_ADPCM22
 FEATURE_PATTERN_SUPPLY = ttrc_routing.FEATURE_PATTERN_SUPPLY
 FEATURE_SHADOW_UPDATE_LISTS = ttrc_routing.FEATURE_SHADOW_UPDATE_LISTS
 FEATURE_VRAM_RAW_PREFETCH = ttrc_routing.FEATURE_VRAM_RAW_PREFETCH
@@ -120,7 +118,7 @@ def configure_from_log(log, *, fill=None, startup_audio_frames=None):
     CBRSIM_* value participates in this function.
     """
     global TCOLS, TROWS, C_CELLS, TILE, PATTERN_BYTES
-    global FPS, VSYNC_N, PLAYBACK_FPS, AUDIO_KIND, AUDIO_RATE
+    global FPS, VSYNC_N, PLAYBACK_FPS, AUDIO_RATE
     global AUDIO_PCM, AUDIO_CONTROL
     global STARTUP_AUDIO_FRAMES, PACK_FILL
 
@@ -156,7 +154,6 @@ def configure_from_log(log, *, fill=None, startup_audio_frames=None):
             f"decision log playback_fps={PLAYBACK_FPS} disagrees with fps={FPS} "
             f"({expected_playback_fps})")
 
-    AUDIO_KIND = str(audio.get("kind", log.get("audio_kind", "pcm13")))
     AUDIO_RATE = int(audio.get("rate", log.get("audio_rate", 0)))
     AUDIO_CONTROL = int(audio.get(
         "control_bytes", audio.get("frame_bytes", log.get("audio_frame_bytes", 0))))
@@ -165,8 +162,7 @@ def configure_from_log(log, *, fill=None, startup_audio_frames=None):
     if AUDIO_RATE <= 0 or AUDIO_CONTROL <= 0 or AUDIO_PCM <= 0:
         raise SystemExit("decision log has no valid audio rate/frame size")
     try:
-        expected_rate, expected_pcm, expected_control = av_config.audio_frame_layout(
-            AUDIO_KIND, FPS)
+        expected_rate, expected_pcm, expected_control = av_config.audio_frame_layout(FPS)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     if (AUDIO_RATE, AUDIO_PCM, AUDIO_CONTROL) != (
@@ -174,15 +170,14 @@ def configure_from_log(log, *, fill=None, startup_audio_frames=None):
         raise SystemExit(
             "decision log audio layout "
             f"rate={AUDIO_RATE} pcm={AUDIO_PCM} control={AUDIO_CONTROL} "
-            f"disagrees with {AUDIO_KIND}/{FPS:g}fps "
+            f"disagrees with ADPCM/{FPS:g}fps "
             f"({expected_rate}, {expected_pcm}, {expected_control})")
     checkpoint_bytes = int(audio.get("checkpoint_bytes", 0))
-    expected_checkpoint = (
-        av_config.IMA_CHECKPOINT_BYTES if AUDIO_KIND == "adpcm22" else 0)
+    expected_checkpoint = av_config.IMA_CHECKPOINT_BYTES
     if checkpoint_bytes != expected_checkpoint:
         raise SystemExit(
             f"decision log checkpoint_bytes={checkpoint_bytes} != "
-            f"{expected_checkpoint} for {AUDIO_KIND}")
+            f"{expected_checkpoint} for ADPCM")
 
     sim_prg_buf = int(hardware.get(
         "prg_buf_kb",
@@ -203,21 +198,21 @@ def require_canonical_p0_debug_colours(log):
     """Reject stale logs without the fixed dark background and bright text."""
     seg_pals = log.get("seg_pals")
     if not seg_pals:
-        raise SystemExit("pack v14: decision log has no segment palettes; re-run sim")
+        raise SystemExit("pack v15: decision log has no segment palettes; re-run sim")
     for seg, pals in enumerate(seg_pals):
         a = np.asarray(pals, np.uint8)
         if a.shape != (4, 15, 3):
             raise SystemExit(
-                f"pack v14: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
+                f"pack v15: segment {seg} palette shape is {a.shape}, expected (4, 15, 3); "
                 "re-run sim")
         brightness = a.astype(np.int16).sum(axis=2)
         if int(brightness[0, 0]) != int(brightness.min()):
             raise SystemExit(
-                f"pack v14: decision log segment {seg} P0 index1 is not tied for globally "
+                f"pack v15: decision log segment {seg} P0 index1 is not tied for globally "
                 "darkest usable CRAM colour (RGB sum); re-run sim with the current encoder")
         if int(brightness[0, 14]) != int(brightness.max()):
             raise SystemExit(
-                f"pack v14: decision log segment {seg} P0 index15 is not tied for globally "
+                f"pack v15: decision log segment {seg} P0 index15 is not tied for globally "
                 "brightest usable CRAM colour (RGB sum); re-run sim with the current encoder")
 
 
@@ -677,7 +672,7 @@ def verify_body_delivery_file(
 
 
 def _read_audio_samples(audio_path):
-    """Read the configured mono WAV/raw source as u8 bytes or s16 samples."""
+    """Read the mono signed-16 WAV/raw source used by the ADPCM encoder."""
     try:
         import wave as _wave
         with _wave.open(str(audio_path), "rb") as wav:
@@ -690,13 +685,10 @@ def _read_audio_samples(audio_path):
             raise ValueError(f"audio rate is {rate}, expected {AUDIO_RATE}")
     except (OSError, EOFError):
         raw = Path(audio_path).read_bytes()
-        width = 1 if AUDIO_KIND == "pcm13" else 2
-    expected_width = 1 if AUDIO_KIND == "pcm13" else 2
-    if width != expected_width:
+        width = 2
+    if width != 2:
         raise ValueError(
-            f"{AUDIO_KIND} source sample width is {width}, expected {expected_width}")
-    if AUDIO_KIND == "pcm13":
-        return bytes(raw)
+            f"ADPCM source sample width is {width}, expected 2")
     if len(raw) & 1:
         raise ValueError("s16 ADPCM source has an odd byte count")
     return np.frombuffer(raw, "<i2").copy()
@@ -706,24 +698,6 @@ def build_audio_chunks(audio_path, frame_count):
     """Return fixed on-disc chunks and their reconstructed RF5C164 PCM."""
     raw = _read_audio_samples(audio_path)
     target_samples = int(frame_count) * AUDIO_PCM
-    if AUDIO_KIND == "pcm13":
-        source_len = len(raw)
-        raw = retime_pcm_u8(raw, target_samples)
-        if len(raw) != source_len:
-            print(f"  PCM retime: {source_len} -> {len(raw)} samples "
-                  f"({AUDIO_PCM} B/frame x {frame_count} frames)")
-        signmag = bytearray(len(raw))
-        for index, value in enumerate(raw):
-            sample = value - 128
-            signmag[index] = (
-                min(sample, 0x7F) if sample >= 0
-                else (0x80 | min(-sample, 0x7E)))
-        pcm_chunks = [
-            bytes(signmag[i * AUDIO_PCM:(i + 1) * AUDIO_PCM])
-            for i in range(frame_count)
-        ]
-        return list(pcm_chunks), pcm_chunks
-
     source_len = len(raw)
     pcm16 = ima_adpcm.retime_pcm_s16(raw, target_samples)
     if len(pcm16) != source_len:
@@ -850,21 +824,6 @@ def replace_control_audio(block, chunk):
     if len(out) != len(block):
         raise AssertionError("audio replacement changed the control block length")
     return bytes(out)
-
-
-def retime_pcm_u8(raw, target_len):
-    """Stretch mono u8 PCM evenly to the fixed-chunk playback length."""
-    if target_len <= 0:
-        return b""
-    if not raw:
-        return b"\x80" * target_len
-    if len(raw) == target_len:
-        return bytes(raw)
-    src = np.frombuffer(raw, np.uint8).astype(np.float64)
-    src_x = np.arange(len(src), dtype=np.float64)
-    dst_x = np.linspace(0.0, float(len(src) - 1), target_len)
-    out = np.rint(np.interp(dst_x, src_x, src)).clip(0, 255).astype(np.uint8)
-    return out.tobytes()
 
 
 def rate_deltas(nfr):
@@ -1058,8 +1017,6 @@ def decode_verify(
 
 
 def _decode_control_chunk(chunk):
-    if AUDIO_KIND == "pcm13":
-        return bytes(chunk)
     decoded, _state = ima_adpcm.decode_chunk(chunk, AUDIO_PCM)
     return ima_adpcm.pcm16_to_sign_magnitude(decoded)
 
@@ -1067,7 +1024,7 @@ def _decode_control_chunk(chunk):
 def write_stream(
         path, log, per, blocks, source_pcm_chunks, supply_plan, sc, POOL,
         boot_sidecar=()):
-    """Write the v14 split stream and a combined tooling container.
+    """Write the v15 split stream and a combined tooling container.
 
     HEADER.DAT:
       Header(1sec) | BOOT_STAGE | [ADPCM_TABLE] | [WR0] | [WR1] | [MAIN]
@@ -1119,11 +1076,8 @@ def write_stream(
     audio_prefetch_frames = (
         min(nfr, STARTUP_AUDIO_FRAMES, safe_audio_prefetch) if f0_header else 0)
     source_audio_chunks = [control_audio(block) for block in blocks]
-    if AUDIO_KIND == "pcm13":
-        silence_chunk = b"\0" * AUDIO_CONTROL
-    else:
-        silence_chunk, _state = ima_adpcm.encode_chunk(
-            np.zeros(AUDIO_PCM, dtype=np.int16), ima_adpcm.State())
+    silence_chunk, _state = ima_adpcm.encode_chunk(
+        np.zeros(AUDIO_PCM, dtype=np.int16), ima_adpcm.State())
     disc_blocks = [
         replace_control_audio(
             block,
@@ -1257,12 +1211,10 @@ def write_stream(
     fps_int = int(round(FPS))                         # 名目fps。FEATURE_FIXED_N2時はplayerが1001/400を選ぶ
     audio_fd = av_config.rf5c164_fd(AUDIO_PCM, PLAYBACK_FPS)
     if not f0_header:
-        raise SystemExit("pack v14 requires frame0 in HEADER.DAT")
+        raise SystemExit("pack v15 requires frame0 in HEADER.DAT")
     features = FEATURE_COLD_RUNS | FEATURE_DICBUF_INDEXED_RUNS
     if av_config.uses_fixed_n2_cadence(FPS):
         features |= FEATURE_FIXED_N2
-    if AUDIO_KIND == "adpcm22":
-        features |= FEATURE_ADPCM22
     if supply_plan.enabled:
         features |= FEATURE_PATTERN_SUPPLY
     if any(struct.unpack_from(">H", block, 4)[0] & shadow_updates.LIST_TAG
@@ -1279,9 +1231,8 @@ def write_stream(
     header += b"\0"                                   # offset 39: pad
     header += struct.pack(">LL", f0_ctrl_sec, f0_pat_sec)  # offset 40,44: frame0ブロック
     header += struct.pack(">L", paltab_sec)          # offset 48: boot-stage sectors(v13)
-    # offset 54 is always the decoded RF5C164 byte/sample count.  PCM stores
-    # the same number in controls; FEATURE_ADPCM22 derives control bytes as
-    # checkpoint(4) + AUDIO_PCM/2 without expanding the fixed 64-byte header.
+    # Offset 54 is the decoded RF5C164 sample count. TTRC v15 always derives
+    # the control size as checkpoint(4) + AUDIO_PCM/2.
     header += struct.pack(">HH", vsync_n, AUDIO_PCM)
     header += struct.pack(">H", fps_int)             # offset 56: 名目fps(レートマッチpadding用) (v4)
     header += struct.pack(">HH", audio_fd, audio_preload_sec)  # offset 58: RF5C164 FD; 60: prefetch sectors
@@ -1306,9 +1257,8 @@ def write_stream(
     paltab[0x0F80:0x0FC0] = header[:64]
     frame0_blk = (f0_ctrl.ljust(f0_ctrl_sec * SECTOR, b"\0")
                   + f0_pat.ljust(f0_pat_sec * SECTOR, b"\0"))
-    adpcm_table_blob = (
-        ima_adpcm.full_tables().ljust(ADPCM_TABLE_SECTORS * SECTOR, b"\0")
-        if AUDIO_KIND == "adpcm22" else b"")
+    adpcm_table_blob = ima_adpcm.full_tables().ljust(
+        ADPCM_TABLE_SECTORS * SECTOR, b"\0")
     header_blob = (header
                    + paltab.ljust(paltab_sec * SECTOR, b"\0")
                    + adpcm_table_blob
@@ -1405,8 +1355,8 @@ def write_stream(
           f"{len(supply_plan.wr1_patterns)}/{len(supply_plan.dic_patterns)} "
           f"frame0 {f0_ctrl_sec}+{f0_pat_sec} backside={sidecar_count} "
           f"routing {routing_sec} prebuf {prebuf_sec} frames {frames_stream_sec}) "
-          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v14 N={vsync_n}"
-          f"(={PLAYBACK_FPS:.3f}fps) AUDIO={AUDIO_KIND} "
+          f"ring_peak {ring_peak*PAT/1024:.0f}KB  v15 N={vsync_n}"
+          f"(={PLAYBACK_FPS:.3f}fps) AUDIO=adpcm22 "
           f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B FD=0x{audio_fd:04X}")
     print(f"  initial CRAM: {palette_path} ({len(seg0)}B, canonical segment {int(frame_seg[0])})")
     print(f"  player constants: {constants_path}")
@@ -1464,20 +1414,16 @@ def main():
     print(f"  encode params from sim: max_cold={sim_cold} "
           f"PrgBuf={sim_prg_buf}KB  "
           f"pack cap={RING_CAP_KB}KB (physical ring {RING_SIZE_KB}KB)  "
-          f"{TCOLS*8}x{TROWS*8} {FPS:g}fps AUDIO={AUDIO_KIND} "
+          f"{TCOLS*8}x{TROWS*8} {FPS:g}fps AUDIO=adpcm22 "
           f"control={AUDIO_CONTROL}B pcm={AUDIO_PCM}B")
-    # A configured build is always namespaced by the TOML filename.  The old
-    # pack.output value remains readable in schema v1 decision logs, but it no
-    # longer controls configured output and cannot mix two profiles in one dir.
+    # A configured build is always namespaced by the TOML filename.
     output = args.output or str(
         profile.pack_output if profile is not None else "out/movieplay/MOVIE.DAT")
     audio_path = args.audio
     if not audio_path:
         audio_name = ((log.get("config") or {}).get("audio") or {}).get("file")
         if not audio_name:
-            audio_name = (
-                "audio_13k3_u8_mono.wav" if AUDIO_KIND == "pcm13"
-                else "audio_22k05_s16_mono.wav")
+            audio_name = "audio_22k05_s16_mono.wav"
         candidate = dec_log.parent / str(audio_name)
         if not candidate.exists():
             raise SystemExit(
@@ -1500,7 +1446,7 @@ def main():
     if supply_enabled and int((log.get("pattern_supply") or {}).get(
             "schema_version", 0)) != 2:
         raise SystemExit(
-            "pack v14 requires a current DicBuf decision log; re-run sim")
+            "pack v15 requires a current DicBuf decision log; re-run sim")
     print(f"  pattern supply: enabled={int(supply_plan.enabled)} "
           f"Prg={len(supply_plan.prg_patterns)} "
           f"Wr0={len(supply_plan.wr0_patterns)}/{pattern_supply.WORD_BUF_PATTERNS} "

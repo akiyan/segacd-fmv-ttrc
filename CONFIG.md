@@ -45,7 +45,7 @@ can schedule.
 | `WordBuf0` / `WordBuf1` | 880 patterns each (27.5 KB each) | sp / ip / sim / pack | Different boot-preloaded sequences in the two physical Word-RAM banks at offset `+0x15200..+0x1C000`. Wr0 serves even timed frames and Wr1 odd timed frames; they are not duplicated copies. |
 | `DicBuf` | 256 patterns (8 KB) | ip / sim / pack | Persistent dictionary boot-staged at Word-RAM `+0xD000`, then copied once to Main RAM `0xFF6600..0xFF8600`. Either frame parity may reuse entries by 8-bit index without consuming them. |
 | `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. The Prg schedule ceiling must stay below it. |
-| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v14 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
+| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v15 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | Prg prebuffer | up to `PRG_BUF_CAP_KB` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both usable Prg capacity and the clip's future Prg load total. |
 | frame-0 inline staging | 36 KB max | sp | Boot-only PRG region `0x71000..0x7A000` plus the ordinary `O_LOADS` path. It holds every exact frame-0 display pattern and as much future preload as still fits the grid-sized path. The additional boot sidecar below fills otherwise-free resident VRAM slots, so total frame-0 exact plus prefetch is capped by the resident pool rather than by visible cells. |
@@ -172,14 +172,10 @@ RF5C164 playback is a fixed rate, so playback must trail the write pointer by a 
 lead drifts out of `[SYNC_MIN, SYNC_MAX]`, the writer jumps (a re-sync = an
 audible click). See the `R`/`L` HUD readouts below.
 
-Both `pcm13` and `adpcm22` are supported profile choices. `adpcm22` is the
-default for new profiles and for direct sim runs that do not set
-`CBRSIM_AUDIO`. ADPCM22 implementation is complete and H40 Sonic is full-length
-emulator- and listening-qualified. Machi OP's H40/15 raster with 720 active
-tiles, Machi ED's H40/15 raster with 1,040 active tiles, and the v10 four-supply
-Bad Apple H40/30 raster with 1,120 active tiles completed full recording, HUD,
-stream, and replay-equivalence checks. Physical hardware and the other
-cadence/mode combinations remain broader compatibility checks.
+TTRC v15 has one audio path: checkpointed 22.05 kHz mono IMA ADPCM decoded by
+the Sub CPU and written to the RF5C164. Profiles contain no audio-format knob.
+Physical hardware and additional cadence/display combinations remain broader
+compatibility checks.
 
 Low-rate ADPCM chunks need one extra streaming safeguard. An N4 decode is about
 16 ms, longer than the 13.3 ms interval between CD sectors, so the Sub CPU polls
@@ -188,10 +184,9 @@ profile-specialized 24/30 fps decoder omits that counter and call entirely.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| `audio.kind` | `pcm13` or `adpcm22` | TOML -> sim / pack / player | `pcm13` stores RF5C164 bytes directly. `adpcm22` extracts 22.05 kHz signed 16-bit mono, then stores checkpointed continuous IMA codes in live controls. |
-| sim playback WAV | `stats.npz:audio_playback_file` | sim / analysis | ADPCM22's waveform and mux use the shared packer-reference encode/decode result after RF5C164 8-bit conversion. The separate signed-16 source WAV remains the packer input. |
-| decoded `AUDIO_BYTES` | PCM13: 888 / 555 / 444 at 15 / 24 / 30 fps; ADPCM22: normally 1472 / 920 / 736 samples | sp / pack | Fixed decoded RF5C164 samples per frame, rounded to the effective playback cadence; ADPCM counts are even. The packer evenly retimes the source WAV to this fixed total. |
-| control audio bytes | PCM13: `AUDIO_BYTES`; ADPCM22: `4 + AUDIO_BYTES/2` | pack / sp | ADPCM's four bytes are a signed predictor, step index, and reserved zero. H40/N2 is 372 control bytes for 736 decoded samples. |
+| sim playback WAV | `stats.npz:audio_playback_file` | sim / analysis | The waveform and mux use the shared packer-reference ADPCM encode/decode result after RF5C164 8-bit conversion. The separate signed-16 source WAV remains the packer input. |
+| decoded `AUDIO_BYTES` | normally 1472 / 920 / 736 samples at 15 / 24 / 30 fps | sp / pack | Fixed decoded RF5C164 samples per frame, rounded to the effective playback cadence and then to an even count. The packer evenly retimes the source WAV to this fixed total. |
+| control audio bytes | `4 + AUDIO_BYTES/2` | pack / sp | The four-byte checkpoint is a signed predictor, step index, and reserved zero. N2 is 372 control bytes for 736 decoded samples. |
 | `audio_fd` | header offset 58 | pack / sp | RF5C164 frequency delta derived from decoded samples per frame times the actual playback cadence. H40/N2 ADPCM uses `0x056C`; deriving it avoids wave-RAM lead drift and repeated re-syncs. |
 | ADPCM full table | 8,800 B at Word-RAM `+0x12800`, copied to both physical banks | pack / sp | Five sectors after the v13 boot stage contain next-index, signed-delta, and RF5C164-output tables. Boot duplicates them once; timed decode never copies tables across a bank handoff. |
 | ADPCM PCM buffer | 1,536 B reserved at Word-RAM `+0x14C00`, per physical bank | sp | Holds one reconstructed chunk before the existing batched wave-RAM writer. |
@@ -216,10 +211,9 @@ continuously.
 | ring-full skip | occ >= 424 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
 | `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. With `FEATURE_FIXED_N2`, 400 frames receive exactly 1001 sectors: 199 two-sector and 201 three-sector allowances. Feature-clear 24fps and 15fps retain the delivery-paced 75/fps schedule (3.125 and 5 sectors/frame). In v6+ each `BODY.DAT` slot is control / future payload / pad; v7+ packs the control and total counts into one routing byte. |
-| `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; the v13 boot stage, optional ADPCM tables, WordBuf0 / WordBuf1 / DicBuf boot-pattern regions, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
+| `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; the v13 boot stage, ADPCM tables, WordBuf0 / WordBuf1 / DicBuf boot-pattern regions, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
 | `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. At 24fps or above, and for every multi-source pattern-supply stream, the Sub copies eligible blocks by these runs instead of scanning every update entry again. Those streams use a movie-wide logical-to-physical permutation: the encoder freezes logical decisions in a seed pass, accounts for the map's real run cost, and accepts only a display-equivalent completed map whose whole trace is funded. The optimizer minimizes the maximum source-aware run count across every 85%-cap-or-heavier frame and aims for 30, but 30 is not a universal per-source acceptance limit. Visible cold payload and an appended raw-prefetch suffix are each emitted in ascending physical-slot order, while name updates remain in cell order. A specialized plain-Prg stream below 24fps deliberately retains the proven 64-entry-polling legacy walker, which reconstructs runs in name-update order. Such a stream automatically retains the contiguous allocator's identity physical map; applying the suffix-order permutation there can fragment the actual player work even while the suffix looks compact. The sim requires the legacy and packed counts to agree frame by frame. Old streams use the same entry fallback; old players ignore the suffix via `total_len`. |
 | `FEATURE_FIXED_N2` | header bit 1 at offset 62 (v8) | pack / sp / ip | Authoritative fixed-cadence contract. Main forces one flip every two VBlanks and Sub selects the matching 1001/400 sector accumulator. The packer sets it only when `uses_fixed_n2_cadence(fps)` is true; 24fps leaves it clear despite its N=2 hint. |
-| `FEATURE_ADPCM22` | header bit 2 at offset 62 (v9) | pack / sp | Live controls use checkpointed IMA ADPCM, the full-table boot region is present, and `audio_bytes` means decoded samples. |
 | Word-RAM swap completion | DMNA bit 1 | sp `swap_settle` | Poll the hardware's 1M bank-switch busy flag. The former fixed `0x400` loop burned about 0.82 ms after every frame even when the switch was already complete. |
 
 ## E. VDP DMA budget (Main CPU)
@@ -352,7 +346,7 @@ whole-series useful total by the whole-series physical read time;
 
 ## H. Per-source TOML profiles
 
-Use one `schema_version = 1` TOML file per source/mode combination. Examples are
+Use one `schema_version = 2` TOML file per source/mode combination. Examples are
 [`configs/bad-apple-h32.toml`](configs/bad-apple-h32.toml) and
 [`configs/bad-apple-h40.toml`](configs/bad-apple-h40.toml). The profile is the
 human-edited input; `CBRSIM_*` is only the encoder's internal compatibility
@@ -425,15 +419,13 @@ build skips this profile-derived counter.
 | `[source]` | `path`, `fps`, `duration`, optional `sar` | Input identity and native timing. `sar` repairs missing/wrong source metadata; it does not crop. |
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when it reduces that count, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel and adds bars when the displayed aspects differ. `fit="crop"` is an explicit object-fit-cover conversion: it fills the complete output raster while preserving displayed aspect, so it may discard active pixels at the outer source edges. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
-| `[audio]` | `kind` | Write `adpcm22` for the default 22.05 kHz Sub-CPU IMA path. Use `pcm13` for the physical-console-qualified 13.3 kHz fallback. The strict profile keeps this choice explicit. |
 | `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. A directory below `videos/` is exposed as a symlink to managed tmpfs and reset for each invocation, so cross-invocation `reuse` is not expected there. The seed/accounting passes within one invocation share an identity-checked tmpfs cache and delete it on exit. Normal hardware work sets `emit_decisions=true`. |
 | `[encoder]` | `gpu`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `boot_vram_prefetch`, `raw_prefetch` | Common codec controls. `boot_vram_prefetch` defaults to true: after exact Raw/Same-only frame 0 is installed, the encoder fills otherwise-free resident VRAM with future exact patterns. The grid-sized inline path is used first; a boot-only sidecar can then use backside slots up to the resident-pool limit. It prioritizes early cold-cap relief, then other protected and exact demand. Less urgent patterns receive the slots reclaimed first, and visible work may always reclaim speculative residency. `raw_prefetch` is the separate timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the measured cap. There is no fixed current-cold threshold: the exact remaining cold and BODY allowances are authoritative. A runtime batch needs room for at least four patterns and is capped at 32. GPU is the default; CPU fallback remains automatic. BODY supply comes from the exact CD-1x sector cadence after reserving control data and is not configurable per source. |
 | `[palette]` | `algorithm`, sampling/validation keys, MOSAIC-GM seam keys | Palette-selection algorithm and its training controls. |
 | `[pack]` | `fill`, `startup_audio_frames` | Disc-generation choices frozen with the encode. `fill=true` replaces CD-1x padding with useful future payload where proven safe. The DEBUG HUD is a player build choice and does not add stream data. Output paths are derived from the TOML filename. |
 
-Schema v1 still accepts the old `pack.output` key so existing authenticated
-profiles and decision logs remain usable, but configured pack runs ignore its
-value. New path selection always uses the TOML filename.
+Schema v2 removes the audio-format table and the obsolete `pack.output` key.
+Artifact paths always derive from the TOML filename.
 
 The profile loader is strict: misspelled sections/keys, unsupported display
 modes, non-tile-aligned dimensions, and unsafe TOML filename characters fail

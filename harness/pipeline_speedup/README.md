@@ -30,8 +30,8 @@ Compare the sustained **cell-update rate** (cells × fps):
 So the Sub saturates on the **per-cell decode loop** in `expand_frame` (`ef_byte`/
 `ef_bit`): the bitmap walk, per-updated-cell entry read, the two `O_UPDS` writes, the
 cold/reuse test, and the run-table (slot-run) building — plus the fixed costs that do
-not scale with cold: the CD drain (`drain1` + `stage_copy`, 75 sectors/s) and the PCM
-audio write (`write_wave_chunk`, ~13.3 kB/s, originally a per-byte wave-RAM loop).
+not scale with cold: the CD drain (`drain1` + `stage_copy`, 75 sectors/s), ADPCM
+decode, and RF5C164 output (`write_wave_chunk`).
 None of these shrink when you lower the cold cap.
 
 ## Implication for optimization

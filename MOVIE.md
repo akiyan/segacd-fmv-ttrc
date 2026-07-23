@@ -17,11 +17,11 @@ then issues one continuous `ROM_READN` for `BODY.DAT`.
 ```
 SECTOR         = 2048            (one Mode-1 CD sector)
 MAGIC          = "TTRC"          (0x54545243; Tile Texture Reuse Codec)
-VERSION        = 14              (bump for an incompatible stream interpretation)
+VERSION        = 15              (ADPCM-only stream interpretation)
 FRAME_SECTORS  = 5               (routing-byte maximum; v4+ frames are variable)
 PAT            = 32              (one 8x8 4bpp tile pattern = 32 bytes)
-AUDIO          = decoded header field (PCM: 888 B at N4 / 444 B at N2;
-                                      ADPCM22: 1472 / 736 samples)
+AUDIO          = decoded header field (normally 1472 samples at N4;
+                                      736 samples at N2)
 BASE           = 1               (POOL_TILE_BASE: VRAM tile index = BASE + slot)
 ```
 
@@ -50,13 +50,10 @@ assigns 1001 sectors per 400 frames. This changes the rate-padding boundaries
 in `BODY.DAT`, so an old v7 player must not read a v8 stream. The current packer
 sets the bit only for rates classified by `uses_fixed_n2_cadence`; 24fps and
 15fps leave it clear and retain their delivery-paced `75 / fps_int` schedule.
-**v9** adds feature bit 2 (`FEATURE_ADPCM22`) for checkpointed continuous IMA
-ADPCM. Header offset 54 remains the decoded RF5C164 sample count, while live
-controls store a four-byte checkpoint plus one nibble per sample. Offset 58 is
-repurposed from the obsolete duplicate-skip count to the RF5C164 frequency
-delta. A feature-selected full decoder-table region follows PALTAB and is copied
-into both physical 1M Word-RAM banks at boot. ADPCM22 is a supported v9 feature;
-the table region is required whenever its feature bit is set.
+**v9** introduced checkpointed continuous IMA ADPCM. Header offset 54 is the
+decoded RF5C164 sample count, while live controls store a four-byte checkpoint
+plus one nibble per sample. Offset 58 became the RF5C164 frequency delta, and a
+full decoder-table region was added after PALTAB.
 **v10** adds feature bit 3 (`FEATURE_PATTERN_SUPPLY`). Cold update entries use
 bits 11-12 for the physical source, and cold-run counts use bits 14-15 for the
 same source. A `PSUP` extension in the first header sector gives the actual
@@ -90,6 +87,9 @@ control record or playback-loop work.
 block. The palette reference now occupies the complete `u16` at the same
 mini-header position, so the header remains 8 bytes and all following words
 remain evenly aligned.
+**v15** removes the audio-codec choice and its feature bit. Every control uses
+checkpointed IMA ADPCM, every header includes the five-sector decoder table,
+and offset 54 always means the even decoded-sample count.
 
 ## File layout
 
@@ -100,7 +100,7 @@ HEADER.DAT
 +--------------------------------------------------+  sector 1
 | BOOT_STAGE (paltab_sec sectors)                  |  PALTAB plus optional boot-VRAM sidecar
 +--------------------------------------------------+
-| ADPCM_TABLE (5 sectors when feature bit 2 set)   |  8,800 B full lookup image
+| ADPCM_TABLE (5 sectors)                          |  8,800 B full lookup image
 +--------------------------------------------------+
 | WR0_PRELOAD (wr0_sec sectors when bit 3 set)     |  WordBuf0 patterns
 +--------------------------------------------------+
@@ -158,8 +158,8 @@ its temporary PRG-RAM bytes. Duplicating routing is required because the bank
 owned by the Sub CPU follows the display handoff, while delivery may run ahead
 by more than one frame.
 
-When feature bit 2 is set, the Sub also stages the 8,800-byte ADPCM table after
-PALTAB and copies it to offset `+0x12800` of both physical banks. The decoded
+The Sub stages the 8,800-byte ADPCM table after PALTAB and copies it to offset
+`+0x12800` of both physical banks. The decoded
 PCM buffer is bank-local at `+0x14C00`. Two boot-time copies avoid every
 per-frame table transfer or pointer change after a bank handoff.
 
@@ -220,11 +220,9 @@ Then:
   `FEATURE_FIXED_N2` is clear. When that feature is set, it is authoritative
   and the Main CPU forces N=2 even if this hint is stale. A 24fps stream stores
   `N = 2` but leaves the feature clear, so it remains delivery-paced;
-- offset 54: `u16 audio_bytes` (v4) — decoded RF5C164 samples per effective
-  playback frame. PCM13 uses 888 at 15fps, 555 at 24fps, and 444 at 30fps.
-  ADPCM22 uses an even count, normally 1472 at 15fps and 736 at 30fps; its live
-  control size is derived as `4 + audio_bytes / 2`.
-  `0` in v2/v3 (player defaults to 887);
+- offset 54: `u16 audio_bytes` — even decoded RF5C164 samples per effective
+  playback frame, normally 1472 at 15fps, 920 at 24fps, and 736 at 30fps. The
+  live ADPCM control size is `4 + audio_bytes / 2`;
 - offset 56: `u16 fps_int` (v4) — nominal fps (15/24/30). When
   `FEATURE_FIXED_N2` is clear, the Sub CPU uses this as the modulus of the
   delivery-paced 75/fps sector schedule (see Routing/Frame). The fixed-N2
@@ -242,11 +240,10 @@ Then:
   two-VBlank timing flag: it makes the Main CPU force N=2 and the Sub CPU use
   the 1001/400 sector accumulator. The packer derives it with
   `uses_fixed_n2_cadence`; 24fps leaves it clear even though its nearest
-  `vsync_n` hint is also 2. Bit 2 (`FEATURE_ADPCM22`, v9) means live control
-  audio is a checkpointed IMA chunk and the boot table region is present. Bit
-  3 (`FEATURE_PATTERN_SUPPLY`, v10) means update/run source bits are active,
+  `vsync_n` hint is also 2. Bit 2 is reserved in v15. Bit 3
+  (`FEATURE_PATTERN_SUPPLY`, v10) means update/run source bits are active,
   the `PSUP` extension is present, and the three boot-preload regions follow
-  the optional ADPCM table. Bit 4 (`FEATURE_SHADOW_UPDATE_LISTS`, v11) means
+  the ADPCM table. Bit 4 (`FEATURE_SHADOW_UPDATE_LISTS`, v11) means
   high-bit-tagged completed-list controls may occur; it is valid only together
   with bit 3 because completed-list entries omit cold/source metadata.
   Bit 5 (`FEATURE_VRAM_RAW_PREFETCH`, v11) allows the cold-run suffix to carry
@@ -341,11 +338,11 @@ they are timed-work meters. Sidecar patterns are not PrgBuf occupancy or a
 `Prg` displayed category: their physical source at this point is the
 temporary Word-RAM boot stage.
 
-## ADPCM_TABLE (v9, feature bit 2)
+## ADPCM_TABLE
 
-When `FEATURE_ADPCM22` is set, five sectors follow the boot stage. The first 8,800
-bytes are the immutable big-endian decoder image and the remaining 1,440 bytes
-are zero padding:
+Five sectors always follow the boot stage. The first 8,800 bytes are the
+immutable big-endian decoder image and the remaining 1,440 bytes are zero
+padding:
 
 | Offset | Size | Contents |
 |---:|---:|---|
@@ -354,12 +351,11 @@ are zero padding:
 | 8,544 | 256 B | predictor-high-byte to RF5C164 output lookup |
 
 At boot the Sub CPU stages this image in PRG-RAM and copies exactly 2,200 longs
-to Word-RAM offset `+0x12800` in each physical 1M bank. The table is absent when
-feature bit 2 is clear.
+to Word-RAM offset `+0x12800` in each physical 1M bank.
 
 ## Pattern preload regions (v12, feature bit 3)
 
-The three `PSUP` regions follow the optional ADPCM table in this fixed order:
+The three `PSUP` regions follow the ADPCM table in this fixed order:
 WR0_PRELOAD, WR1_PRELOAD, DIC_PRELOAD. Each contains
 32-byte packed tile patterns, zero-padded to its declared sector boundary.
 Actual pattern and sector counts come from the `PSUP` extension.
@@ -460,7 +456,7 @@ including the old 2.5-sector average at 30fps.
 light frames omit padding until that temporary lead is repaid. The complete
 stream converges to the CD 1x display-rate total without overflowing PrgBuf.
 Historical v2/v3 players defaulted `fps_int = 0` to 15, yielding the constant 5
-and reproducing the old fixed-slot behaviour. The current player accepts only v14 and
+and reproducing the old fixed-slot behaviour. The current player accepts only v15 and
 rejects a zero nominal fps before entering this schedule.
 
 The v6-and-later packer first spends that frame's allowance on control, then replaces
@@ -514,7 +510,7 @@ pixels `(hi<<4)|lo`.
 | 2    | total_len   | total block length **including these 2 bytes**; always even |
 | 2    | frame_seq   | frame sequence number (low 16 bits). The player checks this against the frame it expects; a mismatch means the stream desynced (e.g. a dropped CD sector) — the frame's updates are discarded (previous frame held) and the desync counter increments. |
 | 2    | n_upd/format | bits 0-14 = number of cell updates; bit 15 = v11 completed-list layout |
-| 2    | pal         | v14 stores the v3 palette reference as a `u16`: `segment index + 1` switches CRAM this frame to that entry of the pre-loaded PALTAB; `0` means no change. (v1/v2 used a 0/1 flag followed by a 128-byte in-stream CRAM payload.) |
+| 2    | pal         | v14+ stores the v3 palette reference as a `u16`: `segment index + 1` switches CRAM this frame to that entry of the pre-loaded PALTAB; `0` means no change. (v1/v2 used a 0/1 flag followed by a 128-byte in-stream CRAM payload.) |
 | variable | shadow updates | legacy: `ceil(cells/8)` bitmap then `n_upd x 2` source-coded entries; completed list: `n_upd x 4` offset/final-entry pairs (see below) |
 | PCM: audio_bytes; ADPCM22: 4 + audio_bytes/2 | audio | PCM stores RF5C164 sign-magnitude bytes directly. ADPCM22 stores `s16 predictor, u8 step_index, u8 reserved_zero`, then low-nibble-first IMA codes. Current prefetched streams carry this logical source chunk `audio_preload_sec` frames ahead. |
 | 0/1  | audio pad   | zero byte when needed to align the optional suffix to a word boundary and keep the legacy block end even |

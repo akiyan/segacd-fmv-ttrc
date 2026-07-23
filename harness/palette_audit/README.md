@@ -13,9 +13,9 @@ Run from the repository root:
 
 ```sh
 tools/python.sh harness/palette_audit/audit.py \
-  videos/BadApple_H32_256x224_pcm13/decisions.pkl \
-  --master-dir videos/BadApple_H32_256x224_pcm13/master \
-  --output-dir videos/BadApple_H32_256x224_pcm13/tmp/palette_audit \
+  videos/BadApple_H32_256x224_adpcm22/decisions.pkl \
+  --master-dir videos/BadApple_H32_256x224_adpcm22/master \
+  --output-dir videos/BadApple_H32_256x224_adpcm22/tmp/palette_audit \
   --upload-offset 19
 ```
 
@@ -33,8 +33,8 @@ grouped by the number of `666` pixels:
 
 ```sh
 tools/python.sh harness/palette_audit/near_white.py \
-  videos/BadApple_H32_256x224_pcm13/decisions.pkl \
-  videos/BadApple_H32_256x224_pcm13/master
+  videos/BadApple_H32_256x224_adpcm22/decisions.pkl \
+  videos/BadApple_H32_256x224_adpcm22/master
 ```
 
 The digital RGB labels use the encoder/emulator levels

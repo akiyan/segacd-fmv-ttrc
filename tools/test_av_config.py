@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for shared playback timing, PCM sizing, and cold caps."""
+"""Regression tests for shared playback timing, ADPCM sizing, and cold caps."""
 from __future__ import annotations
 
 import unittest
@@ -45,16 +45,19 @@ class PlaybackTimingTests(unittest.TestCase):
     def test_ntsc_integer_vblank_rates_keep_existing_chunks(self) -> None:
         self.assertEqual(av_config.vsync_n_for_fps(15), 4)
         self.assertAlmostEqual(av_config.playback_fps_for_content(15), 15_000 / 1001)
-        self.assertEqual(av_config.pcm_frame_bytes(15), 888)
+        self.assertEqual(av_config.adpcm_frame_samples(15), 1472)
+        self.assertEqual(av_config.audio_frame_layout(15), (22_050, 1472, 740))
 
         self.assertEqual(av_config.vsync_n_for_fps(30), 2)
         self.assertAlmostEqual(av_config.playback_fps_for_content(30), 30_000 / 1001)
-        self.assertEqual(av_config.pcm_frame_bytes(30), 444)
+        self.assertEqual(av_config.adpcm_frame_samples(30), 736)
+        self.assertEqual(av_config.audio_frame_layout(30), (22_050, 736, 372))
 
     def test_24fps_is_delivery_paced_not_rounded_to_n2(self) -> None:
         self.assertEqual(av_config.vsync_n_for_fps(24), 2)
         self.assertEqual(av_config.playback_fps_for_content(24), 24)
-        self.assertEqual(av_config.pcm_frame_bytes(24), 555)
+        self.assertEqual(av_config.adpcm_frame_samples(24), 920)
+        self.assertEqual(av_config.audio_frame_layout(24), (22_050, 920, 464))
         self.assertFalse(av_config.uses_fixed_n2_cadence(24))
 
     def test_only_ntsc_n2_rates_use_fixed_cadence(self) -> None:

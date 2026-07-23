@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 
 [source]
 path = "assets/machi_op.mp4"
@@ -16,9 +16,6 @@ active_tiles = 720
 fit = "pad"
 master_filter = "setsar=1,crop=320:152:0:34,scale=640:278:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=320:139:flags=lanczos,pad=320:224:0:42:color=black,setsar=1"
 raw_filter = "setsar=1,crop=320:152:0:34,scale=320:139:flags=lanczos,pad=320:224:0:42:color=black,setsar=1"
-
-[audio]
-kind = "adpcm22"
 
 [output]
 directory = "videos/machi_op_H40_320x224_adpcm22/tmp"
@@ -47,4 +44,3 @@ segment_validate_frames = 60
 [pack]
 fill = true
 startup_audio_frames = 30
-output = "out/movieplay/MOVIE.DAT"

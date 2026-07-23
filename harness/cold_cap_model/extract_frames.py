@@ -32,7 +32,6 @@ SECTOR = 2048
 ROUTING_TOTAL_MAX = 5
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
-FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
 FEATURE_SHADOW_UPDATE_LISTS = 0x0010
 FEATURE_VRAM_RAW_PREFETCH = 0x0020
@@ -222,8 +221,8 @@ def read_pack(pack_dir: Path) -> tuple[list[FrameRow], dict]:
     body = (pack_dir / "BODY.DAT").read_bytes()
     magic, version, nfr, cols, rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", header)
-    if magic != b"TTRC" or version not in (10, 11, 12):
-        die(f"expected TTRC v10-v12, got {magic!r} v{version}")
+    if magic != b"TTRC" or version != 15:
+        die(f"expected TTRC v15, got {magic!r} v{version}")
     if cols * rows != cells:
         die(f"grid {cols}x{rows} != {cells} cells")
     routing_sec = struct.unpack_from(">L", header, 26)[0]
@@ -235,7 +234,7 @@ def read_pack(pack_dir: Path) -> tuple[list[FrameRow], dict]:
     features = struct.unpack_from(">H", header, 62)[0]
     if not features & FEATURE_COLD_RUNS:
         die("stream has no cold-run suffix; nothing to extract")
-    table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
+    table_sec = ADPCM_TABLE_SECTORS
     supply_sec = pattern_supply_sectors(header, version, features)
 
     frame0_offset = (

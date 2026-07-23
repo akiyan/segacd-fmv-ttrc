@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 
 [source]
 path = "assets/BadApple.mp4"
@@ -18,9 +18,6 @@ active_tiles = 896
 fit = "crop"
 resize_filter = "area"
 master_denoise = false
-
-[audio]
-kind = "adpcm22"
 
 [output]
 directory = "videos/BadApple_H32_256x224_adpcm22/tmp"
@@ -47,4 +44,3 @@ segment_validate_frames = 60
 [pack]
 fill = true
 startup_audio_frames = 30
-output = "out/movieplay/MOVIE.DAT"

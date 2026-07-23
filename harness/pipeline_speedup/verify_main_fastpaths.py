@@ -26,7 +26,6 @@ from pathlib import Path
 SECTOR = 2048
 ROUTING_TOTAL_MAX = 5
 FEATURE_FIXED_N2 = 0x0002
-FEATURE_ADPCM22 = 0x0004
 FEATURE_PATTERN_SUPPLY = 0x0008
 FEATURE_SHADOW_UPDATE_LISTS = 0x0010
 ADPCM_TABLE_SECTORS = 5
@@ -35,7 +34,7 @@ NAME_ENTRY_MASK = 0x67FF
 SHADOW_UPDATE_LIST_TAG = 0x8000
 SHADOW_UPDATE_COUNT_MASK = 0x7FFF
 DEFAULT_DECISIONS = Path(
-    "videos/sonic_H32_256x224_pcm13_geometry_pad_4by3/decisions.pkl"
+    "videos/sonic_H32_256x224_adpcm22_geometry_pad_4by3/decisions.pkl"
 )
 
 
@@ -125,12 +124,12 @@ def decode_routes(
 
 
 def pattern_supply_sectors(header: bytes, version: int, features: int) -> int:
-    """Return the validated v10 boot-preload sector total."""
-    if version < 10 or not features & FEATURE_PATTERN_SUPPLY:
+    """Return the validated current boot-preload sector total."""
+    if not features & FEATURE_PATTERN_SUPPLY:
         return 0
     values = struct.unpack_from(">4s8H", header, PATTERN_SUPPLY_OFFSET)
     magic, supply_version, reserved = values[:3]
-    if magic != b"PSUP" or supply_version != 1 or reserved:
+    if magic != b"PSUP" or supply_version != 2 or reserved:
         raise AssertionError(f"invalid pattern-supply extension: {values!r}")
     return sum(values[-3:])
 
@@ -191,8 +190,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, _pool = struct.unpack_from(
         ">4sHHHHHH", header
     )
-    if magic != b"TTRC" or version not in (6, 7, 8, 9, 10, 11):
-        raise AssertionError(f"expected split TTRC v6-v11, got {magic!r} v{version}")
+    if magic != b"TTRC" or version != 15:
+        raise AssertionError(f"expected split TTRC v15, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -203,10 +202,10 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     fps = struct.unpack_from(">H", header, 56)[0] or 15
     audio_preload_sec = struct.unpack_from(">H", header, 60)[0]
     features = struct.unpack_from(">H", header, 62)[0]
-    if version >= 11 and features & FEATURE_SHADOW_UPDATE_LISTS \
+    if features & FEATURE_SHADOW_UPDATE_LISTS \
             and not features & FEATURE_PATTERN_SUPPLY:
         raise AssertionError("shadow update lists require pattern supply")
-    table_sec = ADPCM_TABLE_SECTORS if features & FEATURE_ADPCM22 else 0
+    table_sec = ADPCM_TABLE_SECTORS
     supply_sec = pattern_supply_sectors(header, version, features)
 
     frame0_offset = (

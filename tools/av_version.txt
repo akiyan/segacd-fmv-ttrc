@@ -11,6 +11,9 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e100/p82: Remove the legacy direct-audio codec and profile selector. TTRC
+#        v15 always stores checkpointed 22.05 kHz IMA ADPCM controls, always
+#        boots the full decoder tables, and always decodes on the Sub CPU.
 #   e99 : Centralize analysis category, source, status-bar, and timeline colours
 #        in tools/analysis_style.py. Render Flbk borders in canonical yellow
 #        without blending, and render Prg/Wrd/Dic as thin colour-and-black
@@ -314,7 +317,7 @@
 #        Sub CPU now polls at most every 512 packed bytes. Specialized 24/30
 #        fps players emit none of this counter or call overhead.
 #   e55 : Make ADPCM22 the encoder default for new profiles and direct sim
-#        runs. PCM13 remains an explicit physical-console-qualified fallback.
+#        runs. The direct-audio path remained available at that revision.
 #   e54 : Make sim audio reproduce the current ADPCM22 signal. Analysis and
 #        straight sim videos now use the shared continuous checkpointed IMA
 #        encode/decode path followed by RF5C164 8-bit output conversion; the
@@ -326,8 +329,8 @@
 #        the full 8,800-byte decoder table image follows PALTAB.
 #   p55 : Decode ADPCM22 directly on the Sub CPU through full lookup tables
 #        duplicated at boot into both physical 1M Word-RAM banks. Reuse the PCM
-#        wave writer, export decoder time as DEBUG Axx, and retain PCM13 as a
-#        specialized zero-decoder path. H40 Sonic completes S=0/D=0/R=0/C=0.
+#        wave writer and export decoder time as DEBUG Axx. H40 Sonic completes
+#        S=0/D=0/R=0/C=0.
 #   e52 : Separate the encoder's virtual VBV budget from physical payload-RING
 #        occupancy in analysis. Sim and pack now share the exact sector
 #        scheduler and cross-check every frame, so Tank follows prebuffer,
@@ -702,5 +705,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260723
-e=99
-p=81
+e=100
+p=82

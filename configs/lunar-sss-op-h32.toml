@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 
 [source]
 path = "assets/lunar_sss_op.mp4"
@@ -11,9 +11,6 @@ mode = "H32"
 width = 256
 height = 224
 fit = "pad"
-
-[audio]
-kind = "adpcm22"
 
 [output]
 directory = "videos/lunar_sss_op_H32_256x224_adpcm22/tmp"
@@ -40,4 +37,3 @@ segment_validate_frames = 60
 [pack]
 fill = true
 startup_audio_frames = 30
-output = "out/movieplay/MOVIE.DAT"

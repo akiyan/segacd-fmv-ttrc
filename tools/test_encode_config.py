@@ -20,7 +20,7 @@ from encode_config import (
 
 
 PROFILE = """\
-schema_version = 1
+schema_version = 2
 
 [source]
 path = "assets/source.mp4"
@@ -33,9 +33,6 @@ width = 256
 height = 224
 fit = "pad"
 
-[audio]
-kind = "pcm13"
-
 [output]
 directory = "videos/test/tmp"
 emit_decisions = true
@@ -44,11 +41,19 @@ emit_decisions = true
 algorithm = "mosaic-gm"
 
 [pack]
-output = "out/movieplay/MOVIE.DAT"
+fill = true
 """
 
 
 class EncodeProfileArtifactTests(unittest.TestCase):
+    def test_removed_schema_v1_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "old-schema.toml"
+            path.write_text(PROFILE.replace(
+                "schema_version = 2", "schema_version = 1"))
+            with self.assertRaisesRegex(ValueError, "schema_version must be 2"):
+                load_profile(path)
+
     def test_required_profile_is_consumed_as_first_positional_argument(self) -> None:
         root = Path(__file__).resolve().parents[1]
         profile_path = root / "configs" / "bad-apple-h32.toml"
@@ -99,7 +104,6 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "area")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
         self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "1120")
-        self.assertEqual(env["CBRSIM_AUDIO"], "adpcm22")
         self.assertEqual(env["CBRSIM_RAW_PREFETCH"], "1")
         self.assertTrue(
             env["CBRSIM_OUT"].endswith(
@@ -116,7 +120,6 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "896")
         self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "area")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
-        self.assertEqual(env["CBRSIM_AUDIO"], "adpcm22")
         self.assertEqual(
             env["CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX"], "2")
         self.assertEqual(
@@ -223,11 +226,11 @@ class EncodeProfileArtifactTests(unittest.TestCase):
                     ValueError, "cold-cap measurement required.*H40.*900"):
                 load_profile(path)
 
-    def test_unknown_audio_kind_is_rejected(self) -> None:
+    def test_removed_audio_section_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad-audio.toml"
-            path.write_text(PROFILE.replace('kind = "pcm13"', 'kind = "mp3"'))
-            with self.assertRaisesRegex(ValueError, "audio.kind"):
+            path.write_text(PROFILE + '\n[audio]\nkind = "adpcm22"\n')
+            with self.assertRaisesRegex(ValueError, "unknown sections.*audio"):
                 load_profile(path)
 
     def test_artifacts_follow_toml_filename(self) -> None:
@@ -245,15 +248,13 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(profile.disc_iso, Path("out/sakura-h32.iso"))
         self.assertEqual(profile.disc_cue, Path("out/sakura-h32.cue"))
 
-    def test_legacy_pack_output_cannot_override_profile_namespace(self) -> None:
+    def test_removed_pack_output_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad-apple-h40.toml"
-            path.write_text(PROFILE)
-            profile = load_profile(path)
-
-        self.assertNotEqual(
-            Path(profile.section("pack")["output"]), profile.pack_output)
-        self.assertEqual(profile.pack_output, Path("out/bad-apple-h40/MOVIE.DAT"))
+            path.write_text(PROFILE.replace(
+                "fill = true", 'fill = true\noutput = "out/legacy/MOVIE.DAT"'))
+            with self.assertRaisesRegex(ValueError, "unknown \\[pack\\] keys.*output"):
+                load_profile(path)
 
     def test_unsafe_filename_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
