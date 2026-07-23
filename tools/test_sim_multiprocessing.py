@@ -64,6 +64,39 @@ class SimMultiprocessingTests(unittest.TestCase):
         keys = sim.rendered_color_keys(sim._MD_RGB888.astype(np.uint8))
         np.testing.assert_array_equal(keys, np.arange(512, dtype=np.uint16))
 
+    def test_distance_aging_uses_mean_rgb_error_and_step_cap(self) -> None:
+        summed = np.array([
+            0,
+            8 * 8 * 3 * 24,
+            8 * 8 * 3 * 48,
+            8 * 8 * 3 * 96,
+        ])
+        np.testing.assert_array_equal(
+            sim.distance_aging_step(summed),
+            np.array([0.0, 1.0, 2.0, 2.0]),
+        )
+
+    def test_distance_aging_multiplier_saturates_at_seven(self) -> None:
+        np.testing.assert_array_equal(
+            sim.priority_aging(np.array([0.0, 1.0, 10.0, 30.0])),
+            np.array([1.0, 1.6, 7.0, 7.0]),
+        )
+
+    def test_distance_aging_excludes_near_and_exact_cells(self) -> None:
+        diff = np.full(5, 8 * 8 * 3 * 24)
+        pressure = sim.update_age_pressure(
+            np.full(5, 4.0), np.array([0, 1, 2, 3, 9]), diff)
+        np.testing.assert_array_equal(
+            pressure, np.array([5.0, 5.0, 5.0, 0.0, 0.0]))
+
+    def test_default_detail_weight_is_disabled(self) -> None:
+        self.assertEqual(sim.DETAIL_ALPHA, 0.0)
+
+    def test_ghost_escalation_uses_point_two_seconds_and_floor(self) -> None:
+        self.assertEqual(sim.ghost_escalate_frames(0.2, 30), 6)
+        self.assertEqual(sim.ghost_escalate_frames(0.2, 24), 4)
+        self.assertEqual(sim.ghost_escalate_frames(0.2, 15), 3)
+
     def test_boot_inline_selection_follows_packed_physical_order(self) -> None:
         # Request order is logical 1,2,3, but the physical permutation puts
         # logical 2 and 3 first.  These are the records pack_stream places in

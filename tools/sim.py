@@ -20,10 +20,9 @@
 - BODYの物理2/3セクタ配送を先に置き、固定controlを差し引いた残りを更新entry、
   run descriptor、Prg pattern payloadで共有する。軽いフレームの余りは有限の
   全編画質予算へ残し、重いフレームへ回す。
-- ゴースト対策(キャリーオーバー型エージング): 予算負けで未更新のまま待たされた
-  (dirtyが継続する)タイルほど優先度を累積的に底上げ(1+AGING_ALPHA*wait)し、必ず
-  いつか拾われるようにする(この判断では物理由来のfresh予算を超えない)。内容が変わって
-  不要になったタイルは changed から外れ wait=0 に戻り自然消滅する。
+- ゴースト対策(距離加重エージング): Miss/Flbk/Coa のまま残るタイルは、
+  target と現在表示のRGB平均誤差に応じた age_press を累積して優先度を上げる。
+  Near/正確表示になれば圧力は0に戻る。整数 wait はTSVのMiss継続観測だけに使う。
 - 音声: pcm13 または adpcm22 (TOML指定)。Plane B オーバーレイは無し。
 """
 import json
@@ -132,24 +131,49 @@ NAME_BYTES = 2                  # ネームテーブル1エントリ(tile index 
 VRAM_TILES = int(os.environ.get("CBRSIM_VRAM_TILES", "1518"))   # VRAM常駐パターン数(LRU)。
 # デバッグオーバーレイのフォント予約分だけ実機側で減らす(例 1360)ときは env で指定。
 FLATTEN_STD = 0.12              # rgb333(0-7)タイル内std平均。ディザ除去済みなので低め
-DETAIL_ALPHA = 1.5
+DETAIL_ALPHA = float(os.environ.get("CBRSIM_DETAIL_ALPHA", "0.0"))
 BORDER_TILES = 2
 BORDER_WEIGHT = 0.4
-# キャリーオーバー型エージング: 予算負けで未更新のまま待たされた(dirtyが継続する)
-# タイルほど優先度を累積的に引き上げ、必ずいつか拾われるようにする(飢餓/ゴースト対策)。
-# 内容が変わって不要になったタイルは changed から外れて自然消滅する。
-AGING_ALPHA = 0.6              # 待ちフレーム数あたりの優先度加点(乗算 1+α*wait)
-WAIT_CAP = 10                 # エージング加点の飽和上限(フレーム)
-NBINS = 12                    # MissCarry年齢分布のビン数(1..11, 12+)
-# Comp(same=dedup)を表す色。status帯のCompバー Cs 部と Update tiles パネルの
-# dedupタイル枠で共有する(render_statusline.py の COL_SAME と一致させること)。
+# Miss/Flbk/Coa にだけ、targetと現在表示の距離に応じた圧力を積む。
+# RGB平均誤差 AGING_DIST_REF で1.0/frame、急変時の単フレーム加算はSTEP_CAPまで。
+AGING_ALPHA = 0.6
+WAIT_CAP = 10.0
+AGING_DIST_REF = float(os.environ.get("CBRSIM_AGING_DIST_REF", "24"))
+AGING_STEP_CAP = float(os.environ.get("CBRSIM_AGING_STEP_CAP", "2.0"))
+if AGING_DIST_REF <= 0:
+    raise SystemExit("CBRSIM_AGING_DIST_REF must be greater than zero")
+if AGING_STEP_CAP < 0:
+    raise SystemExit("CBRSIM_AGING_STEP_CAP must be zero or greater")
+
+
+def distance_aging_step(diff, dist_ref=AGING_DIST_REF,
+                        step_cap=AGING_STEP_CAP):
+    """Return one frame's age pressure from per-tile summed RGB error."""
+    mean_rgb_error = np.asarray(diff, dtype=np.float64) / (TILE * TILE * 3)
+    return np.minimum(mean_rgb_error / float(dist_ref), float(step_cap))
+
+
+def priority_aging(age_press):
+    """Convert accumulated age pressure to the bounded priority multiplier."""
+    return 1.0 + AGING_ALPHA * np.minimum(age_press, WAIT_CAP)
+
+
+def update_age_pressure(age_press, cell_tier, diff):
+    """Accumulate pressure for Miss/Flbk/Coa and reset Near/exact cells."""
+    return np.where(
+        np.asarray(cell_tier) < 3,
+        np.asarray(age_press, dtype=np.float64) + distance_aging_step(diff),
+        0.0,
+    )
+
+
+# Comp(same=dedup)を表す色。Update tiles パネルのdedupタイル枠に使う。
 COL_SAME = (0, 190, 175)      # teal
 # カテゴリマップ(catmap)の縁取り色。status/凡例と一致させること。
 CAT_RAW = (205, 205, 205)     # Raw = same-frame exact load (black/white dashed frame)
 CAT_SAME = (150, 150, 158)    # Same = exact resident reuse (legend only; no tile frame)
 CAT_DEDUP = (0, 190, 175)     # Dedup = VRAM流用 (teal, 互換用)
 CAT_MISS = (220, 70, 70)      # Miss = 取りこぼし (red, 塗りつぶし)
-CAT_CARRY = (235, 160, 70)    # MissCarry = 繰越Miss (amber)
 CAT_NEAR = (95, 115, 215)     # Near = ほぼ同一の常駐を流用 (blue)  ※色巡回
 CAT_COA = (45, 240, 70)       # Coa metric colour; category frame uses CAT_NEAR
 CAT_FLBK = CAT_MISS            # Flbk = resident fallback (red, thin frame)
@@ -288,8 +312,12 @@ PATTERN_SUPPLY_ON = FPS >= 24.0
 # 近似流用(Near/Coa/Flbk)が「この秒数」以上そのまま居座ったら、格上げ優先度を Miss級(sev=0)へ
 # 昇格させる。一過性の近似は目に見えないが、居座った近似は静的なゴースト=視線が固定される。時間で切る
 # のは知覚(何秒出続けたか)がfps非依存だから(重み付けaging=予算コンテストのフレーム数とは別軸)。0で無効。
-GHOST_ESCALATE_SEC = float(os.environ.get("CBRSIM_GHOST_ESCALATE_SEC", "0.3"))
-GHOST_ESCALATE_N = max(1, round(GHOST_ESCALATE_SEC * FPS)) if GHOST_ESCALATE_SEC > 0 else 0
+def ghost_escalate_frames(seconds, fps):
+    return max(1, math.floor(seconds * fps)) if seconds > 0 else 0
+
+
+GHOST_ESCALATE_SEC = float(os.environ.get("CBRSIM_GHOST_ESCALATE_SEC", "0.2"))
+GHOST_ESCALATE_N = ghost_escalate_frames(GHOST_ESCALATE_SEC, FPS)
 # issue #10: near_keep(現在表示がほぼ同一なら0Bで維持)を「現在表示が正確(cell_tier==9)」なセルに限定。
 # 近似表示(Coa/Flbk)を入力に Near 判定すると近似が居座る(ゴースト)ため。0で旧挙動(近似表示も維持可)。
 NEAR_KEEP_ACCURATE_ONLY = os.environ.get("CBRSIM_NEAR_ACCURATE_ONLY", "1") != "0"
@@ -1421,9 +1449,8 @@ def main():
 
     main_dir = OUT / "preview"      # SEGA-CD 実出力(ゴースト有り)
     catmap_dir = OUT / "catmap"     # category borders; Raw has none, Miss is overlaid later
-    misscarry_dir = OUT / "misscarry"  # Miss(赤)/MissCarry(amber) を縁取り
     if not NO_PANELS:
-        for d in (main_dir, catmap_dir, misscarry_dir):
+        for d in (main_dir, catmap_dir):
             prepare_dir(d, clean=True)
 
     border_mask = border_weight_mask()
@@ -1510,7 +1537,8 @@ def main():
         cur_rgb[c] = rgb                                     # 暫定(このフレーム末に引き直す)
         touch(key, fi)
 
-    wait = np.zeros(C_CELLS, np.int32)         # 未更新のdirtyが継続したフレーム数(エージング/滞留)
+    wait = np.zeros(C_CELLS, np.int32)         # TSVのMiss carry/age用。優先度には使わない
+    age_press = np.zeros(C_CELLS, np.float64)  # Miss/Flbk/Coaの距離加重優先度圧力
     cell_tier = np.zeros(C_CELLS, np.int8)     # 現在の表示劣化度(0=Miss,1=Flbk,2=Coa,3=Near,9=正確)
     approx_carry = np.zeros(C_CELLS, np.int32)  # 近似(tier<9)のまま持ち越した連続コマ数(格上げ/正確化で0)
     upgrade_log = []                            # 毎コマ: 格上げ枚数 / まだ近似のセル数(指標)
@@ -1538,7 +1566,6 @@ def main():
     }
     stat_rows = []             # per-frame status line 用の実測値
     stale_rows = []            # per-frame の Miss(stale)マスク(packbits, 72B/frame)
-    wait_hist_rows = []        # per-frame の繰越年齢分布(MissCarryバー用)
     starved_frames = 0
     dec_frames = []            # 実機決定ログ: 各要素 = そのフレームの [(cell, pal, key), ...]
     dec_miss = []              # per-frame Miss数(デバッグオーバーレイ用。デコード側では算出不能)
@@ -1968,9 +1995,11 @@ def main():
 
         diff = np.abs(plain_rgb.astype(np.int32) - cur_rgb.astype(np.int32)).sum(axis=(1, 2, 3))
         detail_norm = detail / (detail.max() + 1e-6)
-        # キャリーオーバー型エージング: 待たされたdirtyタイルほど優先度を底上げ(乗算)。
-        aging = 1.0 + AGING_ALPHA * np.minimum(wait, WAIT_CAP)
-        # 優先度 = RGB総和の変化量 × タイル内の細かさ × エージング × 枠重み
+        # Miss/Flbk/Coaだけが前フレームまでに積んだ、距離加重圧力で
+        # 優先度を底上げする。Nearは短時間なら許容できるため対象外。
+        age_press = update_age_pressure(age_press, cell_tier, diff)
+        aging = priority_aging(age_press)
+        # 優先度 = RGB総和の変化量 × 任意の細かさ項 × 距離加重エージング × 枠重み
         score = diff.astype(np.float64) * (1.0 + DETAIL_ALPHA * detail_norm) * aging * border_mask
         # Near: 変化タイルのうち見た目ほぼ同じ(F3)は先に省略(old表示を維持)。買い戻し(Raw更新)は
         # 準備金を食い潰すので入れない(=配給とセットでしか成立しないため今は無し)。
@@ -2468,7 +2497,7 @@ def main():
                 if GHOST_ESCALATE_N:
                     sev[(approx_carry >= GHOST_ESCALATE_N) & cand_mask] = 0
                 for c in sorted((int(x) for x in np.where(cand_mask)[0]),
-                                key=lambda c: (int(sev[c]), -int(approx_carry[c]), -score[c])):
+                                key=lambda c: (int(sev[c]), -float(age_press[c]), -score[c])):
                     raw_upgrade(c, upgrade_limit)
         if _loop_profile:
             _lp_t = _lp_mark("upgrade", _lp_t, _lp_frame)
@@ -2841,14 +2870,10 @@ def main():
             dec_cats.append((
                 raw_count, same_count, near_count, coa_count, flbk_count,
                 source_count, miss))
-        # MissCarry = 前フレームでMissして今も未解決(=stale かつ wait>=1)。旧waitで判定。
-        carry_mask = stale & (wait >= 1)
-        carry = int(carry_mask.sum())
+        # waitはTSVのMiss継続観測専用。優先度のage_pressとは独立。
+        carry = int((stale & (wait >= 1)).sum())
         # 滞留 = 待たされた連続フレーム数(=wait)。今フレームも未更新なので+1
         age_max = int(wait[stale].max()) + 1 if stale.any() else 0
-        # MissCarryバー用: stale タイルの繰越年齢(=wait+1)分布
-        ages = np.clip(wait[stale] + 1, 1, NBINS)
-        wait_hist_rows.append(np.bincount(ages, minlength=NBINS + 1)[1:NBINS + 1])
         # F = every cold tile forming its own runでもfresh supplyで払える
         # 最低保証Raw更新数。実runが連結すれば差分はquality budgetへ戻る。
         f_fixed = budget // (
@@ -2863,7 +2888,7 @@ def main():
             len(u_same), len(u_near), len(u_coa), len(u_flbk), dma_tiles, dma_runs,
             len(prefetch_cold_slots)))
 
-        # エージングの待ちカウンタ更新: 未更新のdirtyは+1、更新済み/変化なしは0へ
+        # TSV観測用のMiss待ちカウンタを更新。NearはMissではない。
         wait = np.where(changed & ~updated & ~near_eff, wait + 1, 0)   # Nearは滞留させない
         if _loop_profile:
             _lp_t = _lp_mark("accounting", _lp_t, _lp_frame)
@@ -2927,11 +2952,6 @@ def main():
             dashed_color_border(cat, dic_source_mask, CAT_DIC)
             _save_png(cells_to_image(cat.clip(0, 255).astype(np.uint8)), catmap_dir / f"{i:05d}.png")
 
-            # Miss/Carry マップ: Miss/Carryタイルだけ内容表示+縁取り(fresh=赤/繰越=amber)。他は黒。
-            mc = np.zeros((C_CELLS, TILE, TILE, 3), np.float64)
-            mc[stale] = cur_rgb[stale]
-            border(mc, stale & ~carry_mask, CAT_MISS); border(mc, carry_mask, CAT_CARRY)
-            _save_png(cells_to_image(mc.clip(0, 255).astype(np.uint8)), misscarry_dir / f"{i:05d}.png")
             _t_render += time.perf_counter() - _r0
 
         if _loop_profile:
@@ -3459,8 +3479,7 @@ def main():
              audio_source_file=AUDIO_FILE,
              audio_playback_file=AUDIO_PLAYBACK_FILE,
              audio_playback_rate=AUDIO_PLAYBACK_RATE,
-             budget_tiles=budget_tiles,
-             wait_hist=np.array(wait_hist_rows), nbins=NBINS)
+             budget_tiles=budget_tiles)
     np.save(OUT / "miss_masks.npy", np.array(stale_rows, np.uint8))   # (n,72) packbits
     if QUALITY_BUDGET_ON:
         # Schema 4 exposes every physical pattern source independently.  The
@@ -3517,7 +3536,7 @@ def main():
             body_fixed_control_bytes=body_fixed_control_bytes,
             body_variable_supply_bytes=body_variable_supply_bytes,
         )
-    print(f"wrote {main_dir}, {catmap_dir}, {misscarry_dir}; stats.npz + miss_masks.npy saved")
+    print(f"wrote {main_dir}, {catmap_dir}; stats.npz + miss_masks.npy saved")
 
     # 実機TTRCエンコード用の決定ログ(既定off)。品質決定(区間パレット/ディザ/Near/Coa/画質予算/fill)は
     # すべてこのログに畳み込まれる=pack_streamは再生するだけでmp4と同じ画を出せる(唯一の真実源)。
@@ -3570,6 +3589,13 @@ def main():
                 "max_cold": int(MAX_COLD),
             },
             "encoder": {
+                "detail_alpha": float(DETAIL_ALPHA),
+                "aging_alpha": float(AGING_ALPHA),
+                "aging_dist_ref": float(AGING_DIST_REF),
+                "aging_step_cap": float(AGING_STEP_CAP),
+                "aging_press_cap": float(WAIT_CAP),
+                "ghost_escalate_sec": float(GHOST_ESCALATE_SEC),
+                "ghost_escalate_frames": int(GHOST_ESCALATE_N),
                 "boot_vram_prefetch": bool(BOOT_VRAM_PREFETCH_ON),
                 "raw_prefetch": bool(RAW_PREFETCH_ON),
                 "raw_prefetch_lookahead": int(RAW_PREFETCH_LOOKAHEAD),

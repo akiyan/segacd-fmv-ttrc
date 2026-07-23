@@ -179,7 +179,7 @@ def code_settings(
         "CBRSIM_TFLBK_YM", "CBRSIM_TFLBK_YP", "CBRSIM_TFLBK_C"))
     ghost_seconds = float(env_default(
         sim_text, "CBRSIM_GHOST_ESCALATE_SEC", "0"))
-    ghost_frames = max(1, round(ghost_seconds * fps)) if ghost_seconds else 0
+    ghost_frames = max(1, math.floor(ghost_seconds * fps)) if ghost_seconds else 0
     run_bytes = literal_value(schedule_text, "RUN_DESCRIPTOR_BYTES")
     run_accounting = None
     if buffer and "run_selection_worst_case" in buffer:
@@ -226,10 +226,12 @@ def code_settings(
             env_default(sim_text, "CBRSIM_COA_K"),
             literal_value(sim_text, "COA_BW"),
         ),
-        "Priority detail=%s aging=%s wait-cap=%s edge=%stiles x%s" % (
-            literal_value(sim_text, "DETAIL_ALPHA"),
+        "Priority detail=%s; aging=%s cap=%s dist-ref=%s step-cap=%s; edge=%stiles x%s" % (
+            env_default(sim_text, "CBRSIM_DETAIL_ALPHA", "?"),
             literal_value(sim_text, "AGING_ALPHA"),
             literal_value(sim_text, "WAIT_CAP"),
+            env_default(sim_text, "CBRSIM_AGING_DIST_REF", "?"),
+            env_default(sim_text, "CBRSIM_AGING_STEP_CAP", "?"),
             literal_value(sim_text, "BORDER_TILES"),
             literal_value(sim_text, "BORDER_WEIGHT"),
         ),

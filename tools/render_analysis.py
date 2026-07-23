@@ -4,7 +4,6 @@
 新レイアウトの『正』は tools/layout_preview.py(ダミー値で秒プレビュー)。本スクリプトは
 その描画関数を実データで回して1920x1080/全フレームを描き、ffmpegでmp4(音声付き)にする。
 動画へ焼き込む数値と元statsの全列は、同じ実データから1フレーム1行のTSVにも出力する。
-sim 側(sim.py)や旧 compose(make_base/render_statusline/compose_*.sh)は使わない。
 
 入力(env):
   CBRSIM_OUT       sim出力ディレクトリ(preview/raw/catmap/stats.npz/miss_masks.npy/

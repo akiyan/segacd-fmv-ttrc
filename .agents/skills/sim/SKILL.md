@@ -193,7 +193,6 @@ After completion:
 - Output appears under `videos/<stem>/`:
   - `preview/`
   - `catmap/`
-  - `misscarry/`
   - `stats.npz`
   - `audio_13k3_u8_mono.wav`, or for ADPCM22 both the packer input
     `audio_22k05_s16_mono.wav` and the analysis/straight-video playback model
@@ -206,10 +205,7 @@ by filename order; that would silently restore the clean source audio.
 
 ### 4. Render the Analysis Video
 
-Use the new layout pipeline: `tools/render_analysis.py` directly.
-
-Do not use the old `make_base`, `render_statusline`, or `compose_*.sh` path for
-this analysis video.
+Use `tools/render_analysis.py` directly.
 
 The canonical layout source is `tools/layout_preview.py`. Run it alone to
 generate a dummy one-second preview at `tmp/layout_preview.png`. If the layout
@@ -312,8 +308,6 @@ ps -eo pid,etimes,args | grep -E "sim\\.py|render_analysis\\.py" | grep -v grep
   - `tools/layout_preview.py`: canonical layout
   - `tools/render_analysis.py`: render real data using that layout
 - Change the layout in `layout_preview.py`; `render_analysis.py` imports it.
-- The old `make_base`, `render_statusline`, `render_palstate`, and
-  `compose_*.sh` path is not needed for this new pipeline.
 - Use `tools/sim.py` unchanged as the simulation core.
 - Never use `CBRSIM_REUSE=1` for `/sim`. Clean the profile-specific simulation
   output directory and re-extract master/raw/audio from the configured source.

@@ -256,7 +256,10 @@ values in this document.
 | `CBRSIM_NEAR_YM` / `_YP` / `_C` | 10 / 28 / 24 | Near = reuse an almost-identical resident tile (mean/max luma diff, mean chroma diff). |
 | `CBRSIM_FLBK_IMPROVE_ONLY` / `_MIN_IMPROVE` | 1 / 0 | Flbk = fill a Miss with a resident tile only if it improves the picture. |
 | `CBRSIM_TFLBK_YM` / `_YP` / `_C` | 120 / 252 / 200 | Flbk match thresholds (loose — a coarse fill beats a hole). |
-| `AGING_ALPHA` / `WAIT_CAP` | 0.6 / 10 | Priority boost per waited frame, saturating at WAIT_CAP frames. |
+| `CBRSIM_DETAIL_ALPHA` | 0.0 | Extra priority for detailed tiles. Zero keeps it off by default; 1.5 reproduces the legacy weighting. |
+| `AGING_ALPHA` / `WAIT_CAP` | 0.6 / 10 | Multiplier for distance-weighted `age_press`, saturating at 7x. Integer Miss wait/age reporting is separate. |
+| `CBRSIM_AGING_DIST_REF` / `_STEP_CAP` | 24 / 2.0 | Miss/Flbk/Coa pressure: mean RGB error 24 adds 1 per frame; any one frame adds at most 2. Near and exact tiles reset pressure to zero. |
+| `CBRSIM_GHOST_ESCALATE_SEC` | 0.2 | Promote a continuously approximate tile to Miss severity after `floor(seconds * fps)` frames (minimum 1): 6 at 30 fps, 4 at 24 fps, 3 at 15 fps. |
 | `encoder.dither` / `encoder.segment_palettes` | on / on | Dithering / per-segment palette swaps. |
 | `palette.algorithm` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. A selected one-line candidate receives a complete flattened-RGB333 histogram refinement and all-frame error proof before segment palettes are considered. |
 | `palette.map_weight` | 1.0 | MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |

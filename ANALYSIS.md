@@ -209,8 +209,19 @@ Notes: `Same/Near/Coa/Flbk` use a resident 32-byte pattern and require at most
 a 2-byte name-table entry. A `Raw` or `Prg` load costs 34 bytes in the
 encoder model. A Wr0/Wr1 boot-preloaded load or DicBuf hit already owns its pattern
 bytes and therefore costs only the 2-byte name entry during playback. A persistent
-approximation (a tile stuck in Near/Coa/Flbk for >= 0.3s) is escalated to
-Miss-priority so it gets an accurate reload when budget allows.
+approximation (a tile stuck in Near/Coa/Flbk for at least 0.2 seconds) is
+escalated to Miss severity so it gets an accurate reload when budget allows.
+The frame threshold is `floor(0.2 * fps)`, with a minimum of one frame: 6 at
+30 fps, 4 at 24 fps, and 3 at 15 fps.
+
+Before the selection cascade, changed tiles are ordered by current visual RGB
+error, optional detail weight (off by default), distance-weighted aging, and
+the screen-edge discount. Aging pressure accumulates only while the displayed
+class is Miss, Flbk, or Coa; a mean RGB error of 24 adds one pressure unit per
+frame, one frame adds at most two, and the multiplier saturates at 7x. Near is
+excluded. The TSV `carry` and `age` fields use a separate integer Miss wait
+counter and do not affect update or upgrade priority. Approximation upgrades
+sort by severity, then aging pressure, then the same base score.
 
 ## Status bar (bottom-left)
 
