@@ -31,14 +31,21 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 def main() -> None:
     args = parse_args()
-    image = args.image.resolve()
+    requested_image = args.image.absolute()
+    image = requested_image.resolve()
     if not image.is_file():
         raise SystemExit(f"timeline image does not exist: {image}")
     digest = hashlib.sha256(image.read_bytes()).hexdigest()
     receipt_path = Path(str(image) + ".gist.json")
+    receipt_alias = Path(str(requested_image) + ".gist.json")
     if receipt_path.exists() and not args.force:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         if receipt.get("image_sha256") == digest:
+            if receipt_alias != receipt_path:
+                receipt_alias.write_text(
+                    json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
             print(json.dumps(receipt, ensure_ascii=False, indent=2))
             return
 
@@ -112,10 +119,10 @@ def main() -> None:
         "commit": commit,
         "public": bool(gist["public"]),
     }
-    receipt_path.write_text(
-        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    receipt_text = json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
+    receipt_path.write_text(receipt_text, encoding="utf-8")
+    if receipt_alias != receipt_path:
+        receipt_alias.write_text(receipt_text, encoding="utf-8")
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
 
 

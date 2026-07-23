@@ -29,10 +29,10 @@ corresponding encoder values remain available in the `stat_*` columns.
 
 | Columns | Definition |
 |---|---|
-| `schema_version` | TSV schema version, currently `1`. |
+| `schema_version` | TSV schema version, currently `2`. |
 | `frame`, `frame_hex`, `time_seconds`, `palette_segment` | Decimal frame, HUD-style hexadecimal frame, exact playback time, and CRAM palette-segment index. |
 | `cells`, `active_tiles`, `budget_tiles`, `cold_cap_tiles`, `prefetch_cap_tiles` | Raster and configured per-frame limits repeated on every row for self-contained filtering. |
-| `legend_raw`, `legend_same`, `legend_dic`, `legend_prg`, `legend_wr`, `legend_wr0`, `legend_wr1`, `legend_near`, `legend_coa`, `legend_flbk`, `legend_miss` | Per-frame category counts. `legend_wr` is the displayed Wr0+Wr1 total; the two source banks are also kept separately. |
+| `legend_raw`, `legend_same`, `legend_dic`, `legend_prg`, `legend_wr`, `legend_wr0`, `legend_wr1`, `legend_near`, `legend_flbk`, `legend_miss` | Per-frame category counts. `legend_wr` is the displayed Wr0+Wr1 total; the two source banks are also kept separately. |
 | `status_req`, `status_miss`, `status_cold`, `status_pre`, `status_band_kib_s`, `status_prg`, `status_wr0`, `status_wr1`, `status_dma`, `status_run` | Numeric values printed in the bottom status bar, including the frame-0 untimed display rule. |
 | `body_payload_bytes`, `body_control_bytes`, `body_pad_bytes`, `body_physical_bytes`, `body_useful_bytes`, `body_band_bps` | Exact physical BODY delivery-slot accounting behind the Band display. Slot 0 is zero because frame 0 comes from `HEADER.DAT`. |
 | `quality_budget_remaining_bytes` | Encoder-only whole-movie quality allowance remaining after the frame. This is diagnostic state, not a physical meter. |
@@ -50,7 +50,7 @@ The compatibility alias follows `ANALYSIS_OUT`: changing
 | +------------------------------------------+ |   | +-------------------------+ |
 | |                                          | |   | | source frame (4:3)      | |
 | |   SEGA-CD OUTPUT (centered on the real   | |   | +-------------------------+ |
-| |   screen; letterboxed to the panel)      | |   | LEGEND (2 rows, 10 classes) |
+| |   screen; letterboxed to the panel)      | |   | LEGEND (2 rows, 9 classes)  |
 | |                                          | |   | +-------------------------+ |
 | |                                          | |   | | CATEGORY MAP (4:3)      | |
 | |                                          | |   | | (tile content + border; | |
@@ -98,20 +98,19 @@ Low-resolution grids therefore appear at their true on-screen size.
 - **Source** (top): the source frame after crop, scaled into the panel (4:3
   panel, same footprint as the category map).
 - **Legend** (between Source and the category map): five entries on the first
-  row and four on the second, ordered `Raw Same Dic Prg Wr` then
-  `Near Coa Flbk Miss`. The ten mutually exclusive data classes remain intact,
+  row and three on the second, ordered `Raw Same Dic Prg Wr` then
+  `Near Flbk Miss`. The nine mutually exclusive data classes remain intact,
   but the displayed `Wr` count combines `Wr0 + Wr1`.
   Numeric fields are text directly on the legend background; there is no level
   fill behind the digits. All zero-padded digits use the normal text colour.
   Swatch styles mirror the map except that borderless `Same` uses the original
   light/dark checker swatch in the legend. `Raw` = black/white dashed frame,
-  `Miss` = red fill, `Near/Flbk` = thin frame, and `Coa` = a thick frame in the
-  same blue as Near. `Dic/Prg/Wr` use thin borders alternating between their
+  `Miss` = red fill, and `Near/Flbk` = thin frame. `Dic/Prg/Wr` use thin borders alternating between their
   colour and transparent gaps.
 - **Category map** (middle): the tile grid. Each 8x8 tile shows its
   **reconstructed content**; the category (see Tile Categories) is indicated by
   the border: `Raw` = thin black/white dashed frame, `Same` = no border,
-  `Near/Flbk` = thin 1px border, `Coa` = thick 3px Near-blue border, and
+  `Near/Flbk` = thin 1px border, and
   `Dic/Prg/Wr0/Wr1` = thin colour-and-transparent dashed border. Wr0 and Wr1
   share the Wr1 cyan display colour. A `Miss` tile is
   drawn as a **red-filled hole** (its content is not updated this frame).
@@ -158,22 +157,22 @@ tested tightest-first, so a tile is labelled by the *tightest* tier it fits.
 | Tier | Ym | Yp | C  | env |
 |------|----|----|----|-----|
 | Near | 10 | 28 | 24 | `CBRSIM_NEAR_YM/YP/C` |
-| Coa  | 20 | 50 | 40 | `CBRSIM_TCOA_YM/YP/C` |
 | Flbk |120 |252 |200 | `CBRSIM_TFLBK_YM/YP/C` |
 
 Smaller thresholds = stricter = better visual match. `Near` is a near-perfect
-reuse; `Flbk` is deliberately **wide** ("rough but far better than a hole"): it
-is the fallback for what would otherwise be a Miss, so it should almost always
-find *some* resident rather than leave a hole.
+reuse. A candidate outside Near is not accepted immediately: the encoder first
+tries an exact cold load. `Flbk` is considered only when that exact load cannot
+fit. Its default improve-only mode accepts the best resident only when it is
+closer to the target than the current display. The wide Flbk bounds above are
+used by the optional absolute-threshold mode.
 
-### The ten classes
+### The nine classes
 
 | Class | Colour | Bytes | Meaning |
 |-------|--------|-------|---------|
 | **Raw**  | black/white dashed border | 34 | An exact pattern delivered for this frame, loaded into VRAM before display, and used immediately. Timed frames are bounded by the per-frame cold cap; frame 0 is boot-loaded from `HEADER.DAT` and is exempt. |
 | **Same** | light/dark checker in legend; no map border | 0 or 2 (name only) | The target tile's exact pattern is **already resident** in VRAM. This includes a pattern prefetched in an earlier frame and first displayed now. No pattern transfer occurs this frame. |
 | **Near** | blue | 2 (name) | No exact match, but a resident pattern passes the **Near** thresholds; the cell points to it. Near-perfect reuse. Also covers "keep the current display" when the currently shown tile is already accurate and still within Near of the new target. |
-| **Coa**  | blue thick border (same colour as Near) | 2 (name) | Best resident passes **Coa** (a bit rougher than Near). Used for flat/low-detail tiles where a close-enough resident exists. Its meter/timeline fill remains green so Near and Coa totals remain distinguishable there. |
 | **Flbk** | red thin border | 2 (name) | **Fallback** (merged Mid+Far). Used when an exact load is unavailable. It remains distinct from the solid-red Miss because it did improve the displayed tile. |
 | **Miss** | red (filled) | 0 | The tile was **not updated**; it still shows whatever was there before. A red-filled hole in the category map. |
 | **Prg** | violet/transparent thin dashed border | 34 | An exact cold load funded from saved whole-movie allowance and physically supplied by streamed PrgBuf. |
@@ -186,30 +185,35 @@ find *some* resident rather than leave a hole.
 Frame 0 is a deliberate exception to this list. It has no timed BODY or cold
 budget, so every cell is installed as its exact target. The first cell using an
 exact pattern is `Raw`; further cells using the same pattern are `Same`.
-`Near`, `Coa`, `Flbk`, `Prg`, `Wr0`, `Wr1`, `Dic`, and `Miss` must all be zero
+`Near`, `Flbk`, `Prg`, `Wr0`, `Wr1`, `Dic`, and `Miss` must all be zero
 in frame 0's displayed category totals. After those exact display patterns are
 placed, unused startup pattern capacity may install future exact patterns into
 otherwise-free VRAM slots; these have no displayed-cell category in frame 0.
 
-1. If the **currently displayed** tile is already accurate (its class last frame
-   was exact) and is within `Near` of the new target -> keep it, 0 bytes -> `Near`.
-2. Else if the exact target pattern is resident -> `Same` (2 B).
-3. Else find the best resident. If it passes `Near`(tier 0) or `Coa`(tier 1) and
-   the budget allows the 2 B name -> `Near` / `Coa`.
-4. Else load the exact pattern (34 B), unless the per-frame **cold cap**
-   (`cold_cap_for_fps`, `av_config.py`) is already reached: charge the current
-   current-frame allowance -> `Raw`, saved whole-movie allowance ->
-   `Prg`, a boot-preload credit -> `Wr0/Wr1`, or a persistent dictionary hit -> `Dic`.
-5. Else (quality budget/cold-cap exhausted) if the best resident improves on the
-   current display (default improve mode; see Flbk above) -> `Flbk`
-   (2 B fallback).
-6. Else -> `Miss`.
+Selection is one automatic three-phase pass:
 
-Notes: `Same/Near/Coa/Flbk` use a resident 32-byte pattern and require at most
+1. Commit every free or two-byte choice first. If the **currently displayed**
+   tile was exact and remains within `Near`, keep it for 0 bytes. Otherwise use
+   an exact resident as `Same`, or the best almost-identical resident as `Near`.
+2. Collect the remaining cells in priority order. Try exact cold loads while
+   reserving one 2-byte name entry for every cell still deferred. The exact
+   source is `Raw`, `Prg`, `Wr0/Wr1`, or `Dic`; the per-frame **cold cap**
+   (`cold_cap_for_fps`, `av_config.py`) still applies.
+3. Recompute resident candidates after those exact loads. For every cell not
+   selected as exact, use a resident that improves the current display as
+   `Flbk`; otherwise leave `Miss`. If the target mean-colour bucket has no
+   improving result, Flbk also compares the newest eligible resident in each
+   of its 26 adjacent mean-colour buckets. The improve-only rule still applies.
+
+The name-entry reservation is internal to this pass, not a setting. It prevents
+early exact loads from consuming the whole frame allowance and making the
+fallback phase unreachable.
+
+Notes: `Same/Near/Flbk` use a resident 32-byte pattern and require at most
 a 2-byte name-table entry. A `Raw` or `Prg` load costs 34 bytes in the
 encoder model. A Wr0/Wr1 boot-preloaded load or DicBuf hit already owns its pattern
 bytes and therefore costs only the 2-byte name entry during playback. A persistent
-approximation (a tile stuck in Near/Coa/Flbk for at least 0.2 seconds) is
+approximation (a tile stuck in Near/Flbk for at least 0.2 seconds) is
 escalated to Miss severity so it gets an accurate reload when budget allows.
 The frame threshold is `floor(0.2 * fps)`, with a minimum of one frame: 6 at
 30 fps, 4 at 24 fps, and 3 at 15 fps.
@@ -217,7 +221,7 @@ The frame threshold is `floor(0.2 * fps)`, with a minimum of one frame: 6 at
 Before the selection cascade, changed tiles are ordered by current visual RGB
 error, optional detail weight (off by default), distance-weighted aging, and
 the screen-edge discount. Aging pressure accumulates only while the displayed
-class is Miss, Flbk, or Coa; a mean RGB error of 24 adds one pressure unit per
+class is Miss or Flbk; a mean RGB error of 24 adds one pressure unit per
 frame, one frame adds at most two, and the multiplier saturates at 7x. Near is
 excluded. The TSV `carry` and `age` fields use a separate integer Miss wait
 counter and do not affect update or upgrade priority. Approximation upgrades
@@ -225,10 +229,11 @@ sort by severity, then aging pressure, then the same base score.
 
 ## Status bar (bottom-left)
 
-Left to right: **Req**, **Cold**, **Pre**, **Band**, **Prg**,
-**Wr0**, **Wr1**, **DMA**, and **Run** meters (each bar is as wide as
-its own label). Below the meters is the palette strip; to the right are three
-stacked timelines. The old Tank and Buf meters are removed.
+Left to right: **Req**, **Cold**, **Band**, **DMA**, **Run**, **Prg**,
+**Wrd**, and **Pre** meters (each bar is as wide as its own label). Wrd
+combines the displayed values of the physically separate Wr0 and Wr1 banks.
+Below the meters is the palette strip; to the right are four stacked timelines.
+The old Tank and Buf meters are removed.
 
 ### Req meter
 All categories stacked into one bar (full width = total tile count `C`), with a
@@ -265,11 +270,21 @@ The physical bytes are the slot's whole sectors, including pad. At CD 1x each
 sector takes 1/75 second, so a completely useful slot reads `Band:150`, a
 half-pad slot reads `Band:075`, and a valid slot never exceeds 150 KiB/sec.
 
-The bar is split into **Raw light grey** for the continuous 32-byte cold-pattern
-payload stream and **dim blue-grey** for the continuous control stream
-(control header, name entries, audio, palette reference, DEBUG data, and run
-descriptors). Future-frame payload is counted in the slot where it is actually
-prefetched, not where the target frame later consumes it.
+The bar is split left to right into **Raw light grey** for same-frame
+Raw-funded pattern payload, **Prg purple** for the remaining quality-budget or
+prefetch pattern charge, and **dim blue-grey** for the continuous control
+stream (control header, name entries, audio, palette reference, DEBUG data,
+and run descriptors). The timeline uses the same stack bottom to top.
+Future-frame payload is counted in the slot where it is actually prefetched,
+not where the target frame later consumes it.
+
+The physical delivery trace stores exact total payload bytes but not the
+Raw/Prg ordering inside one frame. The analysis therefore distributes that
+frame's exact Raw count evenly through its exact PrgBuf load count, removes the
+HEADER prebuffer prefix, and then maps the remaining attribution onto the exact
+physical BODY slots. The input Raw/Prg counts and every slot's total payload
+remain exact; the Raw/Prg split across the prebuffer boundary and BODY slots is
+a visualization because the discarded sub-frame ordering was not logged.
 
 For TTRC v11, the control contribution includes whichever shadow-update
 representation was selected for that frame: the legacy bitmap plus name
@@ -371,34 +386,32 @@ as square tiles in 2 rows of 30 = 2 palettes per row; the `Current` set gets a
 border). Heading per set: `Prev PL:NNN Frame:NNNNN` etc. At a segment edge
 (no previous or no next palette segment) that slot is **blank** (`Prev -`).
 
-### Three stacked timelines (right of the meters, full remaining width)
-Ratio 2:1:1 top to bottom, sharing the whole clip on the x-axis with a white
-playhead:
-1. **Req heatmap** - `Raw / Prg / Wr0 / Wr1 / Dic / Coa / Flbk / Miss`
-   stacked per frame. `Same` and `Near` are omitted so the interesting load
-   remains visible.
+### Four stacked timelines (right of the meters, full remaining width)
+Req occupies half the height, Supply one quarter, and Run/Band split the final
+quarter. All rows share the whole clip on the x-axis with a white playhead:
+1. **Req heatmap** - `Raw / Prg / Wr0 / Wr1 / Dic / Near / Flbk / Miss`
+   stacked per frame. `Same` is omitted so the changing load remains visible.
 2. **Pattern supply** - `Prg / Wr0 / Wr1` remaining counts stacked per
    frame. All three use one scale: the sum of their capacities. Wr0 and Wr1
-   both use the Wr1 cyan display colour; their distinct stack positions and
-   separate numeric meters retain bank identity. The persistent DicBuf has no
-   remaining count and is therefore omitted.
-3. **BODY Band** - useful payload (Raw light grey) plus useful control (dim
-   blue-grey) as a fraction of the physical bytes in each delivery slot. Pad
-   remains blank and a horizontal line at the top marks CD 1x (150 KiB/sec).
+   use the shared Wrd cyan colour while remaining separate internally. The
+   persistent DicBuf has no remaining count and is therefore omitted.
+3. **Run** - physical source-aware cold-run count up to the measured cold cap.
+4. **Band** - useful Raw payload (light grey), Prg charge (purple), and control
+   (blue-grey) as a fraction of the physical bytes in each delivery slot. Pad
+   remains blank and the row top marks CD 1x (150 KiB/sec).
 
 The detailed whole-movie timeline automatically marks the first frame after
 the final Prg payload delivery as the evaluation boundary. Its terminal
-no-refill suffix remains visible with red shading but is excluded from EVAL
-totals and minima. FULL totals remain alongside EVAL for diagnosis. This
-changes reporting only: simulation, packing, and playback verification still
-cover the complete movie.
+no-refill suffix remains visible with red shading but is excluded from
+comparison evaluation. This changes reporting only: simulation, packing, and
+playback verification still cover the complete movie.
 
 ## Colours (RGB)
 
-Raw `(205,205,205)`, Same `(150,150,158)` grey, Near `(95,115,215)` blue,
-Coa `(45,240,70)` green, Flbk and Miss `(220,70,70)` red,
+Raw `(205,205,205)`, Same `(150,150,158)` grey, Near `(128,134,144)` grey,
+Flbk `(225,185,25)` yellow, Miss `(220,70,70)` red,
 DMA `(70,190,90)` green,
 DMA-run `(215,165,65)` amber, Band-control `(95,110,122)` blue-grey.
 Physical supply colours: Prg `(165,105,225)`, Wr0 and Wr1 both
-`(65,205,195)`, Dic `(235,175,70)`. Dic, Prg, and Wr use these colours only
+`(65,205,195)`, Dic `(220,120,30)`. Dic, Prg, and Wrd use these colours only
 on alternating segments of their thin category borders.

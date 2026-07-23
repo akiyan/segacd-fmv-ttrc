@@ -11,6 +11,21 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e98 : Give Flbk a bounded adjacent mean-colour search when the target
+#        bucket's best resident cannot improve the display. Compare the newest
+#        eligible pattern from each of the 26 neighbouring buckets and retain
+#        the existing improve-only acceptance rule. This fills colour coverage
+#        gaps immediately after hard cuts and CRAM switches.
+#   e97 : Make the unified exact/fallback decision explicitly three-phase:
+#        commit free or two-byte Same/Near results, select exact cold loads
+#        while reserving one two-byte name entry for every deferred cell, then
+#        fill the remainder from resident Flbk candidates. This keeps early
+#        exact loads from exhausting the frame budget before the fallback pass.
+#   e96 : Accept only Near before an exact cold load attempt; if that load
+#        cannot fit, the same best resident may be
+#        used as Flbk. Narrow future Miss-risk protection to the Near boundary,
+#        renumber approximation severity, and keep mean-colour resident buckets
+#        solely as search acceleration.
 #   e95 : Qualify cold cap 500 for the exact H40/15fps/720-active-tile
 #        geometry. Its full pack and cadence-aware DEBUG gate pass with useful
 #        phase margin; higher probes are not adopted after cap680 reached M=5
@@ -38,7 +53,7 @@
 #        H40/30fps/1,120-active-tile cold cap from 185 to 180 for the Bad Apple
 #        phase-robustness check.
 #   e91 : Replace fixed-frame priority aging with RGB-distance-weighted
-#        pressure for Miss/Flbk/Coa, exclude Near, and use the same pressure as
+#        pressure for Miss/Flbk, exclude Near, and use the same pressure as
 #        the approximation-upgrade tie-break. Disable detail weighting by
 #        default, shorten persistent-approximation rescue to floored 0.2-second
 #        thresholds, and remove the retired MissCarry/compose diagnostic path.
@@ -69,7 +84,7 @@
 #        startup VDP writes from consuming PrgBuf jitter headroom. DEBUG HUD M
 #        reports 00 for untimed frame 0 while retaining ordinary-frame waits.
 #   e86 : Make frame 0 an exact boot construction instead of passing it through
-#        the timed-frame Near/Coa/Flbk decision path. Its displayed categories
+#        the timed-frame Near/Flbk decision path. Its displayed categories
 #        are now strictly Raw for each first exact pattern load and Same for
 #        duplicate exact references. Fill the remaining 1,518-slot resident
 #        pool with deterministic future patterns, split between the existing
@@ -152,8 +167,8 @@
 #        control incrementally per selected cold tile instead of withholding
 #        the complete cold-cap worst case before the frame makes any choice.
 #   e79 : Refine analysis category rendering: combine Wr0/Wr1 as Wr in the
-#        legend, unify their visible colour, use thin colour/transparent dashes
-#        for Dic/Prg/Wr, and distinguish Coa with a thick Near-colour frame.
+#        legend, unify their visible colour, and use thin colour/transparent
+#        dashes for Dic/Prg/Wr.
 #   e78/p70 : Replace the consumptive MainBuf preload with persistent DicBuf.
 #        Select up to 256 whole-movie dictionary entries before allocating the
 #        residual Wr0/Wr1 credits, encode an 8-bit DicBuf index in each existing
@@ -268,8 +283,9 @@
 #        shared VRAM allocator predicts future demand; a backwards pass keeps
 #        only the bytes future bursts require and ends at zero reserve. The
 #        optional-upgrade plan uses complete exact demand. Normal exact updates
-#        use a narrower Coa-exceeding risk trace, deferring work only where
-#        Coa can degrade gracefully while protecting future Flbk/Miss bursts.
+#        use a narrower approximation-risk trace, deferring work only where
+#        resident reuse can degrade gracefully while protecting future
+#        Flbk/Miss bursts.
 #   e61 : Qualify the H40/30fps/1,120-active-tile Sonic cold cap at 178.
 #        All 2,713 timed intervals stayed at exact N=2 with S/D/R/C=0; 179
 #        inserted one extra scanout, and 200 exhausted delivery margin.
@@ -682,5 +698,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260723
-e=95
+e=98
 p=81

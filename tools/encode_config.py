@@ -65,7 +65,6 @@ ENV_MAP = {
     ("encoder", "dither"): "CBRSIM_DITHER",
     ("encoder", "segment_palettes"): "CBRSIM_SEGPAL",
     ("encoder", "near"): "CBRSIM_NEAR",
-    ("encoder", "coa"): "CBRSIM_COA",
     ("encoder", "boot_vram_prefetch"): "CBRSIM_BOOT_VRAM_PREFETCH",
     ("encoder", "raw_prefetch"): "CBRSIM_RAW_PREFETCH",
     ("palette", "algorithm"): "CBRSIM_PAL_ALGO",

@@ -7,13 +7,11 @@ absolute-address alignment pad:
     n_runs:u16, repeated v12 indexed four-byte descriptors
 
 This checker does not import the packer.  It independently reads the real split
-TTRC v12-v14 files, reconstructs every current control and payload byte, and compares
-two consumers:
-
-* the legacy/fallback Sub path scans all update entries, selects cold entries, builds
-  consecutive slot runs and consumes one 32-byte payload per cold entry;
-* the p39 path decodes the packed run suffix and consumes the same payload
-  directly by ``slot_start + index``.
+TTRC v12-v14 files and reconstructs every current control and payload byte.  The
+display entries remain in cell order, while the p39 suffix and physical pattern
+payload independently follow ascending VRAM-slot order.  The checker proves both
+views against the same decisions and proves the suffix consumes each physical
+source in that authoritative order.
 
 The packed bitmap/cell/palette order and every cold pattern are also checked
 against decisions.pkl, so equality is not merely two views of the same entry
@@ -656,6 +654,49 @@ def main() -> None:
         decoded_packed_runs = (
             decode_descriptors(packed_suffix, source_aware)
             if packed_suffix is not None else ())
+        ordered_patterns = tuple(
+            pack_pattern(bytes(item[2])) for item in ordered)
+
+        # Frame 0 is a boot construction, not a timed BODY frame.  Its name
+        # entries remain in cell order, while the boot loader consumes the
+        # descriptor suffix and pattern payload in physical-slot order.  The
+        # ordinary timed-frame comparison below intentionally requires those
+        # orders to match, so prove the boot representation separately.
+        if seq == 0:
+            if control.use_list:
+                raise AssertionError("frame 0 must use the boot cold-entry form")
+            if not all(bool(entry & 0x8000) for entry in control.entries):
+                raise AssertionError("frame 0 contains a non-cold display entry")
+            packed_slots = expanded_slots(decoded_packed_runs)
+            if any(source != SOURCE_PRG for _slot, source in packed_slots):
+                raise AssertionError("frame 0 boot runs use a non-boot source")
+            slot_patterns = {}
+            for entry, pattern in zip(
+                    control.entries, ordered_patterns, strict=True):
+                slot = (entry & 0x07FF) - stream.base
+                previous = slot_patterns.setdefault(slot, pattern)
+                if previous != pattern:
+                    raise AssertionError(
+                        f"frame 0 slot {slot} maps to conflicting patterns")
+            descriptor_slots = tuple(slot for slot, _source in packed_slots)
+            if descriptor_slots != tuple(sorted(slot_patterns)):
+                raise AssertionError(
+                    "frame 0 descriptors do not cover display slots in "
+                    "physical order")
+            expected_frame_payload = b"".join(
+                slot_patterns[slot] for slot in descriptor_slots)
+            physical_payload = stream.source_payloads[0]
+            if physical_payload != expected_frame_payload:
+                raise AssertionError(
+                    "frame 0 physical payload differs from decisions")
+            source_positions[0] = len(physical_payload)
+            total_updates += len(control.entries)
+            total_cold += len(descriptor_slots)
+            total_runs += len(decoded_packed_runs)
+            run_counts.append(len(decoded_packed_runs))
+            descriptor_bytes_by_frame.append(len(packed_suffix or b""))
+            continue
+
         if control.use_list:
             expanded = iter(expanded_slots(decoded_packed_runs))
             pending = next(expanded, None)
@@ -678,37 +719,54 @@ def main() -> None:
             sources = tuple(
                 (entry & SOURCE_MASK) >> SOURCE_SHIFT if cold and source_aware else 0
                 for entry, cold in zip(control.entries, colds, strict=True))
-        ordered_patterns = tuple(pack_pattern(bytes(item[2])) for item in ordered)
         dic_indices = tuple(
             dic_index_by_pattern[pattern]
             if cold and source == SOURCE_DIC else 0
             for pattern, cold, source in zip(
                 ordered_patterns, colds, sources, strict=True))
-        old_runs = (
-            decoded_packed_runs if control.use_list
-            else per_run_descriptors(
-                tuple(entry & NAME_ENTRY_MASK for entry in control.entries),
-                colds, sources, dic_indices, stream.base))
         entry_mask = NAME_ENTRY_MASK if source_aware else 0x7FFF
         logical_entries = tuple(entry & entry_mask for entry in control.entries)
-        proposed_runs = per_run_descriptors(
-            logical_entries, colds, sources, dic_indices, stream.base)
-        expected_suffix = encode_descriptors(proposed_runs, source_aware)
+        cold_records = [
+            (entry, source, dic_index, pattern)
+            for entry, cold, source, dic_index, pattern in zip(
+                logical_entries, colds, sources, dic_indices, ordered_patterns,
+                strict=True)
+            if cold
+        ]
+        if not control.use_list and packed_suffix is not None:
+            # Bitmap/list entries intentionally remain in cell order.  The
+            # packed suffix and source payload are independently ordered by
+            # physical VRAM slot so the player can issue longer contiguous
+            # transfers.  Rebuild that authoritative order before comparing
+            # descriptor bytes or payload.
+            cold_records.sort(
+                key=lambda record: (
+                    (record[0] & 0x07FF) - stream.base,
+                )
+            )
+        physical_entries = tuple(record[0] for record in cold_records)
+        physical_sources = tuple(record[1] for record in cold_records)
+        physical_dic_indices = tuple(record[2] for record in cold_records)
+        expected_runs = per_run_descriptors(
+            physical_entries,
+            (True,) * len(cold_records),
+            physical_sources,
+            physical_dic_indices,
+            stream.base,
+        )
+        expected_suffix = encode_descriptors(expected_runs, source_aware)
         suffix = packed_suffix or expected_suffix
         if packed_suffix is not None and suffix != expected_suffix:
             raise AssertionError(
-                f"frame {seq}: packed descriptor bytes differ from logical per runs"
+                f"frame {seq}: packed descriptor bytes differ from physical runs"
             )
         decoded_runs = decode_descriptors(suffix, source_aware)
-        if decoded_runs != old_runs:
-            raise AssertionError(f"frame {seq}: run descriptors changed old Sub runs")
+        if decoded_runs != expected_runs:
+            raise AssertionError(
+                f"frame {seq}: decoded descriptors differ from physical runs")
 
         cold_count = sum(colds)
-        decision_patterns = [
-            pattern
-            for pattern, cold in zip(ordered_patterns, colds, strict=True)
-            if cold
-        ]
+        decision_patterns = [record[3] for record in cold_records]
         expected_frame_payload = b"".join(decision_patterns)
         expected_payload += expected_frame_payload
         if stream.source_payloads is None:
@@ -750,20 +808,22 @@ def main() -> None:
                 raise AssertionError(
                     f"frame {seq}: physical source patterns differ from decisions")
 
-        old_slots = tuple(
+        expected_slots = tuple(
             ((entry & 0x07FF) - stream.base, source)
-            for entry, source, cold in zip(
-                control.entries, sources, colds, strict=True)
-            if cold
+            for entry, source in zip(
+                physical_entries, physical_sources, strict=True)
         )
-        proposed_slots = expanded_slots(decoded_runs)
-        if proposed_slots != old_slots:
-            raise AssertionError(f"frame {seq}: descriptor slot order changed")
-        old_output = tuple(zip(old_slots, decision_patterns, strict=True))
-        proposed_output = tuple(zip(proposed_slots, decision_patterns, strict=True))
-        if proposed_output != old_output:
+        descriptor_slots = expanded_slots(decoded_runs)
+        if descriptor_slots != expected_slots:
+            raise AssertionError(
+                f"frame {seq}: descriptor slot order differs from physical order")
+        descriptor_output = tuple(
+            zip(descriptor_slots, decision_patterns, strict=True))
+        expected_output = tuple(
+            zip(expected_slots, decision_patterns, strict=True))
+        if descriptor_output != expected_output:
             raise AssertionError(f"frame {seq}: descriptor output changed")
-        for slot, _source in proposed_slots:
+        for slot, _source in descriptor_slots:
             if not 0 <= slot < stream.pool:
                 raise AssertionError(f"frame {seq}: slot {slot} is outside the pool")
 

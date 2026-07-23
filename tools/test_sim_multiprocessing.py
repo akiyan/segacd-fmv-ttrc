@@ -44,21 +44,16 @@ class SimMultiprocessingTests(unittest.TestCase):
         self.assertEqual(sim.default_png_workers((3, 14, 0)), 1)
         self.assertEqual(sim.default_png_workers((3, 13, 9)), 1)
 
-    def test_pattern_cache_owns_compact_arrays(self) -> None:
+    def test_pattern_cache_owns_compact_rgb(self) -> None:
         rgb_frame = np.zeros((4, 8, 8, 3), np.uint8)
-        sig_frame = np.zeros((4, 12), np.float32)
-        rgb, sig = sim.own_pattern_cache_arrays(rgb_frame[2], sig_frame[2])
+        rgb = sim.own_pattern_cache_rgb(rgb_frame[2])
         self.assertEqual(rgb.shape, (8, 8, 3))
-        self.assertEqual(sig.shape, (12,))
         self.assertTrue(rgb.flags.c_contiguous)
-        self.assertTrue(sig.flags.c_contiguous)
         self.assertFalse(np.shares_memory(rgb, rgb_frame))
-        self.assertFalse(np.shares_memory(sig, sig_frame))
 
     def test_pattern_cache_rejects_wrong_shapes(self) -> None:
         with self.assertRaisesRegex(ValueError, "pattern RGB shape"):
-            sim.own_pattern_cache_arrays(
-                np.zeros((1, 8, 8, 3), np.uint8), np.zeros(12, np.float32))
+            sim.own_pattern_cache_rgb(np.zeros((1, 8, 8, 3), np.uint8))
 
     def test_rendered_colour_keys_round_trip_all_rgb333_colours(self) -> None:
         keys = sim.rendered_color_keys(sim._MD_RGB888.astype(np.uint8))
@@ -83,11 +78,11 @@ class SimMultiprocessingTests(unittest.TestCase):
         )
 
     def test_distance_aging_excludes_near_and_exact_cells(self) -> None:
-        diff = np.full(5, 8 * 8 * 3 * 24)
+        diff = np.full(4, 8 * 8 * 3 * 24)
         pressure = sim.update_age_pressure(
-            np.full(5, 4.0), np.array([0, 1, 2, 3, 9]), diff)
+            np.full(4, 4.0), np.array([0, 1, 2, 9]), diff)
         np.testing.assert_array_equal(
-            pressure, np.array([5.0, 5.0, 5.0, 0.0, 0.0]))
+            pressure, np.array([5.0, 5.0, 0.0, 0.0]))
 
     def test_default_detail_weight_is_disabled(self) -> None:
         self.assertEqual(sim.DETAIL_ALPHA, 0.0)

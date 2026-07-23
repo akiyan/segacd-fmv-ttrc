@@ -33,7 +33,7 @@ the sort keys decide how the constants are applied.
 
 ```text
 step = min(mean RGB error / AGING_DIST_REF, AGING_STEP_CAP)
-age_press = age_press + step for Miss/Flbk/Coa; otherwise 0
+age_press = age_press + step for Miss/Flbk; otherwise 0
 aging = 1 + AGING_ALPHA * min(age_press, WAIT_CAP)
 score = visual change * (1 + DETAIL_ALPHA * detail) * aging * border weight
 ```
@@ -42,15 +42,15 @@ score = visual change * (1 + DETAIL_ALPHA * detail) * aging * border weight
 |---|---|---|---|
 | `diff` visual change | Sum of RGB difference from the currently displayed tile. | - | Tiles that changed more go first. |
 | `detail` | How detailed the tile is, measured by tile standard deviation. | `CBRSIM_DETAIL_ALPHA=0.0` | Disabled by default. Set 1.5 only to reproduce the legacy detail preference. |
-| `aging` | Accumulated visible error while a tile remains Miss, Flbk, or Coa. | `AGING_ALPHA=0.6`, `WAIT_CAP=10`, distance ref `24`, step cap `2.0` | A mean RGB error of 24 adds 1 pressure per frame; one frame adds at most 2. The multiplier saturates at 7. Near is excluded. |
+| `aging` | Accumulated visible error while a tile remains Miss or Flbk. | `AGING_ALPHA=0.6`, `WAIT_CAP=10`, distance ref `24`, step cap `2.0` | A mean RGB error of 24 adds 1 pressure per frame; one frame adds at most 2. The multiplier saturates at 7. Near is excluded. |
 | `border` | De-emphasizes screen-edge tiles. | `BORDER_TILES=2`, `BORDER_WEIGHT=0.4` | Outer two tile bands get 0.4x priority, favoring the center. |
 | tie break | What happens when scores tie. | `CBRSIM_CENTERTIE` | If enabled, cells closer to the center go first through `lexsort`. |
 
 There is a single ordering: changed tiles are sorted by the base score above
 (with the optional center tie-break). There is no separate priority layer that
 promotes degraded cells ahead of the score — an earlier `CBRSIM_PRIOLAYER`
-layer was removed because, on 8x8 tiles, force-promoting Miss/Flbk/Coa cells
-caused block-noise artifacts. Miss/Flbk/Coa cells still rise naturally through
+layer was removed because, on 8x8 tiles, force-promoting Miss/Flbk cells
+caused block-noise artifacts. Miss/Flbk cells still rise naturally through
 the `aging` term. Larger visible errors rise faster; Near is excluded because
 it is already the closest approximation tier.
 
@@ -116,7 +116,7 @@ or the rendered analysis video when the change is meant to improve quality.
 - Priority sorting only applies to changed tiles that are not Near-skipped.
 - Near and Same cost 0 bytes and do not compete for Raw transfer budget.
 - Each cell's current degradation level is tracked in `cell_tier`:
-  `0=Miss`, `1=Flbk`, `2=Coa`, `3=Near`, `9=good`.
+  `0=Miss`, `1=Flbk`, `2=Near`, `9=good`.
 - Integer `wait` is retained only for TSV `carry` and `age` reporting. It must
   not be reused for update or upgrade priority.
 - Approximation upgrades sort by severity, then `age_press`, then base score.

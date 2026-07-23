@@ -6,7 +6,7 @@ render_analysis.py が同じ描画関数と定数を実データに使う。
 新レイアウト(この版):
   左  = SEGA-CD sim output(4:3枠) + 下に status帯
   右  = Source / Category(Miss赤塗り) / 全編カテゴリ合計 / Audio波形
-  下  = Req/Cold/Pre/Band/Prg/Wr0/Wr1/DMA/Run、パレット、3段タイムライン
+  下  = Req/Cold/Band/DMA/Run/Prg/Wrd/Pre、パレット、4段タイムライン
         ※ Miss&MissCarryパネルと per-metric flow は廃止。
 出力: tmp/layout_preview.png
 
@@ -26,11 +26,10 @@ BG = (12, 12, 12)
 # ---- カテゴリ色(sim.py と一致) ----
 CAT_RAW   = (205, 205, 205)   # Raw   same-frame exact load (black/white dashed frame)
 CAT_SAME  = (150, 150, 158)   # Same  resident exact reuse (legend mesh; no tile frame)
-CAT_NEAR  = (95, 115, 215)    # Near  近似で更新省略        ※旧Sameの色
+CAT_NEAR  = (128, 134, 144)   # Near  resident approximation (neutral gray)
 CAT_MISS  = (220, 70, 70)     # Miss  取りこぼし(赤・塗りつぶし)
-CAT_FLBK  = CAT_MISS          # Flbk  Missより良いresident fallback (red thin frame)
+CAT_FLBK  = (225, 185, 25)    # Flbk  resident fallback (deep yellow thin frame)
 CAT_DEDUP = (0, 190, 175)     # Dedup(旧・表示では Same に畳む。互換用に定義だけ残す)
-CAT_COA   = (45, 240, 70)     # Coa   meter/timeline colour; frame uses CAT_NEAR
 CAT_PREFETCH = (85, 175, 225) # future raw loaded into VRAM before first display use
 
 COL_BORDER = (200, 200, 200)
@@ -43,7 +42,8 @@ COL_RUN = (215, 165, 65)         # cold pattern run分断度(amber)
 COL_PRG = (165, 105, 225)        # streamed PrgBuf
 COL_WR1 = (65, 205, 195)         # boot-preloaded WordBuf0/1 shared display colour
 COL_WR0 = COL_WR1                # Wr0/Wr1 remain separate data, unified visually
-COL_DIC = (235, 175, 70)         # persistent DicBuf dictionary
+COL_WRD = COL_WR1                # combined display label; storage remains split
+COL_DIC = (220, 120, 30)         # persistent DicBuf dictionary (deep orange)
 SUPPLY_COLORS = {
     "Prg": COL_PRG,
     "Wr0": COL_WR0,
@@ -59,23 +59,21 @@ METER_SUPPLY_ORDER = ("Prg", "Wr0", "Wr1")
 # status meter and becomes Same if the resident pattern is used later.
 QUALITY_CATS = [
     ("Raw", CAT_RAW), ("Same", CAT_SAME), ("Near", CAT_NEAR),
-    ("Coa", CAT_COA), ("Flbk", CAT_FLBK), ("Miss", CAT_MISS),
+    ("Flbk", CAT_FLBK), ("Miss", CAT_MISS),
 ]
 SOURCE_CATS = [(name, SUPPLY_COLORS[name]) for name in DISPLAY_SOURCE_ORDER]
 CATS = QUALITY_CATS + SOURCE_CATS
 LEGEND_CATS = [
-    ("Raw", CAT_RAW), ("Same", CAT_SAME), ("Dic", COL_DIC),
-    ("Prg", COL_PRG), ("Wr", COL_WR1),
-    ("Near", CAT_NEAR), ("Coa", CAT_NEAR), ("Flbk", CAT_FLBK),
-    ("Miss", CAT_MISS),
+    ("Raw", CAT_RAW), ("Same", CAT_SAME), ("Near", CAT_NEAR),
+    ("Flbk", CAT_FLBK), ("Miss", CAT_MISS),
+    ("Prg", COL_PRG), ("Wrd", COL_WRD), ("Dic", COL_DIC),
 ]
 CAT_FILL = {"Miss"}
-CAT_THICK = {"Coa": 3}
-CAT_DASHED = {"Dic", "Prg", "Wr0", "Wr1", "Wr"}
+CAT_DASHED = {"Dic", "Prg", "Wr0", "Wr1", "Wrd"}
 DISP = {name: name for name, _ in CATS}
-DISP["Wr"] = "Wr"
+DISP["Wrd"] = "Wrd"
 REQ_TIMELINE_CATS = (
-    "Raw", "Prg", "Wr0", "Wr1", "Dic", "Coa", "Flbk", "Miss")
+    "Raw", "Prg", "Wr0", "Wr1", "Dic", "Near", "Flbk", "Miss")
 
 # ---- レイアウト定数(枠 = [x0,y0,x1,y1]) ----
 PAD = 11
@@ -167,7 +165,7 @@ def dummy_data():
     # Mutually exclusive per-frame displayed-cell counts. The four physical
     # sources replace the old Buf funding class.
     counts = {
-        "Raw": 90, "Same": 130, "Near": 40, "Coa": 45, "Flbk": 20,
+        "Raw": 90, "Same": 130, "Near": 40, "Flbk": 65,
         "Miss": 5, "Prg": 30, "Wr0": 15, "Wr1": 12, "Dic": 9,
     }
     # 線グラフ用: 前後4秒×fps の各指標時系列(中央=現在)
@@ -205,9 +203,24 @@ def dummy_data():
         5600 if i % 47 == 0 else max(0, 3200 + int(900 * math.sin(i / 13.0)))
         for i in range(tln)
     ]
+    body_raw_payload_tl = [
+        int(payload * (0.58 + 0.12 * math.sin(i / 17.0)))
+        for i, payload in enumerate(body_payload_tl)
+    ]
+    body_prg_payload_tl = [
+        payload - raw
+        for payload, raw in zip(body_payload_tl, body_raw_payload_tl)
+    ]
     body_control_tl = [720 + (160 if i % 31 == 0 else 0) for i in range(tln)]
     body_physical_tl = [5 * 2048 for _ in range(tln)]
+    run_tl = [
+        max(0, min(96, 18 + int(11 * math.sin(i / 9.0))
+                   + (28 if miss_zones(i) else 0)))
+        for i in range(tln)
+    ]
     body_payload_bytes = body_payload_tl[0]
+    body_raw_payload_bytes = body_raw_payload_tl[0]
+    body_prg_payload_bytes = body_prg_payload_tl[0]
     body_control_bytes = body_control_tl[0]
     body_useful_tl = [p + c for p, c in zip(body_payload_tl, body_control_tl)]
     body_physical_bytes = body_physical_tl[0]
@@ -230,16 +243,22 @@ def dummy_data():
     dma_tiles = displayed_cold + prefetch
     return dict(C=C, counts=counts, series=series, fps=fps, win=win,
                 palettes=palettes, cat_totals=cat_totals,
-                body_payload_bytes=body_payload_bytes, body_control_bytes=body_control_bytes,
+                body_raw_payload_bytes=body_raw_payload_bytes,
+                body_prg_payload_bytes=body_prg_payload_bytes,
+                body_payload_bytes=body_payload_bytes,
+                body_control_bytes=body_control_bytes,
                 body_physical_bytes=body_physical_bytes,
                 band_kbps=band_kbps, body_payload_tl=body_payload_tl,
+                body_raw_payload_tl=body_raw_payload_tl,
+                body_prg_payload_tl=body_prg_payload_tl,
                 body_control_tl=body_control_tl, body_physical_tl=body_physical_tl,
+                run_tl=run_tl,
                 pl_info=pl_info, pl_cur=pl_cur, pl_total=pl_total,
                 mode="H32", res="176x144 (22x18)", audio="13.3kHz mono 8bit PCM", avg_kbps=avg_kbps,
                 src_spec="256x224 / 30fps / AAC 48kHz stereo",
                 req=246, miss=counts["Miss"],
                 budget=273,
-                comp=counts["Same"] + counts["Near"] + counts["Coa"] + counts["Flbk"],
+                comp=counts["Same"] + counts["Near"] + counts["Flbk"],
                 supply_capacities=supply_capacities,
                 supply_remaining={name: values[126] for name, values in supply_series.items()},
                 cold=displayed_cold + prefetch, cold_prefetch=prefetch,
@@ -282,12 +301,11 @@ def draw_field(d, x, y, label, value, width, font, col, maxval=None, maxwidth=No
 def meter_widths(cells):
     """Each bar follows its label width.
 
-    Returns Band, Prg, Wr0, Wr1, DMA, and Run widths.
+    Returns Band, Prg, Wrd, DMA, and Run widths.
     """
     return (_w(f_leg, "Band:000") + 3,
             _w(f_leg, "Prg:00000") + 3,
-            _w(f_leg, "Wr0:000") + 3,
-            _w(f_leg, "Wr1:000") + 3,
+            _w(f_leg, "Wrd:0000") + 3,
             _w(f_leg, dma_label_template(cells)) + 3,
             _w(f_leg, run_label_template()) + 3)
 
@@ -305,8 +323,7 @@ def dummy_image(w, h, seed):
 def draw_catmap(w, h, data):
     """カテゴリマップ: ダミータイル格子。
     Raw=thin black/white dashed frame / Same=no frame / Near/Flbk=thin /
-    Coa=thick Near-colour / Dic/Prg/Wr=thin colour-and-transparent dash /
-    Miss=red fill."""
+    Dic/Prg/Wr=thin colour-and-transparent dash / Miss=red fill."""
     im = Image.new("RGB", (w, h), (18, 18, 18))
     d = ImageDraw.Draw(im)
     cols, rows = 22, 18
@@ -319,7 +336,7 @@ def draw_catmap(w, h, data):
             x0, y0 = int(c * tw), int(r * th)
             x1, y1 = int((c + 1) * tw) - 1, int((r + 1) * th) - 1
             k = random.choices(
-                cats, weights=[24, 34, 8, 10, 5, 2, 7, 4, 3, 3])[0]
+                cats, weights=[24, 34, 8, 15, 2, 7, 4, 3, 3])[0]
             col = dict(CATS)[k]
             if k == "Miss":
                 d.rectangle([x0, y0, x1, y1], fill=CAT_MISS)                  # 赤で塗りつぶし
@@ -333,8 +350,7 @@ def draw_catmap(w, h, data):
             elif k in CAT_DASHED:
                 colored_dashed_rect(d, (x0, y0, x1, y1), col)
             elif k not in CAT_FILL:
-                frame_col = CAT_NEAR if k == "Coa" else col
-                d.rectangle([x0, y0, x1, y1], outline=frame_col, width=CAT_THICK.get(k, 1))
+                d.rectangle([x0, y0, x1, y1], outline=col, width=1)
     return im
 
 
@@ -353,17 +369,17 @@ def dashed_rect(d, box, dash=3):
         d.line((x1, start, x1, end), fill=(235, 235, 235) if not phase else (15, 15, 15))
 
 
-def colored_dashed_rect(d, box, col, dash=3):
-    """One-pixel border alternating between the category colour and content."""
+def colored_dashed_rect(d, box, col, dash=3, width=1):
+    """Dashed border alternating between the category colour and content."""
     x0, y0, x1, y1 = map(int, box)
     for start in range(x0, x1 + 1, dash * 2):
         end = min(start + dash - 1, x1)
-        d.line((start, y0, end, y0), fill=col)
-        d.line((start, y1, end, y1), fill=col)
+        d.line((start, y0, end, y0), fill=col, width=width)
+        d.line((start, y1, end, y1), fill=col, width=width)
     for start in range(y0, y1 + 1, dash * 2):
         end = min(start + dash - 1, y1)
-        d.line((x0, start, x0, end), fill=col)
-        d.line((x1, start, x1, end), fill=col)
+        d.line((x0, start, x0, end), fill=col, width=width)
+        d.line((x1, start, x1, end), fill=col, width=width)
 
 
 def swatch(d, x, y, sw, name, col):
@@ -384,11 +400,11 @@ def swatch(d, x, y, sw, name, col):
     elif name in CAT_FILL:                                        # Miss
         d.rectangle([x, y, x + sw, y + sw], fill=col)
     elif name in CAT_DASHED:
-        colored_dashed_rect(d, (x, y, x + sw, y + sw), col, dash=2)
+        colored_dashed_rect(
+            d, (x, y, x + sw, y + sw), col, dash=2,
+            width=2 if name in {"Prg", "Wrd", "Dic"} else 1)
     else:
-        frame_col = CAT_NEAR if name == "Coa" else col
-        d.rectangle([x, y, x + sw, y + sw], outline=frame_col,
-                    width=CAT_THICK.get(name, 1))  # 枠(細/太)
+        d.rectangle([x, y, x + sw, y + sw], outline=col, width=1)
 
 
 def draw_legend(w, h, data):
@@ -405,7 +421,7 @@ def draw_legend(w, h, data):
         tx = x + sw + 6
         label = DISP[name] + ":"
         count = (data["counts"]["Wr0"] + data["counts"]["Wr1"]
-                 if name == "Wr" else data["counts"][name])
+                 if name == "Wrd" else data["counts"][name])
         draw_field(d, tx, y - 1, label, count, 3, f_leg, COL_TXT)
     return im
 
@@ -439,7 +455,7 @@ def draw_graph(w, h, data):
 
 
 def draw_status(w, h, data):
-    """status帯: Req / Cold / Pre / Band / Prg / Wr0 / Wr1 / DMA / Run + timeline。
+    """status帯: Req / Cold / Band / DMA / Run / Prg / Wrd / Pre + timeline。
     数値は同じ文字色のゼロ埋めで桁固定。Tank/BufメーターとMissCarryは廃止。"""
     im = Image.new("RGB", (w, h), (16, 16, 16))
     d = ImageDraw.Draw(im)
@@ -450,7 +466,7 @@ def draw_status(w, h, data):
     dmax = dma_tile_capacity(data["mode"], data["fps"], C)
     dval = data["dma_tiles"]
     # メーター幅の統一を廃止=各バーは自分のラベル幅
-    BAND_W, PRG_W, WR0_W, WR1_W, DMA_W, RUN_W = meter_widths(C)
+    BAND_W, PRG_W, WRD_W, DMA_W, RUN_W = meter_widths(C)
     COLD_W = _w(f_leg, "Cold:000") + 3
     PRE_W = _w(f_leg, "Pre:000") + 3
     ly = by + BH + 3
@@ -482,31 +498,14 @@ def draw_status(w, h, data):
     stacked(cold_parts, data["cold_cap"], COLD_W)
     draw_field(d, x, ly, "Cold:", data["cold"], 3, f_leg, COL_TXT)
     x += COLD_W + GAP
-    # 3) Pre = future exact patterns written to VRAM but not displayed yet.
-    stacked([(data["cold_prefetch"], CAT_PREFETCH)], data["prefetch_cap"], PRE_W)
-    draw_field(d, x, ly, "Pre:", data["cold_prefetch"], 3, f_leg, COL_TXT)
-    x += PRE_W + GAP
-    # 4) Band = this physical BODY slot's useful payload + control; no pad/Header.
-    stacked([(data["body_payload_bytes"], CAT_RAW),
+    # 3) Band = Raw payload + Prg charge + control; no pad/Header.
+    stacked([(data["body_raw_payload_bytes"], CAT_RAW),
+             (data["body_prg_payload_bytes"], COL_PRG),
              (data["body_control_bytes"], COL_OVH)],
             max(data["body_physical_bytes"], 1), BAND_W)
     d.line([x + BAND_W, by - 2, x + BAND_W, by + BH + 2], fill=(210, 190, 90))
     draw_field(d, x, ly, "Band:", data["band_kbps"], 3, f_leg, COL_TXT)
     x += BAND_W + GAP
-    # 5) The persistent dictionary has no remaining count. Prg/Wr0/Wr1 retain
-    # independent occupancy/credit meters.
-    supply_widths = {
-        "Prg": (PRG_W, 5), "Wr0": (WR0_W, 3),
-        "Wr1": (WR1_W, 3),
-    }
-    for name in METER_SUPPLY_ORDER:
-        width, digits = supply_widths[name]
-        remaining = data["supply_remaining"][name]
-        capacity = data["supply_capacities"][name]
-        stacked([(remaining, SUPPLY_COLORS[name])], capacity, width)
-        draw_field(d, x, ly, name + ":", remaining, digits, f_leg, COL_TXT)
-        x += width + GAP
-
     # 4) DMA = 今フレームの32Bパターンタイル数。フル=モード/fpsの理論DMAから全NT分を引いた枚数。
     fillw = int(DMA_W * min(dval, dmax) / max(dmax, 1)); over = dval > dmax
     d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else COL_DMA)
@@ -526,31 +525,59 @@ def draw_status(w, h, data):
     draw_field(d, x, ly, "Run:", run_val, DMA_RUN_DIGITS, f_leg, COL_TXT)
     x += RUN_W + GAP
 
+    # 6) Physical supply meters. WordBuf banks stay separate internally but
+    # are shown as one Wrd value and bar.
+    prg_remaining = data["supply_remaining"]["Prg"]
+    prg_capacity = data["supply_capacities"]["Prg"]
+    stacked([(prg_remaining, COL_PRG)], prg_capacity, PRG_W)
+    draw_field(d, x, ly, "Prg:", prg_remaining, 5, f_leg, COL_TXT)
+    x += PRG_W + GAP
+
+    wrd_remaining = (
+        data["supply_remaining"]["Wr0"] + data["supply_remaining"]["Wr1"])
+    wrd_capacity = (
+        data["supply_capacities"]["Wr0"] + data["supply_capacities"]["Wr1"])
+    stacked([(wrd_remaining, COL_WRD)], wrd_capacity, WRD_W)
+    draw_field(d, x, ly, "Wrd:", wrd_remaining, 4, f_leg, COL_TXT)
+    x += WRD_W + GAP
+
+    # 7) Pre is future exact work and remains visually separate from supply.
+    stacked([(data["cold_prefetch"], CAT_PREFETCH)], data["prefetch_cap"], PRE_W)
+    draw_field(d, x, ly, "Pre:", data["cold_prefetch"], 3, f_leg, COL_TXT)
+    x += PRE_W + GAP
+
     # メーターの下: パレット Prev/Current/Next(PL/Frame見出し)
     meters_right = x - GAP
     py0 = ly + 16
     draw_palettes_strip(d, 4, py0, meters_right - 4, (h - 2) - py0, data["palettes"], data.get("pl_info"))
 
-    # 6) Three-row timeline: request heatmap / Prg+Wr0+Wr1 remaining stack /
-    # useful BODY delivery.  Height ratio is 2:1:1.
+    # 8) Four-row timeline: request / supply / physical runs / BODY.
+    # The old BODY quarter is split equally between Run and Band.
     x_tl = x
     tlw = w - 4 - x_tl
     if tlw > 20:
         tl = data["tl"]; supply = data["supply_series"]; tln = data["tln"]
         payload_tl = data["body_payload_tl"]
+        raw_payload_tl = data["body_raw_payload_tl"]
         control_tl = data["body_control_tl"]
         physical_tl = data["body_physical_tl"]
+        run_tl = data["run_tl"]
         tlh = (h - 2) - by
-        # 正確に 2:1:1(区切り無し・隙間無し)
         H_req = tlh // 2                          # Req = 2
         H_supply = tlh // 4                       # supply = 1
-        H_dma = tlh - H_req - H_supply            # BODY = 1
+        H_bottom = tlh - H_req - H_supply
+        H_run = H_bottom // 2
+        H_band = H_bottom - H_run
         y_req = by
         y_supply = y_req + H_req
-        y_dma = y_supply + H_supply
+        y_run = y_supply + H_supply
+        y_band = y_run + H_run
         # 各段の背景を極暗色で塗る(下段の空きが純黒=marginに見えないように)
         d.rectangle([x_tl, y_supply, x_tl + tlw, y_supply + H_supply], fill=(21, 22, 28))
-        d.rectangle([x_tl, y_dma, x_tl + tlw, y_dma + H_dma], fill=(18, 26, 20))   # 有効転送段 暗green
+        d.rectangle([x_tl, y_run, x_tl + tlw, y_run + H_run],
+                    fill=(27, 24, 17))
+        d.rectangle([x_tl, y_band, x_tl + tlw, y_band + H_band],
+                    fill=(18, 26, 20))
         stack_order = [(name, dict(CATS)[name]) for name in REQ_TIMELINE_CATS]
         for col_i in range(tlw):
             fi = min(int(col_i / tlw * tln), tln - 1)
@@ -569,14 +596,26 @@ def draw_status(w, h, data):
                 if hs > 0:
                     d.line([(X, ys - hs), (X, ys)], fill=SUPPLY_COLORS[name])
                     ys -= hs
+            run_max = max(data["cold_cap"], 1)
+            hr = int(H_run * min(run_tl[fi], run_max) / run_max)
+            if hr > 0:
+                d.line([(X, y_run + H_run - hr), (X, y_run + H_run)],
+                       fill=COL_RUN)
             physical = max(physical_tl[fi], 1)
-            hp = int(H_dma * payload_tl[fi] / physical)
-            if hp > 0:
-                d.line([(X, y_dma + H_dma - hp), (X, y_dma + H_dma)], fill=CAT_RAW)
-            hc = int(H_dma * (payload_tl[fi] + control_tl[fi]) / physical)
+            hrw = int(H_band * raw_payload_tl[fi] / physical)
+            hp = int(H_band * payload_tl[fi] / physical)
+            if hrw > 0:
+                d.line([(X, y_band + H_band - hrw),
+                        (X, y_band + H_band)], fill=CAT_RAW)
+            if hp > hrw:
+                d.line([(X, y_band + H_band - hp),
+                        (X, y_band + H_band - hrw)], fill=COL_PRG)
+            hc = int(H_band * (payload_tl[fi] + control_tl[fi]) / physical)
             if hc > hp:
-                d.line([(X, y_dma + H_dma - hc), (X, y_dma + H_dma - hp)], fill=COL_OVH)
-        d.line([x_tl, y_dma, x_tl + tlw, y_dma], fill=(110, 105, 70))
+                d.line([(X, y_band + H_band - hc),
+                        (X, y_band + H_band - hp)], fill=COL_OVH)
+        d.line([x_tl, y_run, x_tl + tlw, y_run], fill=(110, 105, 70))
+        d.line([x_tl, y_band, x_tl + tlw, y_band], fill=(110, 105, 70))
         d.rectangle([x_tl, by, x_tl + tlw, by + tlh], outline=COL_FRAME_IN)
         head = x_tl + int(tlw * data["frame"] / data["total_frames"])
         d.line([head, by, head, by + tlh], fill=(255, 255, 255))
@@ -637,7 +676,7 @@ def draw_cattotals(w, h, data):
     ty = ly + 11 - f_sm.getmetrics()[0]      # 四角(ly..ly+11)の下線にベースラインを合わせる
     for name, col in LEGEND_CATS:
         swatch(d, x, ly, 11, name, col); x += 11 + 5
-        value = tot["Wr0"] + tot["Wr1"] if name == "Wr" else tot[name]
+        value = tot["Wr0"] + tot["Wr1"] if name == "Wrd" else tot[name]
         s = str(value)                       # 合計値のみ(ユニーク数併記は廃止)
         d.text((x, ty), s, fill=COL_TXT, font=f_sm); x += _w(f_sm, s)
         x += 14                              # 項目間ギャップ
@@ -659,7 +698,7 @@ def load_fonts():
 
 def draw_footer(cv, data):
     """Analysis / Comparison 共通フッター。上部レイアウトを差し替えても使い回せる。
-    status帯(Req/Cold/Pre/Band/physical supplies/DMA/Run + palettes + timelines)と
+    status帯(Req/Cold/Band/DMA/Run/Prg/Wrd/Pre + palettes + timelines)と
     カテゴリ合計バーを、共通の STATUS_XY / PAL_XY へ貼る。"""
     st = draw_status(STATUS_W, STATUS_H, data)
     cv.paste(st, STATUS_XY)

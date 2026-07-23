@@ -38,13 +38,15 @@ TAIL = (105, 42, 42, 82)
 REQ_ORDER = tuple(layout.REQ_TIMELINE_CATS)
 REQ_COLORS = {name: dict(layout.CATS)[name] for name in REQ_ORDER}
 SUPPLY_ORDER = tuple(layout.METER_SUPPLY_ORDER)
+REQ_LEGEND_ORDER = ("Raw", "Prg", "Wrd", "Dic", "Near", "Flbk", "Miss")
 
 REQUIRED_COLUMNS = {
     "frame", "time_seconds", "palette_segment", "cells", "active_tiles",
     "cold_cap_tiles", "legend_raw", "legend_same", "legend_dic",
     "legend_prg", "legend_wr0", "legend_wr1", "legend_near",
-    "legend_coa", "legend_flbk", "legend_miss", "status_cold",
+    "legend_flbk", "legend_miss", "status_cold",
     "status_prg", "status_wr0", "status_wr1", "status_dma", "status_run",
+    "body_raw_payload_bytes", "body_prg_payload_bytes",
     "body_payload_bytes", "body_control_bytes", "body_pad_bytes",
     "body_physical_bytes", "body_useful_bytes",
     "quality_budget_remaining_bytes",
@@ -187,8 +189,6 @@ def code_settings(
     schedule_text = (TOOLS / "stream_schedule.py").read_text(encoding="utf-8")
     near = "/".join(env_default(sim_text, key) for key in (
         "CBRSIM_NEAR_YM", "CBRSIM_NEAR_YP", "CBRSIM_NEAR_C"))
-    coa = "/".join(env_default(sim_text, key) for key in (
-        "CBRSIM_TCOA_YM", "CBRSIM_TCOA_YP", "CBRSIM_TCOA_C"))
     flbk = "/".join(env_default(sim_text, key) for key in (
         "CBRSIM_TFLBK_YM", "CBRSIM_TFLBK_YP", "CBRSIM_TFLBK_C"))
     ghost_seconds = float(env_default(
@@ -237,13 +237,10 @@ def code_settings(
         else f"heavy target={literal_value(sim_text, 'SLOT_LOCALITY_HEAVY_RUN_TARGET')} runs"
     )
     return [
-        f"F3 Ym/Yp/C  Near {near}  Coa {coa}  Flbk {flbk}",
-        "Coa gate detail<%s; 2x2 mean/max %s/%s; K=%s BW=%s" % (
-            env_default(sim_text, "CBRSIM_COA_DETAIL"),
-            env_default(sim_text, "CBRSIM_COA_MEAN"),
-            env_default(sim_text, "CBRSIM_COA_MAX"),
-            env_default(sim_text, "CBRSIM_COA_K"),
-            literal_value(sim_text, "COA_BW"),
+        f"F3 Ym/Yp/C  Near {near}  Flbk {flbk}",
+        "Resident mean-colour search K=%s BW=%s" % (
+            env_default(sim_text, "CBRSIM_RESIDENT_K"),
+            literal_value(sim_text, "RESIDENT_BW"),
         ),
         "Priority detail=%s; aging=%s cap=%s dist-ref=%s step-cap=%s; edge=%stiles x%s" % (
             env_default(sim_text, "CBRSIM_DETAIL_ALPHA", "?"),
@@ -359,7 +356,7 @@ def summarize(
     take = lambda key: data[key][selection]
     frames = len(selection)
     miss = take("legend_miss")
-    coa = take("legend_coa")
+    flbk = take("legend_flbk")
     cold = take("status_dma")
     runs = take("status_run")
     prg_load = take("legend_prg")
@@ -373,14 +370,14 @@ def summarize(
     )
     lines = [
         prefix,
-        "Categories Raw %s Same %s Near %s Coa %s Flbk %s Miss %s" % tuple(
+        "Categories Raw %s Same %s Near %s Flbk %s Miss %s" % tuple(
             fmt_int(take(f"legend_{name}").sum())
-            for name in ("raw", "same", "near", "coa", "flbk", "miss")),
+            for name in ("raw", "same", "near", "flbk", "miss")),
         "Exact sources Prg %s Wr0 %s Wr1 %s Dic %s" % tuple(
             fmt_int(take(f"legend_{name}").sum())
             for name in ("prg", "wr0", "wr1", "dic")),
-        "Coa avg/p95/max %.1f / %.0f / %.0f; Miss frames/tiles/max %s/%s/%s" % (
-            coa.mean(), np.percentile(coa, 95), coa.max(),
+        "Flbk avg/p95/max %.1f / %.0f / %.0f; Miss frames/tiles/max %s/%s/%s" % (
+            flbk.mean(), np.percentile(flbk, 95), flbk.max(),
             fmt_int(np.count_nonzero(miss)), fmt_int(miss.sum()), fmt_int(miss.max())),
         *miss_streak_lines(miss_masks, selection, miss),
         "Cold total/avg/max %s / %.1f / %.0f; Run total/avg/max %s / %.1f / %.0f" % (
@@ -511,18 +508,14 @@ def draw_text_block(
 
 def draw_legend(draw: ImageDraw.ImageDraw, x: int, y: int) -> None:
     label_font = font(19)
-    for name in REQ_ORDER:
-        color = REQ_COLORS[name]
+    for name in REQ_LEGEND_ORDER:
+        color = (
+            layout.COL_WRD if name == "Wrd"
+            else REQ_COLORS[name]
+        )
         draw.rectangle((x, y + 3, x + 21, y + 23), fill=color)
         draw.text((x + 29, y), name, fill=TEXT, font=label_font)
         x += 104
-    for name in SUPPLY_ORDER:
-        color = layout.SUPPLY_COLORS[name]
-        draw.rectangle((x, y + 3, x + 21, y + 23), fill=color)
-        draw.text((x + 29, y), f"{name} remain", fill=TEXT, font=label_font)
-        x += 152
-    draw.rectangle((x, y + 3, x + 21, y + 23), fill=layout.COL_OVH)
-    draw.text((x + 29, y), "BODY control", fill=TEXT, font=label_font)
 
 
 def draw_timeline(
@@ -532,12 +525,18 @@ def draw_timeline(
     draw = ImageDraw.Draw(image)
     n = len(data["frame"])
     width = n * ppf
-    req_h, supply_h, band_h = 520, 260, 220
+    req_h, supply_h, run_h, band_h = 520, 150, 65, 65
     req_top = top
     supply_top = req_top + req_h
-    band_top = supply_top + supply_h
+    run_top = supply_top + supply_h
+    band_top = run_top + run_h
     bottom = band_top + band_h
-    for y0, height in ((req_top, req_h), (supply_top, supply_h), (band_top, band_h)):
+    for y0, height in (
+        (req_top, req_h),
+        (supply_top, supply_h),
+        (run_top, run_h),
+        (band_top, band_h),
+    ):
         draw.rectangle((left, y0, left + width - 1, y0 + height - 1), fill=PANEL, outline=GRID)
 
     cells = max(float(data["cells"][0]), 1.0)
@@ -546,6 +545,7 @@ def draw_timeline(
         for name in SUPPLY_ORDER
     }
     total_capacity = sum(capacities.values())
+    run_capacity = max(float(data["cold_cap_tiles"].max()), 1.0)
     for frame_index in range(n):
         x0 = left + frame_index * ppf
         x1 = x0 + ppf - 1
@@ -568,19 +568,73 @@ def draw_timeline(
                 )
                 y -= height
 
+        run_value = min(float(data["status_run"][frame_index]), run_capacity)
+        run_height = int(run_h * run_value / run_capacity)
+        if run_height:
+            draw.rectangle(
+                (x0, run_top + run_h - run_height, x1, run_top + run_h - 1),
+                fill=layout.COL_RUN,
+            )
+
         physical = max(float(data["body_physical_bytes"][frame_index]), 1.0)
+        raw_h = int(
+            band_h * data["body_raw_payload_bytes"][frame_index] / physical)
         payload_h = int(band_h * data["body_payload_bytes"][frame_index] / physical)
         useful_h = int(band_h * data["body_useful_bytes"][frame_index] / physical)
-        if payload_h:
+        if raw_h:
             draw.rectangle(
-                (x0, band_top + band_h - payload_h, x1, band_top + band_h - 1),
+                (x0, band_top + band_h - raw_h, x1, band_top + band_h - 1),
                 fill=layout.CAT_RAW,
+            )
+        if payload_h > raw_h:
+            draw.rectangle(
+                (x0, band_top + band_h - payload_h,
+                 x1, band_top + band_h - raw_h - 1),
+                fill=layout.COL_PRG,
             )
         if useful_h > payload_h:
             draw.rectangle(
                 (x0, band_top + band_h - useful_h, x1, band_top + band_h - payload_h - 1),
                 fill=layout.COL_OVH,
             )
+
+    scale_font = font(15)
+
+    def draw_scale(
+        row_top: int,
+        row_height: int,
+        maximum: float,
+        *,
+        percent: bool = False,
+    ) -> None:
+        for fraction in (1.0, 0.5, 0.0):
+            y = row_top + int(round((1.0 - fraction) * (row_height - 1)))
+            draw.line(
+                (left, y, left + width - 1, y),
+                fill=(62, 64, 72),
+                width=1,
+            )
+            if percent:
+                label = f"{int(round(fraction * 100))}%"
+            else:
+                label = fmt_int(maximum * fraction)
+            label_y = y
+            if fraction == 1.0:
+                label_y += 11
+            elif fraction == 0.0:
+                label_y -= 11
+            draw.text(
+                (left - 10, label_y),
+                label,
+                fill=(185, 187, 196),
+                font=scale_font,
+                anchor="rm",
+            )
+
+    draw_scale(req_top, req_h, cells)
+    draw_scale(supply_top, supply_h, total_capacity)
+    draw_scale(run_top, run_h, run_capacity)
+    draw_scale(band_top, band_h, 1.0, percent=True)
 
     fps = 1.0 / (data["time_seconds"][1] - data["time_seconds"][0]) if n > 1 else 1.0
     duration = n / fps
@@ -613,11 +667,13 @@ def draw_timeline(
     small = font(17)
     draw = ImageDraw.Draw(image)
     draw.text((18, req_top + 8), "REQ", fill=TEXT, font=label_font)
-    draw.text((18, req_top + 37), "stack / cells", fill=DIM, font=small)
+    draw.text((18, req_top + 37), "cells", fill=DIM, font=small)
     draw.text((18, supply_top + 8), "SUPPLY", fill=TEXT, font=label_font)
-    draw.text((18, supply_top + 37), "Prg+Wr / caps", fill=DIM, font=small)
-    draw.text((18, band_top + 8), "BODY", fill=TEXT, font=label_font)
-    draw.text((18, band_top + 37), "useful / slot", fill=DIM, font=small)
+    draw.text((18, supply_top + 37), "patterns", fill=DIM, font=small)
+    draw.text((18, run_top + 8), "RUN", fill=TEXT, font=label_font)
+    draw.text((18, run_top + 37), "runs", fill=DIM, font=small)
+    draw.text((18, band_top + 8), "BAND", fill=TEXT, font=label_font)
+    draw.text((18, band_top + 37), "Raw+Prg+ctrl / slot", fill=DIM, font=small)
     return width, bottom
 
 
@@ -635,31 +691,16 @@ def main() -> None:
         raise SystemExit("pixels per frame must be positive")
     if args.evaluation_end_frame is not None and args.evaluation_end_frame <= 1:
         raise SystemExit("evaluation end frame must be greater than frame 1")
-    config = load_toml(config_path)
     buffer = load_npz(sim_out / "buffer_remaining.npz") if sim_out else {}
     evaluation_end = args.evaluation_end_frame
     if evaluation_end is None:
         evaluation_end = infer_evaluation_end(buffer, n)
-    decisions = load_decisions(sim_out / "decisions.pkl") if sim_out else {}
-    miss_masks = load_miss_masks(
-        sim_out / "miss_masks.npy",
-        frames=n,
-        cells=int(data["cells"][0]),
-    ) if sim_out else None
-    source_path = None
-    if config.get("source", {}).get("path"):
-        source_path = (REPO / config["source"]["path"]).resolve()
-    probe = ffprobe_metadata(source_path)
-    source, internals, totals = metadata_lines(
-        data, config, config_path, sim_out, buffer, decisions, probe, miss_masks,
-        evaluation_end,
-    )
 
     left = 220
-    timeline_top = 630
+    timeline_top = 150
     timeline_width = n * ppf
     width = left + timeline_width + 45
-    height = timeline_top + 520 + 260 + 220 + 105
+    height = timeline_top + 520 + 150 + 65 + 65 + 105
     image = Image.new("RGBA", (width, height), BG + (255,))
     draw = ImageDraw.Draw(image)
     title = args.label or tsv.stem
@@ -669,10 +710,6 @@ def main() -> None:
         f"Detailed codec timeline | {n} frames | {ppf} px/frame | {tsv}",
         fill=DIM, font=font(20),
     )
-    column_width = (width - 72) // 3
-    draw_text_block(draw, (24, 108), "SOURCE / PROFILE", source, column_width - 20)
-    draw_text_block(draw, (24 + column_width, 108), "CODEC INTERNALS", internals, column_width - 20)
-    draw_text_block(draw, (24 + 2 * column_width, 108), "TOTALS", totals, column_width - 20)
     draw_legend(draw, left, timeline_top - 42)
     _, bottom = draw_timeline(
         image, data, left, timeline_top, ppf, evaluation_end)

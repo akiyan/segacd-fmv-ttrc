@@ -1,6 +1,6 @@
 ---
 name: timeline
-description: Render and show one large, detailed whole-movie timeline PNG from a codec-analysis TSV, with the canonical Req/supply/BODY heatmaps plus aggregate totals, internal codec thresholds, reserve/run diagnostics, and source/profile metadata. Use after every encoder adjustment or comparison, when the user asks for a timeline, heatmap, TSV visualization, or a visual A/B summary.
+description: Render and show one large, detailed whole-movie timeline PNG from a codec-analysis TSV, with the canonical Req/supply/run/Band heatmaps and fixed scales. Use after every encoder adjustment or comparison, when the user asks for a timeline, heatmap, TSV visualization, or a visual A/B summary.
 ---
 
 # Analysis Timeline
@@ -32,7 +32,7 @@ tools/python.sh .agents/skills/timeline/scripts/render_timeline.py \
 ```
 
 5. Inspect the PNG with `view_image`. Check that the full time axis, tail
-   marker, category colours, metadata, thresholds, and totals are legible.
+   marker, category colours, four row scales, and labels are legible.
 6. Publish the PNG as a public GitHub Gist. The helper creates a Git-backed
    public Gist so the binary PNG is preserved exactly, writes a
    `<image>.gist.json` receipt, and returns both the Gist page and raw PNG URL:
@@ -73,22 +73,17 @@ perform it only when the user requested this timeline workflow.
 
 Keep these parts in every image:
 
-- The canonical three whole-movie rows, using the analysis colours and fixed
-  scales: Req categories; physical Prg/Wr0/Wr1 remaining; useful BODY payload
-  plus control versus physical slot bytes.
-- Full-clip and evaluation-scope totals for categories, Coa, Miss, cold, runs,
-  Prg loads, BODY use, physical Prg occupancy, quality allowance, and the late
-  run-consolidation difference versus the one-run-per-cold upper bound.
-- Miss burst and persistence diagnostics from `miss_masks.npy`: simultaneous
-  affected-frame p50/p95/max, longest consecutive any-Miss frame run, count of
-  multi-frame runs, percentage of same-cell Miss events resolved in one frame,
-  and same-cell multi-frame event count/max duration.
-- Source/container metadata from `ffprobe`, profile geometry/audio/feature
-  choices, profile SHA-256, and simulation identity.
-- Current code thresholds and priority weights: Near/Coa/Flbk comparison
-  bounds, Coa search gate/range, detail/aging/edge weights, persistent
-  approximation rescue time and frame count, run descriptor reservation, and
-  slot-locality target.
+- The canonical four whole-movie rows, using the analysis colours and fixed
+  scales: Req categories; physical Prg plus combined Wrd remaining; physical
+  cold-run count versus the measured cold cap; and useful BODY delivery split
+  into Raw payload, Prg charge, and control versus physical slot bytes. Raw is
+  the bottom Band segment, matching its leftmost position in the status bar.
+  Keep Supply and Band compact so the dedicated RUN row remains visible without
+  increasing the overall timeline height.
+- Show explicit vertical-axis ticks and horizontal guides at zero, half-scale,
+  and full-scale on every row. Put the units below each row heading, not on
+  every tick: Req uses cells, Supply uses patterns, and RUN uses runs. Band
+  remains a percentage of each frame's physical slot.
 - Segment boundaries, five-second labels, exact frame-per-pixel mapping, and a
   clearly shaded excluded tail when requested.
 
@@ -100,8 +95,8 @@ comparable.
 
 - `Prg` in the supply row is physical PrgBuf occupancy. It is not the virtual
   whole-movie quality allowance.
-- `quality allowance` is encoder-only accounting and appears in the metadata,
-  not in the physical supply stack.
+- `quality allowance` is encoder-only accounting and does not appear in the
+  physical supply stack.
 - `Buf` is not a physical meter. Report exact Prg/Wr/Dic sources instead.
 - Run consolidation is diagnostic opportunity, not a promise that every saved
   32B could become one useful exact tile; changed residency and run grouping

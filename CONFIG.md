@@ -131,7 +131,7 @@ Higher probes exposed non-monotonic phase sensitivity rather than a useful
 portable increase. A cap720 stream realized cold 689 and passed, and a cap689
 stream also passed while reaching 65.37 ms. Cap680 then failed the same gate at
 `M=5`, with 2,193 ticks (67.37 ms), despite its lower cap. The larger caps also
-produced more Coa and fewer total exact cold loads than cap500 for this encode.
+produced more approximate reuse and fewer total exact cold loads than cap500 for this encode.
 They remain diagnostic results. This cap applies only to exactly 720 active
 tiles; the separate 1,040-tile measurement below applies only to exactly 1,040.
 
@@ -245,7 +245,7 @@ continuously.
 ## G. Encoder quality knobs
 
 Per-cell the sim picks: Raw (accurate load charged to the current-frame
-allowance), Same, Near/Coa/Flbk (reuse a resident tile), Buf (accurate load
+allowance), Same, Near/Flbk (reuse a resident tile), Buf (accurate load
 funded by saved whole-movie allowance or a boot-preload credit), or Miss. Raw
 and Buf are quality-funding classes; Prg/Wr0/Wr1/Dic independently records the
 physical source. These thresholds steer the choice.
@@ -256,16 +256,23 @@ values in this document.
 | Name | Default | Meaning |
 |---|---|---|
 | `encoder.vram_tiles` | 1518 | Resident tile pool size (LRU), shared by H32 and H40. The pool starts at tile 1 and may run right up to the first movie name table at tile 1536 (`0xC000`), so the maximum is 1535 tiles (1-1535). The common 16-glyph hexadecimal font no longer sits above the pool: it is fixed at tile 1664 (`0xD000`) in the unused `0xD000`-`0xDFFF` gap between the two name tables, identical in DEBUG and release. Existing profiles keep 1518; raise `vram_tiles` toward 1535 to spend the freed slots. |
-| `CBRSIM_COA_DETAIL` / `_MEAN` / `_MAX` / `_K` | 0.7 / 4 / 8 / 24 | Coa = reuse a resident tile whose low-frequency look matches a flat cold tile (detail below DETAIL; 2x2 mean color diff within MEAN/MAX; check K newest candidates). |
+| `CBRSIM_RESIDENT_K` / `RESIDENT_BW` | 24 / 24 | Resident search checks at most the newest 24 candidates in the target's rendered mean-colour bucket. If its best candidate cannot improve a deferred Flbk cell, the fallback pass also checks the newest eligible candidate from each adjacent mean-colour bucket. Buckets narrow search only; acceptance still uses Near or improve-only Flbk logic. |
 | `CBRSIM_NEAR_YM` / `_YP` / `_C` | 10 / 28 / 24 | Near = reuse an almost-identical resident tile (mean/max luma diff, mean chroma diff). |
 | `CBRSIM_FLBK_IMPROVE_ONLY` / `_MIN_IMPROVE` | 1 / 0 | Flbk = fill a Miss with a resident tile only if it improves the picture. |
 | `CBRSIM_TFLBK_YM` / `_YP` / `_C` | 120 / 252 / 200 | Flbk match thresholds (loose — a coarse fill beats a hole). |
 | `CBRSIM_DETAIL_ALPHA` | 0.0 | Extra priority for detailed tiles. Zero keeps it off by default; 1.5 reproduces the legacy weighting. |
 | `AGING_ALPHA` / `WAIT_CAP` | 0.6 / 10 | Multiplier for distance-weighted `age_press`, saturating at 7x. Integer Miss wait/age reporting is separate. |
-| `CBRSIM_AGING_DIST_REF` / `_STEP_CAP` | 24 / 2.0 | Miss/Flbk/Coa pressure: mean RGB error 24 adds 1 per frame; any one frame adds at most 2. Near and exact tiles reset pressure to zero. |
+| `CBRSIM_AGING_DIST_REF` / `_STEP_CAP` | 24 / 2.0 | Miss/Flbk pressure: mean RGB error 24 adds 1 per frame; any one frame adds at most 2. Near and exact tiles reset pressure to zero. |
 | `CBRSIM_GHOST_ESCALATE_SEC` | 0.2 | Promote a continuously approximate tile to Miss severity after `floor(seconds * fps)` frames (minimum 1): 6 at 30 fps, 4 at 24 fps, 3 at 15 fps. |
 | `encoder.dither` / `encoder.segment_palettes` | on / on | Dithering / per-segment palette swaps. |
 | `palette.algorithm` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. A selected one-line candidate receives a complete flattened-RGB333 histogram refinement and all-frame error proof before segment palettes are considered. |
+
+The normal allocator has no knob for splitting exact and fallback work. It
+first commits free/Same/Near results, then selects cold exact loads while
+reserving a two-byte name entry for every deferred cell, and finally fills the
+remainder with improving Flbk residents. The reservation keeps the fallback
+stage reachable even when early exact loads would otherwise exhaust the BODY
+allowance.
 | `palette.map_weight` | 1.0 | MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |
 | `palette.seam_weight` / `palette.seam_iterations` | 8.0 / 2 | MOSAIC-GM spatial assignment cost for a quantization discontinuity introduced at an 8x8 boundary, and deterministic checkerboard passes. Real source edges are excluded from the cost. |
 | `CBRSIM_PAL_GROW_REL` / `_ABS` / `_MIN_USAGE` | 0.005 / 0.002 / 0.002 | Minimum relative gain, gain per pixel, and tile-use fraction required to add another MOSAIC-GM line. |
@@ -297,8 +304,8 @@ That larger trace remains strict rather than distributing its intentionally
 infeasible all-exact shortage: optional improvements must not consume saved
 allowance needed by live Main work that differs from the dry-run prediction.
 Normal exact updates use a narrower Miss-risk trace: source changes that fit
-the existing Coa visual bound are excluded because they can degrade gracefully
-to resident reuse, while changes beyond Coa reserve quality allowance against
+the Near visual bound are excluded because they can degrade gracefully
+to resident reuse, while changes beyond Near reserve quality allowance against
 future Flbk and Miss bursts. The risk trace is independent from optional
 quality spending.
 Both curves end at zero by definition, so the useful tail naturally releases
@@ -420,7 +427,7 @@ build skips this profile-derived counter.
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when it reduces that count, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel and adds bars when the displayed aspects differ. `fit="crop"` is an explicit object-fit-cover conversion: it fills the complete output raster while preserving displayed aspect, so it may discard active pixels at the outer source edges. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
 | `[audio]` | `kind` | Write `adpcm22` for the default 22.05 kHz Sub-CPU IMA path. Use `pcm13` for the physical-console-qualified 13.3 kHz fallback. The strict profile keeps this choice explicit. |
 | `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. A directory below `videos/` is exposed as a symlink to managed tmpfs and reset for each invocation, so cross-invocation `reuse` is not expected there. The seed/accounting passes within one invocation share an identity-checked tmpfs cache and delete it on exit. Normal hardware work sets `emit_decisions=true`. |
-| `[encoder]` | `gpu`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `coa`, `boot_vram_prefetch`, `raw_prefetch` | Common codec controls. `boot_vram_prefetch` defaults to true: after exact Raw/Same-only frame 0 is installed, the encoder fills otherwise-free resident VRAM with future exact patterns. The grid-sized inline path is used first; a boot-only sidecar can then use backside slots up to the resident-pool limit. It prioritizes early cold-cap relief, then other protected and exact demand. Less urgent patterns receive the slots reclaimed first, and visible work may always reclaim speculative residency. `raw_prefetch` is the separate timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the measured cap. There is no fixed current-cold threshold: the exact remaining cold and BODY allowances are authoritative. A runtime batch needs room for at least four patterns and is capped at 32. GPU is the default; CPU fallback remains automatic. BODY supply comes from the exact CD-1x sector cadence after reserving control data and is not configurable per source. |
+| `[encoder]` | `gpu`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `boot_vram_prefetch`, `raw_prefetch` | Common codec controls. `boot_vram_prefetch` defaults to true: after exact Raw/Same-only frame 0 is installed, the encoder fills otherwise-free resident VRAM with future exact patterns. The grid-sized inline path is used first; a boot-only sidecar can then use backside slots up to the resident-pool limit. It prioritizes early cold-cap relief, then other protected and exact demand. Less urgent patterns receive the slots reclaimed first, and visible work may always reclaim speculative residency. `raw_prefetch` is the separate timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the measured cap. There is no fixed current-cold threshold: the exact remaining cold and BODY allowances are authoritative. A runtime batch needs room for at least four patterns and is capped at 32. GPU is the default; CPU fallback remains automatic. BODY supply comes from the exact CD-1x sector cadence after reserving control data and is not configurable per source. |
 | `[palette]` | `algorithm`, sampling/validation keys, MOSAIC-GM seam keys | Palette-selection algorithm and its training controls. |
 | `[pack]` | `fill`, `startup_audio_frames` | Disc-generation choices frozen with the encode. `fill=true` replaces CD-1x padding with useful future payload where proven safe. The DEBUG HUD is a player build choice and does not add stream data. Output paths are derived from the TOML filename. |
 

@@ -295,11 +295,13 @@ tools/python.sh harness/pipeline_speedup/verify_run_descriptors.py \
 The checker reconstructs controls and payload sectors without importing the packer.
 When header feature bit 0 is set, it parses the actual aligned descriptor suffix from
 every control; feature-zero legacy streams remain supported by constructing the same
-suffix hypothetically. Across the complete supplied profile it compares the
-entry scan with the descriptor path, including slot order, run grouping and 32-byte payload
-consumption. For v12 it independently walks frame-0, Prg, Wr0, Wr1, and indexed
-Dic payloads and proves every physical source is reproduced exactly. It also matches
-bitmap cells, entry palettes and every physical cold pattern to `decisions.pkl`.
+suffix hypothetically. Display entries stay in cell order, while the packed suffix
+and payload follow ascending physical VRAM-slot order. Across the complete supplied
+profile the checker rebuilds those two orders independently, including run grouping
+and 32-byte payload consumption. For v12 it independently walks frame 0, Prg, Wr0,
+Wr1, and indexed Dic payloads and proves every physical source is reproduced exactly.
+It also matches bitmap cells, entry palettes and every physical cold pattern to
+`decisions.pkl`.
 The report gives the exact added control bytes/sectors,
 startup frames 1--42 statistics, and decimal frame 2019 statistics.
 
