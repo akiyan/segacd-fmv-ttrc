@@ -138,22 +138,27 @@ run the `timeline` skill, inspect the PNG, publish it to a public Gist, and show
 it to the user. Do not render, mux, verify, or upload the full 1920x1080
 analysis MP4 yet. The emulator recording and complete HUD gate must pass first.
 
-## Stage 3: Pack and Prove the Stream
+## Stage 3: Pack, Prove, and Build the DEBUG Disc
 
-Run the packer's full verification against the same profile:
+Build the disc against the same profile:
 
 ```sh
-tools/python.sh tools/pack_stream.py --config configs/PROFILE.toml --verify
+make disc CONFIG=configs/PROFILE.toml DEBUG=1
 ```
 
-Require the packer to walk the complete stream successfully and confirm the
-simulation/packed preview agreement, delivery/ring result, frame ordering, and
-audio ordering. Retry a transient host-process failure with diagnostic output;
-do not waive a failed proof.
+The Make target removes every previous packed stream file first, runs the
+packer's full verification against the profile-authenticated current decisions,
+and only then builds the specialized player and ISO. Require it to walk the
+complete stream successfully and confirm simulation/packed preview agreement,
+delivery/ring result, frame ordering, and audio ordering. Retry a transient
+host-process failure with diagnostic output; do not waive a failed proof or
+reuse files left by an older format.
 
 ## Stage 4: Record and Verify Playback
 
-Use `record` with the same profile. Build DEBUG by default, keep the Plane A HUD,
+Use `record` with the same profile and the exact DEBUG disc just proved in
+Stage 3. Pass `--no-build` only for that exact current disc so the recorder does
+not repeat the already-completed verified pack. Keep the Plane A HUD,
 and retain the full Mega-CD startup. Choose a launch-to-tail duration at least
 30 seconds longer than the source when using the default
 `original/jp_mcd2_9212.bin`, so its roughly 21-second verified startup plus a

@@ -2,7 +2,9 @@
 """Regression tests for shared playback timing, ADPCM sizing, and cold caps."""
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
 import av_config
 
@@ -107,6 +109,24 @@ class ColdCapTests(unittest.TestCase):
     def test_full_h40_measurements_require_exact_active_tiles(self) -> None:
         self.assertEqual(av_config.cold_cap_for_fps(24, "H40", 1120), 200)
         self.assertEqual(av_config.cold_cap_for_fps(30, "H40", 1120), 180)
+
+    def test_profile_cap_may_raise_but_not_lower_baseline(self) -> None:
+        qualification = av_config.cold_cap_qualification(
+            30, "H40", 1120, requested_cap=190)
+        self.assertEqual(qualification.cap, 190)
+        self.assertEqual(qualification.baseline_cap, 180)
+        self.assertEqual(qualification.source, "profile")
+        with self.assertRaisesRegex(ValueError, "below baseline 180"):
+            av_config.cold_cap_qualification(
+                30, "H40", 1120, requested_cap=179)
+
+    def test_baseline_selector_ignores_profile_environment(self) -> None:
+        with patch.dict(os.environ, {"CBRSIM_COLD_CAP": "190"}):
+            self.assertEqual(
+                av_config.baseline_cold_cap_for_fps(
+                    30, "H40", 1120), 180)
+            self.assertEqual(
+                av_config.cold_cap_for_fps(30, "H40", 1120), 190)
 
     def test_nonexact_tuple_requires_measurement(self) -> None:
         cases = (

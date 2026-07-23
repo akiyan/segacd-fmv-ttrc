@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e101 : Add optional profile-bound encoder.cold_cap. Omission uses the exact
+#        mode/fps/active-tile baseline, a lower value is rejected before sim,
+#        and pack authenticates the same effective cap against frozen
+#        decisions. Consolidate Sonic Jam H40 on its qualified cap-190 crop
+#        profile.
 #   e100/p82: Remove the legacy direct-audio codec and profile selector. TTRC
 #        v15 always stores checkpointed 22.05 kHz IMA ADPCM controls, always
 #        boots the full decoder tables, and always decodes on the Sub CPU.
@@ -705,5 +710,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260723
-e=100
+e=101
 p=82

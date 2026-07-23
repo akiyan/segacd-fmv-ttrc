@@ -52,7 +52,7 @@ ASFLAGS := -m68000 --register-prefix-optional --bitwise-or
 CFLAGS_M68K := -m68000 -ffreestanding -fno-builtin -fomit-frame-pointer -O2 -Wall -Wextra
 LDFLAGS := -nostdlib --oformat binary
 
-.PHONY: all disc setup movieplay-setup clean check-tools test1m cdcbench still256 movieplay dmabench streamtest pcmtest adpcmtest upscaletest asictest prgtest movieplay-force
+.PHONY: all disc setup movieplay-setup clean check-tools test1m cdcbench still256 movieplay moviepack dmabench streamtest pcmtest adpcmtest upscaletest asictest prgtest movieplay-force
 
 all: disc
 
@@ -201,9 +201,23 @@ $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).cue: $(OUT_DIR)/DMABENCH_$(DMABENCH_TAG).iso
 	@printf 'FILE "DMABENCH_$(DMABENCH_TAG).iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
 
 # --- Phase B2: 差分ストリーム再生(単バッファ, BODY.DAT を連続供給) ---
-# HEADER.DAT/BODY.DAT は事前に同じ CONFIG で pack する。
 
 movieplay: check-tools $(MOVIEPLAY_ISO) $(MOVIEPLAY_CUE)
+
+# A disc build must never trust stream files left by an older routing format,
+# profile, or decision log.  Pack from the authenticated current decisions on
+# every build, removing the complete old set first so a failed pack cannot fall
+# through to a stale disc.
+moviepack: check-tools | movieplay-setup
+	@rm -f $(MOVIEPLAY_STREAM_DIR)/HEADER.DAT \
+		$(MOVIEPLAY_STREAM_DIR)/BODY.DAT \
+		$(MOVIEPLAY_STREAM_DIR)/MOVIE.DAT \
+		$(MOVIEPLAY_STREAM_DIR)/palettes.bin \
+		$(PLAYER_CONSTANTS)
+	$(PYTHON) tools/pack_stream.py --config "$(CONFIG)" --verify
+
+$(MOVIEPLAY_STREAM_DIR)/HEADER.DAT $(MOVIEPLAY_STREAM_DIR)/BODY.DAT: moviepack
+	@test -f $@
 
 # 既定はリリースビルド。DEBUG=1 でデバッグオーバーレイを有効化する。
 DEBUG ?= 0

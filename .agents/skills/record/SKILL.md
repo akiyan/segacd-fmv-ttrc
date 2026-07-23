@@ -221,6 +221,10 @@ Check the raw MKV and reports before trusting a capture:
      --gate-json videos/STEM_emu_hud_gate.json --expected-frames FRAME_COUNT
    ```
 
+   Add `--flip-fields` for a specialized H40 DEBUG build so its appended
+   `V/O/E` phase fields are preserved in the CSV. They are diagnostic and do
+   not change the six-field upload gate.
+
    The profile is mandatory and positional because the C/M limits follow the
    packed player's cadence. The command exits nonzero unless the first loop
    contains every frame and all cadence-aware limits pass:

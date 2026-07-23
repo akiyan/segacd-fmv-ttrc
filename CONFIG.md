@@ -90,13 +90,19 @@ physical source is Prg, Wr0, Wr1, or Dic (as opposed to reusing a resident
 tile). More cold gives the encoder more exact updates, but the player still has
 a measured per-frame processing ceiling.
 
-The cap is selected from `av_config.COLD_CAP_QUALIFICATIONS` by display mode,
-nominal fps, and active picture-tile count, and shared by profile validation,
-sim, pack, and analysis. All three conditions must exactly match a measured
-tuple. A result measured for a larger or smaller active picture is not reused,
-even at the same mode and fps. If no exact measurement exists, profile loading
-stops with `cold-cap measurement required`; there is no scaled/default fallback
-and no per-source environment override.
+The baseline cap is selected from `av_config.COLD_CAP_QUALIFICATIONS` by display
+mode, nominal fps, and active picture-tile count, and shared by profile
+validation, sim, pack, and analysis. All three conditions must exactly match a
+measured tuple. A result measured for a larger or smaller active picture is not
+reused, even at the same mode and fps. If no exact measurement exists, profile
+loading stops with `cold-cap measurement required`; there is no scaled/default
+fallback.
+
+`[encoder].cold_cap` may optionally raise that exact baseline for a
+source-specific full-length qualification. Omitting it selects the baseline and
+overwrites any inherited internal value. A value below the baseline is an error
+and stops profile loading before sim. This is one automatic algorithm with a
+profile-bound physical qualification, not a runtime quality knob.
 
 | Mode | fps | Measured active tiles | Qualified cap |
 |---|---:|---:|---:|
@@ -116,7 +122,8 @@ LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| cap `cold_cap_for_fps` | selected from the measured table above | cfg (auto) | **Per-frame cold cap** selected only by an exact mode/fps/active-tile match. A missing tuple is an error. |
+| baseline `baseline_cold_cap_for_fps` | selected from the measured table above | cfg (auto) | Exact mode/fps/active-tile baseline. A missing tuple is an error. |
+| effective cap `cold_cap_for_fps` | optional `[encoder].cold_cap`, otherwise baseline | profile / cfg | **Per-frame cold cap.** A profile may raise but never lower its exact baseline. |
 | realized cold | at most the mode/fps/active-tile cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
 The H40/15 fps/720-active-tile value of 500 is full-length-qualified with the
@@ -355,9 +362,13 @@ layer.
 ```sh
 tools/python.sh tools/sim.py configs/bad-apple-h32.toml
 tools/python.sh tools/render_analysis.py configs/bad-apple-h32.toml
-tools/python.sh tools/pack_stream.py --config configs/bad-apple-h32.toml --verify
 make disc CONFIG=configs/bad-apple-h32.toml DEBUG=1
 ```
+
+`make disc` deletes the previous packed stream for that profile, authenticates
+the current decision log through `pack_stream.py --verify`, and only then builds
+the player and ISO. Run `pack_stream.py` directly only when a verified packed
+stream without a disc build is the intended artifact.
 
 `MAIN_CODEGEN=1` is the default Main-CPU bitmap handler generator. It
 emits code once after header setup and falls back to the reference bit loop if
@@ -420,7 +431,7 @@ build skips this profile-derived counter.
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when it reduces that count, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel and adds bars when the displayed aspects differ. `fit="crop"` is an explicit object-fit-cover conversion: it fills the complete output raster while preserving displayed aspect, so it may discard active pixels at the outer source edges. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
 | `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. A directory below `videos/` is exposed as a symlink to managed tmpfs and reset for each invocation, so cross-invocation `reuse` is not expected there. The seed/accounting passes within one invocation share an identity-checked tmpfs cache and delete it on exit. Normal hardware work sets `emit_decisions=true`. |
-| `[encoder]` | `gpu`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `boot_vram_prefetch`, `raw_prefetch` | Common codec controls. `boot_vram_prefetch` defaults to true: after exact Raw/Same-only frame 0 is installed, the encoder fills otherwise-free resident VRAM with future exact patterns. The grid-sized inline path is used first; a boot-only sidecar can then use backside slots up to the resident-pool limit. It prioritizes early cold-cap relief, then other protected and exact demand. Less urgent patterns receive the slots reclaimed first, and visible work may always reclaim speculative residency. `raw_prefetch` is the separate timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the measured cap. There is no fixed current-cold threshold: the exact remaining cold and BODY allowances are authoritative. A runtime batch needs room for at least four patterns and is capped at 32. GPU is the default; CPU fallback remains automatic. BODY supply comes from the exact CD-1x sector cadence after reserving control data and is not configurable per source. |
+| `[encoder]` | `gpu`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `boot_vram_prefetch`, `raw_prefetch`, optional `cold_cap` | Common codec controls. `cold_cap` may raise, but never lower, the exact mode/fps/active-tile baseline; omission uses the baseline. `boot_vram_prefetch` defaults to true: after exact Raw/Same-only frame 0 is installed, the encoder fills otherwise-free resident VRAM with future exact patterns. The grid-sized inline path is used first; a boot-only sidecar can then use backside slots up to the resident-pool limit. It prioritizes early cold-cap relief, then other protected and exact demand. Less urgent patterns receive the slots reclaimed first, and visible work may always reclaim speculative residency. `raw_prefetch` is the separate timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the effective cap. There is no fixed current-cold threshold: the exact remaining cold and BODY allowances are authoritative. A runtime batch needs room for at least four patterns and is capped at 32. GPU is the default; CPU fallback remains automatic. BODY supply comes from the exact CD-1x sector cadence after reserving control data and is not configurable per source. |
 | `[palette]` | `algorithm`, sampling/validation keys, MOSAIC-GM seam keys | Palette-selection algorithm and its training controls. |
 | `[pack]` | `fill`, `startup_audio_frames` | Disc-generation choices frozen with the encode. `fill=true` replaces CD-1x padding with useful future payload where proven safe. The DEBUG HUD is a player build choice and does not add stream data. Output paths are derived from the TOML filename. |
 
@@ -431,11 +442,13 @@ The profile loader is strict: misspelled sections/keys, unsupported display
 modes, non-tile-aligned dimensions, and unsafe TOML filename characters fail
 immediately. Profile values replace
 inherited per-source environment values unconditionally. Shared hardware
-limits such as PrgBuf size, quality-budget capacity, preload capacities, and the measured cold-cap table
-stay in `tools/av_config.py`; they are deliberately not per-source TOML fields.
-`video.active_tiles` supplies source geometry to that shared selector, not a
-per-source cap override. Profile loading fails before encoding when no measured
-tuple exactly matches the requested mode, fps, and active-tile count.
+limits such as PrgBuf size, quality-budget capacity, preload capacities, and
+the baseline cold-cap table stay in `tools/av_config.py`.
+`video.active_tiles` supplies source geometry to that shared selector.
+`encoder.cold_cap` records a higher source-specific qualification while leaving
+the shared baseline unchanged. Profile loading fails before encoding when no
+measured tuple exactly matches the requested mode, fps, and active-tile count,
+or when an explicit cap is below that tuple's baseline.
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 

@@ -154,6 +154,34 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "lanczos")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "1")
         self.assertEqual(env["CBRSIM_RAW_PREFETCH"], "0")
+        self.assertEqual(env["CBRSIM_COLD_CAP"], "175")
+
+    def test_profile_cold_cap_may_raise_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "raised-cold-cap.toml"
+            path.write_text(PROFILE.replace(
+                "[palette]", "[encoder]\ncold_cap = 180\n\n[palette]"))
+            env = apply_profile_env(
+                load_profile(path), {"CBRSIM_COLD_CAP": "999"})
+        self.assertEqual(env["CBRSIM_COLD_CAP"], "180")
+
+    def test_profile_cold_cap_below_baseline_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lowered-cold-cap.toml"
+            path.write_text(PROFILE.replace(
+                "[palette]", "[encoder]\ncold_cap = 174\n\n[palette]"))
+            with self.assertRaisesRegex(
+                    ValueError, "cold_cap 174 is below baseline 175"):
+                load_profile(path)
+
+    def test_profile_cold_cap_must_be_an_integer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "invalid-cold-cap.toml"
+            path.write_text(PROFILE.replace(
+                "[palette]", "[encoder]\ncold_cap = 180.5\n\n[palette]"))
+            with self.assertRaisesRegex(
+                    ValueError, "cold_cap must be an integer"):
+                load_profile(path)
 
     def test_endpoint_snap_limits_must_be_ordered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

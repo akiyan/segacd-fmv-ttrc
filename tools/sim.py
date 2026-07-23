@@ -1387,8 +1387,13 @@ def main():
                 f"{measured_active_tiles} tiles that are ever non-black")
     print(f"  {n} frames @ {W}x{H} ({TCOLS}x{TROWS}={C_CELLS} cells, "
           f"active={ACTIVE_TILES})")
+    baseline_cap = (
+        COLD_CAP_QUALIFICATION.baseline_cap
+        if COLD_CAP_QUALIFICATION.baseline_cap is not None
+        else MAX_COLD)
     print(
-        f"  measured cold cap={MAX_COLD}: {COLD_CAP_QUALIFICATION.mode} "
+        f"  cold cap={MAX_COLD}: source={COLD_CAP_QUALIFICATION.source} "
+        f"baseline={baseline_cap}; {COLD_CAP_QUALIFICATION.mode} "
         f"{COLD_CAP_QUALIFICATION.fps:g}fps qualification measured at "
         f"{COLD_CAP_QUALIFICATION.active_tiles} active tiles")
 
@@ -3833,6 +3838,11 @@ def main():
                 "prg_buf_kb": int(av_config.PRG_BUF_CAP_KB),
                 "quality_budget_kb": int(QUALITY_BUDGET_KB),
                 "max_cold": int(MAX_COLD),
+                "baseline_cold_cap": int(
+                    COLD_CAP_QUALIFICATION.baseline_cap
+                    if COLD_CAP_QUALIFICATION.baseline_cap is not None
+                    else MAX_COLD),
+                "cold_cap_source": COLD_CAP_QUALIFICATION.source,
             },
             "encoder": {
                 "detail_alpha": float(DETAIL_ALPHA),

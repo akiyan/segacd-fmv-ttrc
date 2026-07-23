@@ -10,7 +10,7 @@ sar = "25:27"
 mode = "H40"
 width = 320
 height = 224
-fit = "pad"
+fit = "crop"
 
 [output]
 directory = "videos/SonicJamOp_H40_320x224_adpcm22/tmp"
@@ -25,6 +25,7 @@ segment_palettes = true
 near = true
 boot_vram_prefetch = true
 raw_prefetch = false
+cold_cap = 190
 
 [palette]
 algorithm = "mosaic-gm"

@@ -24,13 +24,15 @@ PER_SOURCE_ENV = {
     "CBRSIM_ACTIVE_TILES",
     "CBRSIM_MASTER_VF", "CBRSIM_RAW_VF", "CBRSIM_OUT",
     "CBRSIM_VRAM_TILES", "CBRSIM_QUALITY_BUDGET_KB", "CBRSIM_RING_CAP_KB",
-    "CBRSIM_MAX_COLD", "CBRSIM_PACK_FILL", "CBRSIM_STARTUP_AUDIO_FRAMES",
+    "CBRSIM_MAX_COLD", "CBRSIM_COLD_CAP", "CBRSIM_COLD_CAP_DIAG",
+    "CBRSIM_PACK_FILL", "CBRSIM_STARTUP_AUDIO_FRAMES",
 }
 POLLUTED = {
     "CBRSIM_SRC": "wrong.mp4", "CBRSIM_FPS": "15", "CBRSIM_MODE": "H40",
     "CBRSIM_W": "320", "CBRSIM_H": "144",
     "CBRSIM_VRAM_TILES": "7", "CBRSIM_QUALITY_BUDGET_KB": "1",
     "CBRSIM_RING_CAP_KB": "1", "CBRSIM_MAX_COLD": "1",
+    "CBRSIM_COLD_CAP": "1",
     "CBRSIM_PACK_FILL": "0",
     "CBRSIM_STARTUP_AUDIO_FRAMES": "1",
 }
@@ -64,6 +66,40 @@ def check_profiles() -> None:
         assert env["CBRSIM_MODE"] == mode
         assert env["CBRSIM_W"] == width
         assert env["CBRSIM_PAL_ALGO"] == "mosaic-gm"
+        expected_cap = av_config.baseline_cold_cap_for_fps(
+            float(profile.data["source"]["fps"]), mode,
+            int(profile.data["video"].get(
+                "active_tiles",
+                int(profile.data["video"]["width"])
+                * int(profile.data["video"]["height"]) // 64)))
+        assert env["CBRSIM_COLD_CAP"] == str(expected_cap)
+    sonic = load_profile(ROOT / "configs" / "sonic-jam-op-h40.toml")
+    sonic_env = {"CBRSIM_COLD_CAP": "1"}
+    apply_profile_env(sonic, sonic_env)
+    assert sonic_env["CBRSIM_COLD_CAP"] == "190"
+
+    source = (ROOT / "configs" / "sonic-jam-op-h40.toml").read_text(
+        encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="cold-cap-profile-") as td:
+        temp = Path(td)
+        omitted_path = temp / "sonic-h40-omitted.toml"
+        omitted_path.write_text(
+            source.replace("cold_cap = 190\n", ""), encoding="utf-8")
+        omitted = load_profile(omitted_path)
+        omitted_env = {"CBRSIM_COLD_CAP": "999"}
+        apply_profile_env(omitted, omitted_env)
+        assert omitted_env["CBRSIM_COLD_CAP"] == "180"
+
+        lower_path = temp / "sonic-h40-lower.toml"
+        lower_path.write_text(
+            source.replace("cold_cap = 190", "cold_cap = 179"),
+            encoding="utf-8")
+        try:
+            load_profile(lower_path)
+        except ValueError as exc:
+            assert "below baseline 180" in str(exc)
+        else:
+            raise AssertionError("below-baseline TOML cold cap was accepted")
     print("TOML mapping: OK (profile values replace polluted environment)")
 
 
@@ -80,6 +116,19 @@ def check_cold_caps() -> None:
         assert av_config.cold_cap_for_fps(fps, mode, active_tiles) == cap
         assert av_config.cold_realized_ceiling_for_fps(
             fps, mode, active_tiles) == cap
+        raised = av_config.cold_cap_qualification(
+            fps, mode, active_tiles, requested_cap=cap + 10)
+        assert raised.cap == cap + 10
+        assert raised.baseline_cap == cap
+        assert raised.source == "profile"
+        try:
+            av_config.cold_cap_qualification(
+                fps, mode, active_tiles, requested_cap=cap - 1)
+        except ValueError as exc:
+            assert "below baseline" in str(exc)
+        else:
+            raise AssertionError(
+                f"below-baseline profile cap accepted: {mode}/{fps}/{active_tiles}")
     print("Cold caps: OK (mode/fps/active-tile sim and pack limits agree)")
     for fps, mode, active_tiles in (
             (24, "H32", 500),

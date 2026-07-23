@@ -233,6 +233,8 @@ class ColdCapQualification:
     fps: float
     active_tiles: int
     cap: int
+    baseline_cap: int | None = None
+    source: str = "baseline"
 
 
 class ColdCapMeasurementRequired(ValueError):
@@ -252,18 +254,8 @@ COLD_CAP_QUALIFICATIONS = (
 )
 
 
-def cold_cap_qualification(fps, mode, active_tiles):
-    """Return the measured tuple that exactly matches the request.
-
-    Results are not reused across active-tile counts, display modes, or nominal
-    frame rates even when another measurement looks more conservative.
-
-    CBRSIM_COLD_CAP_DIAG replaces the measured cap with an UNQUALIFIED value
-    for cap-raise measurement streams only (harness/cold_cap_model).  It is
-    deliberately loud, never a production fallback, and the resulting stream
-    must not be published or used to update the qualification table without a
-    full-length hardware qualification of its own.
-    """
+def _normalize_cold_cap_request(fps, mode, active_tiles):
+    """Validate and normalize one cold-cap selector request."""
     mode_key = str(mode).upper()
     if mode_key not in _COLD_CAP_MODES:
         raise ValueError(f"unsupported display mode for cold cap: {mode!r}")
@@ -273,20 +265,13 @@ def cold_cap_qualification(fps, mode, active_tiles):
     active_tiles_value = int(active_tiles)
     if active_tiles_value <= 0:
         raise ValueError(f"active tile count must be positive: {active_tiles!r}")
+    return mode_key, fps_value, active_tiles_value
 
-    diag = os.environ.get("CBRSIM_COLD_CAP_DIAG", "").strip()
-    if diag:
-        diag_cap = int(diag)
-        if diag_cap <= 0:
-            raise ValueError(f"CBRSIM_COLD_CAP_DIAG must be positive: {diag!r}")
-        print(
-            f"[cold-cap] DIAGNOSTIC OVERRIDE: cap={diag_cap} for "
-            f"mode={mode_key} fps={fps_value:g} active_tiles={active_tiles_value}"
-            " (UNQUALIFIED - measurement stream only)",
-            file=sys.stderr)
-        return ColdCapQualification(
-            mode_key, fps_value, active_tiles_value, diag_cap)
 
+def baseline_cold_cap_qualification(fps, mode, active_tiles):
+    """Return the exact measured baseline tuple without any override."""
+    mode_key, fps_value, active_tiles_value = _normalize_cold_cap_request(
+        fps, mode, active_tiles)
     same_rate = [
         item for item in COLD_CAP_QUALIFICATIONS
         if item.mode == mode_key and math.isclose(
@@ -297,7 +282,10 @@ def cold_cap_qualification(fps, mode, active_tiles):
         if item.active_tiles == active_tiles_value
     ]
     if exact:
-        return exact[0]
+        item = exact[0]
+        return ColdCapQualification(
+            item.mode, item.fps, item.active_tiles, item.cap,
+            baseline_cap=item.cap, source="baseline")
 
     coverage = (
         ", ".join(
@@ -310,6 +298,69 @@ def cold_cap_qualification(fps, mode, active_tiles):
         "cold-cap measurement required for "
         f"mode={mode_key} fps={fps_value:g} active_tiles={active_tiles_value}; "
         f"measured tuples at this mode/fps: {coverage}")
+
+
+def baseline_cold_cap_for_fps(fps, mode, active_tiles):
+    """Return only the exact measured baseline cap."""
+    return baseline_cold_cap_qualification(fps, mode, active_tiles).cap
+
+
+def cold_cap_qualification(
+        fps, mode, active_tiles, *, requested_cap=None):
+    """Return the effective cap for the exact measured baseline tuple.
+
+    Results are not reused across active-tile counts, display modes, or nominal
+    frame rates even when another measurement looks more conservative.
+
+    ``requested_cap`` is the optional per-profile cap. It may raise the
+    baseline after a source-specific qualification, but may never lower it.
+    When omitted, ``CBRSIM_COLD_CAP`` is the internal TOML handoff. If neither
+    is present, the measured baseline is returned.
+
+    CBRSIM_COLD_CAP_DIAG replaces the measured cap with an UNQUALIFIED value
+    for cap-raise measurement streams only (harness/cold_cap_model).  It is
+    deliberately loud, never a production fallback, and the resulting stream
+    must not be published or used to update the qualification table without a
+    full-length hardware qualification of its own.
+    """
+    mode_key, fps_value, active_tiles_value = _normalize_cold_cap_request(
+        fps, mode, active_tiles)
+
+    diag = os.environ.get("CBRSIM_COLD_CAP_DIAG", "").strip()
+    if diag:
+        diag_cap = int(diag)
+        if diag_cap <= 0:
+            raise ValueError(f"CBRSIM_COLD_CAP_DIAG must be positive: {diag!r}")
+        print(
+            f"[cold-cap] DIAGNOSTIC OVERRIDE: cap={diag_cap} for "
+            f"mode={mode_key} fps={fps_value:g} active_tiles={active_tiles_value}"
+            " (UNQUALIFIED - measurement stream only)",
+            file=sys.stderr)
+        return ColdCapQualification(
+            mode_key, fps_value, active_tiles_value, diag_cap,
+            baseline_cap=None, source="diagnostic")
+
+    baseline = baseline_cold_cap_qualification(
+        fps_value, mode_key, active_tiles_value)
+    if requested_cap is None:
+        raw_cap = os.environ.get("CBRSIM_COLD_CAP", "").strip()
+    else:
+        raw_cap = requested_cap
+    if raw_cap in (None, ""):
+        return baseline
+    try:
+        effective_cap = int(raw_cap)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"profile cold cap must be an integer: {raw_cap!r}") from exc
+    if effective_cap < baseline.cap:
+        raise ValueError(
+            f"profile cold cap {effective_cap} is below baseline "
+            f"{baseline.cap} for mode={mode_key} fps={fps_value:g} "
+            f"active_tiles={active_tiles_value}")
+    return ColdCapQualification(
+        mode_key, fps_value, active_tiles_value, effective_cap,
+        baseline_cap=baseline.cap, source="profile")
 
 
 def cold_cap_for_fps(fps, mode, active_tiles):

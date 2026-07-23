@@ -265,14 +265,14 @@ For a new encode, run the pipeline in this order:
 
 ```sh
 tools/python.sh --gpu tools/sim.py configs/PROFILE.toml
-tools/python.sh tools/pack_stream.py --config configs/PROFILE.toml --verify
 make disc CONFIG=configs/PROFILE.toml DEBUG=1
 ```
 
-The pack step is required after sim: it writes `HEADER.DAT`, `BODY.DAT`, and
-the `palettes.bin` that the player build consumes. `make disc` then builds the
-player disc as
-`out/PROFILE.iso` + `out/PROFILE.cue`. The packer writes `HEADER.DAT`,
+`make disc` first removes any packed stream left by an older format, profile,
+or decision log. It then runs the packer's complete verification against the
+current profile-authenticated `decisions.pkl` before building the player disc
+as `out/PROFILE.iso` + `out/PROFILE.cue`. This prevents a stale
+`HEADER.DAT`/`BODY.DAT` pair from entering a new disc. The packer writes `HEADER.DAT`,
 `BODY.DAT`, `MOVIE.DAT`, and `palettes.bin` under `out/PROFILE/`, using the
 TOML filename as the artifact identity. Transient assembler files, disc staging,
 and the default direct-emulator scratch area are separated under `tmp/PROFILE/`.

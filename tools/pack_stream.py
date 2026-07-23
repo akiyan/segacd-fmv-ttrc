@@ -1462,16 +1462,33 @@ def main():
     stream_active_tiles = int(
         (((log.get("config") or {}).get("video") or {}).get("active_tiles"))
         or C_CELLS)
+    if profile is not None:
+        profile_cold_cap = profile.section("encoder").get("cold_cap")
+        if profile_cold_cap is None:
+            profile_cold_cap = av_config.baseline_cold_cap_for_fps(
+                FPS, stream_mode, stream_active_tiles)
+        requested_cold_cap = int(profile_cold_cap)
+    else:
+        # A direct decision-log pack has no TOML to authenticate. Preserve the
+        # cap frozen by that sim while still enforcing its measured baseline.
+        requested_cold_cap = int(log.get("max_cold", 0))
     cold_qualification = av_config.cold_cap_qualification(
-        FPS, stream_mode, stream_active_tiles)
+        FPS, stream_mode, stream_active_tiles,
+        requested_cap=requested_cold_cap)
     cold_ceiling = cold_qualification.cap
+    if int(sim_cold) != cold_ceiling:
+        raise SystemExit(
+            f"pack: sim cold cap={sim_cold} differs from effective profile "
+            f"cap={cold_ceiling}; re-run sim with the current TOML")
     realized_max = max([int(x) for x in n_load[1:]], default=0)
     if realized_max > cold_ceiling:
         raise SystemExit(
             f"pack: realized per-frame cold max={realized_max} > cap={cold_ceiling}. "
             f"共有 TileAllocator では realized=cap のはず=想定外。sim/pack の割り当て食い違いを疑う。")
     print(f"  realized cold: max={realized_max} <= {stream_mode}/{stream_active_tiles} "
-          f"active tiles cap {cold_ceiling} (measured at "
+          f"active tiles cap {cold_ceiling} "
+          f"(source={cold_qualification.source}, baseline="
+          f"{cold_qualification.baseline_cap}; measured at "
           f"{cold_qualification.active_tiles} tiles, 共有割り当て)")
     if len(n_load) and int(n_load[0]) > POOL:
         raise SystemExit(
