@@ -141,7 +141,9 @@ category.
   decision and emits the decision log plus analysis data. Its seed and
   accounting passes share one invocation-local, identity-checked cache for
   palette/quantization/future-planning results; the cache is deleted when that
-  invocation exits.
+  invocation exits. A completed sim artifact remains reusable across
+  invocations when the source bytes, effective settings, and encoder code
+  fingerprint all match.
 - `tools/pack_stream.py`: packs the decisions into `HEADER.DAT` and `BODY.DAT`,
   and writes the matching canonical segment-0 `palettes.bin` used to build the
   Main CPU player. It also writes their concatenation as an off-disc

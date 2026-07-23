@@ -90,7 +90,9 @@ def _slug(value: str, limit: int = 72) -> str:
 
 def _entry_key(kind: str, key: str) -> str:
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
-    return f"{_slug(kind, 20)}-{_slug(key, 48)}-{digest}"
+    # Sim keys intentionally spell out geometry, fps, fit and caps. Preserve
+    # enough of that human-readable identity to make tmpfs inspection useful.
+    return f"{_slug(kind, 20)}-{_slug(key, 180)}-{digest}"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -207,6 +209,7 @@ def evict_old_entries(
 class Lease:
     entry: Path
     marker: Path
+    reused: bool = False
 
     def release(self) -> None:
         self.marker.unlink(missing_ok=True)
@@ -264,14 +267,32 @@ def activate_directory(
     key: str,
     required_bytes: int = 0,
     root: Path | None = None,
+    reuse_token: str | None = None,
 ) -> Lease:
-    """Reset one managed directory and expose it through a videos/ symlink."""
+    """Expose a managed directory, reusing only an authenticated completion."""
 
     root = ensure_root(root)
     entry = root / "artifacts" / _entry_key(kind, key)
     active = _active_entries(root)
     if entry.resolve() in active:
         raise TmpfsWorkspaceError(f"artifact directory is already active: {entry}")
+    complete_path = entry / ".complete.json"
+    if entry.is_dir() and reuse_token is not None and complete_path.is_file():
+        try:
+            complete = json.loads(complete_path.read_text(encoding="utf-8"))
+            metadata = json.loads(
+                (entry / ".managed.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            complete = {}
+            metadata = {}
+        if (complete.get("reuse_token") == reuse_token
+                and metadata.get("kind") == kind
+                and metadata.get("key") == key
+                and (entry / "data").is_dir()):
+            _replace_alias(alias, entry / "data", directory=True)
+            lease = acquire_lease(entry, root=root)
+            lease.reused = True
+            return lease
     if entry.exists():
         _remove_entry(entry)
     evict_old_entries(required_bytes, root=root)
@@ -283,6 +304,29 @@ def activate_directory(
     }, sort_keys=True) + "\n", encoding="utf-8")
     _replace_alias(alias, data, directory=True)
     return acquire_lease(entry, root=root)
+
+
+def mark_directory_complete(
+    lease: Lease,
+    *,
+    reuse_token: str,
+    details: dict | None = None,
+) -> None:
+    """Atomically mark a leased managed directory safe for later reuse."""
+
+    if not lease.marker.is_file():
+        raise TmpfsWorkspaceError("cannot complete an unleased artifact")
+    payload = {
+        "reuse_token": reuse_token,
+        "completed_ns": time.time_ns(),
+    }
+    if details:
+        payload.update(details)
+    target = lease.entry / ".complete.json"
+    temporary = lease.entry / f".complete.{os.getpid()}.tmp"
+    temporary.write_text(
+        json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(target)
 
 
 def allocate_file(

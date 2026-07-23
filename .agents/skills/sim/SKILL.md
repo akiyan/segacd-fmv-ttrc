@@ -145,32 +145,19 @@ Before every `/sim`, perform these steps in this exact order:
 2. Validate the profile with `tools/encode_config.py` and identify its exact
    `[output].directory`.
 3. Check the shared-machine exclusion rule below.
-4. **Delete all existing contents inside that one simulation output directory**
-   before running. This includes cached `master/`, `raw/`, analysis frames,
-   stats, audio, reports, and decision logs. Never reuse them for `/sim`, even
-   when resolution and fps are unchanged. Constrain deletion to the profile's
-   declared `videos/<stem>/tmp` directory; refuse an empty, root, repository,
-   `tmp/`, or `out/` path. Do not delete packed artifacts under `out/`.
-5. Run the sim only after the cleanup finishes and report that a clean run is
-   starting.
+4. Do not manually clean the simulation output directory. Let `sim.py` inspect
+   its authenticated completed-artifact cache. It reuses only when source
+   bytes, effective encoder/TOML settings, and output-affecting encoder code
+   match; profile filenames, TOML formatting, and output paths are not part of
+   the encode identity. An interrupted artifact has no completion marker and
+   is reset automatically.
+5. Run the sim and report whether it printed `sim artifact cache: hit` or
+   started a clean seed pass. Use `CBRSIM_FORCE_REENCODE=1` only when the user
+   explicitly asks for a fresh encode or cache validation itself is the test.
 
-One safe way to resolve and guard the cleanup target is:
-
-```sh
-CONFIG=configs/<source>-<mode>.toml
-SIM_OUT=$(tools/python.sh -c 'import sys; sys.path.insert(0,"tools"); from encode_config import load_profile; print(load_profile(sys.argv[1]).output_dir)' "$CONFIG")
-case "$SIM_OUT" in
-  videos/*/tmp) ;;
-  *) echo "refusing unsafe sim cleanup path: $SIM_OUT" >&2; exit 1 ;;
-esac
-mkdir -p "$SIM_OUT"
-find "$SIM_OUT" -mindepth 1 -delete
-```
-
-The profile should normally set `output.reuse = false` for a `/sim` analysis
-run. The directory cleanup remains mandatory even with that setting, so a
-parsing error or stale environment cannot silently reuse another comparison's
-inputs.
+The profile should normally keep `output.reuse = false`. That legacy setting
+controls decoded-input reuse inside an in-progress encode; automatic reuse of
+a fully completed, authenticated sim artifact is independent of it.
 
 ```sh
 tools/python.sh --gpu tools/sim.py configs/<source>-<mode>.toml
@@ -324,9 +311,10 @@ ps -eo pid,etimes,args | grep -E "sim\\.py|render_analysis\\.py" | grep -v grep
   - `tools/layout_preview.py`: canonical layout
   - `tools/render_analysis.py`: render real data using that layout
 - Change the layout in `layout_preview.py`; `render_analysis.py` imports it.
-- Use `tools/sim.py` unchanged as the simulation core.
-- Never use `CBRSIM_REUSE=1` for `/sim`. Clean the profile-specific simulation
-  output directory and re-extract master/raw/audio from the configured source.
+- Keep `tools/sim.py` as the simulation core.
+- Never set `CBRSIM_REUSE=1` manually for `/sim`. Completed-artifact reuse is
+  automatic and authenticated; use `CBRSIM_FORCE_REENCODE=1` for an explicitly
+  requested clean run.
 - `render_analysis.py` is heavy for 3000-frame PIL rendering. It uses `nproc-2`
   parallelism. For long videos, run in the background or delegate to a forked
   context to avoid filling the main conversation context.

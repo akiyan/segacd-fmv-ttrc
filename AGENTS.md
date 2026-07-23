@@ -206,6 +206,14 @@ captures remain ordinary disk files because compilation reuses them. Do not
 accumulate video output in `tmp/`. Analysis TSVs are the other exception: keep
 every run persistently under git-ignored `logs/`. Use one stem per encode:
 
+Completed sim directories are reused automatically only when source bytes,
+effective encoder/TOML settings, and the output-affecting encoder-code
+fingerprint match. The tmpfs entry name spells out source, mode, geometry, fps,
+fit, cold cap, and short source/settings/encoder fingerprints. Profile
+filenames and TOML formatting do not split otherwise identical encodes.
+Interrupted entries have no completion marker and are reset on the next run.
+Use `CBRSIM_FORCE_REENCODE=1` only for an explicitly requested clean encode.
+
 ```
 stem = <input-basename>_<display-mode>_<resolution>_<audio-format>
        e.g. OP1_ps2_H32_256x144_adpcm22

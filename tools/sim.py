@@ -54,6 +54,7 @@ import stream_schedule  # noqa: E402
 import shadow_updates  # noqa: E402
 import sim_pass_cache  # noqa: E402
 import ttrc_routing  # noqa: E402
+import sim_artifact_cache  # noqa: E402
 import tmpfs_workspace  # noqa: E402
 import upgrade_planner  # noqa: E402
 
@@ -4175,7 +4176,16 @@ def _run_slot_locality_pipeline():
     delivery_caps_path = Path("tmp") / f"delivery_cold_caps_{stem}.npy"
     delivery_request_path = Path("tmp") / f"delivery_repair_{stem}.json"
     workspace_lease = _activate_sim_tmpfs()
+    if workspace_lease is not None and workspace_lease.reused:
+        print(
+            "sim artifact cache: complete matching encode reused; "
+            "seed and accounting passes skipped",
+            flush=True,
+        )
+        workspace_lease.release()
+        return
     cache_lease = None
+    completed = False
     try:
         cache_lease = tmpfs_workspace.create_run_directory(
             _tmpfs_key(), required_bytes=_pass_cache_required_bytes())
@@ -4265,6 +4275,7 @@ def _run_slot_locality_pipeline():
             raise SystemExit(
                 "slot-locality accounting did not converge within "
                 f"{SLOT_LOCALITY_MAX_ACCOUNTING_PASSES} passes")
+        completed = True
     finally:
         map_path.unlink(missing_ok=True)
         retry_path.unlink(missing_ok=True)
@@ -4273,13 +4284,38 @@ def _run_slot_locality_pipeline():
         if cache_lease is not None:
             tmpfs_workspace.remove_run_directory(cache_lease)
         if workspace_lease is not None:
+            if completed:
+                _mark_sim_tmpfs_complete(workspace_lease)
             workspace_lease.release()
 
 
+_SIM_CACHE_IDENTITY = None
+
+
+def _sim_cache_identity():
+    global _SIM_CACHE_IDENTITY
+    if _SIM_CACHE_IDENTITY is None:
+        _SIM_CACHE_IDENTITY = sim_artifact_cache.build_identity(
+            source=SRC,
+            pack=(
+                CONFIG_PROFILE.section("pack")
+                if CONFIG_PROFILE is not None else {}
+            ),
+            emit_decisions=bool(EMIT_DEC),
+        )
+    return _SIM_CACHE_IDENTITY
+
+
 def _tmpfs_key():
-    profile_name = CONFIG_PROFILE.path.stem if CONFIG_PROFILE else "no-profile"
-    profile_hash = CONFIG_PROFILE.sha256[:10] if CONFIG_PROFILE else "unprofiled"
-    return f"{profile_name}-{profile_hash}-{W}x{H}-{FPS_STR}fps"
+    return sim_artifact_cache.readable_key(
+        _sim_cache_identity(),
+        mode=MODE,
+        width=W,
+        height=H,
+        fps=FPS_STR,
+        fit=GEOMETRY_FIT,
+        cold_cap=MAX_COLD,
+    )
 
 
 def _estimated_frame_count():
@@ -4313,14 +4349,104 @@ def _activate_sim_tmpfs():
             flush=True,
         )
         return None
+    identity = _sim_cache_identity()
+    token = sim_artifact_cache.identity_sha256(identity)
+    force_reencode = os.environ.get(
+        "CBRSIM_FORCE_REENCODE", "0").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+    reuse_token = (
+        None if force_reencode or not EMIT_DEC else token
+    )
     lease = tmpfs_workspace.activate_directory(
         OUT,
         kind="sim",
         key=_tmpfs_key(),
         required_bytes=_sim_tmpfs_required_bytes(),
+        reuse_token=reuse_token,
     )
+    if lease.reused:
+        try:
+            marker = json.loads(
+                (lease.entry / ".complete.json").read_text(encoding="utf-8"))
+            result = sim_artifact_cache.validate_completed_data(
+                lease.entry / "data", identity, marker=marker)
+            _rebind_cached_profile(lease.entry / "data")
+        except Exception as exc:
+            print(
+                f"sim artifact cache: rejected incomplete/corrupt entry: {exc}",
+                flush=True,
+            )
+            lease.release()
+            lease = tmpfs_workspace.activate_directory(
+                OUT,
+                kind="sim",
+                key=_tmpfs_key(),
+                required_bytes=_sim_tmpfs_required_bytes(),
+            )
+        else:
+            print(
+                f"sim artifact cache: hit {result['frames']} frames "
+                f"identity={token[:12]}",
+                flush=True,
+            )
     print(f"tmpfs sim workspace: {OUT} -> {lease.entry / 'data'}", flush=True)
     return lease
+
+
+def _rebind_cached_profile(data):
+    """Authenticate output-neutral profile renames without re-encoding."""
+
+    if CONFIG_PROFILE is None or not EMIT_DEC:
+        return
+    import pickle
+
+    decision_path = Path(data) / "decisions.pkl"
+    with decision_path.open("rb") as source:
+        log = pickle.load(source)
+    config = log.get("config")
+    if not isinstance(config, dict):
+        raise sim_artifact_cache.CacheValidationError(
+            "decision log has no frozen config")
+    config["profile"] = profile_identity(CONFIG_PROFILE)
+    source_config = config.get("source")
+    if isinstance(source_config, dict):
+        source_config["path"] = str(SRC)
+    hardware = config.get("hardware")
+    if isinstance(hardware, dict):
+        hardware["baseline_cold_cap"] = int(
+            COLD_CAP_QUALIFICATION.baseline_cap
+            if COLD_CAP_QUALIFICATION.baseline_cap is not None else MAX_COLD)
+        hardware["cold_cap_source"] = COLD_CAP_QUALIFICATION.source
+    temporary = decision_path.with_name(
+        f".{decision_path.name}.{os.getpid()}.tmp")
+    with temporary.open("wb") as output:
+        pickle.dump(log, output, protocol=4)
+    temporary.replace(decision_path)
+
+
+def _mark_sim_tmpfs_complete(lease):
+    if not EMIT_DEC:
+        return
+    identity = _sim_cache_identity()
+    result = sim_artifact_cache.validate_completed_data(
+        lease.entry / "data", identity)
+    token = sim_artifact_cache.identity_sha256(identity)
+    tmpfs_workspace.mark_directory_complete(
+        lease,
+        reuse_token=token,
+        details={
+            "schema_version": sim_artifact_cache.CACHE_SCHEMA_VERSION,
+            "identity_sha256": token,
+            "identity": identity,
+            "frames": result["frames"],
+        },
+    )
+    print(
+        f"sim artifact cache: completed {result['frames']} frames "
+        f"identity={token[:12]}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
@@ -4331,10 +4457,21 @@ if __name__ == "__main__":
     if (_SLOT_LOCALITY_STAGE or locality_disabled or not EMIT_DEC
             or os.environ.get("CBRSIM_SLOT_LOCALITY_MAP", "").strip()):
         _standalone_lease = _activate_sim_tmpfs()
+        _standalone_completed = False
         try:
-            main()
+            if _standalone_lease is None or not _standalone_lease.reused:
+                main()
+                _standalone_completed = True
+            else:
+                print(
+                    "sim artifact cache: complete matching encode reused; "
+                    "simulation skipped",
+                    flush=True,
+                )
         finally:
             if _standalone_lease is not None:
+                if _standalone_completed:
+                    _mark_sim_tmpfs_complete(_standalone_lease)
                 _standalone_lease.release()
     else:
         _run_slot_locality_pipeline()

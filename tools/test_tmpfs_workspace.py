@@ -36,6 +36,35 @@ class TmpfsWorkspaceTests(unittest.TestCase):
             lease.release()
             self.assertFalse(lease.marker.exists())
 
+    def test_completed_directory_reuses_only_matching_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, self.env(Path(tmp) / "ram"):
+            alias = Path(tmp) / "videos" / "movie" / "tmp"
+            first = workspace.activate_directory(
+                alias, kind="sim", key="same-effective-settings",
+                reuse_token="token-a")
+            (first.entry / "data" / "kept.txt").write_text(
+                "complete", encoding="utf-8")
+            workspace.mark_directory_complete(
+                first, reuse_token="token-a", details={"frames": 12})
+            first.release()
+
+            reused = workspace.activate_directory(
+                alias, kind="sim", key="same-effective-settings",
+                reuse_token="token-a")
+            self.assertTrue(reused.reused)
+            self.assertEqual(
+                (reused.entry / "data" / "kept.txt").read_text(
+                    encoding="utf-8"),
+                "complete")
+            reused.release()
+
+            reset = workspace.activate_directory(
+                alias, kind="sim", key="same-effective-settings",
+                reuse_token="token-b")
+            self.assertFalse(reset.reused)
+            self.assertFalse((reset.entry / "data" / "kept.txt").exists())
+            reset.release()
+
     def test_file_is_published_through_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, self.env(Path(tmp) / "ram"):
             alias = Path(tmp) / "videos" / "movie_analysis.mp4"
