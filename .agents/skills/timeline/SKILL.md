@@ -110,4 +110,7 @@ comparable.
 ## Resource
 
 `scripts/render_timeline.py` is the canonical deterministic renderer. Update
-and test that script instead of writing one-off plotting snippets.
+and test that script instead of writing one-off plotting snippets. Category,
+physical-source, status-bar, and timeline colours come from
+`tools/analysis_style.py`; never duplicate those semantic colour values or
+category-border styles in this renderer.

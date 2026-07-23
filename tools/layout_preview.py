@@ -17,63 +17,48 @@ import random
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import av_config   # cold_cap_for_fps (Coldバーのフルスケール)
+import analysis_style as style
 import stream_schedule
 
 FONT = "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf"
 CW, CH = 1920, 1080
 BG = (12, 12, 12)
 
-# ---- カテゴリ色(sim.py と一致) ----
-CAT_RAW   = (205, 205, 205)   # Raw   same-frame exact load (black/white dashed frame)
-CAT_SAME  = (150, 150, 158)   # Same  resident exact reuse (legend mesh; no tile frame)
-CAT_NEAR  = (128, 134, 144)   # Near  resident approximation (neutral gray)
-CAT_MISS  = (220, 70, 70)     # Miss  取りこぼし(赤・塗りつぶし)
-CAT_FLBK  = (225, 185, 25)    # Flbk  resident fallback (deep yellow thin frame)
-CAT_DEDUP = (0, 190, 175)     # Dedup(旧・表示では Same に畳む。互換用に定義だけ残す)
-CAT_PREFETCH = (85, 175, 225) # future raw loaded into VRAM before first display use
+# ---- Canonical analysis colours and category styles ----
+# Keep these aliases for callers that use layout_preview as the layout API.
+CAT_RAW = style.CAT_RAW
+CAT_SAME = style.CAT_SAME
+CAT_NEAR = style.CAT_NEAR
+CAT_MISS = style.CAT_MISS
+CAT_FLBK = style.CAT_FLBK
+CAT_DEDUP = style.CAT_DEDUP
+CAT_PREFETCH = style.CAT_PREFETCH
 
 COL_BORDER = (200, 200, 200)
 COL_FRAME_IN = (70, 70, 70)
 COL_TXT = (225, 225, 225)
 COL_DIM = (150, 150, 155)
-COL_OVH = (95, 110, 122)         # BODY useful controlセグメント(くすんだ青灰)
-COL_DMA = (70, 190, 90)          # DMAパターンタイル数(green)
-COL_RUN = (215, 165, 65)         # cold pattern run分断度(amber)
-COL_PRG = (165, 105, 225)        # streamed PrgBuf
-COL_WR1 = (65, 205, 195)         # boot-preloaded WordBuf0/1 shared display colour
-COL_WR0 = COL_WR1                # Wr0/Wr1 remain separate data, unified visually
-COL_WRD = COL_WR1                # combined display label; storage remains split
-COL_DIC = (220, 120, 30)         # persistent DicBuf dictionary (deep orange)
-SUPPLY_COLORS = {
-    "Prg": COL_PRG,
-    "Wr0": COL_WR0,
-    "Wr1": COL_WR1,
-    "Dic": COL_DIC,
-}
-DISPLAY_SOURCE_ORDER = ("Prg", "Wr0", "Wr1", "Dic")
-METER_SUPPLY_ORDER = ("Prg", "Wr0", "Wr1")
+COL_OVH = style.COL_OVH
+COL_DMA = style.COL_DMA
+COL_RUN = style.COL_RUN
+COL_PRG = style.COL_PRG
+COL_WR1 = style.COL_WR1
+COL_WR0 = style.COL_WR0
+COL_WRD = style.COL_WRD
+COL_DIC = style.COL_DIC
+SUPPLY_COLORS = style.SUPPLY_COLORS
+DISPLAY_SOURCE_ORDER = style.DISPLAY_SOURCE_ORDER
+METER_SUPPLY_ORDER = style.METER_SUPPLY_ORDER
 
 # Category is now based on display-time behavior and physical supply. Raw is a
 # same-frame CD load used immediately. The four supply categories replace the
 # old encoder-funding class Buf. Prefetch is not visible yet, so it has only a
 # status meter and becomes Same if the resident pattern is used later.
-QUALITY_CATS = [
-    ("Raw", CAT_RAW), ("Same", CAT_SAME), ("Near", CAT_NEAR),
-    ("Flbk", CAT_FLBK), ("Miss", CAT_MISS),
-]
-SOURCE_CATS = [(name, SUPPLY_COLORS[name]) for name in DISPLAY_SOURCE_ORDER]
-CATS = QUALITY_CATS + SOURCE_CATS
-LEGEND_CATS = [
-    ("Raw", CAT_RAW), ("Same", CAT_SAME), ("Near", CAT_NEAR),
-    ("Flbk", CAT_FLBK), ("Miss", CAT_MISS),
-    ("Prg", COL_PRG), ("Wrd", COL_WRD), ("Dic", COL_DIC),
-]
-CAT_FILL = {"Miss"}
-CAT_DASHED = {"Dic", "Prg", "Wr0", "Wr1", "Wrd"}
+CATS = style.CATS
+LEGEND_CATS = style.LEGEND_CATS
 DISP = {name: name for name, _ in CATS}
 DISP["Wrd"] = "Wrd"
-REQ_TIMELINE_CATS = (
-    "Raw", "Prg", "Wr0", "Wr1", "Dic", "Near", "Flbk", "Miss")
+REQ_TIMELINE_CATS = style.REQ_TIMELINE_CATS
 
 # ---- レイアウト定数(枠 = [x0,y0,x1,y1]) ----
 PAD = 11
@@ -323,7 +308,7 @@ def dummy_image(w, h, seed):
 def draw_catmap(w, h, data):
     """カテゴリマップ: ダミータイル格子。
     Raw=thin black/white dashed frame / Same=no frame / Near/Flbk=thin /
-    Dic/Prg/Wr=thin colour-and-transparent dash / Miss=red fill."""
+    Dic/Prg/Wr=thin colour-and-black dash / Miss=red fill."""
     im = Image.new("RGB", (w, h), (18, 18, 18))
     d = ImageDraw.Draw(im)
     cols, rows = 22, 18
@@ -337,74 +322,19 @@ def draw_catmap(w, h, data):
             x1, y1 = int((c + 1) * tw) - 1, int((r + 1) * th) - 1
             k = random.choices(
                 cats, weights=[24, 34, 8, 15, 2, 7, 4, 3, 3])[0]
-            col = dict(CATS)[k]
             if k == "Miss":
-                d.rectangle([x0, y0, x1, y1], fill=CAT_MISS)                  # 赤で塗りつぶし
+                style.draw_category_border(d, (x0, y0, x1, y1), k)
                 continue
             # 内容(色ブロック)を塗る
             d.rectangle([x0, y0, x1, y1], fill=((c * 11 + r * 7) % 256, (r * 13) % 256, (c * 17) % 256))
-            if k == "Raw":
-                dashed_rect(d, (x0, y0, x1, y1))
-            elif k == "Same":
-                continue
-            elif k in CAT_DASHED:
-                colored_dashed_rect(d, (x0, y0, x1, y1), col)
-            elif k not in CAT_FILL:
-                d.rectangle([x0, y0, x1, y1], outline=col, width=1)
+            style.draw_category_border(d, (x0, y0, x1, y1), k)
     return im
-
-
-def dashed_rect(d, box, dash=3):
-    """One-pixel alternating black/white dashed rectangle."""
-    x0, y0, x1, y1 = map(int, box)
-    for start in range(x0, x1 + 1, dash):
-        end = min(start + dash - 1, x1)
-        phase = ((start - x0) // dash) & 1
-        d.line((start, y0, end, y0), fill=(235, 235, 235) if not phase else (15, 15, 15))
-        d.line((start, y1, end, y1), fill=(15, 15, 15) if not phase else (235, 235, 235))
-    for start in range(y0, y1 + 1, dash):
-        end = min(start + dash - 1, y1)
-        phase = ((start - y0) // dash) & 1
-        d.line((x0, start, x0, end), fill=(15, 15, 15) if not phase else (235, 235, 235))
-        d.line((x1, start, x1, end), fill=(235, 235, 235) if not phase else (15, 15, 15))
-
-
-def colored_dashed_rect(d, box, col, dash=3, width=1):
-    """Dashed border alternating between the category colour and content."""
-    x0, y0, x1, y1 = map(int, box)
-    for start in range(x0, x1 + 1, dash * 2):
-        end = min(start + dash - 1, x1)
-        d.line((start, y0, end, y0), fill=col, width=width)
-        d.line((start, y1, end, y1), fill=col, width=width)
-    for start in range(y0, y1 + 1, dash * 2):
-        end = min(start + dash - 1, y1)
-        d.line((x0, start, x0, end), fill=col, width=width)
-        d.line((x1, start, x1, end), fill=col, width=width)
 
 
 def swatch(d, x, y, sw, name, col):
     """Legend swatch mirroring the category-map border/fill semantics."""
-    if name == "Raw":
-        dashed_rect(d, (x, y, x + sw, y + sw), dash=3)
-    elif name == "Same":
-        # Reuse the original Raw legend's light/dark checker exactly.
-        hi, lo = (210, 210, 210), (45, 45, 45)
-        cs = max(2, (sw + 1) // 4)
-        for iy in range(0, sw + 1, cs):
-            for ix in range(0, sw + 1, cs):
-                on = (((ix // cs) + (iy // cs)) % 2 == 0)
-                d.rectangle(
-                    [x + ix, y + iy, min(x + ix + cs - 1, x + sw),
-                     min(y + iy + cs - 1, y + sw)],
-                    fill=hi if on else lo)
-    elif name in CAT_FILL:                                        # Miss
-        d.rectangle([x, y, x + sw, y + sw], fill=col)
-    elif name in CAT_DASHED:
-        colored_dashed_rect(
-            d, (x, y, x + sw, y + sw), col, dash=2,
-            width=2 if name in {"Prg", "Wrd", "Dic"} else 1)
-    else:
-        d.rectangle([x, y, x + sw, y + sw], outline=col, width=1)
+    del col
+    style.draw_category_swatch(d, (x, y, x + sw, y + sw), name)
 
 
 def draw_legend(w, h, data):
@@ -484,7 +414,7 @@ def draw_status(w, h, data):
     # 1) Req = mutually-exclusive displayed categories; headline values only.
     stacked([(data["counts"][k], dict(CATS)[k]) for k, _ in CATS], C, REQ_W)
     bx = x + int(REQ_W * data["budget"] / C)
-    d.line([bx, by - 2, bx, by + BH + 2], fill=(255, 214, 0))
+    d.line([bx, by - 2, bx, by + BH + 2], fill=style.COL_LIMIT)
     xq = draw_field(d, x, ly, "Req:", data["req"], 3, f_leg, COL_TXT)
     draw_field(d, xq + 8, ly, "Miss:", data["miss"], 3, f_leg, COL_TXT)
     x += REQ_W + GAP
@@ -503,14 +433,23 @@ def draw_status(w, h, data):
              (data["body_prg_payload_bytes"], COL_PRG),
              (data["body_control_bytes"], COL_OVH)],
             max(data["body_physical_bytes"], 1), BAND_W)
-    d.line([x + BAND_W, by - 2, x + BAND_W, by + BH + 2], fill=(210, 190, 90))
+    d.line(
+        [x + BAND_W, by - 2, x + BAND_W, by + BH + 2],
+        fill=style.COL_BAND_LIMIT,
+    )
     draw_field(d, x, ly, "Band:", data["band_kbps"], 3, f_leg, COL_TXT)
     x += BAND_W + GAP
     # 4) DMA = 今フレームの32Bパターンタイル数。フル=モード/fpsの理論DMAから全NT分を引いた枚数。
     fillw = int(DMA_W * min(dval, dmax) / max(dmax, 1)); over = dval > dmax
-    d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else COL_DMA)
+    d.rectangle(
+        [x, by, x + fillw, by + BH],
+        fill=style.COL_OVER if over else COL_DMA,
+    )
     if over:
-        d.rectangle([x + fillw, by, x + DMA_W, by + BH], fill=(150, 60, 60))
+        d.rectangle(
+            [x + fillw, by, x + DMA_W, by + BH],
+            fill=style.COL_OVER_REMAINDER,
+        )
     d.rectangle([x, by, x + DMA_W, by + BH], outline=COL_FRAME_IN)
     draw_field(d, x, ly, "DMA:", dval, dma_value_digits(C), f_leg, COL_TXT)
     x += DMA_W + GAP
@@ -520,7 +459,7 @@ def draw_status(w, h, data):
     run_fill = (max(1, int(RUN_W * min(run_val, run_max) / run_max))
                 if run_val > 0 and run_max > 0 else 0)
     d.rectangle([x, by, x + run_fill, by + BH],
-                fill=(220, 70, 70) if run_val > run_max else COL_RUN)
+                fill=CAT_MISS if run_val > run_max else COL_RUN)
     d.rectangle([x, by, x + RUN_W, by + BH], outline=COL_FRAME_IN)
     draw_field(d, x, ly, "Run:", run_val, DMA_RUN_DIGITS, f_leg, COL_TXT)
     x += RUN_W + GAP

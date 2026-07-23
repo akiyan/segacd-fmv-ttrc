@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import analysis_style as style  # noqa: E402
 from cbr_paths import sim_work_dir  # noqa: E402
 
 OUT = sim_work_dir()
@@ -17,9 +18,15 @@ W = 1600                     # 画像幅
 HM_H, BUF_H = 340, 150       # ヒートマップ高 / Bufマップ高
 PADL, PADR, PADT = 8, 8, 46  # 左右余白・上見出し余白
 GAP, AXIS = 22, 22           # マップ間の隙間 / 時間軸の高さ
-COL = dict(raw=(205, 205, 205), dedup=(0, 190, 175),
-           near=(128, 134, 144), flbk=(225, 185, 25),
-           buf=(175, 120, 235), miss=(220, 70, 70), bufline=(175, 120, 235))
+COL = dict(
+    raw=style.CAT_RAW,
+    dedup=style.CAT_DEDUP,
+    near=style.CAT_NEAR,
+    flbk=style.CAT_FLBK,
+    buf=style.COL_PRG,
+    miss=style.CAT_MISS,
+    bufline=style.COL_PRG,
+)
 BG = (16, 16, 18)
 
 

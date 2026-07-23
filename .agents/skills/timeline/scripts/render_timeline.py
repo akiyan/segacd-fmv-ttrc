@@ -23,6 +23,7 @@ SCRIPT = Path(__file__).resolve()
 REPO = SCRIPT.parents[4]
 TOOLS = REPO / "tools"
 sys.path.insert(0, str(TOOLS))
+import analysis_style as style  # noqa: E402
 import layout_preview as layout  # noqa: E402
 import tmpfs_workspace  # noqa: E402
 
@@ -35,9 +36,9 @@ GRID = (52, 54, 62)
 SEGMENT = (105, 105, 118)
 TAIL = (105, 42, 42, 82)
 
-REQ_ORDER = tuple(layout.REQ_TIMELINE_CATS)
-REQ_COLORS = {name: dict(layout.CATS)[name] for name in REQ_ORDER}
-SUPPLY_ORDER = tuple(layout.METER_SUPPLY_ORDER)
+REQ_ORDER = tuple(style.REQ_TIMELINE_CATS)
+REQ_COLORS = {name: style.CATEGORY_COLORS[name] for name in REQ_ORDER}
+SUPPLY_ORDER = tuple(style.METER_SUPPLY_ORDER)
 REQ_LEGEND_ORDER = ("Raw", "Prg", "Wrd", "Dic", "Near", "Flbk", "Miss")
 
 REQUIRED_COLUMNS = {
@@ -510,7 +511,7 @@ def draw_legend(draw: ImageDraw.ImageDraw, x: int, y: int) -> None:
     label_font = font(19)
     for name in REQ_LEGEND_ORDER:
         color = (
-            layout.COL_WRD if name == "Wrd"
+            style.COL_WRD if name == "Wrd"
             else REQ_COLORS[name]
         )
         draw.rectangle((x, y + 3, x + 21, y + 23), fill=color)
@@ -564,7 +565,7 @@ def draw_timeline(
             if height:
                 draw.rectangle(
                     (x0, y - height, x1, y - 1),
-                    fill=layout.SUPPLY_COLORS[name],
+                    fill=style.SUPPLY_COLORS[name],
                 )
                 y -= height
 
@@ -573,7 +574,7 @@ def draw_timeline(
         if run_height:
             draw.rectangle(
                 (x0, run_top + run_h - run_height, x1, run_top + run_h - 1),
-                fill=layout.COL_RUN,
+                fill=style.COL_RUN,
             )
 
         physical = max(float(data["body_physical_bytes"][frame_index]), 1.0)
@@ -584,18 +585,18 @@ def draw_timeline(
         if raw_h:
             draw.rectangle(
                 (x0, band_top + band_h - raw_h, x1, band_top + band_h - 1),
-                fill=layout.CAT_RAW,
+                fill=style.CAT_RAW,
             )
         if payload_h > raw_h:
             draw.rectangle(
                 (x0, band_top + band_h - payload_h,
                  x1, band_top + band_h - raw_h - 1),
-                fill=layout.COL_PRG,
+                fill=style.COL_PRG,
             )
         if useful_h > payload_h:
             draw.rectangle(
                 (x0, band_top + band_h - useful_h, x1, band_top + band_h - payload_h - 1),
-                fill=layout.COL_OVH,
+                fill=style.COL_OVH,
             )
 
     scale_font = font(15)

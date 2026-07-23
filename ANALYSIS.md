@@ -98,20 +98,20 @@ Low-resolution grids therefore appear at their true on-screen size.
 - **Source** (top): the source frame after crop, scaled into the panel (4:3
   panel, same footprint as the category map).
 - **Legend** (between Source and the category map): five entries on the first
-  row and three on the second, ordered `Raw Same Dic Prg Wr` then
-  `Near Flbk Miss`. The nine mutually exclusive data classes remain intact,
-  but the displayed `Wr` count combines `Wr0 + Wr1`.
+  row and three on the second, ordered `Raw Same Near Flbk Miss` then
+  `Prg Wrd Dic`. The nine mutually exclusive data classes remain intact,
+  but the displayed `Wrd` count combines `Wr0 + Wr1`.
   Numeric fields are text directly on the legend background; there is no level
   fill behind the digits. All zero-padded digits use the normal text colour.
   Swatch styles mirror the map except that borderless `Same` uses the original
   light/dark checker swatch in the legend. `Raw` = black/white dashed frame,
-  `Miss` = red fill, and `Near/Flbk` = thin frame. `Dic/Prg/Wr` use thin borders alternating between their
-  colour and transparent gaps.
+  `Miss` = red fill, and `Near/Flbk` = thin frame. `Dic/Prg/Wrd` use thin
+  borders alternating between their category colour and black.
 - **Category map** (middle): the tile grid. Each 8x8 tile shows its
   **reconstructed content**; the category (see Tile Categories) is indicated by
   the border: `Raw` = thin black/white dashed frame, `Same` = no border,
   `Near/Flbk` = thin 1px border, and
-  `Dic/Prg/Wr0/Wr1` = thin colour-and-transparent dashed border. Wr0 and Wr1
+  `Dic/Prg/Wr0/Wr1` = thin colour-and-black dashed border. Wr0 and Wr1
   share the Wr1 cyan display colour. A `Miss` tile is
   drawn as a **red-filled hole** (its content is not updated this frame).
 - **Category totals** (directly below the category map, `CATTOT_XY`): a thin
@@ -172,13 +172,13 @@ used by the optional absolute-threshold mode.
 |-------|--------|-------|---------|
 | **Raw**  | black/white dashed border | 34 | An exact pattern delivered for this frame, loaded into VRAM before display, and used immediately. Timed frames are bounded by the per-frame cold cap; frame 0 is boot-loaded from `HEADER.DAT` and is exempt. |
 | **Same** | light/dark checker in legend; no map border | 0 or 2 (name only) | The target tile's exact pattern is **already resident** in VRAM. This includes a pattern prefetched in an earlier frame and first displayed now. No pattern transfer occurs this frame. |
-| **Near** | blue | 2 (name) | No exact match, but a resident pattern passes the **Near** thresholds; the cell points to it. Near-perfect reuse. Also covers "keep the current display" when the currently shown tile is already accurate and still within Near of the new target. |
-| **Flbk** | red thin border | 2 (name) | **Fallback** (merged Mid+Far). Used when an exact load is unavailable. It remains distinct from the solid-red Miss because it did improve the displayed tile. |
+| **Near** | grey thin border | 2 (name) | No exact match, but a resident pattern passes the **Near** thresholds; the cell points to it. Near-perfect reuse. Also covers "keep the current display" when the currently shown tile is already accurate and still within Near of the new target. |
+| **Flbk** | yellow thin border | 2 (name) | **Fallback** (merged Mid+Far). Used when an exact load is unavailable. It remains distinct from the solid-red Miss because it did improve the displayed tile. |
 | **Miss** | red (filled) | 0 | The tile was **not updated**; it still shows whatever was there before. A red-filled hole in the category map. |
-| **Prg** | violet/transparent thin dashed border | 34 | An exact cold load funded from saved whole-movie allowance and physically supplied by streamed PrgBuf. |
-| **Wr0** | cyan/transparent thin dashed border | 2 (name) | An exact cold load using a boot-preloaded WordBuf0 pattern. Its legend count is combined into `Wr`. |
-| **Wr1** | cyan/transparent thin dashed border | 2 (name) | An exact cold load using a boot-preloaded WordBuf1 pattern. Its legend count is combined into `Wr`. |
-| **Dic** | amber/transparent thin dashed border | 2 (name) | An exact cold load using an entry from persistent DicBuf. |
+| **Prg** | violet/black thin dashed border | 34 | An exact cold load funded from saved whole-movie allowance and physically supplied by streamed PrgBuf. |
+| **Wr0** | cyan/black thin dashed border | 2 (name) | An exact cold load using a boot-preloaded WordBuf0 pattern. Its legend count is combined into `Wrd`. |
+| **Wr1** | cyan/black thin dashed border | 2 (name) | An exact cold load using a boot-preloaded WordBuf1 pattern. Its legend count is combined into `Wrd`. |
+| **Dic** | amber/black thin dashed border | 2 (name) | An exact cold load using an entry from persistent DicBuf. |
 
 ### Selection order (per changed tile, `commit_unified`)
 
@@ -413,5 +413,6 @@ Flbk `(225,185,25)` yellow, Miss `(220,70,70)` red,
 DMA `(70,190,90)` green,
 DMA-run `(215,165,65)` amber, Band-control `(95,110,122)` blue-grey.
 Physical supply colours: Prg `(165,105,225)`, Wr0 and Wr1 both
-`(65,205,195)`, Dic `(220,120,30)`. Dic, Prg, and Wrd use these colours only
-on alternating segments of their thin category borders.
+`(65,205,195)`, Dic `(220,120,30)`. Dic, Prg, and Wrd alternate these colours
+with black on their thin category borders. All analysis renderers take these
+semantic colours and border styles from `tools/analysis_style.py`.

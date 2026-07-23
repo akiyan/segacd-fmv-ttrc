@@ -37,6 +37,7 @@ CONFIG_PROFILE = consume_config_arg(
     sys.argv, required=__name__ == "__main__")
 
 import layout_preview as L
+import analysis_style as style
 import stream_schedule
 import analysis_logs
 import tmpfs_workspace
@@ -376,7 +377,7 @@ def frame_palettes(i):
             "Next": seg_pal_rgb(s + 1) if s < last else None}
 
 
-CAT_TOTALS = {k: int(FULL[k].sum()) for k, _ in L.CATS}
+CAT_TOTALS = {k: int(FULL[k].sum()) for k, _ in style.CATS}
 
 # ---- 有効転送量(新規パターンのCDバイト) + CD1x/コマ + パレット切替フレーム ----
 Updated = col("updated")
@@ -475,7 +476,10 @@ def build_tl_bg():
     d.rectangle([0, H_req, tlw, H_req + H_supply], fill=(21, 22, 28))
     d.rectangle([0, y_run, tlw, y_band], fill=(27, 24, 17))
     d.rectangle([0, y_band, tlw, tlh], fill=(18, 26, 20))
-    order = [(name, dict(L.CATS)[name]) for name in L.REQ_TIMELINE_CATS]
+    order = [
+        (name, style.CATEGORY_COLORS[name])
+        for name in style.REQ_TIMELINE_CATS
+    ]
     for cx in range(tlw):
         fi = min(int(cx / tlw * NF), NF - 1)
         yb = H_req
@@ -485,25 +489,34 @@ def build_tl_bg():
                 d.line([(cx, yb - seg), (cx, yb)], fill=c); yb -= seg
         ys = H_req + H_supply
         total_capacity = max(sum(SUPPLY_CAPACITIES.values()), 1)
-        for name in L.METER_SUPPLY_ORDER:
+        for name in style.METER_SUPPLY_ORDER:
             hs = int(H_supply * SUPPLY_REMAINING[name][fi] / total_capacity)
             if hs > 0:
-                d.line([(cx, ys - hs), (cx, ys)], fill=L.SUPPLY_COLORS[name])
+                d.line(
+                    [(cx, ys - hs), (cx, ys)],
+                    fill=style.SUPPLY_COLORS[name],
+                )
                 ys -= hs
         run_capacity = max(COLD_CAP, 1)
         hr = int(H_run * min(int(DMA_RUNS[fi]), run_capacity) / run_capacity)
         if hr > 0:
-            d.line([(cx, y_band - hr), (cx, y_band)], fill=L.COL_RUN)
+            d.line([(cx, y_band - hr), (cx, y_band)], fill=style.COL_RUN)
         physical = max(int(BODY_PHYSICAL_BYTES[fi]), 1)
         hrw = int(H_band * int(BODY_RAW_PAYLOAD_BYTES[fi]) / physical)
         hprg = int(H_band * int(BODY_PAYLOAD_BYTES[fi]) / physical)
         if hrw > 0:
-            d.line([(cx, tlh - hrw), (cx, tlh)], fill=L.CAT_RAW)
+            d.line([(cx, tlh - hrw), (cx, tlh)], fill=style.CAT_RAW)
         if hprg > hrw:
-            d.line([(cx, tlh - hprg), (cx, tlh - hrw)], fill=L.COL_PRG)
+            d.line(
+                [(cx, tlh - hprg), (cx, tlh - hrw)],
+                fill=style.COL_PRG,
+            )
         hc = int(H_band * int(BODY_USEFUL_BYTES[fi]) / physical)
         if hc > hprg:
-            d.line([(cx, tlh - hc), (cx, tlh - hprg)], fill=L.COL_OVH)
+            d.line(
+                [(cx, tlh - hc), (cx, tlh - hprg)],
+                fill=style.COL_OVH,
+            )
     d.line([(0, y_run), (tlw - 1, y_run)], fill=(110, 105, 70))
     d.line([(0, y_band), (tlw - 1, y_band)], fill=(110, 105, 70))
     d.rectangle([0, 0, tlw - 1, tlh - 1], outline=L.COL_FRAME_IN)
@@ -533,35 +546,47 @@ def draw_status_real(data):
         d.rectangle([x, by, x + bw, by + BH], outline=L.COL_FRAME_IN)
 
     # 1) Req + Miss headline values.
-    stacked([(cn[k], dict(L.CATS)[k]) for k, _ in L.CATS], C, REQ_W)
+    stacked([
+        (cn[name], style.CATEGORY_COLORS[name])
+        for name, _ in style.CATS
+    ], C, REQ_W)
     bx = x + int(REQ_W * data["budget"] / C)
-    d.line([bx, by - 2, bx, by + BH + 2], fill=(255, 214, 0))
+    d.line([bx, by - 2, bx, by + BH + 2], fill=style.COL_LIMIT)
     xq = L.draw_field(d, x, ly, "Req:", data["req"], 3, L.f_leg, L.COL_TXT)
     L.draw_field(d, xq + 8, ly, "Miss:", data["miss"], 3, L.f_leg, L.COL_TXT)
     x += REQ_W + GAP
     # 2) Cold = same-frame exact loads by source + future prefetch.
-    cold_parts = [(cn["Raw"], L.CAT_RAW)]
+    cold_parts = [(cn["Raw"], style.CAT_RAW)]
     cold_parts += [
-        (cn[name], L.SUPPLY_COLORS[name])
-        for name in L.DISPLAY_SOURCE_ORDER
+        (cn[name], style.SUPPLY_COLORS[name])
+        for name in style.DISPLAY_SOURCE_ORDER
     ]
-    cold_parts.append((data["cold_prefetch"], L.CAT_PREFETCH))
+    cold_parts.append((data["cold_prefetch"], style.CAT_PREFETCH))
     stacked(cold_parts, data["cold_cap"], COLD_W)
     L.draw_field(d, x, ly, "Cold:", data["cold"], 3, L.f_leg, L.COL_TXT)
     x += COLD_W + GAP
     # 3) Band = Raw payload + Prg charge + control; no pad/Header.
-    stacked([(data["body_raw_payload_bytes"], L.CAT_RAW),
-             (data["body_prg_payload_bytes"], L.COL_PRG),
-             (data["body_control_bytes"], L.COL_OVH)],
+    stacked([(data["body_raw_payload_bytes"], style.CAT_RAW),
+             (data["body_prg_payload_bytes"], style.COL_PRG),
+             (data["body_control_bytes"], style.COL_OVH)],
             max(data["body_physical_bytes"], 1), BAND_W)
-    d.line([x + BAND_W, by - 2, x + BAND_W, by + BH + 2], fill=(210, 190, 90))
+    d.line(
+        [x + BAND_W, by - 2, x + BAND_W, by + BH + 2],
+        fill=style.COL_BAND_LIMIT,
+    )
     L.draw_field(d, x, ly, "Band:", data["band_kbps"], 3, L.f_leg, L.COL_TXT)
     x += BAND_W + GAP
     # 4) DMA = 今フレームの32Bパターンタイル数
     fillw = int(DMA_W * min(dval, dmax) / max(dmax, 1)); over = dval > dmax
-    d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else L.COL_DMA)
+    d.rectangle(
+        [x, by, x + fillw, by + BH],
+        fill=style.COL_OVER if over else style.COL_DMA,
+    )
     if over:
-        d.rectangle([x + fillw, by, x + DMA_W, by + BH], fill=(150, 60, 60))
+        d.rectangle(
+            [x + fillw, by, x + DMA_W, by + BH],
+            fill=style.COL_OVER_REMAINDER,
+        )
     d.rectangle([x, by, x + DMA_W, by + BH], outline=L.COL_FRAME_IN)
     L.draw_field(d, x, ly, "DMA:", dval, L.dma_value_digits(C), L.f_leg, L.COL_TXT)
     x += DMA_W + GAP
@@ -571,7 +596,7 @@ def draw_status_real(data):
     run_fill = (max(1, int(RUN_W * min(run_val, run_max) / run_max))
                 if run_val > 0 and run_max > 0 else 0)
     d.rectangle([x, by, x + run_fill, by + BH],
-                fill=(220, 70, 70) if run_val > run_max else L.COL_RUN)
+                fill=style.CAT_MISS if run_val > run_max else style.COL_RUN)
     d.rectangle([x, by, x + RUN_W, by + BH], outline=L.COL_FRAME_IN)
     L.draw_field(d, x, ly, "Run:", run_val, L.DMA_RUN_DIGITS, L.f_leg, L.COL_TXT)
     x += RUN_W + GAP
@@ -579,7 +604,7 @@ def draw_status_real(data):
     # 6) Prg remains physical; WordBuf banks are combined only for display.
     prg_remaining = data["supply_remaining"]["Prg"]
     prg_capacity = data["supply_capacities"]["Prg"]
-    stacked([(prg_remaining, L.COL_PRG)], prg_capacity, PRG_W)
+    stacked([(prg_remaining, style.COL_PRG)], prg_capacity, PRG_W)
     L.draw_field(d, x, ly, "Prg:", prg_remaining, 5, L.f_leg, L.COL_TXT)
     x += PRG_W + GAP
 
@@ -587,12 +612,12 @@ def draw_status_real(data):
         data["supply_remaining"]["Wr0"] + data["supply_remaining"]["Wr1"])
     wrd_capacity = (
         data["supply_capacities"]["Wr0"] + data["supply_capacities"]["Wr1"])
-    stacked([(wrd_remaining, L.COL_WRD)], wrd_capacity, WRD_W)
+    stacked([(wrd_remaining, style.COL_WRD)], wrd_capacity, WRD_W)
     L.draw_field(d, x, ly, "Wrd:", wrd_remaining, 4, L.f_leg, L.COL_TXT)
     x += WRD_W + GAP
 
     # 7) Prefetch activity is shown last.
-    stacked([(data["cold_prefetch"], L.CAT_PREFETCH)],
+    stacked([(data["cold_prefetch"], style.CAT_PREFETCH)],
             data["prefetch_cap"], PRE_W)
     L.draw_field(d, x, ly, "Pre:", data["cold_prefetch"], 3, L.f_leg, L.COL_TXT)
     x += PRE_W + GAP
@@ -617,7 +642,10 @@ def catmap_panel(i, sw, sh):
             r, c = int(cell) // TCOLS, int(cell) % TCOLS
             x0 = round(c * sw / TCOLS); y0 = round(r * sh / TROWS)
             x1 = round((c + 1) * sw / TCOLS) - 1; y1 = round((r + 1) * sh / TROWS) - 1
-            d.rectangle([x0, y0, x1, y1], fill=L.CAT_MISS)     # 赤で塗りつぶし
+            d.rectangle(
+                [x0, y0, x1, y1],
+                fill=style.CAT_MISS,
+            )
     return cm
 
 
@@ -627,7 +655,7 @@ def frame_data(i):
     # classification, but do not present boot work as timed codec load.
     displayed_cold = (
         cn["Raw"]
-        + sum(cn[name] for name in L.DISPLAY_SOURCE_ORDER)
+        + sum(cn[name] for name in style.DISPLAY_SOURCE_ORDER)
         + int(PREFETCH[i])
     )
     return dict(C=C, counts=cn, fps=FPS, win=WIN,
