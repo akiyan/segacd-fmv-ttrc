@@ -11,6 +11,26 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e95 : Qualify cold cap 500 for the exact H40/15fps/720-active-tile
+#        geometry. Its full pack and cadence-aware DEBUG gate pass with useful
+#        phase margin; higher probes are not adopted after cap680 reached M=5
+#        and 67.37 ms despite neighboring values passing non-monotonically.
+#   e94 : Keep the contiguous identity slot map automatically for specialized
+#        plain-Prg streams below 24fps, matching the legacy Sub-CPU walker's
+#        cell/update-order run construction. Require its real execution-run
+#        count to equal the packed suffix and expose the selected player path
+#        in the frozen decisions. This prevents suffix-order locality from
+#        turning a compact low-rate stream into hundreds of runtime runs.
+#   e93/p81 : Feed an impossible physical Prg sector deadline back from the
+#        completed logical seed into the existing slot-accounting pass, limiting
+#        only the causal frame without lowering the measured cold cap or
+#        repeating the seed. Preserve the per-frame delivery envelope in sim
+#        artifacts and timelines, including an enforceable zero-pattern
+#        envelope while frame 0 remains the explicit boot-time exception. Keep
+#        source rows 34..185 in the Machi OP
+#        profile. Omit the unreachable dense cold-run parser from specialized
+#        low-rate Sub-CPU builds so the full DEBUG HUD fits the 4 KiB boot area;
+#        the qualified legacy low-rate parser and runtime behavior are unchanged.
 #   e92/p80 : Move the control-block palette reference from an 8-bit field
 #        paired with an unused debug flag to one 16-bit field, and remove the
 #        optional 22-byte diagnostic block from TTRC v14. The DEBUG HUD remains
@@ -662,5 +682,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260723
-e=92
-p=80
+e=95
+p=81

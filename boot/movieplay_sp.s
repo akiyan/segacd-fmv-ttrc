@@ -35,6 +35,22 @@
 .equ INCLUDE_ADPCM_DECODER, 1
 .endif
 
+/* The packed cold-run parser is used by every pattern-supply stream and by
+   the dense 24/30fps cadence. A specialized lower-rate build always takes the
+   proven legacy entry walker, so do not spend scarce 4 KiB boot-SP space on
+   an unreachable parser. */
+.ifdef INCLUDE_PATTERN_SUPPLY
+.equ INCLUDE_COLD_RUN_FASTPATH, 1
+.else
+.ifdef PLAYER_SPECIALIZED
+.if PC_PUMP_MASK == 0x03FF
+.equ INCLUDE_COLD_RUN_FASTPATH, 1
+.endif
+.else
+.equ INCLUDE_COLD_RUN_FASTPATH, 1
+.endif
+.endif
+
 .macro PC_MOVE_W runtime, constant, dest
 .ifdef PLAYER_SPECIALIZED
 	move.w	#\constant, \dest
@@ -1436,20 +1452,21 @@ ef_count_ready:
 	bsr	pump_poll
 	bra	ef_runs_setup
 .else
+.ifdef INCLUDE_COLD_RUN_FASTPATH
+.ifndef PLAYER_SPECIALIZED
 	PC_MOVE_W h_features, PC_FEATURES, d0
 	btst	#FEATURE_COLD_RUNS_BIT, d0
 	beq	ef_entries
-.ifdef PLAYER_SPECIALIZED
-.if PC_PUMP_MASK != 0x03FF
-	bra	ef_entries
-.endif
-.else
 	cmpi.w	#0x03FF, pump_mask
 	bne	ef_entries			/* lower rates retain their proven 64-entry cadence */
 .endif
 	cmpi.w	#1024, d5
 	bhi	ef_entries			/* H40 >1024 needs the legacy intermediate poll */
+.else
+	bra	ef_entries
 .endif
+.endif
+.ifdef INCLUDE_COLD_RUN_FASTPATH
 ef_runs_setup:
 	movea.l	a5, a0				/* audio start */
 	PC_MOVE_W h_audio_control_bytes, PC_AUDIO_CONTROL_BYTES, d0
@@ -1530,6 +1547,7 @@ ef_runs_polled:
 	beq	ef_store
 	bsr	pump_poll
 	bra	ef_store
+.endif
 .ifndef INCLUDE_PATTERN_SUPPLY
 ef_entries:
 	moveq	#0, d3				/* open run count (register-resident hot state) */

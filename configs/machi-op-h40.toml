@@ -10,12 +10,12 @@ sar = "1:1"
 mode = "H40"
 width = 320
 height = 224
-# The 320x130 picture at y=47 touches 18 tile rows; all other rows are
-# confirmed black throughout the source. Count partially covered rows.
+# The whole-movie non-black union is retained from source rows 34..185, then
+# HAR-corrected to a 320x139 picture at y=42. It still touches 18 tile rows.
 active_tiles = 720
 fit = "pad"
-master_filter = "setsar=1,crop=320:144:0:38,scale=640:260:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=320:130:flags=lanczos,pad=320:224:0:47:color=black,setsar=1"
-raw_filter = "setsar=1,crop=320:144:0:38,scale=320:130:flags=lanczos,pad=320:224:0:47:color=black,setsar=1"
+master_filter = "setsar=1,crop=320:152:0:34,scale=640:278:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=320:139:flags=lanczos,pad=320:224:0:42:color=black,setsar=1"
+raw_filter = "setsar=1,crop=320:152:0:34,scale=320:139:flags=lanczos,pad=320:224:0:42:color=black,setsar=1"
 
 [audio]
 kind = "adpcm22"
@@ -32,6 +32,8 @@ dither = true
 segment_palettes = true
 near = true
 coa = true
+boot_vram_prefetch = true
+raw_prefetch = false
 
 [palette]
 algorithm = "mosaic-gm"

@@ -269,6 +269,8 @@ SLOT_LOCALITY_FINAL_ITERATIONS = 160
 SLOT_LOCALITY_HEAVY_RUN_TARGET = 30
 SLOT_LOCALITY_RETRY_EXIT = 75
 SLOT_LOCALITY_MAX_ACCOUNTING_PASSES = 4
+DELIVERY_SCHEDULE_RETRY_EXIT = 76
+DELIVERY_SCHEDULE_MAX_REPAIR_PASSES = 16
 # PRG-RAM先読みバッファ: 再生前にPRGへ載せた静的タイル集合(pickle set of pattern keys)。
 # ここにあるパターンは再生中いつでもCD 0バイト(RAM→VRAM DMAのみ)で出せる=Fill扱い。
 PRG_PRELOAD_PATH = os.environ.get("CBRSIM_PRG_PRELOAD", "")
@@ -309,6 +311,17 @@ RAW_PREFETCH_BUDGET_FLOOR_PATTERNS = 256
 # keep its quality decisions on Prg-only supply until that combination is
 # measured end to end.
 PATTERN_SUPPLY_ON = FPS >= 24.0
+# The specialized Sub-CPU player consumes the packed cold-run suffix at 24fps
+# and above, or whenever the multi-source pattern-supply path requires it.
+# Lower-rate plain-Prg streams deliberately retain the legacy 64-entry polling
+# walker.  That walker reconstructs runs in cell/update order, so applying a
+# permutation optimized for the suffix's physical-slot-sorted order can turn a
+# few long runs into hundreds of one-tile runs.  The contiguous logical
+# allocator already emits the legacy order correctly; keep its identity map.
+PACKED_COLD_RUN_EXECUTION = ttrc_routing.player_uses_packed_cold_runs(
+    FPS,
+    ttrc_routing.FEATURE_PATTERN_SUPPLY if PATTERN_SUPPLY_ON else 0,
+)
 # 近似流用(Near/Coa/Flbk)が「この秒数」以上そのまま居座ったら、格上げ優先度を Miss級(sev=0)へ
 # 昇格させる。一過性の近似は目に見えないが、居座った近似は静的なゴースト=視線が固定される。時間で切る
 # のは知覚(何秒出続けたか)がfps非依存だから(重み付けaging=予算コンテストのフレーム数とは別軸)。0で無効。
@@ -1312,6 +1325,28 @@ def main():
     _t = _mark("展開(reuse)" if cached else "抽出(ffmpeg)", _t)
     frames = sorted(master_dir.glob("*.png"))
     n = len(frames)
+    delivery_cold_caps = np.full(n, MAX_COLD, np.int64)
+    delivery_caps_path = os.environ.get(
+        "CBRSIM_DELIVERY_COLD_CAPS", "").strip()
+    if delivery_caps_path and Path(delivery_caps_path).is_file():
+        delivery_cold_caps = np.asarray(
+            np.load(delivery_caps_path), np.int64)
+        if delivery_cold_caps.shape != (n,):
+            raise SystemExit(
+                "delivery cold-cap trace does not match the frame count")
+        if ((delivery_cold_caps < 0).any()
+                or (delivery_cold_caps > MAX_COLD).any()):
+            raise SystemExit(
+                "delivery cold-cap trace is outside 0..measured cold cap")
+        limited = np.flatnonzero(delivery_cold_caps[1:] < MAX_COLD) + 1
+        if limited.size:
+            print(
+                "physical delivery feedback: "
+                f"{len(limited)} frames constrained below cold cap "
+                f"(minimum {int(delivery_cold_caps[limited].min())}, "
+                f"measured cap remains {MAX_COLD})",
+                flush=True,
+            )
     pass_cache_payload = None
     pass_cache_metadata = None
     if _PASS_CACHE_PATH:
@@ -1807,6 +1842,13 @@ def main():
             np.load(slot_locality_map),
             cold_cap=MAX_COLD,
         )
+    elif not PACKED_COLD_RUN_EXECUTION:
+        slot_locality = evaluate_slot_locality(
+            demand_prediction.cold_slots,
+            VRAM_TILES,
+            np.arange(VRAM_TILES, dtype=np.int64),
+            cold_cap=MAX_COLD,
+        )
     else:
         slot_locality = optimize_slot_locality(
             demand_prediction.cold_slots,
@@ -1823,7 +1865,9 @@ def main():
         slot_locality.optimized_runs, np.int64)
     print(
         "slot locality: fixed logical->physical bijection; "
-        f"map={'loaded' if slot_locality_map else 'predicted'}; "
+        f"execution="
+        f"{'packed-suffix' if PACKED_COLD_RUN_EXECUTION else 'legacy-entry-order'}; "
+        f"map={'loaded' if slot_locality_map else 'identity' if not PACKED_COLD_RUN_EXECUTION else 'predicted'}; "
         f"predicted max runs {int(predicted_baseline_runs[1:].max(initial=0))}"
         f"->{int(predicted_local_runs[1:].max(initial=0))}, "
         f"risk frames={int(predicted_risk.sum())} "
@@ -2187,7 +2231,8 @@ def main():
             updated[c] = True
 
         # frame0はDAT冒頭ヘッダで別ロード(リング非消費)なので常にcold上限を免除=全面フルロード。
-        frame_max_cold = MAX_COLD if i > 0 else 0
+        cold_limit_active = i > 0
+        frame_max_cold = int(delivery_cold_caps[i]) if i > 0 else 0
 
         def find_approx(c):
             """平坦なコールドタイルcに、見た目(2×2低周波)が近い常駐パターンを探す。無ければNone。"""
@@ -2238,14 +2283,14 @@ def main():
                 rep_key = approx_key; rep_pal = pat_pal[approx_key]; rep_rgb = pat_rgb[approx_key]
                 loaded_keys.add(approx_key)
             elif in_prg:
-                if frame_max_cold and cold_spent >= frame_max_cold:
+                if cold_limit_active and cold_spent >= frame_max_cold:
                     return False                                  # cold上限: 今コマは見送り(Miss繰越)
                 cold_spent += 1
                 prg_hits += 1; prg_mask[c] = True; loaded_keys.add(key)
             elif in_l3:
                 l3_hits += 1; loaded_keys.add(key); l3.pop(key, None)
             else:                                                # cold: exact pattern load (Raw or saved/preload-funded Buf)
-                if frame_max_cold and cold_spent >= frame_max_cold:
+                if cold_limit_active and cold_spent >= frame_max_cold:
                     return False                                  # cold上限: 今コマは見送り(Miss繰越)
                 cold_spent += 1
                 loaded_keys.add(key)
@@ -2376,7 +2421,9 @@ def main():
                 preload = source != pattern_supply.SOURCE_PRG
                 cost = NAME_BYTES + (0 if preload else PATTERN_BYTES)
                 if (decision_fits(cost, extra_cold=1)
-                        and not (frame_max_cold and cold_spent >= frame_max_cold)):
+                        and not (
+                            cold_limit_active
+                            and cold_spent >= frame_max_cold)):
                     cold_spent += 1
                     loaded_keys.add(key)
                     if preload:
@@ -2462,7 +2509,7 @@ def main():
                             extra_cold=int(not in_vram),
                             limit=lim):
                         return
-                    if (not in_vram) and frame_max_cold and cold_spent >= frame_max_cold:
+                    if (not in_vram) and cold_limit_active and cold_spent >= frame_max_cold:
                         return                                   # cold上限: 格上げ見送り(近似のまま)
                     if coa_mask[c]:
                         coa_mask[c] = False; coa_hits -= 1
@@ -2644,7 +2691,8 @@ def main():
                 for deadline in range(i + 1, last_deadline))
             cold_room = (
                 frame_max_cold - cold_spent
-                if frame_max_cold else RAW_PREFETCH_MAX_REQUESTS_PER_FRAME)
+                if cold_limit_active
+                else RAW_PREFETCH_MAX_REQUESTS_PER_FRAME)
             body_room = max(
                 0,
                 (prefetch_spend_limit - current_reserved_spend())
@@ -2714,9 +2762,35 @@ def main():
         run_prefetch_count = (
             boot_inline_requests if i == 0 else len(prefetch_cold_slots))
         run_tile_count = len(transfer_order) + run_prefetch_count
-        dma_runs = pattern_supply.count_source_runs(
+        packed_runs = pattern_supply.count_source_runs(
             dma_slots[:run_tile_count], dma_sources[:run_tile_count],
             dma_dic_indices[:run_tile_count])
+        if PACKED_COLD_RUN_EXECUTION:
+            dma_runs = packed_runs
+        else:
+            legacy_order = [
+                index for index, (_slot, cold) in enumerate(placements)
+                if cold
+            ]
+            legacy_slots = [
+                int(placements[index][0]) for index in legacy_order
+            ]
+            legacy_sources = [
+                int(frame_sources[index]) for index in legacy_order
+            ]
+            legacy_dic_indices = [
+                (dic_dictionary_index[upd_ck[index][1]]
+                 if legacy_sources[position] == pattern_supply.SOURCE_DIC
+                 else -1)
+                for position, index in enumerate(legacy_order)
+            ]
+            dma_runs = pattern_supply.count_source_runs(
+                legacy_slots, legacy_sources, legacy_dic_indices)
+            if dma_runs != packed_runs:
+                raise AssertionError(
+                    f"frame {i}: legacy entry-order runs={dma_runs} differ "
+                    f"from packed suffix runs={packed_runs}; lower-rate "
+                    "plain-Prg streams must retain the contiguous identity map")
         if dma_runs > cold_spent:
             raise AssertionError(
                 f"frame {i}: source-aware runs={dma_runs} exceed "
@@ -3057,14 +3131,23 @@ def main():
         if accounted_proof["cold"] != int(np.sum(transfer_tiles_log)):
             raise AssertionError(
                 "accounted slot-locality proof changed the frozen cold total")
-        final_locality = optimize_slot_locality(
-            _run_accounted_cold_slots(replay, boot_inline_requests),
-            VRAM_TILES,
-            cold_cap=MAX_COLD,
-            iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
-            target_heavy_runs=SLOT_LOCALITY_HEAVY_RUN_TARGET,
-            run_groups_by_frame=run_groups,
-        )
+        if PACKED_COLD_RUN_EXECUTION:
+            final_locality = optimize_slot_locality(
+                _run_accounted_cold_slots(replay, boot_inline_requests),
+                VRAM_TILES,
+                cold_cap=MAX_COLD,
+                iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
+                target_heavy_runs=SLOT_LOCALITY_HEAVY_RUN_TARGET,
+                run_groups_by_frame=run_groups,
+            )
+        else:
+            final_locality = evaluate_slot_locality(
+                _run_accounted_cold_slots(replay, boot_inline_requests),
+                VRAM_TILES,
+                np.arange(VRAM_TILES, dtype=np.int64),
+                cold_cap=MAX_COLD,
+                run_groups_by_frame=run_groups,
+            )
         final_mapping = np.asarray(
             final_locality.physical_by_logical, np.int64)
         proof = verify_display_equivalence(
@@ -3113,6 +3196,30 @@ def main():
                     "inline cold count")
             final_runs.append(pattern_supply.count_source_runs(
                 slots, sources, dic_indices))
+            if not PACKED_COLD_RUN_EXECUTION:
+                legacy_order = [
+                    index for index, (_slot, cold) in enumerate(physical)
+                    if cold
+                ]
+                legacy_slots = [
+                    int(physical[index][0]) for index in legacy_order
+                ]
+                legacy_sources = [
+                    int(raw_sources[index]) for index in legacy_order
+                ]
+                legacy_dic_indices = [
+                    (dic_dictionary_index[frame[index][1]]
+                     if legacy_sources[position]
+                     == pattern_supply.SOURCE_DIC else -1)
+                    for position, index in enumerate(legacy_order)
+                ]
+                legacy_runs = pattern_supply.count_source_runs(
+                    legacy_slots, legacy_sources, legacy_dic_indices)
+                if legacy_runs != final_runs[-1]:
+                    raise AssertionError(
+                        f"frame {frame_index}: final legacy entry-order "
+                        f"runs={legacy_runs} differ from packed suffix "
+                        f"runs={final_runs[-1]}")
 
         old_runs = np.asarray(transfer_runs_log, np.int64)
         final_runs_array = np.asarray(final_runs, np.int64)
@@ -3351,7 +3458,54 @@ def main():
                 fill=bool(pack_config.get("fill", True)),
             )
         )
-    except (ValueError, stream_schedule.ScheduleError) as exc:
+    except stream_schedule.ScheduleError as exc:
+        request_path = os.environ.get(
+            "CBRSIM_DELIVERY_REPAIR_REQUEST", "").strip()
+        if request_path and exc.kind == "payload_capacity":
+            if EMIT_DEC:
+                import pickle
+                # The seed pass has already completed every logical decision.
+                # Preserve only what the existing slot-map derivation needs so
+                # physical feedback can flow directly into the mandatory
+                # accounting pass instead of repeating the seed loop.
+                with Path(EMIT_DEC).open("wb") as provisional:
+                    pickle.dump({
+                        "geom": (
+                            int(TCOLS), int(TROWS), int(C_CELLS), int(TILE)),
+                        "frames": dec_frames,
+                        "vram_tiles": int(VRAM_TILES),
+                        "max_cold": int(MAX_COLD),
+                        "pattern_supply": {
+                            "sources": supply_sources_log,
+                        },
+                        "raw_prefetch": {
+                            "requests": prefetch_requests_log,
+                            "boot_inline_requests": int(
+                                boot_inline_requests),
+                        },
+                    }, provisional, protocol=4)
+            request = {
+                "schema_version": 1,
+                "error": str(exc),
+                "details": exc.details,
+                "prg_loads": np.asarray(prg_loads_log, np.int64).tolist(),
+                "cold_loads": np.asarray(
+                    transfer_tiles_log, np.int64).tolist(),
+                "delivery_cold_caps": delivery_cold_caps.tolist(),
+            }
+            request_file = Path(request_path)
+            request_file.parent.mkdir(parents=True, exist_ok=True)
+            request_file.write_text(
+                json.dumps(request, indent=2), encoding="utf-8")
+            print(
+                "sim: requesting automatic physical-delivery feedback: "
+                f"{exc}",
+                flush=True,
+            )
+            raise SystemExit(DELIVERY_SCHEDULE_RETRY_EXIT) from exc
+        raise SystemExit(
+            f"sim: physical PrgBuf schedule failed: {exc}") from exc
+    except ValueError as exc:
         raise SystemExit(
             f"sim: physical PrgBuf schedule failed: {exc}") from exc
     if not physical_schedule["feasible"]:
@@ -3386,6 +3540,8 @@ def main():
     body_useful_bytes = body_payload_bytes + body_control_bytes
     body_useful_bps = stream_schedule.average_body_delivery_rate_bps(
         body_useful_bytes, body_physical_bytes)
+    delivery_limited_frames = np.flatnonzero(
+        delivery_cold_caps[1:] < MAX_COLD) + 1
 
     report = "\n".join([
         f"resolution={W}x{H} cells/frame={C_CELLS} active_tiles={ACTIVE_TILES} fps={FPS}",
@@ -3397,6 +3553,9 @@ def main():
         f"incremental_run_control_reservation="
         f"{stream_schedule.RUN_DESCRIPTOR_BYTES}B/cold "
         f"({MAX_RUN_CONTROL_BYTES}B cap); unused bytes refunded after exact run charge",
+        f"physical_delivery_feedback={len(delivery_limited_frames)} frames "
+        f"(measured cold cap={MAX_COLD}, minimum frame envelope="
+        f"{int(delivery_cold_caps[delivery_limited_frames].min()) if len(delivery_limited_frames) else MAX_COLD})",
         f"avg_codec_work_bytes_per_frame={fb.mean():.1f}",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
         f"avg_PrgBuf_loads_per_frame={prg_loads.mean():.1f}",
@@ -3465,6 +3624,7 @@ def main():
                          len(guniq["flbk"])], np.int64)
     np.savez(OUT / "stats.npz", stats=stats, cols=cols, fps=FPS, cells=C_CELLS,
              active_tiles=ACTIVE_TILES, max_cold=MAX_COLD,
+             delivery_cold_caps=delivery_cold_caps,
              raw_prefetch=np.asarray(prefetch_cold_log, np.int64),
              raw_prefetch_cap=np.int64(max(
                  1, RAW_PREFETCH_MAX_REQUESTS_PER_FRAME)),
@@ -3507,6 +3667,7 @@ def main():
             wr1_preloaded=np.int64(wr1_loads.sum()),
             dic_preloaded=np.int64(supply_budget.dic_patterns),
             quality_budget_remaining=quality_budget_remaining,
+            delivery_cold_caps=delivery_cold_caps,
             exact_demand_bytes=demand_prediction.exact_bytes,
             protected_demand_bytes=demand_prediction.protected_bytes,
             preload_credit_bytes=preload_credit_bytes,
@@ -3635,6 +3796,10 @@ def main():
                     predicted_local_runs, np.uint16),
                 "risk_frames": np.asarray(
                     predicted_risk, np.bool_),
+                "player_execution": (
+                    "packed_suffix"
+                    if PACKED_COLD_RUN_EXECUTION else "legacy_entry_order"
+                ),
             },
             "pattern_supply": {
                 "schema_version": 2,
@@ -3677,6 +3842,12 @@ def main():
                     prefetch_forecast.protected_cold, np.uint16),
                 "forecast_requested": np.asarray(
                     prefetch_forecast.requested_patterns, np.uint16),
+            },
+            "physical_delivery": {
+                "schema_version": 1,
+                "measured_cold_cap": int(MAX_COLD),
+                "frame_cold_caps": delivery_cold_caps.astype(np.uint16),
+                "limited_frames": delivery_limited_frames.astype(np.uint16),
             },
             # simが決めた値をpackで全frame再計算し、descriptor/HUD Nとのズレを即時検出する。
             "pattern_transfers": {
@@ -3772,6 +3943,7 @@ def _derive_completed_slot_map(decision_log, output_path):
     """Derive and prove the physical map used by the accounting pass."""
     import pickle
     from tile_alloc import (
+        evaluate_slot_locality,
         optimize_slot_locality,
         replay_logical_slots,
         verify_display_equivalence,
@@ -3793,21 +3965,32 @@ def _derive_completed_slot_map(decision_log, output_path):
     if replay.tearing:
         raise AssertionError(
             f"seed slot-locality replay tore {replay.tearing} patterns")
-    plan = optimize_slot_locality(
-        _run_accounted_cold_slots(
-            replay,
-            int((log.get("raw_prefetch") or {}).get(
-                "boot_inline_requests", 0))),
-        int(log["vram_tiles"]),
-        cold_cap=int(log.get("max_cold", 0)),
-        iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
-        target_heavy_runs=SLOT_LOCALITY_HEAVY_RUN_TARGET,
-        run_groups_by_frame=_source_run_groups(
-            replay, (log.get("pattern_supply") or {}).get("sources", ()),
-            boot_inline_requests=int(
-                (log.get("raw_prefetch") or {}).get(
-                    "boot_inline_requests", 0))),
-    )
+    cold_trace = _run_accounted_cold_slots(
+        replay,
+        int((log.get("raw_prefetch") or {}).get(
+            "boot_inline_requests", 0)))
+    run_groups = _source_run_groups(
+        replay, (log.get("pattern_supply") or {}).get("sources", ()),
+        boot_inline_requests=int(
+            (log.get("raw_prefetch") or {}).get(
+                "boot_inline_requests", 0)))
+    if PACKED_COLD_RUN_EXECUTION:
+        plan = optimize_slot_locality(
+            cold_trace,
+            int(log["vram_tiles"]),
+            cold_cap=int(log.get("max_cold", 0)),
+            iterations=SLOT_LOCALITY_FINAL_ITERATIONS,
+            target_heavy_runs=SLOT_LOCALITY_HEAVY_RUN_TARGET,
+            run_groups_by_frame=run_groups,
+        )
+    else:
+        plan = evaluate_slot_locality(
+            cold_trace,
+            int(log["vram_tiles"]),
+            np.arange(int(log["vram_tiles"]), dtype=np.int64),
+            cold_cap=int(log.get("max_cold", 0)),
+            run_groups_by_frame=run_groups,
+        )
     proof = verify_display_equivalence(
         frames,
         int(log["geom"][2]),
@@ -3821,6 +4004,8 @@ def _derive_completed_slot_map(decision_log, output_path):
     risk = np.asarray(plan.risk_frames, bool)
     print(
         "slot locality seed proof: "
+        f"execution="
+        f"{'packed-suffix' if PACKED_COLD_RUN_EXECUTION else 'legacy-entry-order'}; "
         f"display={proof['frames']}/{len(frames)} exact "
         f"cold={proof['cold']} tearing={proof['tearing']}; "
         f"deadline-heavy source-aware runs "
@@ -3830,13 +4015,69 @@ def _derive_completed_slot_map(decision_log, output_path):
     )
 
 
+def _apply_delivery_feedback(request_path, caps_path):
+    """Tighten only the frames responsible for a physical payload deadline."""
+    request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    if int(request.get("schema_version", 0)) != 1:
+        raise SystemExit("unsupported physical-delivery feedback schema")
+    details = request.get("details") or {}
+    repairs = details.get("repairs")
+    if not isinstance(repairs, list) or not repairs:
+        repairs = [details]
+    prg_loads = np.asarray(request.get("prg_loads", ()), np.int64)
+    cold_loads = np.asarray(request.get("cold_loads", ()), np.int64)
+    caps = np.asarray(request.get("delivery_cold_caps", ()), np.int64)
+    if (prg_loads.ndim != 1 or cold_loads.shape != prg_loads.shape
+            or caps.shape != prg_loads.shape):
+        raise SystemExit("physical-delivery feedback traces are inconsistent")
+
+    changes = []
+    for repair in sorted(
+            repairs, key=lambda item: int(item.get("origin_frame", -1))):
+        origin = int(repair.get("origin_frame", -1))
+        remaining = int(repair.get("patterns_to_remove", 0))
+        if not 1 <= origin < len(prg_loads) or remaining <= 0:
+            raise SystemExit(
+                "physical-delivery feedback has no repairable deadline")
+        for frame in range(origin, 0, -1):
+            if remaining <= 0:
+                break
+            removable = min(int(prg_loads[frame]), remaining)
+            if removable <= 0:
+                continue
+            next_cap = max(0, int(cold_loads[frame]) - removable)
+            if next_cap >= int(caps[frame]):
+                continue
+            caps[frame] = next_cap
+            remaining = max(0, remaining - removable)
+            changes.append((frame, next_cap, removable))
+        if remaining:
+            raise SystemExit(
+                "physical-delivery feedback could not remove enough Prg demand")
+    Path(caps_path).parent.mkdir(parents=True, exist_ok=True)
+    np.save(caps_path, caps)
+    summary = ", ".join(
+        f"f{frame}->{cap} (-{removed})"
+        for frame, cap, removed in changes[:8])
+    if len(changes) > 8:
+        summary += f", +{len(changes) - 8} more"
+    print(
+        "physical delivery feedback applied without changing measured cap: "
+        f"{summary}",
+        flush=True,
+    )
+
+
 def _run_slot_locality_pipeline():
-    """Seed logical decisions, then account maps until one is publishable."""
+    """Use the seed once, then converge delivery inside accounting passes."""
     import subprocess
 
     command = [sys.executable, *_ORIGINAL_ARGV]
-    map_path = Path("tmp") / f"slot_locality_seed_{os.getpid()}.npy"
-    retry_path = Path("tmp") / f"slot_locality_retry_{os.getpid()}.npy"
+    stem = str(os.getpid())
+    map_path = Path("tmp") / f"slot_locality_seed_{stem}.npy"
+    retry_path = Path("tmp") / f"slot_locality_retry_{stem}.npy"
+    delivery_caps_path = Path("tmp") / f"delivery_cold_caps_{stem}.npy"
+    delivery_request_path = Path("tmp") / f"delivery_repair_{stem}.json"
     workspace_lease = _activate_sim_tmpfs()
     cache_lease = None
     try:
@@ -3847,18 +4088,38 @@ def _run_slot_locality_pipeline():
         common_env["CBRSIM_TMPFS_PREPARED"] = "1"
         common_env["CBRSIM_PASS_CACHE"] = str(cache_path)
         common_env["CBRSIM_PASS_CACHE_INVOCATION"] = cache_lease.entry.name
+        common_env["CBRSIM_DELIVERY_COLD_CAPS"] = str(
+            delivery_caps_path.resolve())
+        common_env["CBRSIM_DELIVERY_REPAIR_REQUEST"] = str(
+            delivery_request_path.resolve())
+
+        delivery_request_path.unlink(missing_ok=True)
         seed_env = common_env.copy()
         seed_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "seed"
         seed_env["CBRSIM_NOPANELS"] = "1"
         seed_env.pop("CBRSIM_SLOT_LOCALITY_MAP", None)
         seed_env.pop("CBRSIM_SLOT_LOCALITY_REUSE", None)
         print("slot locality seed pass: logical decisions", flush=True)
-        subprocess.run(command, env=seed_env, check=True)
+        result = subprocess.run(command, env=seed_env, check=False)
+        if result.returncode == DELIVERY_SCHEDULE_RETRY_EXIT:
+            if not delivery_request_path.is_file() or not Path(EMIT_DEC).is_file():
+                raise SystemExit(
+                    "physical-delivery seed feedback lacks its provisional trace")
+            _apply_delivery_feedback(
+                delivery_request_path, delivery_caps_path)
+        else:
+            result.check_returncode()
 
+        # A failed physical schedule does not invalidate the completed logical
+        # seed decisions. Derive the map from their provisional trace and feed
+        # the corrected envelope straight into the already-required accounting
+        # pass; never repeat the expensive seed loop.
         _derive_completed_slot_map(EMIT_DEC, map_path)
-        for accounting_pass in range(
-                1, SLOT_LOCALITY_MAX_ACCOUNTING_PASSES + 1):
+        accounting_pass = 1
+        delivery_repairs = int(delivery_caps_path.is_file())
+        while accounting_pass <= SLOT_LOCALITY_MAX_ACCOUNTING_PASSES:
             retry_path.unlink(missing_ok=True)
+            delivery_request_path.unlink(missing_ok=True)
             final_env = common_env.copy()
             final_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "final"
             final_env["CBRSIM_SLOT_LOCALITY_MAP"] = str(map_path.resolve())
@@ -3877,6 +4138,20 @@ def _run_slot_locality_pipeline():
             result = subprocess.run(command, env=final_env, check=False)
             if result.returncode == 0:
                 break
+            if result.returncode == DELIVERY_SCHEDULE_RETRY_EXIT:
+                if not delivery_request_path.is_file():
+                    raise SystemExit(
+                        "physical-delivery retry requested without evidence")
+                delivery_repairs += 1
+                if delivery_repairs > DELIVERY_SCHEDULE_MAX_REPAIR_PASSES:
+                    raise SystemExit(
+                        "physical-delivery feedback did not converge within "
+                        f"{DELIVERY_SCHEDULE_MAX_REPAIR_PASSES} passes")
+                _apply_delivery_feedback(
+                    delivery_request_path, delivery_caps_path)
+                # The map and precomputed future data remain valid. Re-run only
+                # the accounting pass under the tighter physical envelope.
+                continue
             if result.returncode != SLOT_LOCALITY_RETRY_EXIT:
                 result.check_returncode()
             if not retry_path.is_file():
@@ -3889,6 +4164,7 @@ def _run_slot_locality_pipeline():
                     "slot-locality accounting cannot progress: retry map "
                     "equals the current map")
             retry_path.replace(map_path)
+            accounting_pass += 1
         else:
             raise SystemExit(
                 "slot-locality accounting did not converge within "
@@ -3896,6 +4172,8 @@ def _run_slot_locality_pipeline():
     finally:
         map_path.unlink(missing_ok=True)
         retry_path.unlink(missing_ok=True)
+        delivery_caps_path.unlink(missing_ok=True)
+        delivery_request_path.unlink(missing_ok=True)
         if cache_lease is not None:
             tmpfs_workspace.remove_run_directory(cache_lease)
         if workspace_lease is not None:

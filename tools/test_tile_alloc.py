@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tile_alloc import (
     TileAllocator,
     cold_transfer_order,
+    count_slot_runs,
     evaluate_slot_locality,
     optimize_slot_locality,
     remap_placements,
@@ -56,6 +57,25 @@ class TileAllocatorPrefetchTests(unittest.TestCase):
 
 
 class SlotLocalityTests(unittest.TestCase):
+    def test_identity_contiguous_allocation_matches_legacy_and_suffix_runs(self):
+        alloc = TileAllocator(4, 6)
+        frames = [
+            [(0, b"a"), (1, b"b"), (2, b"c"), (3, b"d")],
+            [(0, b"e"), (1, b"b"), (2, b"f"), (3, b"g")],
+            [(0, b"h"), (1, b"i"), (2, b"f"), (3, b"j")],
+        ]
+        for frame, updates in enumerate(frames):
+            placements = alloc.place_frame(updates, frame)
+            legacy_slots = [slot for slot, cold in placements if cold]
+            suffix_slots = [
+                placements[index][0]
+                for index in cold_transfer_order(placements)
+            ]
+            self.assertEqual(
+                count_slot_runs(legacy_slots),
+                count_slot_runs(suffix_slots),
+            )
+
     def test_transfer_order_follows_physical_slots_without_changing_cold(self):
         placements = [(5, True), (2, False), (1, True), (3, True)]
         self.assertEqual(cold_transfer_order(placements), (2, 3, 0))

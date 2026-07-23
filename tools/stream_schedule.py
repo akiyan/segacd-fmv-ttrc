@@ -26,6 +26,11 @@ STREAM_SCHEDULE_SCHEMA_VERSION = 3
 class ScheduleError(ValueError):
     """The requested stream cannot satisfy the player's delivery rules."""
 
+    def __init__(self, message, *, kind="", details=None):
+        super().__init__(message)
+        self.kind = str(kind)
+        self.details = dict(details or {})
+
 
 def body_delivery_rate_bps(useful_bytes, physical_bytes):
     """Return useful BODY bandwidth over each slot's actual CD read time.
@@ -407,11 +412,18 @@ def schedule_payload_ring(
         # Back-propagate future cold deadlines through each slot's hard sector
         # cap.  This is the minimum cumulative payload that must have arrived.
         need = np.zeros(nfr, np.int64)
+        need_origin = np.zeros(nfr, np.int64)
         need[-1] = total_payload_sec
+        need_origin[-1] = nfr - 1
         for i in range(nfr - 2, -1, -1):
             immediate = int(-(-int(consumed[i + 1]) // PATTERNS_PER_SECTOR))
             future = int(need[i + 1]) - int(cap_sec[i + 1])
-            need[i] = max(immediate, future, 0)
+            if immediate >= future and immediate > 0:
+                need[i] = immediate
+                need_origin[i] = i + 1
+            elif future > 0:
+                need[i] = future
+                need_origin[i] = need_origin[i + 1]
         if prebuffer_sec < int(need[0]):
             raise ScheduleError(
                 f"prebuffer {prebuffer_sec} sectors cannot arm the payload schedule; "
@@ -430,9 +442,31 @@ def schedule_payload_ring(
             hi = min(prev + int(cap_sec[i]), total_payload_sec, int(hi_ring))
             lo = max(prev, int(need[i]))
             if lo > hi:
+                deficit_sectors = lo - hi
+                origin_frame = int(need_origin[i])
+                origin_patterns = int(consumed[origin_frame])
+                origin_sectors = int(
+                    -(-origin_patterns // PATTERNS_PER_SECTOR))
+                target_sectors = max(0, origin_sectors - deficit_sectors)
+                patterns_to_remove = max(
+                    1,
+                    origin_patterns
+                    - target_sectors * PATTERNS_PER_SECTOR,
+                )
                 raise ScheduleError(
                     f"rate-shaped payload schedule is impossible at frame {i}: "
-                    f"minimum cumulative delivery {lo} sectors exceeds limit {hi}")
+                    f"minimum cumulative delivery {lo} sectors exceeds limit {hi}; "
+                    f"deadline origin frame {origin_frame} needs "
+                    f"{patterns_to_remove} fewer Prg patterns",
+                    kind="payload_capacity",
+                    details={
+                        "failure_frame": int(i),
+                        "origin_frame": origin_frame,
+                        "deficit_sectors": int(deficit_sectors),
+                        "patterns_to_remove": int(patterns_to_remove),
+                        "minimum_delivery_sectors": int(lo),
+                        "delivery_limit_sectors": int(hi),
+                    })
             current = max(lo, min(prev + soft_pay, hi))
             delivered[i] = current
             actual = (current - prev) + int(nc[i])

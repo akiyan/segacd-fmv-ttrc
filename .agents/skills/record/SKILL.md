@@ -215,23 +215,36 @@ Check the raw MKV and reports before trusting a capture:
    complete movie loop and write a passing HUD gate sidecar:
 
    ```sh
-   tools/python.sh harness/startup_resync/analyze.py videos/STEM_emu_lossless.mkv \
+   tools/python.sh harness/startup_resync/analyze.py \
+     videos/STEM_emu_lossless.mkv configs/PROFILE.toml \
      --csv videos/STEM_emu_hud.csv \
      --gate-json videos/STEM_emu_hud_gate.json --expected-frames FRAME_COUNT
    ```
 
-   The command exits nonzero unless the first loop contains every frame and
-   `S/D/R/C=00`, `M<=01`, and `J<=17`. The `J` limit is derived from the current
-   404 KiB cap plus the complete 24 KiB tail: `17` is 23 KiB and proves the
-   circular ring never became completely full. `J` above `14` means the 20 KiB
-   jitter headroom was exhausted and sector-granular back-pressure entered the
+   The profile is mandatory and positional because the C/M limits follow the
+   packed player's cadence. The command exits nonzero unless the first loop
+   contains every frame and all cadence-aware limits pass:
+
+   - fixed-N2: `S/D/R/C=00`, `M<=01`;
+   - delivery-paced 15 fps: `S/D/R=00`, `C<=04`, `M<=04`;
+   - delivery-paced 24 fps: `S/D/R=00`, `C<=03`, `M<=03`;
+   - every cadence: `J<=17`.
+
+   Delivery-paced C permits all but the already-armed control sector to finish
+   on the current Sub path. Its M limit permits all display fields available
+   to one content frame. The `J` limit is derived from the current 404 KiB cap
+   plus the complete 24 KiB tail: `17` is 23 KiB and proves the circular ring
+   never became completely full. `J` above `14` means the 20 KiB jitter
+   headroom was exhausted and sector-granular back-pressure entered the
    separate physical guard; report this explicitly, but a value at or below
    the passing `17` limit does not by itself require another confirmation or
-   fail the recording. `C` is not corruption by itself, but any nonzero
-   critical-path CD work fails the gate.
+   fail the recording.
    Do not waive, hand-edit, or reuse a gate JSON from another recording.
 
-   Even on PASS, report all six maxima and **stop before compilation or upload**.
+   On PASS, report all six maxima. A standalone `record` request ends with the
+   verified recording because it did not authorize publication. Under `$run`,
+   the existing upload authorization is sufficient; continue without asking
+   again merely because the gate ran.
    Continue only after the user explicitly reviews and approves that exact
    recording's result. This manual pause is mandatory for `$run` too.
 

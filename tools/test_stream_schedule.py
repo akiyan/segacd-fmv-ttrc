@@ -11,9 +11,18 @@ import numpy as np
 import pack_stream as pack
 import shadow_updates
 import stream_schedule as schedule
+import ttrc_routing
 
 
 class ControlLengthTests(unittest.TestCase):
+    def test_player_cold_run_path_matches_rate_and_pattern_supply(self) -> None:
+        self.assertFalse(ttrc_routing.player_uses_packed_cold_runs(15, 0))
+        self.assertFalse(ttrc_routing.player_uses_packed_cold_runs(20, 0))
+        self.assertTrue(ttrc_routing.player_uses_packed_cold_runs(24, 0))
+        self.assertTrue(ttrc_routing.player_uses_packed_cold_runs(30, 0))
+        self.assertTrue(ttrc_routing.player_uses_packed_cold_runs(
+            15, ttrc_routing.FEATURE_PATTERN_SUPPLY))
+
     def test_lengths_mix_bitmap_and_shadow_lists(self) -> None:
         lengths = schedule.control_block_lengths(
             np.array([3, 3]), np.array([0, 0]), cells=1120,
@@ -171,6 +180,21 @@ class PayloadRingScheduleTests(unittest.TestCase):
             fill=True,
         )
         self.assertEqual(result["ring_occupancy"].tolist(), [64, 54, 54])
+
+    def test_payload_failure_identifies_the_causal_deadline(self) -> None:
+        with self.assertRaises(schedule.ScheduleError) as caught:
+            schedule.schedule_payload_ring(
+                [0, 112, 112, 112],
+                [0, 0, 0, 0],
+                fps=15,
+                ring_capacity_patterns=128,
+                frame_sectors=5,
+                fill=True,
+            )
+        self.assertEqual(caught.exception.kind, "payload_capacity")
+        self.assertEqual(caught.exception.details["failure_frame"], 1)
+        self.assertEqual(caught.exception.details["origin_frame"], 2)
+        self.assertEqual(caught.exception.details["patterns_to_remove"], 32)
 
     def test_pack_wrapper_uses_the_shared_schedule_exactly(self) -> None:
         old_fps, old_fill = pack.FPS, pack.PACK_FILL

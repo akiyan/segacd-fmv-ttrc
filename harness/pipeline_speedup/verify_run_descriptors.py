@@ -7,7 +7,7 @@ absolute-address alignment pad:
     n_runs:u16, repeated v12 indexed four-byte descriptors
 
 This checker does not import the packer.  It independently reads the real split
-TTRC v12 files, reconstructs every current control and payload byte, and compares
+TTRC v12-v14 files, reconstructs every current control and payload byte, and compares
 two consumers:
 
 * the legacy/fallback Sub path scans all update entries, selects cold entries, builds
@@ -38,6 +38,7 @@ FEATURE_PATTERN_SUPPLY = 0x0008
 FEATURE_SHADOW_UPDATE_LISTS = 0x0010
 FEATURE_VRAM_RAW_PREFETCH = 0x0020
 FEATURE_DICBUF_INDEXED_RUNS = 0x0040
+FEATURE_BOOT_VRAM_SIDECAR = 0x0080
 ADPCM_TABLE_SECTORS = 5
 ROUTING_TOTAL_MAX = 5
 PATTERN_SUPPLY_OFFSET = 196
@@ -247,8 +248,9 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, pool, base = struct.unpack_from(
         ">4sHHHHHHH", header
     )
-    if magic != b"TTRC" or version != 12:
-        raise AssertionError(f"expected split TTRC v12, got {magic!r} v{version}")
+    if magic != b"TTRC" or not 12 <= version <= 14:
+        raise AssertionError(
+            f"expected split TTRC v12-v14, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -266,7 +268,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     unknown_features = features & ~(
         FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_ADPCM22
         | FEATURE_PATTERN_SUPPLY | FEATURE_SHADOW_UPDATE_LISTS
-        | FEATURE_VRAM_RAW_PREFETCH | FEATURE_DICBUF_INDEXED_RUNS)
+        | FEATURE_VRAM_RAW_PREFETCH | FEATURE_DICBUF_INDEXED_RUNS
+        | FEATURE_BOOT_VRAM_SIDECAR)
     if unknown_features:
         raise AssertionError(f"unsupported header feature bits 0x{unknown_features:04X}")
     if features & FEATURE_SHADOW_UPDATE_LISTS and not features & FEATURE_PATTERN_SUPPLY:

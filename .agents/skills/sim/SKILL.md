@@ -207,6 +207,14 @@ by filename order; that would silently restore the clean source audio.
 
 Use `tools/render_analysis.py` directly.
 
+When this skill is orchestrated by `$run`, do not perform the full render at
+this point. Run the zero-frame data mode to write the persistent TSV, invoke
+the `timeline` skill, publish/show its PNG, then return control to `$run` for
+pack and DEBUG recording. `$run` may return here for the full analysis render
+only after that exact stream's complete HUD recording gate passes. A standalone
+`/sim` request remains allowed to render immediately because it does not claim
+an end-to-end playback-qualified deliverable.
+
 The canonical layout source is `tools/layout_preview.py`. Run it alone to
 generate a dummy one-second preview at `tmp/layout_preview.png`. If the layout
 must change, change it there first. `render_analysis.py` uses the same drawing
@@ -233,6 +241,10 @@ Frame-range check only:
 ```sh
 tools/python.sh tools/render_analysis.py configs/<source>-<mode>.toml <A> <B>
 ```
+
+For `$run`'s pre-recording TSV handoff, use `0 0`; this writes all numeric data
+without constructing the analysis MP4. The later full render writes a new TSV,
+so invoke `timeline` and publish its Gist again for that final analysis upload.
 
 Important rendering notes:
 
@@ -275,6 +287,9 @@ Important rendering notes:
   - Use `ffprobe` to verify resolution, duration, and audio.
 
 ### 5. Upload If Requested
+
+Under `$run`, this section is forbidden until the matching DEBUG recording has
+a complete `pass: true` HUD gate JSON. Standalone `/sim` uploads are unaffected.
 
 ```sh
 PY=~/.config/youtube/venv/bin/python

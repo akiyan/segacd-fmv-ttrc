@@ -102,44 +102,48 @@ and no per-source environment override.
 |---|---:|---:|---:|
 | H32 | 24 | 896 | 219 |
 | H32 | 30 | 896 | 175 |
-| H40 | 15 | 720 | 400 |
+| H40 | 15 | 720 | 500 |
 | H40 | 15 | 1,040 | 400 |
 | H40 | 24 | 1,120 | 200 |
-| H40 | 30 | 1,120 | 185 |
+| H40 | 30 | 1,120 | 180 |
 
 For example, H40/15 at 720 or 1,040 active tiles uses its respective measured
-cap of 400. H40/15 at 900 or 1,120 tiles has no exact measurement and is
+cap of 500 or 400. H40/15 at 900 or 1,120 tiles has no exact measurement and is
 rejected until that tuple is measured. The sim and pack use ONE tile allocator
-(`tools/tile_alloc.py`), so the pack's **realized cold == the selected cap
-exactly** (the old +overhead from LRU-vs-contig re-loads is gone).
+(`tools/tile_alloc.py`), so the pack's realized cold exactly matches the sim's
+selected cold and never exceeds the cap (the old +overhead from
+LRU-vs-contig re-loads is gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | cap `cold_cap_for_fps` | selected from the measured table above | cfg (auto) | **Per-frame cold cap** selected only by an exact mode/fps/active-tile match. A missing tuple is an error. |
 | realized cold | at most the mode/fps/active-tile cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
-The H40/15 fps/720-active-tile value of 400 is full-length-qualified with the
-2,293-frame Machi OP stream. Its 320x130 picture touches 40x18 tile cells after
-being placed at y=47 in the 320x224 raster; the remaining rows are confirmed
-black across every master frame. The packed stream had no ring underrun and
-decoded exactly; the DEBUG recording kept `S=0`, `D=0`, and `R=0`, with at most
-two Main-CPU VBlank waits. This result applies only to exactly 720 active tiles;
-the separate 1,040-tile measurement below applies only to exactly 1,040.
+The H40/15 fps/720-active-tile value of 500 is full-length-qualified with the
+2,293-frame Machi OP stream. Its confirmed active rows are fitted to a 320x139
+picture touching 40x18 tile cells. The pack reached cold 500, decoded every
+frame exactly, and kept the physical PrgBuf evaluation minimum at 6 KiB with no
+underrun. The cadence-aware DEBUG gate passed with `S/D/R=0`, `C/M=4`, and
+`J=8 KiB`; run count was at most 134 and Main pattern-transfer time was at most
+1,669 ticks (51.29 ms).
 
-The H40/30 fps/1,120-active-tile value of 185 is full-length-qualified with the
-2,714-frame Sonic Jam OP stream. The e83 movie-wide physical-slot permutation
-keeps every frame at 85% or more of the cap to at most 30 source-aware runs;
-the former heavy plateau at frames 1960-1976 is 21-30 runs. The pack reconstructs
-every frame exactly, keeps its finalized quality budget positive, and reports
-no Prg underrun. Two same-Replay DEBUG recordings match exactly in all 7,191
-decoded video frames, 5,294,592 stereo PCM sample frames, packet timing, and
-metadata. Both keep `S=0`, `D=0`, `R=0`, `C=0`, `M=1`, and `J=12 KiB`, with all
-2,713 timed intervals exactly two VBlanks; frame 2712 also remains two VBlanks.
-The diagnostic cap180 and cap190 recordings each retained one non-monotonic
-freeze-type hold away from the repaired heavy plateau, so cap190 is not
-qualified. Whole-movie run total is not a gate: light frames may gain runs when
-that lowers the deadline cost of heavy frames. This value is specific to H40,
-30 fps, and the full 1,120-tile raster.
+Higher probes exposed non-monotonic phase sensitivity rather than a useful
+portable increase. A cap720 stream realized cold 689 and passed, and a cap689
+stream also passed while reaching 65.37 ms. Cap680 then failed the same gate at
+`M=5`, with 2,193 ticks (67.37 ms), despite its lower cap. The larger caps also
+produced more Coa and fewer total exact cold loads than cap500 for this encode.
+They remain diagnostic results. This cap applies only to exactly 720 active
+tiles; the separate 1,040-tile measurement below applies only to exactly 1,040.
+
+The H40/30 fps/1,120-active-tile value of 180 is full-length-qualified with the
+2,714-frame Sonic Jam OP stream. The movie-wide physical-slot permutation keeps
+the repaired heavy plateau compact, the pack reconstructs every frame exactly,
+and the complete DEBUG gate keeps `S/D/R/C=0` and `M=1`. The final recording's
+`J=22 KiB` remains inside the 23 KiB physical-ring gate but proves that the
+20 KiB scheduling headroom was consumed, so the older cap185 result is not
+treated as a phase-robust general limit. Whole-movie run total is not a gate:
+light frames may gain runs when that lowers a deadline cliff. This value is
+specific to H40, 30 fps, and the full 1,120-tile raster.
 
 The previously qualified Bad Apple H40 full-raster stream combined cap 175
 with a 1,440-tile resident VRAM pool. Its 6,576-frame TTRC v11 stream selected 557
@@ -213,7 +217,7 @@ continuously.
 | apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
 | `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. With `FEATURE_FIXED_N2`, 400 frames receive exactly 1001 sectors: 199 two-sector and 201 three-sector allowances. Feature-clear 24fps and 15fps retain the delivery-paced 75/fps schedule (3.125 and 5 sectors/frame). In v6+ each `BODY.DAT` slot is control / future payload / pad; v7+ packs the control and total counts into one routing byte. |
 | `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; the v13 boot stage, optional ADPCM tables, WordBuf0 / WordBuf1 / DicBuf boot-pattern regions, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
-| `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. The encoder freezes logical decisions in a seed pass and accounts for that map's real run cost. It derives a movie-wide logical-to-physical permutation from the completed decisions and repeats accounting when an improved map moves run-control bytes into an unfunded frame. Finalization accepts only a display-equivalent map whose whole frozen decision trace is funded. The optimizer minimizes the maximum source-aware run count across every 85%-cap-or-heavier frame and aims for 30, but 30 is not a universal per-source acceptance limit; total whole-movie runs are not constrained. Visible cold payload and the appended raw-prefetch suffix are each emitted in ascending physical-slot order, while name updates remain in cell order. Treating those two Prg groups separately keeps the locality estimate conservative. At 24fps or above, the Sub copies eligible blocks by these runs instead of scanning every update entry again. Old streams use the entry fallback; old players ignore the suffix via `total_len`. |
+| `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. At 24fps or above, and for every multi-source pattern-supply stream, the Sub copies eligible blocks by these runs instead of scanning every update entry again. Those streams use a movie-wide logical-to-physical permutation: the encoder freezes logical decisions in a seed pass, accounts for the map's real run cost, and accepts only a display-equivalent completed map whose whole trace is funded. The optimizer minimizes the maximum source-aware run count across every 85%-cap-or-heavier frame and aims for 30, but 30 is not a universal per-source acceptance limit. Visible cold payload and an appended raw-prefetch suffix are each emitted in ascending physical-slot order, while name updates remain in cell order. A specialized plain-Prg stream below 24fps deliberately retains the proven 64-entry-polling legacy walker, which reconstructs runs in name-update order. Such a stream automatically retains the contiguous allocator's identity physical map; applying the suffix-order permutation there can fragment the actual player work even while the suffix looks compact. The sim requires the legacy and packed counts to agree frame by frame. Old streams use the same entry fallback; old players ignore the suffix via `total_len`. |
 | `FEATURE_FIXED_N2` | header bit 1 at offset 62 (v8) | pack / sp / ip | Authoritative fixed-cadence contract. Main forces one flip every two VBlanks and Sub selects the matching 1001/400 sector accumulator. The packer sets it only when `uses_fixed_n2_cadence(fps)` is true; 24fps leaves it clear despite its N=2 hint. |
 | `FEATURE_ADPCM22` | header bit 2 at offset 62 (v9) | pack / sp | Live controls use checkpointed IMA ADPCM, the full-table boot region is present, and `audio_bytes` means decoded samples. |
 | Word-RAM swap completion | DMNA bit 1 | sp `swap_settle` | Poll the hardware's 1M bank-switch busy flag. The former fixed `0x400` loop burned about 0.82 ms after every frame even when the switch was already complete. |
@@ -226,7 +230,7 @@ continuously.
 | `VB_WORDS_H32` | 2800 words/VBlank | ip | H32 per-VBlank DMA word budget. |
 | fixed N2 cadence | `FEATURE_FIXED_N2` (v8) | pack / sp / ip | Main flips every exactly two VBlanks. The paired Sub schedule is 1001/400 sectors/frame, so CD delivery does not run ahead of the fixed display clock. This feature bit is authoritative; `vsync_n` alone never enables the path. Current 24fps and 15fps streams leave it clear and remain delivery-paced. |
 | `MAIN_CODEGEN_BASE..LIMIT` | 17.5 KB (`0xFF2000..0xFF65FF`) | ip | Reserved for Main-CPU code generated once after header setup. The H40 maximum currently ends at `0xFF6580`; `DicBuf` begins at `0xFF6600`, leaving a 128-byte guard. |
-| `RUN_TABLE` | 488 pre-swizzled records by address range; every supported cap is at most 400 | ip | 22-byte records for contiguous physical cold-slot runs. Pass1 stores ready VDP length/source words, the VRAM command, and raw fallback fields so Pass2 avoids rebuilding them inside VBlank. Each record is counted by HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. The encoder minimizes the maximum source-aware run count over every frame at 85% or more of the measured cold cap. Prg/Wr/Dic boundaries split runs. Whole-movie run total is not constrained, so light frames may gain runs when that removes a deadline cliff. |
+| `RUN_TABLE` | 488 pre-swizzled records by address range | ip | 22-byte records for contiguous physical cold-slot runs. This capacity is a run-count limit, not a cold-tile cap; the pack rejects an overflowing frame. Pass1 stores ready VDP length/source words, the VRAM command, and raw fallback fields so Pass2 avoids rebuilding them inside VBlank. Each record is counted by HUD `N`; a one- or two-tile record uses CPU writes, while a longer record can become one or more DMA commands at VBlank boundaries. The encoder minimizes the maximum source-aware run count over every frame at 85% or more of the measured cold cap. Prg/Wr/Dic boundaries split runs. Whole-movie run total is not constrained, so light frames may gain runs when that removes a deadline cliff. |
 
 ## F. Physical CD delivery and encoder allowance
 
@@ -304,6 +308,18 @@ reserve are stored as separate byte traces in `buffer_remaining.npz`. The
 physical PrgBuf
 sector schedule remains a separate exact proof in `stream_schedule.py`. See
 [`BUEFFERING.md`](BUEFFERING.md) for the complete planning flow and validation.
+
+The first logical seed pass also supplies exact control lengths and Prg demand
+to that physical proof. If independently sectorized control and payload cannot
+meet a future deadline, the scheduler identifies the deadline's origin and the
+smallest cumulative Prg-pattern reduction needed. That one frame receives a
+source-derived delivery envelope below the measured cold cap, and the existing
+slot-accounting pass applies it. The seed is not repeated, the measured cap is
+not lowered, and no per-profile knob is created. Any further mismatch caused
+by the finalized physical slot map is fed back through the accounting pass
+until the full schedule is feasible. `delivery_cold_caps` in `stats.npz` and
+`buffer_remaining.npz`, plus `physical_delivery` in `decisions.pkl`, preserve
+the exact automatic constraints.
 
 The exact schedule and decoder verification always cover every frame. Summary
 comparisons use a separate automatic evaluation boundary: the first frame

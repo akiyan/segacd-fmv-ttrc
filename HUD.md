@@ -78,15 +78,18 @@ The HUD always occupies row 0 of the native 256x224 or 320x224 raster. It can
 cover active picture content; it is not repositioned around letterboxing.
 
 For any recording that can proceed to compilation or upload, the complete first
-movie loop is a mandatory gate. `S/D/R/C` must remain zero, `M` must remain at
-most `01`, and `J` must remain at most `17` (23 KiB). The last limit proves the
-404 KiB schedule plus measured excess stayed below the 428 KiB physical ring
-end despite `J`'s upward KiB rounding. `J` above `14` means the 20 KiB jitter
-headroom was exhausted and sector-granular back-pressure entered the separate
-4 KiB physical guard. Report the value, but `J<=17` does not by itself require
-another confirmation or fail the recording. A nonzero `C` is not data corruption by itself,
-but fails the automatic gate. Even on PASS, publication pauses until
-the user explicitly reviews and approves all six maxima.
+movie loop is a mandatory gate. `S/D/R` must remain zero and `J` must remain at
+most `17` (23 KiB). `C/M` limits follow the profile's player cadence. Fixed-N2
+content requires `C=00` and `M<=01`. Delivery-paced content may use all but the
+already-armed control sector on the current Sub path and all display fields in
+one content frame: 15 fps permits `C<=04`, `M<=04`; 24 fps permits `C<=03`,
+`M<=03`. The `J` limit proves the 404 KiB schedule plus measured excess stayed
+below the 428 KiB physical ring end despite upward KiB rounding. `J` above `14`
+means the 20 KiB jitter headroom was exhausted and sector-granular back-pressure
+entered the separate 4 KiB physical guard. Report the value, but `J<=17` does
+not by itself require another confirmation or fail the recording. Report all
+six maxima on PASS. When the enclosing task already authorizes publication,
+continue without requesting another approval merely because the gate ran.
 
 ## At-a-glance field reference
 
@@ -198,8 +201,10 @@ represent the same duration per displayed unit.
 Each pump drains one physical sector. `C=00` means the needed control was
 already armed when `process_frame` reached it. A small nonzero value is not a
 sector slip; it means delivery work landed directly on the current frame's
-critical path. Persistent or large `C`, especially with rising `W`, identifies
-the Sub/CD side as the likely deadline pressure.
+critical path. This is rejected in fixed-N2 playback, whose control must already
+be armed, but is expected within the profile-derived slot allowance at
+delivery-paced 15/24 fps. Persistent or above-allowance `C`, especially with
+rising `W`, identifies the Sub/CD side as the likely deadline pressure.
 
 ### `W`: Main wait for the Sub CPU
 
@@ -219,9 +224,11 @@ the current frame. Display cadence waiting is deliberately excluded. This
 makes `M` a deadline diagnostic rather than a restatement of 15/24/30 fps
 pacing.
 
-`M=00` or `01` is the normal region. `M>=02` proves that pattern work spilled
-into an additional VBlank. Correlate it with `U` and `N` to distinguish total
-transfer volume from run fragmentation.
+For fixed-N2 playback, `M=00` or `01` is the normal region and `M>=02` proves
+that pattern work spilled into an additional VBlank. Delivery-paced 15/24 fps
+has more display fields per content frame, so its automatic limit is
+`ceil(60000/1001/fps)`: four at 15 fps and three at 24 fps. Correlate `M` with
+`U` and `N` to distinguish total transfer volume from run fragmentation.
 
 ### `A`: Sub ADPCM decode time
 

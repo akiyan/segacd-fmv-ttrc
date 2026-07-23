@@ -13,7 +13,7 @@ The short answer is:
 | Sub PRG-RAM | 6.00 KiB | 6.00 KiB | 2 bytes of SP boot-slot growth, not data RAM |
 | Word RAM bank 0 | 10.64 KiB | 48.42 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
 | Word RAM bank 1 | 10.64 KiB | 48.42 KiB | +5.75 KiB if `ISO_HOLD_DUMP` compatibility is dropped |
-| Main RAM | 5.63 KiB | 10.25 KiB | Boot UI shares the future generated-code area; none counted from palette or stack reservations |
+| Main RAM | 3.72 KiB | 10.23 KiB | Boot UI shares the future generated-code area; none counted from palette or stack reservations |
 | Main CPU | no hard positive guarantee | measured `U` at most 409 ticks (12.56 ms) | repeated cap185 recording has zero cadence holds; this is evidence, not spendable slack |
 | Sub CPU | no hard positive guarantee | ADPCM decoder measured 7.62-8.11 ms in H40/N2 | full Sonic capture passes; BIOS/CD/Word-RAM waits remain outside that stopwatch |
 
@@ -49,8 +49,8 @@ The live throughput reference is the largest current fixed-cadence raster:
 | Build | specialized DEBUG player, Main code generation and short-run fast path enabled |
 
 Memory that must work for every supported rate uses the qualified H40/15 fps
-720- and 1,040-active-tile limit where necessary: 400 cold patterns, 888 PCM
-bytes, and a 4,900-byte control block. H40/15 with all 1,120 tiles active is
+720-active-tile limit where necessary: 500 cold patterns. The 1,040-active-tile
+tuple remains 400. H40/15 with all 1,120 tiles active is
 unmeasured and rejected. Frame 0 is outside timed streaming and may contain all 1,120 patterns.
 Its initial ascending slot allocation makes one 35,844-byte load run.
 
@@ -163,17 +163,16 @@ a separate proof that its maximum output ends at `0xFF6580`.
 | `0xFF2000..0xFF267F` at boot only | 1.625 KiB | transient SGDK font, preload-screen text, and lookup data; deliberately overwritten by generated code before playback | 0 additional runtime use |
 | `0xFF6580..0xFF65FF` | **128 B** | asserted guard after maximum generated code | **128 B** |
 | `0xFF6600..0xFF85FF` | 8.00 KiB | persistent DicBuf, 256 patterns | 0 |
-| `0xFF8600..0xFFA85F` | 8.594 KiB | all-supported maximum of 400 pre-swizzled run records at 22 B each | 0 |
-| `0xFFA860..0xFFAFFF` | **1.906 KiB** | RUN_TABLE tail after the largest qualified cap | **1.906 KiB** |
+| `0xFF8600..0xFFAFFF` | 10.50 KiB | fixed RUN_TABLE capacity: 488 pre-swizzled records at 22 B each | 0 |
 | `0xFFB000..0xFFCFFF` | 8.00 KiB | 64-entry resident PALTAB | 0 |
 | `0xFFD000..0xFFF07D` | 8,318 B | BSS: 4,096-byte shadow, 72-byte DEBUG HUD row, 4,096-byte 64-pitch name-table DMA stage, and fixed state | 0 |
 | `0xFFF07E..0xFFFAFF` | **2.627 KiB** | unused below the stack guard | **2.627 KiB** |
 | `0xFFFB00..0xFFFCFF` | 512 B | conservative stack and interrupt reserve | 0 |
 | `0xFFFD00..0xFFFFFF` | 768 B | above configured stack top / BIOS reserve | 0 |
 
-This yields **5.627 KiB** safe with the largest supported cap of 400 treated as
-400 separate runs. H40/N2 cap185 leaves another 4.619 KiB in RUN_TABLE, for
-**10.246 KiB** of steady-stream Main RAM, but that profile-specific tail is not
+This yields **3.721 KiB** safe while reserving the complete 488-record
+RUN_TABLE. H40/N2 cap180 leaves another 6.617 KiB in RUN_TABLE, for
+**10.338 KiB** of steady-stream Main RAM, but that profile-specific tail is not
 counted as general-purpose fixed memory. The 512-byte stack
 reserve is deliberately larger than the approximately 80-byte deepest visible
 player call chain; it leaves room for interrupt/BIOS use that the assembly call
@@ -294,17 +293,16 @@ while the pre-fix recording ended at `S=3` and held `F0107`, `F0166`, and
 `F0391` during recovery. This qualifies that low-rate path without turning its
 variable BIOS time into spendable Sub-CPU margin.
 
-The same stream then qualified the H40/15 fps/720-active-tile cold cap at 400.
-Its 320x130 picture occupies 40 columns by 18 partially or fully covered tile
-rows in the 320x224 raster; all other tiles stayed black throughout the source.
-The pack reported `under=0`, a 43-pattern minimum ready payload, and exact
-reconstruction of all 2,293 frames. Across the 2,292 timed DEBUG HUD groups,
-`S`, `D`, and `R` stayed zero; Main-CPU VBlank waits were at most two, cold-run
-count was at most 131, and the longest pattern-update interval was 1,636 ticks
-(50.26 ms), within the 66.7 ms 15 fps frame period. The lossless recording also
-passed packet, frame, audio, and extracted-frame checks. This evidence applies
-only to that mode/fps/active-tile tuple; it does not raise full-raster H40/15,
-H40/24, H40/30, H32, or mode4 limits.
+The same geometry later qualified the H40/15 fps/720-active-tile cold cap at
+500. Its confirmed active rows fit a 320x139 picture occupying 40 columns by
+18 tile rows. The pack reached cold500, reported `under=0`, retained a 6 KiB
+evaluation minimum, and reconstructed all 2,293 frames exactly. The complete
+HUD gate passed with `S/D/R=0`, `C/M=4`, and `J=8 KiB`; cold-run count was at
+most 134 and the longest pattern-update interval was 1,669 ticks (51.29 ms).
+Higher probes were phase-sensitive; cap680 failed at `M=5` and 67.37 ms despite
+nearby probes passing. This evidence applies only to that
+mode/fps/active-tile tuple; it does not raise full-raster H40/15, H40/24,
+H40/30, H32, or mode4 limits.
 
 Machi ED separately qualified H40/15 fps with 1,040 active tiles at the same
 400 cold cap. Its 320x204 picture touches 40 columns by 26 tile rows in the
