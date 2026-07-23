@@ -1349,7 +1349,6 @@ def main():
         FPS,
         cells=C_CELLS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        debug=bool(pack_config.get("debug", False)),
     )
     body_gross_bytes = np.asarray(body_fresh["gross"], np.int64)
     body_fixed_control_bytes = np.asarray(
@@ -3304,7 +3303,6 @@ def main():
             av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
         frame_sectors=ttrc_routing.FRAME_SECTORS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        debug=bool(pack_config.get("debug", False)),
         fill=bool(pack_config.get("fill", True)),
     ) if PATTERN_SUPPLY_ON else None
     shadow_list_flags = (
@@ -3318,7 +3316,6 @@ def main():
             np.asarray(transfer_runs_log, np.int64),
             cells=C_CELLS,
             audio_frame_bytes=AUDIO_CONTROL_BYTES,
-            debug=bool(pack_config.get("debug", False)),
         )
     )
     exact_body_work = stream_schedule.body_funded_work_bytes(
@@ -3327,7 +3324,6 @@ def main():
         np.asarray(transfer_runs_log, np.int64),
         cells=C_CELLS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        debug=bool(pack_config.get("debug", False)),
         update_lists=shadow_list_flags,
     )
     legacy_lengths = stream_schedule.control_block_lengths(
@@ -3335,7 +3331,6 @@ def main():
         np.asarray(transfer_runs_log, np.int64),
         cells=C_CELLS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        debug=bool(pack_config.get("debug", False)),
     )
     fb = fb_baseline + control_lengths - legacy_lengths
     if not np.array_equal(fb.astype(np.int64), exact_body_work):

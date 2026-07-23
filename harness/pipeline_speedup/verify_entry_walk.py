@@ -138,8 +138,7 @@ def verify_block(
     if n_upd > cells:
         raise AssertionError(f"frame {seq}: n_upd {n_upd} exceeds {cells} cells")
 
-    dbg = block[7]
-    bitmap_off = 8 + (22 if dbg else 0)
+    bitmap_off = 8
     if use_list:
         list_end = bitmap_off + n_upd * 4
         if list_end > len(block):

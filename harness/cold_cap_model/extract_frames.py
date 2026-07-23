@@ -171,9 +171,8 @@ def parse_frame(raw: bytes, seq: int, cells: int, pool: int,
         die(f"frame {seq}: packed sequence is {packed_seq}")
     n_upd = raw_count & SHADOW_UPDATE_COUNT_MASK
     use_list = bool(raw_count & SHADOW_UPDATE_LIST_TAG)
-    pal = raw[6]
-    dbg = raw[7]
-    pos = 8 + (22 if dbg else 0)
+    pal = struct.unpack_from(">H", raw, 6)[0]
+    pos = 8
 
     cold_entries: int | None = None
     if use_list:

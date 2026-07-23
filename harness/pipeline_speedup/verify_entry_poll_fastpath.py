@@ -136,7 +136,7 @@ def parse_entries(block: bytes, seq: int, cells: int) -> tuple[int, ...]:
         raise AssertionError(f"frame {seq}: {n_upd} updates exceed {cells} cells")
 
     if use_list:
-        list_start = 8 + (22 if block[7] else 0)
+        list_start = 8
         list_end = list_start + 4 * n_upd
         if list_end > len(block):
             raise AssertionError(f"frame {seq}: shadow list exceeds the control block")
@@ -150,7 +150,7 @@ def parse_entries(block: bytes, seq: int, cells: int) -> tuple[int, ...]:
         # walker measured by this harness is intentionally not entered.
         return ()
 
-    bitmap_start = 8 + (22 if block[7] else 0)
+    bitmap_start = 8
     bitmap_len = (cells + 7) // 8
     entries_start = bitmap_start + bitmap_len
     entries_end = entries_start + 2 * n_upd

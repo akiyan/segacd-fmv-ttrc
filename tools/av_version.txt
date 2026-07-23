@@ -11,6 +11,12 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e92/p80 : Move the control-block palette reference from an 8-bit field
+#        paired with an unused debug flag to one 16-bit field, and remove the
+#        optional 22-byte diagnostic block from TTRC v14. The DEBUG HUD remains
+#        a player build feature with no stream payload. Lower the qualified
+#        H40/30fps/1,120-active-tile cold cap from 185 to 180 for the Bad Apple
+#        phase-robustness check.
 #   e91 : Replace fixed-frame priority aging with RGB-distance-weighted
 #        pressure for Miss/Flbk/Coa, exclude Near, and use the same pressure as
 #        the approximation-upgrade tie-break. Disable detail weighting by
@@ -656,5 +662,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260723
-e=91
-p=79
+e=92
+p=80

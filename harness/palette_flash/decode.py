@@ -81,9 +81,7 @@ class Decoder:
         del self.ab[:total]
         p = 2
         nu = struct.unpack(">H", blk[p:p + 2])[0]; p += 2
-        pal = blk[p]; dbg = blk[p + 1]; p += 2
-        if dbg:
-            p += 22
+        pal = struct.unpack_from(">H", blk, p)[0]; p += 2
         if pal:
             cram = np.zeros((4, 16, 3), np.uint8)
             for pr in range(4):

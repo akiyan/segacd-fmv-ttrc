@@ -39,7 +39,6 @@ segment_train_frames = 240
 segment_validate_frames = 60
 
 [pack]
-debug = true
 fill = true
 startup_audio_frames = 30
 output = "out/movieplay/MOVIE.DAT"
