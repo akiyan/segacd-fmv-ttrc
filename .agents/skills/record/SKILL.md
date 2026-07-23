@@ -219,8 +219,10 @@ Check the raw MKV and reports before trusting a capture:
    404 KiB cap plus the complete 24 KiB tail: `17` is 23 KiB and proves the
    circular ring never became completely full. `J` above `14` means the 20 KiB
    jitter headroom was exhausted and sector-granular back-pressure entered the
-   separate physical guard; report this explicitly for manual review. `C` is not
-   corruption by itself, but any nonzero critical-path CD work fails the gate.
+   separate physical guard; report this explicitly, but a value at or below
+   the passing `17` limit does not by itself require another confirmation or
+   fail the recording. `C` is not corruption by itself, but any nonzero
+   critical-path CD work fails the gate.
    Do not waive, hand-edit, or reuse a gate JSON from another recording.
 
    Even on PASS, report all six maxima and **stop before compilation or upload**.
