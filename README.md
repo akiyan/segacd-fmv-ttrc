@@ -240,18 +240,22 @@ CONFIG=configs/PROFILE.toml` to verify the toolchain and ISO writer before a
 full build.
 
 The Japanese Mega-CD BIOS used for local testing is a user-supplied,
-git-ignored file at `original/jp_mcd1_9111.bin`; it is not distributed by this
+git-ignored file at `original/jp_mcd2_9212.bin`; it is not distributed by this
 repository. Install that project-local copy for Genesis Plus GX as follows:
 
 ```sh
 install -d -m 700 ~/.config/retroarch/system
-install -m 600 original/jp_mcd1_9111.bin \
+install -m 600 original/jp_mcd2_9212.bin \
   ~/.config/retroarch/system/bios_CD_J.bin
 ```
 
 The recording harness uses the distro Genesis Plus GX core at
 `/usr/lib/x86_64-linux-gnu/libretro/genesis_plus_gx_libretro.so`. Override
-`CORE` or `SYSTEM_DIR` only when the distro or BIOS layout differs.
+`CORE`, `BIOS_IMAGE`, or `SYSTEM_DIR` only when the distro or BIOS layout
+differs. Each run stages `BIOS_IMAGE` as `bios_CD_J.bin` and prints its SHA-256
+so Replay and capture provenance stay explicit. Replay generation presses
+START once per second across the BIOS/CD-player transition instead of relying
+on one BIOS revision's fixed startup time.
 
 ## Build
 

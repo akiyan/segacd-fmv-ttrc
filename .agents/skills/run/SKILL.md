@@ -162,8 +162,10 @@ do not waive a failed proof.
 ## Stage 4: Record and Verify Playback
 
 Use `record` with the same profile. Build DEBUG by default, keep the Plane A HUD,
-and retain the full Mega-CD startup. Choose a launch-to-tail duration long
-enough for startup, the complete source, and a short ending margin. `record`
+and retain the full Mega-CD startup. Choose a launch-to-tail duration at least
+30 seconds longer than the source when using the default
+`original/jp_mcd2_9212.bin`, so its roughly 21-second verified startup plus a
+short ending margin are both retained. `record`
 uses the qualified fixed-Replay offline FFV1/FLAC path by default. Use:
 
 - `ffv1-flac`;

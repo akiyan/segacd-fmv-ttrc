@@ -144,6 +144,23 @@ class PayloadRingScheduleTests(unittest.TestCase):
         self.assertEqual(result["n_pay_sec"].tolist(), [0, 0, 0, 0, 0])
         self.assertTrue(result["feasible"])
 
+    def test_terminal_drain_is_excluded_only_from_comparison_minimum(self) -> None:
+        result = schedule.schedule_payload_ring(
+            [0, 96, 96, 96, 96, 96, 96, 96, 96, 0, 0],
+            [0] * 11,
+            fps=30,
+            ring_capacity_patterns=128,
+            frame_sectors=3,
+            fill=True,
+        )
+        end = int(result["evaluation_end_frame"])
+        self.assertLess(end, len(result["ring_occupancy"]))
+        self.assertEqual(
+            int(result["ring_min_evaluation"]),
+            int(result["ring_occupancy"][1:end].min()))
+        self.assertLessEqual(
+            int(result["ring_min"]), int(result["ring_min_evaluation"]))
+
     def test_last_sector_padding_is_real_ring_occupancy(self) -> None:
         result = schedule.schedule_payload_ring(
             [0, 10, 0],

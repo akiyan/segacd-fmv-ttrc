@@ -182,7 +182,7 @@ if [ "$OFFLINE_RECORD" -eq 1 ] && [ -z "$REPLAY_FILE" ]; then
   echo ">> generating input replay ($REPLAY_MAX_FRAMES frames) -> $REPLAY_FILE"
   OUTDIR="$REPLAY_DIR" tools/run_headless.sh "$DISC" --tag "${TAG}_replay" \
     --record-replay "$REPLAY_FILE" --max-frames "$REPLAY_MAX_FRAMES" \
-    --boot-wait 0.5 --presses 30 --press-gap 0.1 --display "$DISPLAY_NUM"
+    --boot-wait 1 --presses 20 --press-gap 1 --display "$DISPLAY_NUM"
   [ -s "$REPLAY_FILE" ] || { echo "input replay not produced: $REPLAY_FILE" >&2; exit 1; }
 fi
 

@@ -453,6 +453,15 @@ def schedule_payload_ring(
     n_pay_sec[0] = delivered[0] - prebuffer_sec
     n_pay_sec[1:] = delivered[1:] - delivered[:-1]
     occupancy = delivered * PATTERNS_PER_SECTOR - consumed
+    payload_frames = np.flatnonzero(n_pay_sec > 0)
+    # Once the final payload sector has arrived, the terminal suffix can only
+    # consume what remains.  Keep that suffix in the feasibility proof, but do
+    # not let the intentional end-of-stream drain define comparison minima.
+    evaluation_end_frame = (
+        min(nfr, int(payload_frames[-1]) + 1) if payload_frames.size else nfr
+    )
+    evaluation_occupancy = occupancy[
+        1:evaluation_end_frame] if evaluation_end_frame > 1 else occupancy[:1]
     under = int((occupancy < 0).sum())
     over = int((n_pay_sec + nc > int(frame_sectors)).sum())
 
@@ -513,6 +522,8 @@ def schedule_payload_ring(
         "prebuf_pat": prebuffer_sec * PATTERNS_PER_SECTOR,
         "ring_peak": int(occupancy.max()),
         "ring_min": int(occupancy.min()),
+        "ring_min_evaluation": int(evaluation_occupancy.min()),
+        "evaluation_end_frame": int(evaluation_end_frame),
         "ring_occupancy": occupancy,
         "ready_min": ready_min,
         "ctrl_min": ctrl_min,

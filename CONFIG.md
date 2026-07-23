@@ -305,6 +305,14 @@ physical PrgBuf
 sector schedule remains a separate exact proof in `stream_schedule.py`. See
 [`BUEFFERING.md`](BUEFFERING.md) for the complete planning flow and validation.
 
+The exact schedule and decoder verification always cover every frame. Summary
+comparisons use a separate automatic evaluation boundary: the first frame
+after the final BODY Prg payload delivery. The terminal suffix after that
+boundary can only drain remaining PrgBuf data and is therefore excluded from
+reported comparison minima such as `ring_min eval`. The full-movie minimum is
+still emitted as `full` for proof and diagnosis; no frame is removed from the
+feasibility, underrun, or display-equivalence checks.
+
 Schema-5 `buffer_remaining.npz` records `prg_remaining`, `wr0_remaining`,
 `wr1_remaining`, and `dic_remaining` plus the matching capacities and
 per-frame loads. `quality_budget_remaining` is diagnostic only and is not one

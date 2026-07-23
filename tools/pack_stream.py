@@ -1602,8 +1602,11 @@ def main():
           f"rate_lead_end {sc.get('rate_lead_end', 0)})")
     Pb = sum(len(b) for b in blocks)
     under = sc.get("under", 0)
+    evaluation_end = int(sc.get("evaluation_end_frame", len(per)))
     print(f"schedule[{st}] prebuf {sc['prebuf_pat']*PAT/1024:.0f}KB ring_peak {sc['ring_peak']*PAT/1024:.0f}KB "
-          f"ring_min {sc.get('ring_min',0)*PAT/1024:.0f}KB (cap {RING_CAP_KB}KB)  under(枯渇) {under} "
+          f"ring_min eval {sc.get('ring_min_evaluation', sc.get('ring_min', 0))*PAT/1024:.1f}KB "
+          f"(f1..{max(1, evaluation_end - 1)}, full {sc.get('ring_min',0)*PAT/1024:.1f}KB, "
+          f"tail starts f{evaluation_end}, cap {RING_CAP_KB}KB)  under(枯渇) {under} "
           f"({100.0*under/max(1,len(per)):.1f}%)  n_pay_sec avg {sc['n_pay_sec'].mean():.2f}  "
           f"control-first ready_min {sc['ready_min']}pat ctrl_min {sc['ctrl_min']}B  "
           f"rate_lead peak/end {sc['rate_lead_peak']}/{sc['rate_lead_end']}sec")

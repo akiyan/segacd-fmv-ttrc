@@ -60,7 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label", default="")
     parser.add_argument(
         "--evaluation-end-frame", type=int,
-        help="first excluded frame; the complete tail remains visible")
+        help=("first excluded frame; defaults to the terminal suffix after "
+              "the final Prg payload delivery"))
     parser.add_argument("--pixels-per-frame", type=int)
     return parser.parse_args()
 
@@ -103,6 +104,18 @@ def load_npz(path: Path) -> dict[str, np.ndarray]:
         return {}
     with np.load(path, allow_pickle=True) as data:
         return {key: data[key].copy() for key in data.files}
+
+
+def infer_evaluation_end(buffer: dict[str, np.ndarray], frames: int) -> int | None:
+    """Exclude the terminal no-refill suffix from comparison aggregates."""
+    payload = np.asarray(buffer.get("payload_sectors", ()), np.int64)
+    if payload.shape != (frames,):
+        return None
+    delivered = np.flatnonzero(payload > 0)
+    if not delivered.size:
+        return None
+    first_excluded = min(frames, int(delivered[-1]) + 1)
+    return first_excluded if first_excluded < frames else None
 
 
 def load_miss_masks(
@@ -584,6 +597,9 @@ def main() -> None:
         raise SystemExit("evaluation end frame must be greater than frame 1")
     config = load_toml(config_path)
     buffer = load_npz(sim_out / "buffer_remaining.npz") if sim_out else {}
+    evaluation_end = args.evaluation_end_frame
+    if evaluation_end is None:
+        evaluation_end = infer_evaluation_end(buffer, n)
     decisions = load_decisions(sim_out / "decisions.pkl") if sim_out else {}
     miss_masks = load_miss_masks(
         sim_out / "miss_masks.npy",
@@ -596,7 +612,7 @@ def main() -> None:
     probe = ffprobe_metadata(source_path)
     source, internals, totals = metadata_lines(
         data, config, config_path, sim_out, buffer, decisions, probe, miss_masks,
-        args.evaluation_end_frame,
+        evaluation_end,
     )
 
     left = 220
@@ -619,7 +635,7 @@ def main() -> None:
     draw_text_block(draw, (24 + 2 * column_width, 108), "TOTALS", totals, column_width - 20)
     draw_legend(draw, left, timeline_top - 42)
     _, bottom = draw_timeline(
-        image, data, left, timeline_top, ppf, args.evaluation_end_frame)
+        image, data, left, timeline_top, ppf, evaluation_end)
     draw = ImageDraw.Draw(image)
     draw.text(
         (left, bottom + 69),

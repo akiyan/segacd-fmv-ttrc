@@ -3436,8 +3436,12 @@ def main():
          f"control_delta={int((control_lengths - legacy_lengths).sum())}B "
          f"threshold="
          f"{'schedule' if shadow_plan['control_growth_enabled'] else 'no-control-growth'} "
-         f"baseline/selected ring_min="
-         f"{shadow_plan['baseline_schedule']['ring_min']}/{physical_schedule['ring_min']} "
+         f"baseline/selected ring_min eval="
+         f"{shadow_plan['baseline_schedule']['ring_min_evaluation']}/"
+         f"{physical_schedule['ring_min_evaluation']} "
+         f"(full {shadow_plan['baseline_schedule']['ring_min']}/"
+         f"{physical_schedule['ring_min']}, "
+         f"tail f{physical_schedule['evaluation_end_frame']}..) "
          f"ready_min={shadow_plan['baseline_schedule']['ready_min']}/{physical_schedule['ready_min']}"
          if shadow_plan is not None else "shadow_update_lists=0 (pattern supply disabled)"),
         (f"upgrade(格上げ): 余剰でRaw化 avg {np.mean([u for u, _ in upgrade_log]):.1f}/コマ, "
@@ -3692,6 +3696,11 @@ def main():
                 "ring_occupancy": prg_remaining,
                 "payload_sectors": np.asarray(
                     physical_schedule["n_pay_sec"], np.int64),
+                "evaluation_end_frame": int(
+                    physical_schedule["evaluation_end_frame"]),
+                "ring_min_evaluation": int(
+                    physical_schedule["ring_min_evaluation"]),
+                "ring_min_full": int(physical_schedule["ring_min"]),
                 "control_sectors": np.asarray(
                     physical_schedule["n_ctrl_sec"], np.int64),
                 "body_useful_payload_bytes": body_payload_bytes,
@@ -3715,10 +3724,18 @@ def main():
                 "baseline_ring_min": (
                     int(shadow_plan["baseline_schedule"]["ring_min"])
                     if shadow_plan is not None else int(physical_schedule["ring_min"])),
+                "baseline_ring_min_evaluation": (
+                    int(shadow_plan["baseline_schedule"]["ring_min_evaluation"])
+                    if shadow_plan is not None
+                    else int(physical_schedule["ring_min_evaluation"])),
                 "baseline_ready_min": (
                     int(shadow_plan["baseline_schedule"]["ready_min"])
                     if shadow_plan is not None else int(physical_schedule["ready_min"])),
                 "selected_ring_min": int(physical_schedule["ring_min"]),
+                "selected_ring_min_evaluation": int(
+                    physical_schedule["ring_min_evaluation"]),
+                "evaluation_end_frame": int(
+                    physical_schedule["evaluation_end_frame"]),
                 "selected_ready_min": int(physical_schedule["ready_min"]),
                 "control_growth_enabled": (
                     bool(shadow_plan["control_growth_enabled"])

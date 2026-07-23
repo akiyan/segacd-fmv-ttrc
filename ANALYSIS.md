@@ -386,6 +386,13 @@ playhead:
    blue-grey) as a fraction of the physical bytes in each delivery slot. Pad
    remains blank and a horizontal line at the top marks CD 1x (150 KiB/sec).
 
+The detailed whole-movie timeline automatically marks the first frame after
+the final Prg payload delivery as the evaluation boundary. Its terminal
+no-refill suffix remains visible with red shading but is excluded from EVAL
+totals and minima. FULL totals remain alongside EVAL for diagnosis. This
+changes reporting only: simulation, packing, and playback verification still
+cover the complete movie.
+
 ## Colours (RGB)
 
 Raw `(205,205,205)`, Same `(150,150,158)` grey, Near `(95,115,215)` blue,
