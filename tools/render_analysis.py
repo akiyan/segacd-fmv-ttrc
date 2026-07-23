@@ -194,11 +194,13 @@ MISS_MASKS = np.load(f"{SIM}/miss_masks.npy")
 
 # ---- stats -> mutually-exclusive display categories ----
 col = lambda k: S[:, idx[k]].astype(np.int64) if k in idx else np.zeros(NF, np.int64)
-Raw = col("tx"); Dedup = col("dedup"); Coa = col("coa"); Near = col("near")
+Raw = col("tx"); Dedup = col("dedup"); Near = col("near")
 # Flbk = 旧Mid+Farを統合(Missのフォールバック)。新statsは flbk 列, 旧statsは mid+far を合算(後方互換)
 Flbk = col("flbk") + col("mid") + col("far")
 Want = col("want"); Miss = col("miss")
-Buf = col("buf") if "buf" in idx else np.maximum(col("updated") - Raw - Dedup - Coa, 0)
+if "buf" not in idx:
+    raise SystemExit("analysis exact-source total is missing; re-run sim")
+Buf = col("buf")
 _source_fields = ("prg", "wr0", "wr1", "dic")
 if any(name not in idx for name in _source_fields):
     raise SystemExit(
@@ -214,6 +216,49 @@ DMA_TILES = col("dma_tiles") if "dma_tiles" in idx else Raw + Buf
 PREFETCH = col("prefetch")
 PREFETCH_CAP = int(z["raw_prefetch_cap"]) if "raw_prefetch_cap" in z else max(
     1, int(PREFETCH.max(initial=0)))
+
+
+def _balanced_raw_flags(raw_count, total_count):
+    """Spread one frame's Raw attribution evenly through its PrgBuf loads."""
+    raw_count = int(raw_count)
+    total_count = int(total_count)
+    if not 0 <= raw_count <= total_count:
+        raise SystemExit(
+            f"Raw payload attribution {raw_count} exceeds "
+            f"{total_count} PrgBuf loads")
+    if total_count == 0:
+        return np.zeros(0, np.bool_)
+    positions = np.arange(total_count, dtype=np.int64)
+    return (
+        ((positions + 1) * raw_count // total_count)
+        != (positions * raw_count // total_count)
+    )
+
+
+if "prg_loads" not in BUF:
+    raise SystemExit("analysis PrgBuf load trace is missing; re-run sim")
+_prg_loads = BUF["prg_loads"].astype(np.int64)
+if len(_prg_loads) != NF:
+    raise SystemExit("analysis PrgBuf load trace has the wrong frame count")
+_payload_raw_flags = np.concatenate([
+    _balanced_raw_flags(Raw[i], _prg_loads[i])
+    for i in range(1, NF)
+])
+_delivered_payload_patterns = (
+    int(BODY_PAYLOAD_BYTES.sum()) // stream_schedule.PATTERN_BYTES)
+_prebuffer_patterns = len(_payload_raw_flags) - _delivered_payload_patterns
+BODY_RAW_PAYLOAD_BYTES, BODY_PRG_PAYLOAD_BYTES = (
+    stream_schedule.split_body_payload_classes(
+        _payload_raw_flags,
+        BODY_PAYLOAD_BYTES,
+        prebuffer_patterns=_prebuffer_patterns,
+    )
+)
+if not np.array_equal(
+        BODY_RAW_PAYLOAD_BYTES + BODY_PRG_PAYLOAD_BYTES,
+        BODY_PAYLOAD_BYTES,
+):
+    raise AssertionError("Band Raw/Prg split does not cover BODY payload")
 
 
 def _legacy_dma_runs():
@@ -261,8 +306,7 @@ def _legacy_dma_runs():
 
 DMA_RUNS = col("dma_runs") if "dma_runs" in idx else _legacy_dma_runs()
 FULL = {
-    "Raw": Raw, "Same": Same, "Near": Near, "Coa": Coa,
-    "Flbk": Flbk, "Miss": Miss,
+    "Raw": Raw, "Same": Same, "Near": Near, "Flbk": Flbk, "Miss": Miss,
     "Prg": Prg, "Wr0": Wr0, "Wr1": Wr1, "Dic": Dic,
 }
 _category_sum = sum(FULL.values())
@@ -367,11 +411,11 @@ GAP = 16
 REQ_W = L._w(L.f_leg, "Req:000  Miss:000") + 3
 COLD_W = L._w(L.f_leg, "Cold:000") + 3
 PRE_W = L._w(L.f_leg, "Pre:000") + 3
-BAND_W, PRG_W, WR0_W, WR1_W, DMA_W, RUN_W = L.meter_widths(C)
+BAND_W, PRG_W, WRD_W, DMA_W, RUN_W = L.meter_widths(C)
 X_TL_STATUS = (
-    4 + REQ_W + GAP + COLD_W + GAP + PRE_W + GAP + BAND_W + GAP
-    + PRG_W + GAP + WR0_W + GAP + WR1_W + GAP
-    + DMA_W + GAP + RUN_W + GAP)
+    4 + REQ_W + GAP + COLD_W + GAP + BAND_W + GAP
+    + DMA_W + GAP + RUN_W + GAP + PRG_W + GAP + WRD_W + GAP
+    + PRE_W + GAP)
 
 
 def fit(A, bw, bh):
@@ -421,11 +465,16 @@ def build_tl_bg():
     tlh = (L.STATUS_H - 2) - by
     H_req = tlh // 2
     H_supply = tlh // 4
-    H_dma = tlh - H_req - H_supply
+    H_bottom = tlh - H_req - H_supply
+    H_run = H_bottom // 2
+    H_band = H_bottom - H_run
+    y_run = H_req + H_supply
+    y_band = y_run + H_run
     im = Image.new("RGB", (tlw, tlh), (16, 16, 16))
     d = ImageDraw.Draw(im)
     d.rectangle([0, H_req, tlw, H_req + H_supply], fill=(21, 22, 28))
-    d.rectangle([0, H_req + H_supply, tlw, tlh], fill=(18, 26, 20))
+    d.rectangle([0, y_run, tlw, y_band], fill=(27, 24, 17))
+    d.rectangle([0, y_band, tlw, tlh], fill=(18, 26, 20))
     order = [(name, dict(L.CATS)[name]) for name in L.REQ_TIMELINE_CATS]
     for cx in range(tlw):
         fi = min(int(cx / tlw * NF), NF - 1)
@@ -441,14 +490,22 @@ def build_tl_bg():
             if hs > 0:
                 d.line([(cx, ys - hs), (cx, ys)], fill=L.SUPPLY_COLORS[name])
                 ys -= hs
+        run_capacity = max(COLD_CAP, 1)
+        hr = int(H_run * min(int(DMA_RUNS[fi]), run_capacity) / run_capacity)
+        if hr > 0:
+            d.line([(cx, y_band - hr), (cx, y_band)], fill=L.COL_RUN)
         physical = max(int(BODY_PHYSICAL_BYTES[fi]), 1)
-        hp = int(H_dma * int(BODY_PAYLOAD_BYTES[fi]) / physical)
-        if hp > 0:
-            d.line([(cx, tlh - hp), (cx, tlh)], fill=L.CAT_RAW)
-        hc = int(H_dma * int(BODY_USEFUL_BYTES[fi]) / physical)
-        if hc > hp:
-            d.line([(cx, tlh - hc), (cx, tlh - hp)], fill=L.COL_OVH)
-    d.line([(0, tlh - H_dma), (tlw - 1, tlh - H_dma)], fill=(110, 105, 70))
+        hrw = int(H_band * int(BODY_RAW_PAYLOAD_BYTES[fi]) / physical)
+        hprg = int(H_band * int(BODY_PAYLOAD_BYTES[fi]) / physical)
+        if hrw > 0:
+            d.line([(cx, tlh - hrw), (cx, tlh)], fill=L.CAT_RAW)
+        if hprg > hrw:
+            d.line([(cx, tlh - hprg), (cx, tlh - hrw)], fill=L.COL_PRG)
+        hc = int(H_band * int(BODY_USEFUL_BYTES[fi]) / physical)
+        if hc > hprg:
+            d.line([(cx, tlh - hc), (cx, tlh - hprg)], fill=L.COL_OVH)
+    d.line([(0, y_run), (tlw - 1, y_run)], fill=(110, 105, 70))
+    d.line([(0, y_band), (tlw - 1, y_band)], fill=(110, 105, 70))
     d.rectangle([0, 0, tlw - 1, tlh - 1], outline=L.COL_FRAME_IN)
     return im, x_tl, by, tlw, tlh
 
@@ -492,32 +549,14 @@ def draw_status_real(data):
     stacked(cold_parts, data["cold_cap"], COLD_W)
     L.draw_field(d, x, ly, "Cold:", data["cold"], 3, L.f_leg, L.COL_TXT)
     x += COLD_W + GAP
-    # 3) Prefetch activity is not a displayed-cell category.
-    stacked([(data["cold_prefetch"], L.CAT_PREFETCH)],
-            data["prefetch_cap"], PRE_W)
-    L.draw_field(d, x, ly, "Pre:", data["cold_prefetch"], 3, L.f_leg, L.COL_TXT)
-    x += PRE_W + GAP
-    # 4) Band = physical slot useful BODY payload + control, excluding pad/Header.
-    stacked([(data["body_payload_bytes"], L.CAT_RAW),
+    # 3) Band = Raw payload + Prg charge + control; no pad/Header.
+    stacked([(data["body_raw_payload_bytes"], L.CAT_RAW),
+             (data["body_prg_payload_bytes"], L.COL_PRG),
              (data["body_control_bytes"], L.COL_OVH)],
             max(data["body_physical_bytes"], 1), BAND_W)
     d.line([x + BAND_W, by - 2, x + BAND_W, by + BH + 2], fill=(210, 190, 90))
     L.draw_field(d, x, ly, "Band:", data["band_kbps"], 3, L.f_leg, L.COL_TXT)
     x += BAND_W + GAP
-    # 5) DicBuf is persistent and has no remaining meter.
-    supply_widths = {
-        "Prg": (PRG_W, 5), "Wr0": (WR0_W, 3),
-        "Wr1": (WR1_W, 3),
-    }
-    for name in L.METER_SUPPLY_ORDER:
-        width, digits = supply_widths[name]
-        remaining = data["supply_remaining"][name]
-        capacity = data["supply_capacities"][name]
-        stacked([(remaining, L.SUPPLY_COLORS[name])], capacity, width)
-        L.draw_field(
-            d, x, ly, name + ":", remaining, digits, L.f_leg, L.COL_TXT)
-        x += width + GAP
-
     # 4) DMA = 今フレームの32Bパターンタイル数
     fillw = int(DMA_W * min(dval, dmax) / max(dmax, 1)); over = dval > dmax
     d.rectangle([x, by, x + fillw, by + BH], fill=(220, 130, 60) if over else L.COL_DMA)
@@ -536,6 +575,27 @@ def draw_status_real(data):
     d.rectangle([x, by, x + RUN_W, by + BH], outline=L.COL_FRAME_IN)
     L.draw_field(d, x, ly, "Run:", run_val, L.DMA_RUN_DIGITS, L.f_leg, L.COL_TXT)
     x += RUN_W + GAP
+
+    # 6) Prg remains physical; WordBuf banks are combined only for display.
+    prg_remaining = data["supply_remaining"]["Prg"]
+    prg_capacity = data["supply_capacities"]["Prg"]
+    stacked([(prg_remaining, L.COL_PRG)], prg_capacity, PRG_W)
+    L.draw_field(d, x, ly, "Prg:", prg_remaining, 5, L.f_leg, L.COL_TXT)
+    x += PRG_W + GAP
+
+    wrd_remaining = (
+        data["supply_remaining"]["Wr0"] + data["supply_remaining"]["Wr1"])
+    wrd_capacity = (
+        data["supply_capacities"]["Wr0"] + data["supply_capacities"]["Wr1"])
+    stacked([(wrd_remaining, L.COL_WRD)], wrd_capacity, WRD_W)
+    L.draw_field(d, x, ly, "Wrd:", wrd_remaining, 4, L.f_leg, L.COL_TXT)
+    x += WRD_W + GAP
+
+    # 7) Prefetch activity is shown last.
+    stacked([(data["cold_prefetch"], L.CAT_PREFETCH)],
+            data["prefetch_cap"], PRE_W)
+    L.draw_field(d, x, ly, "Pre:", data["cold_prefetch"], 3, L.f_leg, L.COL_TXT)
+    x += PRE_W + GAP
     # メーター下: パレット Prev/Current/Next(PL/Frame見出し, 正方形タイル)
     meters_right = x - GAP
     py0 = ly + 16
@@ -573,7 +633,7 @@ def frame_data(i):
     return dict(C=C, counts=cn, fps=FPS, win=WIN,
                 mode=MODE, res=RES, audio=AUDIO_STR, avg_kbps=AVG_KBPS,
                 req=int(Want[i]), miss=cn["Miss"], budget=BUDGET,
-                comp=cn["Same"] + cn["Near"] + cn["Coa"] + cn["Flbk"],
+                comp=cn["Same"] + cn["Near"] + cn["Flbk"],
                 supply_capacities=SUPPLY_CAPACITIES,
                 supply_remaining={
                     name: int(values[i])
@@ -581,6 +641,10 @@ def frame_data(i):
                 },
                 dma_tiles=L.timed_metric_value(i, DMA_TILES[i]),
                 dma_runs=L.timed_metric_value(i, DMA_RUNS[i]),
+                body_raw_payload_bytes=L.timed_metric_value(
+                    i, BODY_RAW_PAYLOAD_BYTES[i]),
+                body_prg_payload_bytes=L.timed_metric_value(
+                    i, BODY_PRG_PAYLOAD_BYTES[i]),
                 body_payload_bytes=L.timed_metric_value(
                     i, BODY_PAYLOAD_BYTES[i]),
                 body_control_bytes=L.timed_metric_value(
@@ -604,10 +668,11 @@ ANALYSIS_TSV_COLUMNS = (
     "cold_cap_tiles", "prefetch_cap_tiles",
     "legend_raw", "legend_same", "legend_dic", "legend_prg",
     "legend_wr", "legend_wr0", "legend_wr1", "legend_near",
-    "legend_coa", "legend_flbk", "legend_miss",
+    "legend_flbk", "legend_miss",
     "status_req", "status_miss", "status_cold", "status_pre",
     "status_band_kib_s", "status_prg", "status_wr0", "status_wr1",
     "status_dma", "status_run",
+    "body_raw_payload_bytes", "body_prg_payload_bytes",
     "body_payload_bytes", "body_control_bytes", "body_pad_bytes",
     "body_physical_bytes", "body_useful_bytes", "body_band_bps",
     "quality_budget_remaining_bytes",
@@ -630,7 +695,7 @@ def analysis_tsv_row(i):
     data = frame_data(i)
     cn = data["counts"]
     row = {
-        "schema_version": 1,
+        "schema_version": 3,
         "frame": i,
         "frame_hex": f"0x{i:04X}",
         "time_seconds": format(i / FPS, ".9f"),
@@ -648,7 +713,6 @@ def analysis_tsv_row(i):
         "legend_wr0": cn["Wr0"],
         "legend_wr1": cn["Wr1"],
         "legend_near": cn["Near"],
-        "legend_coa": cn["Coa"],
         "legend_flbk": cn["Flbk"],
         "legend_miss": cn["Miss"],
         "status_req": data["req"],
@@ -661,6 +725,8 @@ def analysis_tsv_row(i):
         "status_wr1": data["supply_remaining"]["Wr1"],
         "status_dma": data["dma_tiles"],
         "status_run": data["dma_runs"],
+        "body_raw_payload_bytes": int(BODY_RAW_PAYLOAD_BYTES[i]),
+        "body_prg_payload_bytes": int(BODY_PRG_PAYLOAD_BYTES[i]),
         "body_payload_bytes": int(BODY_PAYLOAD_BYTES[i]),
         "body_control_bytes": int(BODY_CONTROL_BYTES[i]),
         "body_pad_bytes": int(BODY_PAD_BYTES[i]),

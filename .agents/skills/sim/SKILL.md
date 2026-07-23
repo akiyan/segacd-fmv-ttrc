@@ -46,7 +46,7 @@ Argument: source MP4 path, optionally plus display name or upload instruction.
 Other fixed defaults:
 
 - All features on: `DITHER`, `SEGPAL`, `NEAR`, whole-movie quality planning,
-  `COA`, and the qualified four-source pattern supply.
+  and the qualified four-source pattern supply.
 - Audio = `adpcm22`. Use `pcm13` only when explicitly requested or when a
   physical-console-qualified fallback is required.
 - PrgBuf and offline quality-budget ceilings come from `tools/av_config.py`.
@@ -255,8 +255,8 @@ Important rendering notes:
 - Layout details are implemented in `layout_preview.py`:
   - right column: Source / Category / whole-clip category totals / Audio
   - Miss in Category is a filled red hole
-  - legend: `Raw/Same/Dic/Prg/Wr` on row 1 and
-    `Near/Coa/Flbk/Miss` on row 2; the displayed Wr count is Wr0 + Wr1
+  - legend: `Raw / Same / Near / Flbk / Miss` on row 1 and
+    `Prg / Wrd / Dic` on row 2; the displayed Wrd count is Wr0 + Wr1
   - each legend item shows one displayed-cell count (Wr shows the combined
     count while the underlying Wr0/Wr1 data remains separate)
   - Same uses the original light/dark checker legend swatch but no
@@ -264,14 +264,15 @@ Important rendering notes:
   - Raw uses a thin black/white dashed border in both legend and category map
   - Dic/Prg/Wr use a thin colour-and-transparent dashed border; both Wr banks
     use the Wr1 cyan display colour
-  - Coa uses a thick Near-blue border; its meter/timeline fill remains green
   - scrolling audio waveform with +/-2 seconds and now centered
-  - status uses Req / Cold / Pre / Band / Prg / Wr0 / Wr1 / DMA / Run
+  - status uses Req / Cold / Band / DMA / Run / Prg / Wrd / Pre
   - Pre is the number of future patterns actually written to VRAM in the frame;
     a prefetched pattern used later is displayed as Same
-  - Band is physical-slot useful BODY payload + control, excluding all pad and
-    HEADER, divided by that slot's actual CD read time (0 to 150 KiB/s)
-  - three-row timeline: Req2 : Prg/Wr0/Wr1 remaining stack1 : BODY-Band1
+  - Band is physical-slot useful BODY data split left-to-right into Raw
+    payload, Prg charge, and control, excluding all pad and HEADER, divided by
+    that slot's actual CD read time (0 to 150 KiB/s)
+  - four-row timeline: Req, Prg/Wrd remaining, physical cold runs, and Band;
+    Raw is the bottom Band segment, followed by Prg and control
   - DMA is compared against theoretical `(60/fps)` VBlank budget
   - heading metadata plus small top-right Time / Frame, baseline-aligned
   - palette used-color blocks have no outline

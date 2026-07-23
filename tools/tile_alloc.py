@@ -520,7 +520,7 @@ class TileAllocator:
         self.prefetch_evictions = 0
         self.prefetch_cache_evictions = 0
 
-    # ---- residency query (used by the sim for cold/reuse + near/coa reuse) ----
+    # ---- residency query (used by the sim for cold/reuse + resident matching) ----
     def is_resident(self, key):
         return key in self.key_slot
 

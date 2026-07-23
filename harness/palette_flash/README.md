@@ -43,7 +43,7 @@ Evidence (boundary f829, P1→P2):
 - The sim's **ideal preview is clean/dark**. Divergence is sim-vs-stream.
 - Decision log: only 588/720 cells updated at f829; of the 417 garbage cells,
   80 were "not-updated" (kept via `near_keep`) and **337 were "updated" but
-  repointed to a resident tile loaded in the previous segment** (dedup / Coa /
+  repointed to a resident tile loaded in the previous segment** (dedup /
   Near reuse).
 
 Mechanism: a tile is stored in the sim as RGB (`pat_rgb[key]`), but on hardware
@@ -55,13 +55,13 @@ preview hides this because it renders stored RGB, never re-looking-up indices.
 **Invariant that must hold:** a displayed tile must have been quantized under
 the currently-active CRAM. Therefore **each palette segment is a fresh tile
 epoch** — no tile from a previous segment may be reused (`near_keep`, dedup,
-Coa, Near, Flbk, or Miss carry-over all violate this at a boundary).
+Near, Flbk, or Miss carry-over all violate this at a boundary).
 
 ### Fix direction (pending)
 
 At each segment boundary the encoder must ensure every cell points to a tile
 quantized under the new palette. Options under consideration:
-1. Invalidate all resident/loaded/coa/l3 pools at the boundary and reload — but
+1. Invalidate all resident/loaded/resident-bucket/L3 pools at the boundary and reload — but
    720 cold tiles/boundary exceeds the per-frame cold cap → still 1 garbage
    frame unless the tiles are **pre-resident in VRAM**.
 2. Pre-load the next segment's tiles into spare VRAM slots during the quiet
@@ -94,7 +94,7 @@ only looks clean because it renders each tile's stored RGB, never re-looking-up
 indices through the new palette.
 
 **Fix:** tag every loaded tile with its load-segment and forbid reuse
-(dedup / Near / Coa / Flbk / near_keep) of any tile whose segment != the current
+(dedup / Near / Flbk / near_keep) of any tile whose segment != the current
 frame's segment. Then every cell at a boundary loads a fresh tile quantized under
 the new palette. Verify with `detect.py` (F-synced) that all boundaries show the
 `new` candidate, never garbage, and re-record to confirm on the emulator.

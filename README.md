@@ -33,10 +33,14 @@ Everything else is shaped by Sega CD hardware, not by video theory:
   is kept in VRAM. Each frame the codec searches that pool for the best match to
   every changed cell and re-points name-table entries (2 bytes) instead of
   re-sending patterns (32 bytes). This *tile texture reuse* is the codec.
-- **Best-match tiers (Near / Coa / Flbk).** With no exact resident match, a
-  *close* resident is accepted under graded thresholds: `Near` (near-perfect),
-  `Coa` (coarse), and `Flbk` (a wide fallback that fills what would otherwise be
-  a hole). Accuracy is traded for zero pattern transfer.
+- **Best-match tiers (Near / Flbk).** With no exact resident match, a
+  near-perfect resident may be accepted as `Near`. For everything else, one
+  automatic three-phase pass commits cheap reuse, selects exact cold loads
+  while reserving the two-byte fallback names, then lets `Flbk` reuse the best
+  resident that improves the current display. Flbk may inspect adjacent
+  mean-colour buckets only when the target bucket cannot improve the result.
+  Both avoid a pattern transfer, but Flbk remains emergency fallback rather
+  than normal quality.
 - **Whole-movie quality budget + four pattern supplies.** The encoder first
   dry-runs the quantized movie through the same VRAM allocator used for the
   final encode. It selects the boot-only 256-entry DicBuf from whole-movie reuse,
@@ -97,7 +101,7 @@ Sega CD-specific compression is the "Encode" step.
    name-table and cold-pattern demand, spread any capacity-unavoidable
    Miss-risk shortage across that burst, and build backwards reserve curves
    that end at zero; then maintain the resident VRAM tile pool and reuse exact /
-   near / coarse / fallback residents where possible and spend only the
+   near / fallback residents where possible and spend only the
    whole-movie quality allowance not reserved for a harder future burst. Exact
    cold loads are then assigned to Prg, Wr0, Wr1, or Dic.
 6. **Pack** video control, tile payload, palettes, and the selected PCM13 or

@@ -33,7 +33,6 @@ vram_tiles = 1535
 dither = true
 segment_palettes = true
 near = true
-coa = true
 raw_prefetch = true
 
 [palette]

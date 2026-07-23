@@ -366,6 +366,40 @@ def useful_body_delivery_trace(
     }
 
 
+def split_body_payload_classes(
+        raw_pattern_flags, body_payload_bytes, *, prebuffer_patterns):
+    """Split timed BODY payload into Raw and Prg-charge byte traces.
+
+    ``raw_pattern_flags`` follows PrgBuf payload order after frame 0. True
+    marks a same-frame Raw-funded pattern; false marks a quality-budget or
+    prefetch Prg pattern. HEADER prebuffer patterns precede timed BODY data.
+    """
+    flags = np.asarray(raw_pattern_flags, np.bool_)
+    delivered = np.asarray(body_payload_bytes, np.int64)
+    prebuffer = int(prebuffer_patterns)
+    if flags.ndim != 1 or delivered.ndim != 1:
+        raise ValueError("payload class flags and delivery bytes must be 1-D")
+    if prebuffer < 0 or prebuffer > len(flags):
+        raise ValueError("payload prebuffer is outside the class stream")
+    if np.any(delivered < 0) or np.any(delivered % PATTERN_BYTES):
+        raise ValueError("payload delivery bytes must contain whole patterns")
+    body_flags = flags[prebuffer:]
+    delivered_patterns = delivered // PATTERN_BYTES
+    if int(delivered_patterns.sum()) != len(body_flags):
+        raise ValueError(
+            "payload class stream does not match delivered BODY patterns")
+    raw_bytes = np.zeros(delivered.shape, np.int64)
+    cursor = 0
+    for frame, count in enumerate(delivered_patterns):
+        next_cursor = cursor + int(count)
+        raw_bytes[frame] = (
+            int(np.count_nonzero(body_flags[cursor:next_cursor]))
+            * PATTERN_BYTES
+        )
+        cursor = next_cursor
+    return raw_bytes, delivered - raw_bytes
+
+
 def schedule_payload_ring(
         pattern_loads, block_lengths, *, fps, ring_capacity_patterns,
         frame_sectors, fill=True):

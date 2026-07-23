@@ -1,0 +1,4 @@
+interface:
+  display_name: "Finish branch"
+  short_description: "Merge branch chains into main and clean up"
+  default_prompt: "Use $finish to merge the current branch chain into main, clean up the branch, and resolve related issues."

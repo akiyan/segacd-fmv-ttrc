@@ -36,7 +36,7 @@ Even below back-pressure, the collapse depends on BOTH the per-frame cold count
 
 So a higher cold cap needs a larger ring (more jitter buffer). `PACK_MAXCOLD`
 caps only the cold (Raw / new-CD-pattern) tiles; Same and reuse
-(Near/Coa/Flbk/Buf) are unaffected. Cold is CD-bandwidth-bound at ~262/frame on
+(Near/Flbk/Buf) are unaffected. Cold is CD-bandwidth-bound at ~262/frame on
 1x (9830 payload bytes / 32 B, minus control/audio).
 
 ## Key negative result — the deterministic ring model CANNOT predict it

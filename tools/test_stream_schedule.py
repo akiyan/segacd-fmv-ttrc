@@ -103,6 +103,16 @@ class BodyDeliveryRateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "within physical"):
             schedule.body_delivery_rate_bps([2049], [2048])
 
+    def test_payload_class_split_skips_prebuffer_and_preserves_delivery(self) -> None:
+        raw, prg = schedule.split_body_payload_classes(
+            [True, False, True, False, True],
+            [64, 64],
+            prebuffer_patterns=1,
+        )
+        self.assertEqual(raw.tolist(), [32, 32])
+        self.assertEqual(prg.tolist(), [32, 32])
+        np.testing.assert_array_equal(raw + prg, [64, 64])
+
 
 class PayloadRingScheduleTests(unittest.TestCase):
     def test_useful_body_trace_excludes_header_and_all_padding(self) -> None:

@@ -60,7 +60,7 @@ Planning happens after palette selection and quantization but before the final
 per-frame decisions:
 
 1. Render the exact quantized target for every frame.
-2. Mark changed cells whose visual change exceeds the Coa bound. These are the
+2. Mark changed cells whose visual change exceeds the Near bound. These are the
    narrower Miss-risk set.
 3. Dry-run the complete exact target through the same `TileAllocator` used by
    the final encode.
@@ -106,11 +106,11 @@ The prediction exposes two traces:
 
 | Trace | Includes | Protects |
 |---|---|---|
-| complete exact | every exact changed cell and predicted cold pattern | Optional correction of Near, Coa, Flbk, Miss, and carried approximations. |
-| protected Miss-risk | changed cells whose visual change exceeds the Coa bounds | Normal allocation against future Flbk/Miss bursts. |
+| complete exact | every exact changed cell and predicted cold pattern | Optional correction of Near, Flbk, Miss, and carried approximations. |
+| protected Miss-risk | changed cells whose visual change exceeds the Near bounds | Normal allocation against future Flbk/Miss bursts. |
 
 The complete trace is deliberately strict for optional upgrades. The protected
-trace is narrower so a Coa-safe change can degrade gracefully instead of
+trace is narrower so a Near-safe change can degrade gracefully instead of
 starving the current frame to preserve unnecessary bytes for the future.
 
 ## Assigning the boot preloads

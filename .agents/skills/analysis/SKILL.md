@@ -35,7 +35,7 @@ drawing functions and layout constants in `tools/layout_preview.py`
    layout map at the top, the affected meter/timeline/category description, the
    colour list, and any threshold/formula. `ANALYSIS.md` must be complete and
    correct - it is the contract that prevents future misunderstandings. Be
-   especially precise about the tile categories (Raw/Same/Near/Coa/Flbk/
+  especially precise about the tile categories (Raw/Same/Near/Flbk/
    Buf/Miss): their meaning, byte cost, thresholds, and selection order.
 
 4. **Notify with the preview via Telegram** (the user reviews layout there):
