@@ -267,6 +267,16 @@ COLD_CAP_QUALIFICATION = av_config.cold_cap_qualification(
 MAX_COLD = COLD_CAP_QUALIFICATION.cap
 MAX_RUN_CONTROL_BYTES = stream_schedule.max_run_control_reservation(
     MAX_COLD, ACTIVE_TILES)
+# Source-aware run fragmentation is known only after the complete frame has
+# been placed. Charge that exact result at frame finalization instead of
+# withholding one worst-case descriptor for every selected cold pattern.
+# The following frame sees the exact reduced allowance and automatically
+# repays any reserve undershoot; the final replay still rejects unfunded work.
+RUN_SELECTION_WORST_CASE = False
+# A separate hard-solvency check may still use the per-cold upper bound. It is
+# not a future reserve: it only prevents the current frame from selecting more
+# work than its quality allowance plus physical BODY supply can possibly pay.
+RUN_SOLVENCY_WORST_CASE = True
 # Boot VRAM prefetch uses otherwise-unused frame-0 HEADER/staging capacity and
 # free resident slots.  It is default-on because it adds no timed BODY work.
 # Optional runtime prefetch remains profile-gated: only spare cold/BODY
@@ -1880,7 +1890,9 @@ def main():
         # リングを削っていたのが原因で、ヘッダ化で根絶する。
         if i == 0:
             decision_budget = 1 << 30
+            frame_available = 1 << 30
         elif QUALITY_BUDGET_ON:
+            frame_available = quality_budget + frame_cd
             funded_limit = upgrade_planner.planned_spend_limit(
                 budget_before=quality_budget,
                 frame_supply=frame_cd,
@@ -1890,6 +1902,7 @@ def main():
             decision_budget = funded_limit
         else:
             decision_budget = frame_cd
+            frame_available = frame_cd
         frame_patch = (frozenset() if QUALITY_BUDGET_ON
                        else prg_patch.get(i, frozenset()))
 
@@ -1919,19 +1932,29 @@ def main():
             decision_spent=0,
             cold_tiles=0,
         ):
-            """Upper-bound BODY work before actual source runs are known."""
+            """BODY work visible to the pre-placement decision pass."""
 
             return (
                 decision_spent
-                + cold_tiles * stream_schedule.RUN_DESCRIPTOR_BYTES)
+                + (
+                    cold_tiles * stream_schedule.RUN_DESCRIPTOR_BYTES
+                    if RUN_SELECTION_WORST_CASE else 0
+                ))
 
         def decision_fits(cost, *, extra_cold=0, limit=None):
             if limit is None:
                 limit = decision_budget
-            return reserved_variable_spend(
-                spent_tiles + cost,
-                cold_spent + extra_cold,
-            ) <= limit
+            next_spent = spent_tiles + cost
+            next_cold = cold_spent + extra_cold
+            if reserved_variable_spend(next_spent, next_cold) > limit:
+                return False
+            if RUN_SOLVENCY_WORST_CASE:
+                worst_case_current = (
+                    next_spent
+                    + next_cold * stream_schedule.RUN_DESCRIPTOR_BYTES)
+                if worst_case_current > frame_available:
+                    return False
+            return True
 
         def current_reserved_spend():
             return reserved_variable_spend(spent_tiles, cold_spent)
@@ -2498,8 +2521,28 @@ def main():
             body_room = max(
                 0,
                 (prefetch_spend_limit - current_reserved_spend())
-                // (PATTERN_BYTES + stream_schedule.RUN_DESCRIPTOR_BYTES),
+                // (
+                    PATTERN_BYTES
+                    + (
+                        stream_schedule.RUN_DESCRIPTOR_BYTES
+                        if RUN_SELECTION_WORST_CASE else 0
+                    )
+                ),
             )
+            if RUN_SOLVENCY_WORST_CASE:
+                solvency_room = max(
+                    0,
+                    (
+                        frame_available
+                        - spent_tiles
+                        - cold_spent * stream_schedule.RUN_DESCRIPTOR_BYTES
+                    )
+                    // (
+                        PATTERN_BYTES
+                        + stream_schedule.RUN_DESCRIPTOR_BYTES
+                    ),
+                )
+                body_room = min(body_room, solvency_room)
             capacity = min(
                 RAW_PREFETCH_MAX_REQUESTS_PER_FRAME,
                 request_room,
@@ -2597,10 +2640,18 @@ def main():
             + dma_runs * stream_schedule.RUN_DESCRIPTOR_BYTES
             + prg_used * PATTERN_BYTES)
         reserved_body_spent = current_reserved_spend()
-        if variable_body_spent > reserved_body_spent:
+        if (RUN_SELECTION_WORST_CASE
+                and variable_body_spent > reserved_body_spent):
             raise AssertionError(
                 f"frame {i}: exact BODY variable work {variable_body_spent}B "
                 f"exceeds incremental run reservation {reserved_body_spent}B")
+        if (not RUN_SELECTION_WORST_CASE
+                and variable_body_spent != reserved_body_spent
+                + dma_runs * stream_schedule.RUN_DESCRIPTOR_BYTES):
+            raise AssertionError(
+                f"frame {i}: exact late run charge {variable_body_spent}B "
+                f"does not reconcile with decision work {reserved_body_spent}B "
+                f"and {dma_runs} runs")
         if QUALITY_BUDGET_ON and i > 0:
             decision_spent = name_recs * NAME_BYTES + prg_used * PATTERN_BYTES
             if spent_tiles != decision_spent:
@@ -3257,9 +3308,14 @@ def main():
         f"body_fixed_control_bytes_per_frame={body_fixed_control_bytes[1:].mean():.1f}",
         f"body_variable_supply_bytes_per_frame={body_variable_supply_bytes[1:].mean():.1f} "
         f"(updates + runs + Prg payload)",
-        f"incremental_run_control_reservation="
-        f"{stream_schedule.RUN_DESCRIPTOR_BYTES}B/cold "
-        f"({MAX_RUN_CONTROL_BYTES}B cap); unused bytes refunded after exact run charge",
+        (f"run_control_accounting=selection worst-case "
+         f"{stream_schedule.RUN_DESCRIPTOR_BYTES}B/cold "
+         f"({MAX_RUN_CONTROL_BYTES}B cap), then exact refund"
+         if RUN_SELECTION_WORST_CASE else
+         f"run_control_accounting=exact late charge "
+         f"{stream_schedule.RUN_DESCRIPTOR_BYTES}B/source-aware-run; "
+         "next-frame allowance repays reserve undershoot; "
+         f"current-frame solvency={'worst-case/cold' if RUN_SOLVENCY_WORST_CASE else 'unchecked'}"),
         f"avg_codec_work_bytes_per_frame={fb.mean():.1f}",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
         f"avg_PrgBuf_loads_per_frame={prg_loads.mean():.1f}",
@@ -3299,6 +3355,7 @@ def main():
          f"control_delta={int((control_lengths - legacy_lengths).sum())}B "
          f"threshold="
          f"{'schedule' if shadow_plan['control_growth_enabled'] else 'no-control-growth'} "
+         f"zero_cost_fallback={int(shadow_plan['zero_cost_fallback'])} "
          f"baseline/selected ring_min="
          f"{shadow_plan['baseline_schedule']['ring_min']}/{physical_schedule['ring_min']} "
          f"ready_min={shadow_plan['baseline_schedule']['ready_min']}/{physical_schedule['ready_min']}"
@@ -3367,6 +3424,11 @@ def main():
             wr1_preloaded=np.int64(wr1_loads.sum()),
             dic_preloaded=np.int64(supply_budget.dic_patterns),
             quality_budget_remaining=quality_budget_remaining,
+            quality_reserve_mode=np.array("forecast_pair"),
+            run_selection_worst_case=np.bool_(RUN_SELECTION_WORST_CASE),
+            run_solvency_worst_case=np.bool_(RUN_SOLVENCY_WORST_CASE),
+            run_descriptor_bytes=np.int64(
+                stream_schedule.RUN_DESCRIPTOR_BYTES),
             exact_demand_bytes=demand_prediction.exact_bytes,
             protected_demand_bytes=demand_prediction.protected_bytes,
             preload_credit_bytes=preload_credit_bytes,
@@ -3579,6 +3641,9 @@ def main():
                 "selected_ready_min": int(physical_schedule["ready_min"]),
                 "control_growth_enabled": (
                     bool(shadow_plan["control_growth_enabled"])
+                    if shadow_plan is not None else False),
+                "zero_cost_fallback": (
+                    bool(shadow_plan["zero_cost_fallback"])
                     if shadow_plan is not None else False),
             },
             "miss": dec_miss,                                         # per-frame Miss数(overlay用)

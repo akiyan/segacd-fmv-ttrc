@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -43,10 +44,26 @@ class ControlLengthTests(unittest.TestCase):
             int(plan["schedule"]["ready_min"]),
             int(plan["baseline_schedule"]["ready_min"]))
         self.assertFalse(plan["control_growth_enabled"])
+        self.assertFalse(plan["zero_cost_fallback"])
         self.assertTrue(all(
             cost.added_bytes <= 0
             for cost, selected in zip(plan["costs"], plan["selected"], strict=True)
             if selected))
+
+    def test_zero_cost_shadow_lists_fall_back_when_sector_rounding_hurts(self) -> None:
+        baseline = {"feasible": True, "ring_min": 10, "ready_min": 8}
+        rounded_worse = {"feasible": True, "ring_min": 9, "ready_min": 8}
+        with patch.object(
+                schedule, "schedule_payload_ring",
+                side_effect=[baseline, rounded_worse]):
+            plan = schedule.select_shadow_update_lists(
+                [[], [0]], np.zeros(2, np.int64), np.zeros(2, np.int64),
+                cells=1120, fps=30, ring_capacity_patterns=64,
+                frame_sectors=3, audio_frame_bytes=16, debug=False, fill=True)
+        self.assertTrue(plan["zero_cost_fallback"])
+        self.assertFalse(bool(plan["selected"].any()))
+        self.assertIs(plan["schedule"], baseline)
+        self.assertIs(plan["baseline_schedule"], baseline)
 
     def test_lengths_match_the_packed_layout_formula(self) -> None:
         lengths = schedule.control_block_lengths(

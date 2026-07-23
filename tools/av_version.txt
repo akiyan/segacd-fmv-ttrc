@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e91 : WIP preservation of the e89 exact-late run-accounting experiment,
+#        rebased on the e90 analysis/timeline tooling. Selection no longer
+#        withholds one run descriptor per cold tile; exact source-aware runs
+#        are charged after placement, with a separate current-frame solvency
+#        bound. Cold cap and the two forecast reserve curves are unchanged.
 #   e90 : Retain the analysis timeline/TSV diagnostics and required positional
 #        profile CLI while restoring the e87 encoder allocation behavior after
 #        the e88/e89 comparisons were not adopted. Advance the public build
@@ -651,5 +656,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
-e=90
+e=91
 p=79

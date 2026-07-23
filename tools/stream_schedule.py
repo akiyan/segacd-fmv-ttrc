@@ -136,12 +136,13 @@ def body_fresh_byte_supply(
 
 
 def max_run_control_reservation(max_cold, active_tiles):
-    """Return the temporary worst-case run-descriptor reservation.
+    """Return the worst-case current-frame run-descriptor bound.
 
     A source-aware run always contains at least one cold tile, so its count
     cannot exceed the per-frame cold cap.  A zero cap means uncapped and falls
-    back to the active cell count.  The encoder refunds the difference between
-    this reservation and the exact run count as soon as allocation finishes.
+    back to the active cell count.  The encoder may use this only as a hard
+    solvency guard before placement; future-reserve selection charges exact
+    source-aware runs after placement instead.
     """
     cold = int(max_cold)
     active = int(active_tiles)
@@ -232,10 +233,19 @@ def select_shadow_update_lists(
         for index, cost in enumerate(costs)
     ], np.bool_)
     lengths, chosen_schedule = run_schedule(selected)
+    zero_cost_fallback = False
     if (not chosen_schedule["feasible"]
             or int(chosen_schedule["ring_min"]) < target_ring
             or int(chosen_schedule["ready_min"]) < target_ready):
-        raise AssertionError("zero-cost shadow lists unexpectedly reduced schedule margins")
+        # Shorter logical control does not guarantee identical physical slot
+        # boundaries: sector rounding can move payload delivery and reduce a
+        # ring/readiness minimum. Shadow lists are optional CPU acceleration,
+        # so retain the proven legacy layout whenever the combined zero/negative
+        # byte set changes either physical margin.
+        selected = np.zeros(n_upd.shape, np.bool_)
+        lengths = baseline_lengths
+        chosen_schedule = baseline
+        zero_cost_fallback = True
 
     from fractions import Fraction
     groups = {}
@@ -278,6 +288,7 @@ def select_shadow_update_lists(
         "rejected_denominator": (
             int(rejected_ratio.denominator) if rejected_ratio is not None else 1),
         "control_growth_enabled": bool(allow_control_growth),
+        "zero_cost_fallback": zero_cost_fallback,
     }
 
 
