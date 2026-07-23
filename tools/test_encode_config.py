@@ -5,11 +5,18 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import av_config
-from encode_config import MAX_RESIDENT_VRAM_TILES, apply_profile_env, load_profile
+from encode_config import (
+    MAX_RESIDENT_VRAM_TILES,
+    apply_profile_env,
+    consume_config_arg,
+    load_profile,
+)
 
 
 PROFILE = """\
@@ -43,6 +50,34 @@ output = "out/movieplay/MOVIE.DAT"
 
 
 class EncodeProfileArtifactTests(unittest.TestCase):
+    def test_required_profile_is_consumed_as_first_positional_argument(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        profile_path = root / "configs" / "bad-apple-h32.toml"
+        argv = ["sim.py", str(profile_path)]
+        with patch.dict(os.environ, {}, clear=False):
+            profile = consume_config_arg(argv, required=True)
+        self.assertEqual(profile.path, profile_path.resolve())
+        self.assertEqual(argv, ["sim.py"])
+
+    def test_required_profile_preserves_following_frame_range(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        profile_path = root / "configs" / "bad-apple-h32.toml"
+        argv = ["render_analysis.py", str(profile_path), "10", "20"]
+        with patch.dict(os.environ, {}, clear=False):
+            consume_config_arg(argv, required=True)
+        self.assertEqual(argv, ["render_analysis.py", "10", "20"])
+
+    def test_missing_required_profile_is_rejected(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "profile is required.*positional"):
+            consume_config_arg(["sim.py"], required=True)
+
+    def test_legacy_config_option_is_rejected(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "positional; do not use --config"):
+            consume_config_arg(
+                ["sim.py", "--config", "configs/bad-apple-h32.toml"],
+                required=True,
+            )
+
     def test_all_repository_profiles_have_measured_cold_cap_coverage(self) -> None:
         root = Path(__file__).resolve().parents[1]
         for path in sorted((root / "configs").glob("*.toml")):

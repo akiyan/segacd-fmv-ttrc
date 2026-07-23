@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analysis Timeline"
+  short_description: "Render and publish detailed codec timelines"
+  default_prompt: "Use $timeline to render and show a detailed timeline image for this codec-analysis TSV, publish it to a public Gist, and add its links to the matching YouTube description."

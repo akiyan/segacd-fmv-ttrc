@@ -325,9 +325,9 @@ human-edited input; `CBRSIM_*` is only the encoder's internal compatibility
 layer.
 
 ```sh
-python tools/sim.py --config configs/bad-apple-h32.toml
-python tools/render_analysis.py --config configs/bad-apple-h32.toml
-python tools/pack_stream.py --config configs/bad-apple-h32.toml --verify
+tools/python.sh tools/sim.py configs/bad-apple-h32.toml
+tools/python.sh tools/render_analysis.py configs/bad-apple-h32.toml
+tools/python.sh tools/pack_stream.py --config configs/bad-apple-h32.toml --verify
 make disc CONFIG=configs/bad-apple-h32.toml DEBUG=1
 ```
 

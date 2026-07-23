@@ -307,33 +307,35 @@ def apply_profile_env(
     return applied
 
 
-def consume_config_arg(argv: list[str] | None = None) -> EncodeProfile | None:
-    """Remove ``--config`` from argv and apply the selected profile immediately.
+def consume_config_arg(
+    argv: list[str] | None = None,
+    *,
+    required: bool = False,
+) -> EncodeProfile | None:
+    """Consume a required first positional profile and apply it immediately.
 
-    sim.py and render_analysis.py evaluate settings at import time, so this small
-    pre-parser must run before their other local imports.
+    ``sim.py`` and ``render_analysis.py`` evaluate settings at import time, so
+    this small pre-parser must run before their other local imports. Import-only
+    callers pass ``required=False`` and retain the historical no-profile test
+    defaults; executable entry points pass ``required=True``.
     """
     args = sys.argv if argv is None else argv
-    config: str | None = None
-    clean = [args[0]]
-    i = 1
-    while i < len(args):
-        arg = args[i]
-        if arg == "--config":
-            if i + 1 >= len(args):
-                raise SystemExit("--config requires a TOML path")
-            config = args[i + 1]
-            i += 2
-            continue
-        if arg.startswith("--config="):
-            config = arg.split("=", 1)[1]
-            i += 1
-            continue
-        clean.append(arg)
-        i += 1
-    args[:] = clean
-    if not config:
+    if not required:
         return None
+    if len(args) < 2:
+        raise SystemExit(
+            "encode profile is required as the first positional argument: "
+            f"{Path(args[0]).name} PROFILE.toml")
+    config = args[1]
+    if config == "--config" or config.startswith("--config="):
+        raise SystemExit(
+            "encode profile is positional; do not use --config: "
+            f"{Path(args[0]).name} PROFILE.toml")
+    if config.startswith("-"):
+        raise SystemExit(
+            "encode profile must be the first positional argument: "
+            f"{Path(args[0]).name} PROFILE.toml")
+    del args[1]
     try:
         profile = load_profile(config)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:

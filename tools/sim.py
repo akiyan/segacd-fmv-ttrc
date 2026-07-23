@@ -44,7 +44,8 @@ from encode_config import consume_config_arg, profile_identity  # noqa: E402
 # evaluated.  The internal environment remains compatible with older scripts,
 # but TOML values always win over an inherited shell environment.
 _ORIGINAL_ARGV = tuple(sys.argv)
-CONFIG_PROFILE = consume_config_arg(sys.argv)
+CONFIG_PROFILE = consume_config_arg(
+    sys.argv, required=__name__ == "__main__")
 import av_config  # noqa: E402
 import ima_adpcm  # noqa: E402
 import pattern_supply  # noqa: E402

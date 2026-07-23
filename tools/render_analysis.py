@@ -16,8 +16,8 @@ sim 側(sim.py)や旧 compose(make_base/render_statusline/compose_*.sh)は使わ
   ANALYSIS_CQ      h264_nvenc cq (既定 23)
 W/H/タイル数/表示アスペクト/諸元は sim 出力から自動導出。
 
-usage: python3 tools/render_analysis.py            # 全編→mp4
-       python3 tools/render_analysis.py A B         # frame [A,B) だけPNG(検証用, mp4化しない)
+usage: python3 tools/render_analysis.py PROFILE.toml       # 全編→mp4
+       python3 tools/render_analysis.py PROFILE.toml A B   # frame [A,B) だけPNG(検証用, mp4化しない)
 """
 import sys
 import os
@@ -34,7 +34,8 @@ from encode_config import consume_config_arg
 
 # Match the sim invocation exactly without requiring callers to repeat its
 # resolved CBRSIM_* environment by hand.
-CONFIG_PROFILE = consume_config_arg(sys.argv)
+CONFIG_PROFILE = consume_config_arg(
+    sys.argv, required=__name__ == "__main__")
 
 import layout_preview as L
 import stream_schedule

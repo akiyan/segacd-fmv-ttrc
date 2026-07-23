@@ -256,7 +256,7 @@ Bootstrap `.venv` (and `.venv-gpu` for an NVIDIA encode) as described above.
 For a new encode, run the pipeline in this order:
 
 ```sh
-tools/python.sh --gpu tools/sim.py --config configs/PROFILE.toml
+tools/python.sh --gpu tools/sim.py configs/PROFILE.toml
 tools/python.sh tools/pack_stream.py --config configs/PROFILE.toml --verify
 make disc CONFIG=configs/PROFILE.toml DEBUG=1
 ```

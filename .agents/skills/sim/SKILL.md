@@ -173,7 +173,7 @@ parsing error or stale environment cannot silently reuse another comparison's
 inputs.
 
 ```sh
-tools/python.sh --gpu tools/sim.py --config configs/<source>-<mode>.toml
+tools/python.sh --gpu tools/sim.py configs/<source>-<mode>.toml
 ```
 
 TOML values replace inherited per-source `CBRSIM_*` values. `sim.py` freezes
@@ -219,7 +219,7 @@ function on real data.
 ```sh
 CBRSIM_SRCLABEL="Source (<source name>, <platform/year>)" \
 ANALYSIS_OUT=videos/<stem>_analysis.mp4 \
-tools/python.sh --gpu tools/render_analysis.py --config configs/<source>-<mode>.toml
+tools/python.sh --gpu tools/render_analysis.py configs/<source>-<mode>.toml
 ```
 
 Every invocation first writes the complete per-frame numeric sidecar to
@@ -232,7 +232,7 @@ audio.
 Frame-range check only:
 
 ```sh
-tools/python.sh tools/render_analysis.py --config configs/<source>-<mode>.toml <A> <B>
+tools/python.sh tools/render_analysis.py configs/<source>-<mode>.toml <A> <B>
 ```
 
 Important rendering notes:

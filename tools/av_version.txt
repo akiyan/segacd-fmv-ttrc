@@ -11,6 +11,21 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e90 : Retain the analysis timeline/TSV diagnostics and required positional
+#        profile CLI while restoring the e87 encoder allocation behavior after
+#        the e88/e89 comparisons were not adopted. Advance the public build
+#        sequence without retaining either experimental output behavior.
+#   e89 : Experimental comparison (not retained on main): stop reserving one
+#        worst-case four-byte run descriptor for every cold tile during
+#        selection. Charge only exact source-aware runs after placement and use
+#        a per-cold upper bound solely as a current-frame solvency check. Cold
+#        cap, Main/upgrade reserve curves, and physical slot locality remain
+#        unchanged. Preserve this result on its WIP branch.
+#   e88 : Experimental comparison (not retained): derive one future reserve
+#        from the completed encoder's actual update, Prg-pattern, and
+#        source-aware run work, shared by Main decisions and optional exact
+#        upgrades. The comparison exposed a drain/refill shape and was not
+#        self-consistent, so e89 restores the forecast-pair reserve.
 #   p79 : Move the DEBUG HUD font from directly above the resident pool to the
 #        fixed unused VRAM gap at 0xD000 (tiles 1664..1679). The pool may now
 #        run right up to NT0, and DEBUG and release share one pool shape.
@@ -636,5 +651,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260722
-e=87
+e=90
 p=79
