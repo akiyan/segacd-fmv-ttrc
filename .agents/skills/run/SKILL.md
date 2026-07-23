@@ -2,12 +2,12 @@
 name: run
 description: >-
   Orchestrate the complete SEGA-CD FMV delivery pipeline for one or more source
-  videos: inspect geometry, create a strict H32/H40 profile, simulate and upload
-  the analysis video, verify the packed stream, make and verify a DEBUG lossless
-  emulator recording, create the boot-preserving square-pixel compilation, and
-  upload it. Use when the user invokes "$run", says "same as usual", or asks for
-  /sim, /record, and /compilation as one end-to-end job, including sequential
-  batches such as "finish this source, then do the next one".
+  videos: inspect geometry, create a strict H32/H40 profile, simulate and verify
+  the packed stream, make a DEBUG lossless emulator recording, require its
+  complete HUD gate to pass, then render/upload the analysis and create/upload
+  the boot-preserving square-pixel compilation. Use when the user invokes
+  "$run", says "same as usual", or asks for /sim, /record, and /compilation as
+  one end-to-end job, including sequential batches.
 ---
 
 # run: Complete FMV Pipeline
@@ -29,10 +29,10 @@ upload path remains unsupported until the geometry harness verifies it.
 Include all of the following unless the user explicitly excludes a stage:
 
 1. Source inspection and a checked-in-style strict TOML profile
-2. Full simulation and analysis render
-3. Analysis-video metadata, CRAM chapters, verification, and upload
-4. Packed-stream verification
-5. DEBUG disc build, synchronized native lossless emulator capture, and verification
+2. Full simulation, persistent TSV, and detailed timeline PNG/Gist
+3. Packed-stream verification
+4. DEBUG disc build, synchronized native lossless emulator capture, and passing HUD gate
+5. Analysis render, metadata, CRAM chapters, verification, and upload
 6. Square-pixel playback compilation, boot-aware CRAM chapters, verification, and upload
 
 Treat both uploads as part of `$run`, not as optional follow-up work. Upload
@@ -117,7 +117,7 @@ and canonical `videos/` artifact paths from `AGENTS.md`.
 Do not bump `tools/av_version.txt` merely for a new source profile. Apply the
 version policy in `AGENTS.md` if output-affecting encoder or player code changes.
 
-## Stage 2: Simulate, Render, and Upload the Analysis
+## Stage 2: Simulate and Publish Numeric Evidence
 
 Run `tools/sim.py` with the profile and preferred GPU Python. Require a normal
 completion and record:
@@ -133,18 +133,10 @@ run or missing decision data. Band divides useful bytes by each slot's actual
 physical CD read time, so it must stay at or below CD 1x (150 KiB/s); pad is
 shown as unused bandwidth.
 
-Render the full canonical 1920x1080 analysis with
-`tools/render_analysis.py`. Verify its video, audio, duration, and selected
-frames. Confirm the source aspect, content, category/miss panels, and layout are
-visually credible.
-
-Generate CRAM chapters with `tools/youtube_chapters.py`. Build the title and
-English-then-Japanese description from the current `AGENTS.md` convention,
-including the repository URL in both language sections and never adding source
-bitrate or angle brackets. Upload the newly rebuilt analysis as unlisted,
-category 20. Use `--force` only for a re-upload and retain the returned URL.
-
-Do not proceed to recording until the analysis artifact and upload are verified.
+Write the persistent TSV immediately with the zero-frame analysis-data mode,
+run the `timeline` skill, inspect the PNG, publish it to a public Gist, and show
+it to the user. Do not render, mux, verify, or upload the full 1920x1080
+analysis MP4 yet. The emulator recording and complete HUD gate must pass first.
 
 ## Stage 3: Pack and Prove the Stream
 
@@ -187,7 +179,10 @@ Before accepting the recording, verify:
 - startup screens, later movie playback, visible DEBUG HUD, progression, and tail;
 - representative lossless frames against the sim when timing or fps behavior is new or suspect.
 - one complete HUD loop with `harness/startup_resync/analyze.py --gate-json`;
-  require every expected movie frame, `S/D/R/C=00`, `M<=01`, and `J<=17`.
+  pass the encode profile as the required second positional argument and
+  require every expected movie frame. Fixed-N2 requires `S/D/R/C=00`, `M<=01`;
+  delivery-paced 15 fps permits `C<=04`, `M<=04`; delivery-paced 24 fps permits
+  `C<=03`, `M<=03`. Every cadence requires `S/D/R=00` and `J<=17`.
   Explicitly report whether `J` exceeded the 20 KiB jitter headroom (`J>14`).
   Preserve the CSV and passing gate JSON next to the recording.
 
@@ -204,13 +199,31 @@ recording, not a physical hardware recording.
 Use full HUD OCR only for requested diagnostics or to investigate a failure.
 Never use HUD OCR to choose a publication head cue or chapter offset.
 
-Do not enter Stage 5 when the HUD gate is missing or fails. Even on PASS, report
-the exact `S/D/R/C/M/J` maxima and stop `$run` until the user explicitly approves
-that recording. A nonzero `C` is not necessarily corruption, but fails the
-automatic safety gate so the critical-path CD spike can be investigated. Never
-waive or edit the sidecar.
+Do not enter Stage 5 when the HUD gate is missing or fails. Never waive or edit
+the sidecar.
 
-## Stage 5: Compile and Upload Playback
+## Stage 5: Render and Upload the Analysis
+
+Only after Stage 4 produced a matching `pass: true` gate JSON, render the full
+canonical 1920x1080 analysis with `tools/render_analysis.py`. Verify its video,
+audio, duration, and selected frames. Confirm the source aspect, content,
+category/miss panels, and layout are visually credible.
+
+The full render writes another persistent TSV. Immediately run the `timeline`
+skill for that TSV, publish the PNG to a public Gist, show it to the user, and
+put the Gist URL in the YouTube description.
+
+Generate CRAM chapters with `tools/youtube_chapters.py`. Build the title and
+English-then-Japanese description from the current `AGENTS.md` convention,
+including the repository URL in both language sections and never adding source
+bitrate or angle brackets. Upload the newly rebuilt analysis as unlisted,
+category 20. Use `--force` only for a re-upload and retain the returned URL.
+
+After the analysis upload succeeds, report the exact `S/D/R/C/M/J` maxima and
+continue to the already-authorized playback compilation/upload. Do not request
+another approval merely because the gate ran.
+
+## Stage 6: Compile and Upload Playback
 
 Pass only the latest verified native lossless MKV with its matching passing
 HUD gate JSON to `compilation`. Bake the
@@ -243,9 +256,8 @@ Stop before the next source whenever a stage fails. Preserve logs and evidence,
 identify the failing layer, fix it when the requested scope permits, and rerun
 the failed stage plus every downstream stage whose inputs changed.
 
-An absent or failed `S/D/R/C/M/J` gate is a Stage 4 failure. Stop before every
-analysis-independent playback compilation or upload until a newly recorded,
-complete loop passes.
+An absent or failed `S/D/R/C/M/J` gate is a Stage 4 failure. Do not create or
+upload either public MP4 until a newly recorded, complete loop passes.
 
 For new frame rates such as 24 fps, do not hide a player, recorder, or encoder
 defect by changing fps, shrinking the raster, loosening checks blindly, or

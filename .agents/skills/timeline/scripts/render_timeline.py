@@ -181,6 +181,7 @@ def code_settings(
     *,
     sim_out: Path | None = None,
     buffer: dict[str, np.ndarray] | None = None,
+    player_execution: str = "",
 ) -> list[str]:
     sim_text = (TOOLS / "sim.py").read_text(encoding="utf-8")
     schedule_text = (TOOLS / "stream_schedule.py").read_text(encoding="utf-8")
@@ -230,6 +231,11 @@ def code_settings(
             f"exact late {run_bytes}B/source-aware-run, "
             f"solvency/cold={run_solvency}"
         )
+    locality = (
+        "inactive (contiguous identity map)"
+        if player_execution == "legacy_entry_order"
+        else f"heavy target={literal_value(sim_text, 'SLOT_LOCALITY_HEAVY_RUN_TARGET')} runs"
+    )
     return [
         f"F3 Ym/Yp/C  Near {near}  Coa {coa}  Flbk {flbk}",
         "Coa gate detail<%s; 2x2 mean/max %s/%s; K=%s BW=%s" % (
@@ -249,10 +255,7 @@ def code_settings(
             literal_value(sim_text, "BORDER_WEIGHT"),
         ),
         f"Persistent approximation rescue={ghost_seconds:g}s={ghost_frames} frames",
-        "Run accounting=%s; locality heavy target=%s runs" % (
-            run_accounting,
-            literal_value(sim_text, "SLOT_LOCALITY_HEAVY_RUN_TARGET"),
-        ),
+        f"Run accounting={run_accounting}; locality={locality}",
     ]
 
 
@@ -417,7 +420,37 @@ def metadata_lines(
 ) -> tuple[list[str], list[str], list[str]]:
     fps = 1.0 / (data["time_seconds"][1] - data["time_seconds"][0]) if len(data["frame"]) > 1 else 0.0
     source = source_lines(config, config_path, probe)
-    hardware = decisions.get("hardware", {})
+    hardware = (
+        decisions.get("hardware", {})
+        or (decisions.get("config", {}).get("hardware", {})))
+    physical_delivery = decisions.get("physical_delivery", {})
+    slot_locality = decisions.get("slot_locality", {})
+    player_execution = str(slot_locality.get("player_execution", "unknown"))
+    physical_map = np.asarray(
+        slot_locality.get("physical_by_logical", ()), np.int64)
+    map_kind = "unknown"
+    if physical_map.size:
+        map_kind = (
+            "identity"
+            if np.array_equal(physical_map, np.arange(len(physical_map)))
+            else "permuted"
+        )
+    run_trace = np.asarray(
+        (decisions.get("pattern_transfers") or {}).get("runs", ()), np.int64)
+    run_max = fmt_int(run_trace[1:].max(initial=0)) if run_trace.size else "?"
+    frame_caps = np.asarray(
+        physical_delivery.get("frame_cold_caps", ()), np.int64)
+    limited_frames = np.asarray(
+        physical_delivery.get("limited_frames", ()), np.int64)
+    delivery_summary = "Physical delivery feedback=none"
+    if limited_frames.size and frame_caps.size:
+        delivery_summary = (
+            "Physical delivery feedback=%s frames; minimum envelope=%s; "
+            "measured cold cap unchanged" % (
+                fmt_int(len(limited_frames)),
+                fmt_int(frame_caps[limited_frames].min()),
+            )
+        )
     reserve_mode = buffer.get("quality_reserve_mode", np.array("forecast_pair"))
     reserve_mode = str(np.asarray(reserve_mode).item())
     reserve = np.asarray(buffer.get("upgrade_reserve_bytes", ()), np.float64)
@@ -434,8 +467,15 @@ def metadata_lines(
             hardware.get("vram_tiles", config.get("encoder", {}).get("vram_tiles", "?")),
             fmt_int(data["cold_cap_tiles"][0]),
             hardware.get("prg_buf_kb", "?"), hardware.get("quality_budget_kb", "?")),
+        delivery_summary,
+        f"Player runs={player_execution}; physical map={map_kind}; max={run_max}",
         f"Reserve mode={reserve_mode}; {reserve_summary}",
-    ] + code_settings(fps, sim_out=sim_out, buffer=buffer)
+    ] + code_settings(
+        fps,
+        sim_out=sim_out,
+        buffer=buffer,
+        player_execution=player_execution,
+    )
     full = np.arange(1, len(data["frame"]), dtype=np.int64)
     if evaluation_end is None:
         evaluation = full

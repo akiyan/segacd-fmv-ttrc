@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import statistics
 import subprocess
 import sys
@@ -34,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 import read_frameno  # noqa: E402
 import av_config  # noqa: E402
+import encode_config  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -417,8 +419,43 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
     print(f"CSV: {path}")
 
 
+def upload_gate_limits(content_fps: float) -> tuple[dict[str, int], str]:
+    """Return cadence-aware HUD limits for the exact encoded content rate."""
+    fps = float(content_fps)
+    if fps <= 0:
+        raise ValueError(f"content fps must be positive, got {content_fps!r}")
+    if av_config.uses_fixed_n2_cadence(fps):
+        cadence = "fixed_n2"
+        c_limit = 0
+        m_limit = 1
+    else:
+        cadence = "delivery_paced"
+        sector_num, sector_mod = av_config.cd_sector_rate(fps)
+        # A delivery-paced slot may finish all but its already-armed control
+        # sector on the current Sub path without slipping. The Main path may
+        # use the complete number of display fields available to one content
+        # frame; exceeding it proves an additional spill.
+        c_limit = max(0, math.ceil(sector_num / sector_mod) - 1)
+        m_limit = math.ceil(av_config.NTSC_VSYNC / fps)
+    return {
+        "S": 0,
+        "D": 0,
+        "R": 0,
+        "C": c_limit,
+        "M": m_limit,
+        # J is ceil-KiB. Leave one complete KiB below the physical ring end so
+        # an accepted value proves head and tail never became equal at full.
+        # Values beyond jitter headroom remain visible for mandatory review.
+        "J": av_config.RING_SIZE_KB - av_config.PRG_BUF_CAP_KB - 1,
+    }, cadence
+
+
 def evaluate_upload_gate(
-    groups: list[FrameGroup], expected_frames: int, recording: Path
+    groups: list[FrameGroup],
+    expected_frames: int,
+    recording: Path,
+    content_fps: float = 30.0,
+    profile: encode_config.EncodeProfile | None = None,
 ) -> dict:
     """Require a complete clean first loop before a recording may be uploaded."""
     first_loop = [group for group in groups if group.loop == 0]
@@ -448,17 +485,7 @@ def evaluate_upload_gate(
             f"actual={actual} expected={expected}"
         )
 
-    limits = {
-        "S": 0,
-        "D": 0,
-        "R": 0,
-        "C": 0,
-        "M": 1,
-        # J is ceil-KiB. Leave one complete KiB below the physical ring end so
-        # an accepted value proves head and tail never became equal at full.
-        # Values beyond jitter headroom remain visible for mandatory review.
-        "J": av_config.RING_SIZE_KB - av_config.PRG_BUF_CAP_KB - 1,
-    }
+    limits, cadence = upload_gate_limits(content_fps)
     for field, limit in limits.items():
         if maxima[field] > limit:
             failures.append(
@@ -474,14 +501,19 @@ def evaluate_upload_gate(
         "recording_mtime_ns": stat.st_mtime_ns,
         "expected_frames": expected_frames,
         "observed_first_loop_frames": len(first_loop),
+        "content_fps": float(content_fps),
+        "cadence": cadence,
         "maxima": maxima,
         "limits": limits,
         "prg_buf_cap_kib": av_config.PRG_BUF_CAP_KB,
         "backpressure_kib": av_config.BACKPRESSURE_KB,
         "physical_ring_kib": av_config.RING_SIZE_KB,
-        "requires_explicit_upload_approval": True,
+        "requires_explicit_upload_approval": False,
         "failures": failures,
     }
+    if profile is not None:
+        result["profile"] = str(profile.path.resolve())
+        result["profile_sha256"] = profile.sha256
     return result
 
 
@@ -494,7 +526,8 @@ def write_gate_json(path: Path, result: dict) -> None:
         f"HUD record gate: {state}  "
         + " ".join(f"{field}{maxima[field]:02X}" for field in "SDRCMJ")
         + f"  frames={result['observed_first_loop_frames']}/"
-        f"{result['expected_frames']}"
+        f"{result['expected_frames']}  cadence={result['cadence']} "
+        f"fps={result['content_fps']:g}"
     )
     for failure in result["failures"]:
         print(f"  gate failure: {failure}")
@@ -506,6 +539,10 @@ def parse_args() -> argparse.Namespace:
         description="Aggregate the DEBUG HUD and report audio R transitions."
     )
     parser.add_argument("recording", type=Path, help="native FFV1 MKV or MP4 recording")
+    parser.add_argument(
+        "profile", nargs="?", type=Path,
+        help="encode profile; required positionally with --gate-json",
+    )
     parser.add_argument("--csv", type=Path, help="write all aggregated movie frames to CSV")
     parser.add_argument(
         "--gate-json", type=Path,
@@ -556,6 +593,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--context must not be negative")
     if args.gate_json and not args.expected_frames:
         parser.error("--gate-json requires --expected-frames")
+    if args.gate_json and args.profile is None:
+        parser.error("--gate-json requires the encode profile as the second positional argument")
+    if args.profile is not None and not args.profile.is_file():
+        parser.error(f"profile not found: {args.profile}")
     if args.expected_frames is not None and args.expected_frames < 1:
         parser.error("--expected-frames must be at least 1")
     return args
@@ -578,7 +619,10 @@ def main() -> int:
     if args.csv:
         write_csv(args.csv, groups, transitions)
     if args.gate_json:
-        result = evaluate_upload_gate(groups, args.expected_frames, args.recording)
+        profile = encode_config.load_profile(args.profile)
+        content_fps = float(Fraction(str(profile.data["source"]["fps"])))
+        result = evaluate_upload_gate(
+            groups, args.expected_frames, args.recording, content_fps, profile)
         write_gate_json(args.gate_json, result)
         if not result["pass"]:
             return 1

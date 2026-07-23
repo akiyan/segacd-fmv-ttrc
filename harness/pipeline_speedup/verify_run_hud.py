@@ -7,17 +7,25 @@ import argparse
 import csv
 from pathlib import Path
 
-from verify_run_descriptors import decode_descriptors, old_sub_runs, read_stream
+from verify_run_descriptors import (
+    FEATURE_PATTERN_SUPPLY,
+    decode_descriptors,
+    old_sub_runs,
+    read_stream,
+)
 
 
 def packed_run_counts(header: Path, body: Path) -> list[int]:
     stream = read_stream(header, body)
+    source_aware = bool(stream.features & FEATURE_PATTERN_SUPPLY)
     counts = []
     for control in stream.controls:
         if control.descriptor_suffix is not None:
-            counts.append(len(decode_descriptors(control.descriptor_suffix)))
+            counts.append(len(decode_descriptors(
+                control.descriptor_suffix, source_aware)))
         else:
-            counts.append(len(old_sub_runs(control.entries, stream.base)))
+            counts.append(len(old_sub_runs(
+                control.entries, stream.base, source_aware)))
     return counts
 
 

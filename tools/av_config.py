@@ -214,16 +214,16 @@ def audio_frame_layout(kind, fps):
         return 22_050, samples, IMA_CHECKPOINT_BYTES + samples // 2
     raise ValueError(f"unsupported audio kind: {kind!r}")
 
-# --- Realized cold == cap, by construction ---
+# --- Realized cold matches the sim and never exceeds the cap ---
 # The sim (tools/sim.py) and the pack (tools/pack_stream.py) now share ONE tile-slot
-# allocator (tools/tile_alloc.py, two-pass contiguous). So the pack's REALIZED per-frame
-# cold EQUALS the sim's cap — the historical +overhead (the sim modelled LRU residency
-# while the pack allocated contiguously and re-loaded a few tiles) is gone: the two-pass
-# protects every reuse tile shown this frame before allocating cold slots, so nothing is
-# re-loaded. There is therefore no separate realized ceiling and no per-source
-# `CBRSIM_COLD_CAP_REALIZED` env override — the ceiling IS the cap. The pack still asserts
-# realized <= cap as a guard (it must hold by construction). frame0 (the full-load header)
-# is exempt.
+# allocator (tools/tile_alloc.py, two-pass contiguous). So the pack's realized
+# per-frame cold equals the sim's selected cold, not necessarily the cap itself.
+# The historical +overhead (the sim modelled LRU residency while the pack
+# allocated contiguously and re-loaded a few tiles) is gone: the two-pass
+# protects every reuse tile shown this frame before allocating cold slots, so
+# nothing is re-loaded. There is therefore no separate realized ceiling and no
+# per-source `CBRSIM_COLD_CAP_REALIZED` env override. The pack still asserts
+# realized <= cap as a guard. frame0 (the full-load header) is exempt.
 
 # --- Per-frame cold cap as a qualified physical draw/delivery limit ---
 # A qualification applies only to the exact display mode, nominal fps, and
@@ -251,7 +251,7 @@ class ColdCapMeasurementRequired(ValueError):
 COLD_CAP_QUALIFICATIONS = (
     ColdCapQualification("H32", 24.0, 896, 219),
     ColdCapQualification("H32", 30.0, 896, 175),
-    ColdCapQualification("H40", 15.0, 720, 400),
+    ColdCapQualification("H40", 15.0, 720, 500),
     ColdCapQualification("H40", 15.0, 1040, 400),
     ColdCapQualification("H40", 24.0, 1120, 200),
     ColdCapQualification("H40", 30.0, 1120, 180),

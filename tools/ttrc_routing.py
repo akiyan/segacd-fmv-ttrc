@@ -27,6 +27,19 @@ TOTAL_SHIFT = 3
 MAX_ENTRY = (FRAME_SECTORS << TOTAL_SHIFT) | FRAME_SECTORS
 
 
+def player_uses_packed_cold_runs(fps: float, features: int) -> bool:
+    """Return whether the Sub player consumes the packed cold-run suffix.
+
+    Dense 24/30fps streams use the suffix directly. Multi-source pattern
+    supply also requires it at every rate. A lower-rate plain-Prg stream keeps
+    the legacy entry-order walker so its frequent CDC polling remains intact.
+    """
+    return (
+        float(fps) >= 24.0
+        or bool(operator.index(features) & FEATURE_PATTERN_SUPPLY)
+    )
+
+
 def _index(value: object, name: str) -> int:
     try:
         return operator.index(value)
