@@ -140,7 +140,10 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "900")
         self.assertEqual(env["CBRSIM_GEOMETRY_FIT"], "pad")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
-        self.assertEqual(env["CBRSIM_MASTER_VF"], "setsar=1")
+        self.assertEqual(
+            env["CBRSIM_MASTER_VF"],
+            "setsar=1,guided=radius=1:eps=0.002:planes=15",
+        )
         self.assertEqual(env["CBRSIM_RAW_VF"], "setsar=1")
         self.assertEqual(
             profile.section("analysis")["source_canvas"], [320, 224])

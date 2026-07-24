@@ -235,18 +235,19 @@ Check the raw MKV and reports before trusting a capture:
    - fixed-N2: `S/D/R=00`, `C` warning above `00`, `M<=01`;
    - delivery-paced 15 fps: `S/D/R=00`, `C` warning above `04`, `M<=04`;
    - delivery-paced 24 fps: `S/D/R=00`, `C` warning above `03`, `M<=03`;
-   - every cadence: `S/D/R=00`; `J<=2B` at 15fps, `J<=1C` at 24fps,
-     or `J<=17` at 30fps.
+   - every cadence: `S/D/R=00`; `J<=2D` at 15fps, `J<=1E` at 24fps,
+     or `J<=19` at 30fps.
 
    Delivery-paced C's threshold marks work beyond all but the already-armed
    control sector on the current Sub path. Above-threshold C is diagnostic
    evidence, but not playback failure by itself, so it produces `WARNING`.
    The M limit permits all display fields available to one content frame. The
    `J` limit is derived from the stream's generated
-   normal PrgBuf ceiling: normal/jitter is 384/40 KiB at 15fps,
-   399/25 KiB at 24fps, and 404/20 KiB at 30fps. A value above `28`, `19`, or
-   `14` respectively means sector-granular back-pressure entered the separate
-   physical guard; report this explicitly, but a value at or below the
+   normal PrgBuf ceiling: normal/jitter is 382/40 KiB at 15fps,
+   397/25 KiB at 24fps, and 402/20 KiB at 30fps. A value above `28`, `19`, or
+   `14` respectively means sector-granular occupancy crossed the 422 KiB
+   scheduled-delivery ceiling and entered its 2 KiB back-pressure guard or the
+   separate 4 KiB physical guard; report this explicitly, but a value at or below the
    cadence-specific passing limit does not by itself require another
    confirmation or fail the recording.
    Do not waive, hand-edit, or reuse a gate JSON from another recording.

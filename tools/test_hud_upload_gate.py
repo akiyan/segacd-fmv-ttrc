@@ -42,7 +42,7 @@ class HudUploadGateTests(unittest.TestCase):
                 rows, expected, Path(recording.name), content_fps)
 
     def test_clean_complete_loop_passes(self):
-        result = self.evaluate(groups(4, M=1, J=23), 4)
+        result = self.evaluate(groups(4, M=1, J=25), 4)
         self.assertTrue(result["pass"], result["failures"])
         self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["warnings"], [])
@@ -50,7 +50,7 @@ class HudUploadGateTests(unittest.TestCase):
 
     def test_each_unsafe_metric_blocks_upload(self):
         for field, value in {"S": 1, "D": 1, "R": 1,
-                             "M": 2, "J": 24}.items():
+                             "M": 2, "J": 26}.items():
             with self.subTest(field=field):
                 result = self.evaluate(groups(4, **{field: value}), 4)
                 self.assertFalse(result["pass"])
@@ -65,13 +65,13 @@ class HudUploadGateTests(unittest.TestCase):
         self.assertTrue(any(text.startswith("C") for text in result["warnings"]))
 
     def test_delivery_paced_15fps_uses_its_full_slot_and_field_budget(self):
-        result = self.evaluate(groups(4, C=4, M=4, J=43), 4, 15)
+        result = self.evaluate(groups(4, C=4, M=4, J=45), 4, 15)
         self.assertTrue(result["pass"], result["failures"])
         self.assertEqual(result["cadence"], "delivery_paced")
         self.assertEqual(result["limits"]["C"], 4)
         self.assertEqual(result["limits"]["M"], 4)
-        self.assertEqual(result["limits"]["J"], 43)
-        self.assertEqual(result["prg_buf_cap_kib"], 384)
+        self.assertEqual(result["limits"]["J"], 45)
+        self.assertEqual(result["prg_buf_cap_kib"], 382)
         self.assertEqual(result["jitter_headroom_kib"], 40)
         for field in ("C", "M"):
             result = self.evaluate(groups(4, **{field: 5}), 4, 15)
@@ -87,16 +87,16 @@ class HudUploadGateTests(unittest.TestCase):
                     text.startswith(field) for text in result["failures"]))
 
     def test_delivery_paced_24fps_uses_variable_slot_and_field_budget(self):
-        result = self.evaluate(groups(4, C=3, M=3, J=28), 4, 24)
+        result = self.evaluate(groups(4, C=3, M=3, J=30), 4, 24)
         self.assertTrue(result["pass"], result["failures"])
         self.assertEqual(result["limits"]["C"], 3)
         self.assertEqual(result["limits"]["M"], 3)
-        self.assertEqual(result["limits"]["J"], 28)
-        self.assertEqual(result["prg_buf_cap_kib"], 399)
+        self.assertEqual(result["limits"]["J"], 30)
+        self.assertEqual(result["prg_buf_cap_kib"], 397)
         self.assertEqual(result["jitter_headroom_kib"], 25)
 
     def test_each_cadence_rejects_a_full_physical_ring(self):
-        for fps, first_failing_j in ((15, 44), (24, 29), (30, 24)):
+        for fps, first_failing_j in ((15, 46), (24, 31), (30, 26)):
             with self.subTest(fps=fps):
                 result = self.evaluate(
                     groups(4, J=first_failing_j), 4, fps)

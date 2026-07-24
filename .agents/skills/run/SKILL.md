@@ -33,8 +33,9 @@ Include all of the following unless the user explicitly excludes a stage:
 3. Packed-stream verification
 4. DEBUG disc build, synchronized native lossless emulator capture, and upload-capable HUD gate
 5. Complete-recording HUD timeline PNG, inline review, and public Gist
-6. Analysis render, metadata, CRAM chapters, verification, and upload
-7. Square-pixel playback compilation, boot-aware CRAM chapters, verification, and upload
+6. Matching codec/HUD mixed timeline PNG, inline review, and public Gist
+7. Analysis render, metadata, CRAM chapters, verification, and upload
+8. Square-pixel playback compilation, boot-aware CRAM chapters, verification, and upload
 
 Treat both uploads as part of `$run`, not as optional follow-up work. Upload
 analysis and playback videos as unlisted, category 20.
@@ -50,6 +51,9 @@ Before acting, read these files completely:
 2. `.agents/skills/sim/SKILL.md`
 3. `.agents/skills/record/SKILL.md`
 4. `.agents/skills/compilation/SKILL.md`
+5. `.agents/skills/timeline/SKILL.md`
+6. `.agents/skills/hudline/SKILL.md`
+7. `.agents/skills/mixline/SKILL.md`
 
 Use those files as the detailed source of truth. This skill defines their
 ordering, handoffs, gates, and completion criteria; it does not replace their
@@ -194,8 +198,8 @@ Before accepting the recording, verify:
   `M<=04`; delivery-paced 24 fps warns when `C>03` and requires `M<=03`.
   Every cadence requires `S/D/R=00`. A C warning remains upload-capable. The
   generated gate uses
-  the fps-derived normal PrgBuf ceiling: `J<=2B` at 15fps, `J<=1C` at 24fps,
-  and `J<=17` at 30fps. Explicitly report whether `J` exceeded that cadence's
+  the fps-derived normal PrgBuf ceiling: `J<=2D` at 15fps, `J<=1E` at 24fps,
+  and `J<=19` at 30fps. Explicitly report whether `J` exceeded that cadence's
   normal jitter interval (`28`, `19`, or `14` respectively).
   Preserve the TSV and upload-capable gate JSON next to the recording.
 
@@ -212,6 +216,13 @@ FAIL results; a FAIL is still published as diagnostic evidence but stops Stage 5
 `hudline` shares `/timeline`'s frame x-coordinate contract so a future
 `/mixline` can combine both without resampling.
 
+Immediately after the hudline PNG and receipts exist, invoke the `mixline`
+skill with the matching Stage 2 timeline and this hudline. Inspect and show the
+combined image, publish it to a public Gist, and preserve its layout and Gist
+receipts. Do this for PASS, WARNING, and FAIL results so a failed recording
+still has aligned codec/HUD evidence. A FAIL stops Stage 5 only after the
+hudline and mixline evidence has been published.
+
 Do not apply waveform-threshold gates to routine recordings; legitimate source
 transients and lossy-preview ringing make them content-dependent. State that
 human listening occurred only if it actually occurred. Call this an emulator
@@ -221,8 +232,8 @@ Use full HUD OCR only for requested diagnostics or to investigate a failure.
 Never use HUD OCR to choose a publication head cue or chapter offset.
 
 Do not enter Stage 5 when the HUD gate is missing or has status `FAIL`, or when the
-matching hudline image/Gist receipt is absent. Never waive or edit the
-sidecars.
+matching hudline or mixline image/Gist receipt is absent. Never waive or edit
+the sidecars.
 
 ## Stage 5: Render and Upload the Analysis
 
@@ -236,11 +247,26 @@ The full render writes another persistent TSV. Immediately run the `timeline`
 skill for that TSV, publish the PNG to a public Gist, show it to the user, and
 put the Gist URL in the YouTube description.
 
+Regenerate `mixline` against this final analysis timeline and the already
+accepted hudline, then inspect, publish, and show the final combined image.
+This keeps the published mixed evidence tied to the exact TSV used by the
+analysis upload rather than the pre-recording TSV.
+
 Generate CRAM chapters with `tools/youtube_chapters.py`. Build the title and
 English-then-Japanese description from the current `AGENTS.md` convention,
 including the repository URL in both language sections and never adding source
-bitrate or angle brackets. Upload the newly rebuilt analysis as unlisted,
-category 20. Use `--force` only for a re-upload and retain the returned URL.
+bitrate or angle brackets. Save the exact description to a UTF-8 text file and
+measure it before upload. YouTube's description limit is 5,000 characters:
+target 4,800 or fewer and hard-fail above 5,000. If it is too long, shorten
+explanatory prose without removing CRAM chapters, required specs/layout/
+technique sections, both project links, or the current timeline links.
+
+```sh
+tools/python.sh -c 'from pathlib import Path; p=Path("videos/STEM_analysis_description.txt"); n=len(p.read_text(encoding="utf-8")); print(f"description_chars={n}"); assert n <= 5000'
+```
+
+Upload the newly rebuilt analysis as unlisted, category 20. Use `--force` only
+for a re-upload and retain the returned URL.
 
 After the analysis upload succeeds, report the exact `S/D/R/C/M/J` maxima and
 continue to the already-authorized playback compilation/upload. Do not request
@@ -271,8 +297,11 @@ Extract startup/movie/tail stills with `tools/extract_verification_frames.sh`, u
 `CHECK_DIR`; do not mix files from an older compilation.
 
 Generate boot-aware CRAM chapters and current bilingual metadata according to
-`AGENTS.md`, then upload as unlisted, category 20. Use `--force` only for a
-re-upload and retain the returned URL.
+`AGENTS.md`. Save and measure the exact UTF-8 description before upload using
+the same 5,000-character hard gate as Stage 5 (target 4,800 or fewer). Never
+send an over-limit description and wait for YouTube to reject it. Upload as
+unlisted, category 20. Use `--force` only for a re-upload and retain the
+returned URL.
 
 ## Failure and Resume Policy
 
@@ -305,6 +334,7 @@ Report one compact result block per source with:
 - pack verification result;
 - lossless recording and preview paths, duration, raster/fps, and audio metrics;
 - hudline path, `S/D/R/C/M/J` maxima, and public Gist/raw image URLs;
+- timeline and final mixline paths plus their public Gist/raw image URLs;
 - whether startup was retained and whether human listening was performed;
 - playback compilation URL and path, duration, raster/SAR/DAR, and audio presence;
 - any diagnosed anomaly, workaround, or remaining limitation.

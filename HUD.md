@@ -86,9 +86,10 @@ already-armed control sector on the current Sub path and all display fields in
 one content frame: 15 fps warns when `C>04` and fails when `M>04`; 24 fps warns
 when `C>03` and fails when `M>03`. The largest passing `J` is
 normal-ceiling-to-physical-end minus one
-KiB: `2B` at 15fps, `1C` at 24fps, and `17` at 30fps. Values above the normal
+KiB: `2D` at 15fps, `1E` at 24fps, and `19` at 30fps. Values above the normal
 jitter interval (`28`, `19`, or `14` respectively) show that
-sector-granular back-pressure entered the separate 4 KiB physical guard.
+sector-granular occupancy crossed the 422 KiB scheduled-delivery ceiling and
+entered its 2 KiB back-pressure guard or the separate 4 KiB physical guard.
 Report the value, but a `J` within the cadence-specific passing limit does not
 by itself require another confirmation or fail the recording. Report all gate
 maxima on PASS or WARNING, and report every C warning frame. When the enclosing
@@ -276,7 +277,7 @@ hardware transfer choices.
 
 `J` is the maximum simultaneous streamed PrgBuf occupancy above the
 fps-derived normal ceiling observed since BODY streaming began. That ceiling
-is 384 KiB at 15fps, 399 KiB at 24fps, and 404 KiB at 30fps. It is rounded
+is 382 KiB at 15fps, 397 KiB at 24fps, and 402 KiB at 30fps. It is rounded
 upward to KiB and displayed in hexadecimal. `J=00` proves that occupancy never
 crossed the ceiling; `J=01` means a nonzero excess of at most 1 KiB, and
 `J=0A` means a maximum excess of at most 10 KiB.
