@@ -142,8 +142,18 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
         self.assertEqual(env["CBRSIM_MASTER_VF"], "setsar=1")
         self.assertEqual(env["CBRSIM_RAW_VF"], "setsar=1")
+        self.assertEqual(
+            profile.section("analysis")["source_canvas"], [320, 224])
         self.assertTrue(env["CBRSIM_OUT"].endswith(
             "videos/SonicJamOp_H40_288x200_adpcm22/tmp"))
+
+    def test_analysis_source_canvas_requires_two_positive_integers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad-analysis-canvas.toml"
+            path.write_text(PROFILE + "\n[analysis]\nsource_canvas = [320, 0]\n")
+            with self.assertRaisesRegex(
+                    ValueError, "analysis.source_canvas must be"):
+                load_profile(path)
 
     def test_machi_op_uses_confirmed_black_bar_crop_and_native_h40_sar(self) -> None:
         root = Path(__file__).resolve().parents[1]

@@ -95,6 +95,7 @@ ALLOWED = {
     "output": {key for section, key in ENV_MAP if section == "output"},
     "encoder": {key for section, key in ENV_MAP if section == "encoder"},
     "palette": {key for section, key in ENV_MAP if section == "palette"},
+    "analysis": {"source_canvas"},
 }
 REQUIRED = {
     "source": {"path", "fps", "duration"},
@@ -252,6 +253,14 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         if black_max >= white_min:
             raise ValueError(
                 f"{profile_path}: endpoint snap black_max must be below white_min")
+    source_canvas = data.get("analysis", {}).get("source_canvas")
+    if source_canvas is not None:
+        if (not isinstance(source_canvas, list) or len(source_canvas) != 2
+                or any(isinstance(value, bool) or not isinstance(value, int)
+                       or value <= 0 for value in source_canvas)):
+            raise ValueError(
+                f"{profile_path}: analysis.source_canvas must be "
+                "[positive_width, positive_height]")
     profile = EncodeProfile(profile_path, data, hashlib.sha256(raw).hexdigest())
     # Validate the filename while loading so every consumer agrees on paths.
     profile.artifact_stem

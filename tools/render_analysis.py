@@ -25,6 +25,7 @@ import glob
 import pickle
 import subprocess
 from pathlib import Path
+from fractions import Fraction
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -120,11 +121,16 @@ _raw = sorted(glob.glob(f"{SIM}/raw/*.png"))
 W, H = Image.open(_pv[0]).size                # タイルグリッド画素(=WxH)
 TCOLS, TROWS = W // 8, H // 8
 RW, RH = Image.open(_raw[0]).size             # Sourceパネル素材の画素
+_SOURCE_SAR = Fraction(os.environ.get("CBRSIM_SOURCE_SAR", "1:1").replace(":", "/"))
+SOURCE_SAR_NUM = _SOURCE_SAR.numerator
+SOURCE_SAR_DEN = _SOURCE_SAR.denominator
+_analysis_profile = CONFIG_PROFILE.section("analysis") if CONFIG_PROFILE else {}
+SOURCE_CANVAS = tuple(_analysis_profile.get("source_canvas", (RW, RH)))
+SOURCE_CANVAS_W, SOURCE_CANVAS_H = map(int, SOURCE_CANVAS)
 # 画面モード(H32/H40/mode4)から PAR・実機画面サイズ・表示アスペクトを取得
 _M = L.MODES[MODE]
 PAR = _M["par"]                                # 1ドット横長比
 A_CONTENT = (W / H) * PAR                      # カテゴリ(タイル解析)の表示比
-A_SRC = RW / RH                                # Sourceの表示比(crop済素材そのまま)
 RES = f"{W}x{H} ({TCOLS}x{TROWS})"
 # 実機画面(この解像度を画面いっぱいに拡大せず中央配置する)。
 SCREEN_W = max(_M["sw"], W)
@@ -822,8 +828,18 @@ def render(i):
     # Source(raw は 1始点)
     sv = Image.open(f"{SIM}/raw/{i + 1:05d}.png").convert("RGB")
     bw = L.SRC_FRAME[2] - L.SRC_FRAME[0] - 2 * L.PAD; bh = L.SRC_FRAME[3] - L.SRC_FRAME[1] - 2 * L.PAD
-    sw, sh, ox, oy = fit(A_SRC, bw, bh)
-    cv.paste(sv.resize((sw, sh), Image.LANCZOS), (L.SRC_FRAME[0] + L.PAD + ox, L.SRC_FRAME[1] + L.PAD + oy))
+    source_geometry = L.source_panel_geometry(
+        RW, RH, SOURCE_CANVAS_W, SOURCE_CANVAS_H,
+        SOURCE_SAR_NUM, SOURCE_SAR_DEN, bw, bh)
+    sw, sh = source_geometry["panel_size"]
+    ox, oy = source_geometry["panel_offset"]
+    cw, ch = source_geometry["content_size"]
+    cx, cy = source_geometry["content_offset"]
+    source_canvas = Image.new("RGB", (sw, sh), (0, 0, 0))
+    source_canvas.paste(sv.resize((cw, ch), Image.LANCZOS), (cx, cy))
+    cv.paste(
+        source_canvas,
+        (L.SRC_FRAME[0] + L.PAD + ox, L.SRC_FRAME[1] + L.PAD + oy))
     # Category(Miss=中身なし赤枠)
     bw = L.CAT_FRAME[2] - L.CAT_FRAME[0] - 2 * L.PAD; bh = L.CAT_FRAME[3] - L.CAT_FRAME[1] - 2 * L.PAD
     sw, sh, ox, oy = fit(A_CONTENT, bw, bh)

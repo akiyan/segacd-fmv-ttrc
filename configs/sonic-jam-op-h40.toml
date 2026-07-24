@@ -25,3 +25,6 @@ cold_cap = 190
 
 [palette]
 algorithm = "mosaic-gm"
+
+[analysis]
+source_canvas = [320, 224]
