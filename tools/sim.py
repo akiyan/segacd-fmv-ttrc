@@ -3937,6 +3937,9 @@ def main():
                 "schema_version": stream_schedule.STREAM_SCHEDULE_SCHEMA_VERSION,
                 "block_lengths": control_lengths,
                 "ring_occupancy": prg_remaining,
+                "ring_occupancy_before_consume": np.asarray(
+                    physical_schedule["ring_occupancy_before_consume"],
+                    np.int64),
                 "payload_sectors": np.asarray(
                     physical_schedule["n_pay_sec"], np.int64),
                 "evaluation_end_frame": int(

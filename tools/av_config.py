@@ -192,6 +192,10 @@ CD_BYTES_PER_SECOND = CD_SECTOR_BYTES * CD_SECTORS_PER_SECOND
 # packer's fixed PCM chunk cannot disagree.
 NTSC_VSYNC = 60_000 / 1001
 _INTEGER_VBLANK_TOLERANCE = 0.01
+# Fixed display pacing is currently practical through N=4.  Larger intervals
+# would regularly need more than the routing format's five useful sectors per
+# frame and can outlive the Main CPU's 12-bit stopwatch cadence window.
+MAX_FIXED_VBLANK_INTERVAL = 4
 
 # RF5C164 phase-step conversion.  One output sample advances the 11-bit
 # frequency delta once per 384 clocks of the 12.5 MHz PCM clock.
@@ -240,35 +244,62 @@ def rf5c164_fd(samples_per_frame, playback_fps):
     return fd
 
 
-def uses_fixed_n2_cadence(fps):
-    """Whether this source uses the exact two-VBlank NTSC display cadence.
+def fixed_vblank_interval(fps):
+    """Return the authoritative fixed-N interval, or ``None``.
 
-    The packer serializes this decision as ``FEATURE_FIXED_N2``. That header
-    bit, not the nominal fps or nearest-N hint, is authoritative to the player.
-    This deliberately excludes 24 fps even though its nearest cadence hint is
-    also N=2.  Delivery-paced 24 fps must retain its alternating two/three
-    VBlank behavior; only rates already classified as NTSC N=2 are fixed.
+    Rates close to an integer NTSC VBlank divisor use that exact display
+    cadence.  Delivery-paced rates such as 24 fps return ``None`` even though
+    their nearest interval hint is also N=2.
     """
     value = float(fps)
+    if value <= 0:
+        raise ValueError(f"fps must be positive, got {fps!r}")
     n = vsync_n_for_fps(value)
-    return (
-        n == 2
-        and abs((NTSC_VSYNC / value) - n) <= _INTEGER_VBLANK_TOLERANCE
-    )
+    if not 1 <= n <= MAX_FIXED_VBLANK_INTERVAL:
+        return None
+    if abs((NTSC_VSYNC / value) - n) > _INTEGER_VBLANK_TOLERANCE:
+        return None
+    return n
+
+
+def uses_fixed_n_cadence(fps):
+    """Whether the stream uses its header's exact fixed-N VBlank cadence."""
+    return fixed_vblank_interval(fps) is not None
+
+
+def uses_fixed_n2_cadence(fps):
+    """Compatibility helper for callers that specifically need N=2."""
+    return fixed_vblank_interval(fps) == 2
+
+
+def fixed_cd_sector_rate(vsync_n):
+    """Return reduced CD-1x sectors/frame for one fixed VBlank interval."""
+    n = int(vsync_n)
+    if not 1 <= n <= MAX_FIXED_VBLANK_INTERVAL:
+        raise ValueError(
+            f"fixed VBlank interval must be 1..{MAX_FIXED_VBLANK_INTERVAL}, "
+            f"got {vsync_n!r}")
+    # 75 sectors/s * N * (1001/60000)s = 1001*N/800 sectors/frame.
+    numerator = 1001 * n
+    modulus = 800
+    divisor = math.gcd(numerator, modulus)
+    return numerator // divisor, modulus // divisor
 
 
 def cd_sector_rate(fps):
     """Return the integer accumulator numerator/modulus for CD-1x sectors.
 
-    A fixed N=2 frame lasts exactly two 60000/1001 Hz VBlanks, so CD-1x
-    supplies 1001/400 sectors per frame.  Other rates retain the legacy
-    delivery-paced ``75 / round(fps)`` schedule.
+    A fixed-N frame lasts exactly N 60000/1001 Hz VBlanks, so CD-1x supplies
+    ``1001*N/800`` sectors per frame (reduced to 1001/400 at N=2 and 1001/200
+    at N=4). Other rates retain the delivery-paced ``75 / round(fps)``
+    schedule.
     """
     value = float(fps)
     if value <= 0:
         raise ValueError(f"fps must be positive, got {fps!r}")
-    if uses_fixed_n2_cadence(value):
-        return 1001, 400
+    fixed_n = fixed_vblank_interval(value)
+    if fixed_n is not None:
+        return fixed_cd_sector_rate(fixed_n)
     nominal = int(round(value))
     if nominal <= 0:
         raise ValueError(f"fps must round to a positive integer, got {fps!r}")

@@ -64,17 +64,17 @@ class HudUploadGateTests(unittest.TestCase):
         self.assertEqual(result["failures"], [])
         self.assertTrue(any(text.startswith("C") for text in result["warnings"]))
 
-    def test_delivery_paced_15fps_uses_its_full_slot_and_field_budget(self):
-        result = self.evaluate(groups(4, C=4, M=4, J=45), 4, 15)
+    def test_fixed_n4_15fps_uses_three_work_fields(self):
+        result = self.evaluate(groups(4, C=0, M=3, J=45), 4, 15)
         self.assertTrue(result["pass"], result["failures"])
-        self.assertEqual(result["cadence"], "delivery_paced")
-        self.assertEqual(result["limits"]["C"], 4)
-        self.assertEqual(result["limits"]["M"], 4)
+        self.assertEqual(result["cadence"], "fixed_n4")
+        self.assertEqual(result["limits"]["C"], 0)
+        self.assertEqual(result["limits"]["M"], 3)
         self.assertEqual(result["limits"]["J"], 45)
         self.assertEqual(result["prg_buf_cap_kib"], 382)
         self.assertEqual(result["jitter_headroom_kib"], 40)
-        for field in ("C", "M"):
-            result = self.evaluate(groups(4, **{field: 5}), 4, 15)
+        for field, value in (("C", 1), ("M", 4)):
+            result = self.evaluate(groups(4, **{field: value}), 4, 15)
             if field == "C":
                 self.assertTrue(result["pass"])
                 self.assertEqual(result["status"], "WARNING")

@@ -91,7 +91,7 @@ RING_DELIVERY_CAP_PAT = RING_DELIVERY_CAP_KB * 1024 // PAT
 RING_JITTER_HEADROOM_KB = av_config.RING_JITTER_HEADROOM_KB
 
 FEATURE_COLD_RUNS = ttrc_routing.FEATURE_COLD_RUNS
-FEATURE_FIXED_N2 = ttrc_routing.FEATURE_FIXED_N2
+FEATURE_FIXED_N = ttrc_routing.FEATURE_FIXED_N
 FEATURE_PATTERN_SUPPLY = ttrc_routing.FEATURE_PATTERN_SUPPLY
 FEATURE_SHADOW_UPDATE_LISTS = ttrc_routing.FEATURE_SHADOW_UPDATE_LISTS
 FEATURE_VRAM_RAW_PREFETCH = ttrc_routing.FEATURE_VRAM_RAW_PREFETCH
@@ -596,6 +596,8 @@ def verify_sim_stream_schedule(log, packed_schedule):
         "block_lengths": np.asarray(packed_schedule["blk_len"], np.int64),
         "ring_occupancy": np.asarray(
             packed_schedule["ring_occupancy"], np.int64),
+        "ring_occupancy_before_consume": np.asarray(
+            packed_schedule["ring_occupancy_before_consume"], np.int64),
         "payload_sectors": np.asarray(
             packed_schedule["n_pay_sec"], np.int64),
         "control_sectors": np.asarray(
@@ -850,9 +852,9 @@ def rate_deltas(nfr):
 
     Frame 0 lives in HEADER.DAT, so its allowance is zero.  The accumulator is
     intentionally identical to the player and to the BODY writer. Nominal
-    30fps fixed-N2 content uses the exact 1001/400 sectors needed by two NTSC
-    VBlanks. The 24/15 fps paths retain their legacy 75/nominal-fps delivery
-    schedule.
+    Fixed-N content uses the exact CD allowance for its integer NTSC VBlank
+    interval (1001/400 at N=2, 1001/200 at N=4). Delivery-paced content such
+    as 24fps retains the legacy 75/nominal-fps schedule.
     """
     try:
         return stream_schedule.rate_deltas(nfr, FPS)
@@ -893,9 +895,9 @@ def decode_verify(
         boot_sidecar=()):
     """Simulate the current control-first player and compare it with sim output.
 
-    A frame consumes its already-armed cold patterns before that frame's BODY
-    payload is appended to the ring.  This intentionally models the earliest
-    legal apply time instead of relying on favorable CPU/CD overlap.
+    The current slot's BODY payload may arrive while Main still displays the
+    previous frame, before this frame consumes its already-armed cold patterns.
+    Model that live order so the physical PrgBuf peak includes the overlap.
     """
     frame_seg = np.asarray(log["frame_seg"], np.int64)
     seg_pals = log["seg_pals"]
@@ -935,6 +937,13 @@ def decode_verify(
     for i in range(len(per)):
         add = int(n_pay_sec[i]) * PAT_PER_SEC
         prg_src = f0_ring if (f0h and i == 0) else ring
+        # The live player may pump this BODY payload while Main still displays
+        # frame i-1. Append before consuming frame i so the verifier measures
+        # the same safety-critical PrgBuf peak as hardware.
+        for k in range(pc, min(pc + add, len(prg_patterns))):
+            ring.append(prg_patterns[k])
+        pc += add
+        ring_peak = max(ring_peak, len(ring))
         blk = ctrl[cc:cc + int(blk_len[i])]; cc += int(blk_len[i])
         p = 2                                         # skip total_len
         p += 2                                        # skip frame_seq(同期マーカー)
@@ -997,12 +1006,6 @@ def decode_verify(
         for c, ent in update_items:
             nt_pal[c] = (ent >> 13) & 3
             nt_slot[c] = (ent & 0x07FF) - BASE
-        # BODY payload follows control and arms later frames.  Append it only
-        # after the current block has consumed every cold entry.
-        for k in range(pc, min(pc + add, len(prg_patterns))):
-            ring.append(prg_patterns[k])
-        pc += add
-        ring_peak = max(ring_peak, len(ring))
         need_img = (cmp is not None) or (sample_dir is not None and i in samples)
         if not need_img:
             continue
@@ -1232,13 +1235,13 @@ def write_stream(
     # CDレート累積器が実際のfpsを決める。Nは整数VBlank cadenceのヒントで、24fpsのN2を
     # 29.97fpsへ丸める指定ではない。AUDIOも実効fps由来。FRAME_SECTORS(=5)は最大スロット。
     vsync_n = VSYNC_N                                  # N: 近似VBLANK間隔(30/24→2, 15→4)
-    fps_int = int(round(FPS))                         # 名目fps。FEATURE_FIXED_N2時はplayerが1001/400を選ぶ
+    fps_int = int(round(FPS))                         # 名目fps。FEATURE_FIXED_N時はvsync_n由来のCD rate
     audio_fd = av_config.rf5c164_fd(AUDIO_PCM, PLAYBACK_FPS)
     if not f0_header:
         raise SystemExit("pack v16 requires frame0 in HEADER.DAT")
     features = FEATURE_COLD_RUNS | FEATURE_DICBUF_INDEXED_RUNS
-    if av_config.uses_fixed_n2_cadence(FPS):
-        features |= FEATURE_FIXED_N2
+    if av_config.uses_fixed_n_cadence(FPS):
+        features |= FEATURE_FIXED_N
     if supply_plan.enabled:
         features |= FEATURE_PATTERN_SUPPLY
     if any(struct.unpack_from(">H", block, 4)[0] & shadow_updates.LIST_TAG
@@ -1318,12 +1321,13 @@ def write_stream(
     fsec_schedule = sc["fsec"]
     with body_path.open("wb") as f:
         # v4 レートマッチpadding: 各frameを「CD 1x が1コマ時間に届けるセクタ数」までpaddingする。
-        # CD 1x = 75セクタ/秒。FEATURE_FIXED_N2時は1001/400 sectors/frame、その他は75/fps_int。
+        # CD 1x = 75セクタ/秒。FEATURE_FIXED_N時はvsync_n由来、その他は75/fps_int。
         # この整数割り当てを累積器で出し、fsec=max(実データ, レート割当)として「ディスク
         # 読み速度=表示速度」になり、paddingを外したv4で起きた過剰配送→バッファ溢れ→CDCスリップ
-        # を根絶する(15fpsでは5固定=v3と同一)。padセクタはプレイヤが読んで捨てる(累積器で同期)。
+        # を根絶する。padセクタはプレイヤが読んで捨てる(累積器で同期)。
         # レートマッチpadding(有界累積器 sec_acc/lead)。1コマのCD 1xセクタ配分ratedeltaを
-        # 累積器で整数化(15fps→5固定, 24fps→75/24, FIXED_N2→1001/400)。lead = CD 1x予定より
+        # 累積器で整数化(固定N4→1001/200, 24fps→75/24, 固定N2→1001/400)。
+        # lead = CD 1x予定より
         # 先行しているセクタ数(≥0)。重いコマ(実データ超過)は lead を増やし、後続の軽いコマは pad を
         # lead ぶん減らして吸収する。fsec = max(実データ, ratedelta - lead)。総ディスク量が CD 1x 相当
         # 指定された実効表示rateに収束し、過剰配送(→バッファ溢れ→CDCスリップ)も過小配送も起きない。
