@@ -85,9 +85,9 @@ needed.**
 Done + verified:
 - At this historical checkpoint the cold cap used the single confirmed
   `COLD_CAP_15FPS = 350` reference and `cap(fps)=350*15/fps` (30->175,
-  24->219). Current builds instead require an exact measured
-  mode/fps/active-tile qualification from `tools/av_config.py`; unmatched
-  tuples stop for measurement rather than using this historical scaling rule.
+  24->219). Current builds use the fps-only baseline
+  `round(360*15/fps)` from `tools/av_config.py` (15->360, 24->225,
+  30->180); mode and tile count do not affect it.
 - `AUDIO` fps-derived in the pack (15->887, 30->443).
 - **MOVIE.DAT v4**: variable frames (no 5-sector padding; each frame = n_pay+n_ctrl
   sectors), header offset 52 = N (VBlanks/frame), 54 = AUDIO. Sonic H32 30fps packs to

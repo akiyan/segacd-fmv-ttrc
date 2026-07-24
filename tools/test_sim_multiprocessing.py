@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-# Import sim under a measured cold-cap tuple.  The module resolves playback
+# Import sim with a valid fps-derived cold cap. The module resolves playback
 # geometry at import time even though these tests exercise only helper functions.
 _sim_env = {
     "CBRSIM_FPS": "30",

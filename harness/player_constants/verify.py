@@ -29,6 +29,8 @@ class Case:
     mode: int
     fps: int
     pattern_supply: bool = False
+    tcols: int | None = None
+    trows: int = 28
 
 
 CASES = (
@@ -38,6 +40,7 @@ CASES = (
     Case("h40-15", 1, 15),
     Case("h40-24-supply", 1, 24, True),
     Case("h40-30-supply", 1, 30, True),
+    Case("h40-30-centered", 1, 30, True, 36, 25),
 )
 
 
@@ -52,8 +55,8 @@ def find_tool(name: str) -> Path:
 
 
 def make_header(case: Case) -> bytes:
-    tcols = 32 if case.mode == 0 else 40
-    trows = 28
+    tcols = case.tcols if case.tcols is not None else (32 if case.mode == 0 else 40)
+    trows = case.trows
     cells = tcols * trows
     frames = 600
     features = ttrc_routing.FEATURE_COLD_RUNS
@@ -101,9 +104,14 @@ class Build:
 
 
 def run(command: list[str]) -> str:
-    result = subprocess.run(
-        command, cwd=ROOT, check=True, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        result = subprocess.run(
+            command, cwd=ROOT, check=True, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as exc:
+        raise AssertionError(
+            f"command failed ({exc.returncode}): {' '.join(command)}\n{exc.stdout}"
+        ) from exc
     return result.stdout
 
 
@@ -184,6 +192,44 @@ def verify_flip_control_flow(objdump: Path, obj: Path) -> None:
         raise AssertionError(f"{obj}: do_flip branch escaped its region: {details}")
 
 
+def verify_startup_body_arm(objdump: Path, obj: Path) -> None:
+    """Prove BODY is acknowledged only after the Main frame-0 build."""
+    disassembly = run([str(objdump), "-d", str(obj)])
+    loop_match = re.search(
+        r"^[0-9a-f]+ <play_loop>:$", disassembly, re.MULTILINE)
+    loop_end_match = re.search(
+        r"^[0-9a-f]+ <movie_end_md>:$", disassembly, re.MULTILINE)
+    if not loop_match or not loop_end_match:
+        raise AssertionError(f"{obj}: missing play-loop symbols")
+    loop = disassembly[loop_match.end():loop_end_match.start()]
+    build_call = re.search(r"\bbsr\w*\s+[^\n]*<build_frame>", loop)
+    arm_call = re.search(r"\bbsr\w*\s+[^\n]*<arm_body_after_frame0>", loop)
+    if not build_call or not arm_call or build_call.start() >= arm_call.start():
+        raise AssertionError(
+            f"{obj}: BODY arm does not follow the completed frame-0 build")
+
+    startup_match = re.search(
+        r"^[0-9a-f]+ <cmd_wait_startup>:$", disassembly, re.MULTILINE)
+    generic_match = re.search(
+        r"^[0-9a-f]+ <cmd_wait_ready>:$", disassembly, re.MULTILINE)
+    arm_match = re.search(
+        r"^[0-9a-f]+ <arm_body_after_frame0>:$", disassembly, re.MULTILINE)
+    arm_end_match = re.search(
+        r"^[0-9a-f]+ <load_boot_vram_sidecar>:$", disassembly, re.MULTILINE)
+    if not all((generic_match, arm_match, arm_end_match)):
+        raise AssertionError(f"{obj}: missing startup-handshake symbols")
+    start_wait = (
+        disassembly[startup_match.end():generic_match.start()]
+        if startup_match else "")
+    generic_wait = disassembly[generic_match.end():arm_match.start()]
+    arm = disassembly[arm_match.end():arm_end_match.start()]
+    body_ack = r"\bmovew\s+#1,(?:00)?a12012 <GA_COMCMD1>"
+    if re.search(body_ack, start_wait) or re.search(body_ack, generic_wait):
+        raise AssertionError(f"{obj}: BODY acknowledged inside a preload wait")
+    if not re.search(body_ack, arm):
+        raise AssertionError(f"{obj}: post-frame-0 BODY acknowledgement is missing")
+
+
 def verify_adpcm_decode_pump(
     objdump: Path, obj: Path, *, expected: bool,
 ) -> None:
@@ -202,6 +248,59 @@ def verify_adpcm_decode_pump(
         wanted = "present" if expected else "absent"
         raise AssertionError(
             f"{obj}: decoder pump is {state}, expected {wanted}")
+
+
+def verify_centered_nt_dma(
+    objdump: Path, obj: Path, *, tcols: int, trows: int,
+) -> None:
+    """Prove that fixed-N2 H40 staging centers the encoded grid."""
+    disassembly = run([str(objdump), "-dr", str(obj)])
+    start_match = re.search(
+        r"^[0-9a-f]+ <bf_blit>:$", disassembly, re.MULTILINE)
+    end_match = re.search(
+        r"^[0-9a-f]+ <bf_dma>:$", disassembly, re.MULTILINE)
+    if not start_match or not end_match:
+        raise AssertionError(f"{obj}: missing bf_blit/bf_dma symbols")
+    block = disassembly[start_match.end():end_match.start()]
+    long_copies = len(re.findall(r"\bmovel\s+%a0@\+,%a1@\+", block))
+    word_copies = len(re.findall(r"\bmovew\s+%a0@\+,%a1@\+", block))
+    if (long_copies, word_copies) != (tcols // 2, tcols & 1):
+        raise AssertionError(
+            f"{obj}: NT stage row copies {long_copies} longs/{word_copies} words, "
+            f"expected {tcols // 2}/{tcols & 1}")
+    row_skip = (64 - tcols) * 2
+    if not re.search(rf"\blea\s+%a1@\({row_skip}\),%a1", block):
+        raise AssertionError(f"{obj}: NT stage row skip is not {row_skip} bytes")
+    if not re.search(rf"\bmovew\s+#{trows - 1},%d0", block):
+        raise AssertionError(f"{obj}: NT stage row count is not {trows}")
+
+    stage_match = re.search(
+        r"\blea\s+0 [^\n]*,%a1\n"
+        r"\s+[^\n]*R_68K_32\s+\.bss\+0x([0-9a-f]+)",
+        block,
+    )
+    dma_match = re.search(
+        r"^[0-9a-f]+ <nt_dma_flip>:$", disassembly, re.MULTILINE)
+    dma_end_match = re.search(
+        r"^[0-9a-f]+ <set_vram_write>:$", disassembly, re.MULTILINE)
+    if not stage_match or not dma_match or not dma_end_match:
+        raise AssertionError(f"{obj}: missing NT stage/DMA symbols")
+    dma = disassembly[dma_match.end():dma_end_match.start()]
+    base_match = re.search(
+        r"\bmovel\s+#0,%d2\n"
+        r"\s+[^\n]*R_68K_32\s+\.bss\+0x([0-9a-f]+)",
+        dma,
+    )
+    if not base_match:
+        raise AssertionError(f"{obj}: missing NT stage base relocation")
+    actual_offset = int(stage_match.group(1), 16) - int(base_match.group(1), 16)
+    expected_offset = (((28 - trows) // 2) * 64 + (40 - tcols) // 2) * 2
+    if actual_offset != expected_offset:
+        raise AssertionError(
+            f"{obj}: NT stage offset is {actual_offset}, expected {expected_offset}")
+    if "#-27904" not in dma or "#-27641" not in dma:
+        raise AssertionError(
+            f"{obj}: NT DMA length is not the full 64x28 aperture")
 
 
 def build_case(
@@ -225,8 +324,12 @@ def build_case(
         str(linker), "-nostdlib", "--oformat", "binary",
         "-T", str(ROOT / "cfg/ip.ld"), "-o", str(ip_bin), str(ip_obj),
     ])
+    verify_startup_body_arm(objdump, ip_obj)
     if specialized:
         verify_flip_control_flow(objdump, ip_obj)
+        if case.mode == 1 and av_config.uses_fixed_n2_cadence(case.fps):
+            verify_centered_nt_dma(
+                objdump, ip_obj, tcols=case.tcols or 40, trows=case.trows)
 
     sp_obj = case_dir / f"sp-{tag}.o"
     sp_bin = case_dir / f"sp-{tag}.bin"

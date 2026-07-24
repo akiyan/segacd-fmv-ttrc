@@ -101,7 +101,7 @@ idx = {k: i for i, k in enumerate(STAT_COLUMNS)}
 FPS = float(z["fps"]); C = int(z["cells"]); BUDGET = int(z["budget_tiles"])
 ACTIVE_TILES = int(z["active_tiles"]) if "active_tiles" in z else C
 COLD_CAP = (int(z["max_cold"]) if "max_cold" in z else
-            L.av_config.cold_cap_for_fps(FPS, MODE, ACTIVE_TILES))
+            L.av_config.cold_cap_for_fps(FPS))
 NF = len(S)
 if "audio_label" in z:
     AUDIO_STR = str(z["audio_label"])        # sim側のADPCM音声ラベル

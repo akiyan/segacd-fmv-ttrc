@@ -1,10 +1,10 @@
 # Player constants build matrix
 
 This harness verifies the disc-specific Main/Sub assembly path without
-reusing stale packed movies. It creates current TTRC v10 headers for H32 and
-H40 at 15, 24 and 30 fps, plus H40 ADPCM22 headers at 15 and 30 fps and two
-four-supply cases, generates `player_constants.inc`, then assembles and links
-both the generic and specialized DEBUG players.
+reusing stale packed movies. It creates current TTRC headers for H32 and H40
+at 15, 24 and 30 fps, plus a centered H40 36x25 case, generates
+`player_constants.inc`, then assembles and links both the generic and
+specialized DEBUG players.
 
 For every case it requires:
 
@@ -15,9 +15,12 @@ For every case it requires:
 - Main's specialized flip branches stay inside their local regions, and the
   final guard performs status, V-counter tail, second-status, fresh-wait, then
   the Plane A reg2 write in that order;
+- fixed-N2 H40 name-table DMA stages only the encoded row width at the
+  generated center offset and transfers the complete zero-bordered 40x28
+  visible aperture;
 - the specialized 15 fps ADPCM decoder services the CDC during its long decode,
   while the 30 fps decoder contains no such call or counter overhead;
-- all ten geometry/timing/audio/supply combinations assemble and link
+- all geometry/timing/audio/supply combinations assemble and link
   successfully.
 
 Run it with the project Python environment:

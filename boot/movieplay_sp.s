@@ -216,7 +216,7 @@
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
-.equ STAT_BOOT_VRAM, 0x8002		/* frame-0 bank ready; BODY not started */
+.equ STAT_BOOT_VRAM, 0x8002		/* frame-0 bank ready; BODY waits for built/displayed ack */
 .equ STAT_READY, 0x8003
 .equ STAT_END,   0x8004			/* 全フレーム再生完了(MDは15秒待って CMD_STREAM 再送) */
 
@@ -582,7 +582,8 @@ rt_copy:
 	move.w	#1, frame_idx			/* frame0処理済み(旧playerと同じframe_idx=1) */
 	bsr	expand_frame
 	clr.w	f0_expand
-	/* Hand the complete frame-0 bank to Main before BODY.DAT starts. */
+	/* Hand the complete frame-0 bank to Main before BODY.DAT starts.  Main
+	   acknowledges only after it has built and displayed frame 0. */
 	bchg	#0, (MEMMODE+1).l
 	bsr	swap_settle
 	move.w	#STAT_BOOT_VRAM, (COMSTAT0).l
@@ -624,10 +625,10 @@ stream_armed:
 	/* Frame 1 consumes from the beginning of PREBUFFER; later payload appends at
 	   ring_tail. */
 	move.l	#RING_BASE, ring_head
-	/* Keep PCM stopped until the Main CPU has built and displayed frame 0.  The
-	   first CMD_SWAP below is that acknowledgement; starting earlier lets the
-	   expensive frame-0 VRAM build consume the audio lead and causes startup R
-	   re-syncs before the timed stream has even begun. */
+	/* The BODY-start acknowledgement already proves that Main built and
+	   displayed frame 0. Keep PCM stopped until the first timed frame handoff;
+	   starting it during frame-1 pre-drain would consume audio lead before the
+	   timed stream has begun. */
 	/* Release Main only after frame 1 is fully pre-drained. */
 	move.w	#STAT_READY, (COMSTAT0).l
 1:

@@ -11,6 +11,16 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   p89: Keep BODY.DAT stopped while Main initializes, builds, and displays
+#        frame 0. Delay the existing COMCMD1 BODY-start acknowledgement until
+#        build_frame returns, then pre-drain frame 1 and enter timed playback.
+#   p88: Center sub-aperture H40 fixed-N2 streams in the fast name-table DMA
+#        path. Stage the encoded grid at PC_COL0/PC_ROW0 inside a zeroed 40x28
+#        visible aperture instead of copying 40 columns from the top-left.
+#   e111: Derive the shared cold-cap baseline only from content fps as
+#        round(5400/fps): 360 at 15fps, 225 at 24fps, and 180 at 30fps.
+#        Display mode and encoded/active tile counts no longer select separate
+#        baseline tuples; profiles may still raise the common baseline.
 #   e110: Enable one-frame timed Raw VRAM prefetch for the cropped Machi OP
 #        H40/15 profile at cold cap 480, targeting the two scene-cut frames
 #        whose DEBUG playback reached C=5 with the option disabled.
@@ -767,5 +777,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260724
-e=110
-p=87
+e=111
+p=89

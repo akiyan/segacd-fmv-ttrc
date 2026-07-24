@@ -1,0 +1,6 @@
+interface:
+  display_name: "New Task Branch"
+  short_description: "Start a branch and commit scoped work safely"
+  default_prompt: "Use $new to start this repository task on a fresh branch and commit each coherent change."
+policy:
+  allow_implicit_invocation: false

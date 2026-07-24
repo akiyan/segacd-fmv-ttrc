@@ -1476,25 +1476,17 @@ def main():
     # sim のモデル cap が pack の連続スロット割当に対して高すぎる兆候(=解析は合うが実機で滑る)。
     # frame0(完全ロードのヘッダ)は除外。
     # realized == cap(共有 TileAllocator で構成上保証)。上限=cap を自動取得(手動env廃止)。
-    stream_mode = str(
-        (((log.get("config") or {}).get("video") or {}).get("mode"))
-        or log.get("mode") or "H32")
-    stream_active_tiles = int(
-        (((log.get("config") or {}).get("video") or {}).get("active_tiles"))
-        or C_CELLS)
     if profile is not None:
         profile_cold_cap = profile.section("encoder").get("cold_cap")
         if profile_cold_cap is None:
-            profile_cold_cap = av_config.baseline_cold_cap_for_fps(
-                FPS, stream_mode, stream_active_tiles)
+            profile_cold_cap = av_config.baseline_cold_cap_for_fps(FPS)
         requested_cold_cap = int(profile_cold_cap)
     else:
         # A direct decision-log pack has no TOML to authenticate. Preserve the
-        # cap frozen by that sim while still enforcing its measured baseline.
+        # cap frozen by that sim while still enforcing its fps baseline.
         requested_cold_cap = int(log.get("max_cold", 0))
     cold_qualification = av_config.cold_cap_qualification(
-        FPS, stream_mode, stream_active_tiles,
-        requested_cap=requested_cold_cap)
+        FPS, requested_cap=requested_cold_cap)
     cold_ceiling = cold_qualification.cap
     if int(sim_cold) != cold_ceiling:
         raise SystemExit(
@@ -1505,11 +1497,9 @@ def main():
         raise SystemExit(
             f"pack: realized per-frame cold max={realized_max} > cap={cold_ceiling}. "
             f"共有 TileAllocator では realized=cap のはず=想定外。sim/pack の割り当て食い違いを疑う。")
-    print(f"  realized cold: max={realized_max} <= {stream_mode}/{stream_active_tiles} "
-          f"active tiles cap {cold_ceiling} "
+    print(f"  realized cold: max={realized_max} <= {FPS:g}fps cap {cold_ceiling} "
           f"(source={cold_qualification.source}, baseline="
-          f"{cold_qualification.baseline_cap}; measured at "
-          f"{cold_qualification.active_tiles} tiles, 共有割り当て)")
+          f"{cold_qualification.baseline_cap}; 共有割り当て)")
     if len(n_load) and int(n_load[0]) > POOL:
         raise SystemExit(
             f"pack: frame0 exact+prefetch cold={int(n_load[0])} exceeds "

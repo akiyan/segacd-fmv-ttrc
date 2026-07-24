@@ -64,11 +64,7 @@ def check_profiles() -> None:
         assert env["CBRSIM_W"] == width
         assert env["CBRSIM_PAL_ALGO"] == "mosaic-gm"
         expected_cap = av_config.baseline_cold_cap_for_fps(
-            float(profile.data["source"]["fps"]), mode,
-            int(profile.data["video"].get(
-                "active_tiles",
-                int(profile.data["video"]["width"])
-                * int(profile.data["video"]["height"]) // 64)))
+            float(profile.data["source"]["fps"]))
         assert env["CBRSIM_COLD_CAP"] == str(expected_cap)
     sonic = load_profile(ROOT / "configs" / "sonic-jam-op-h40.toml")
     sonic_env = {"CBRSIM_COLD_CAP": "1"}
@@ -102,47 +98,26 @@ def check_profiles() -> None:
 
 def check_cold_caps() -> None:
     expected = (
-        ("H32", 24, 896, 219),
-        ("H32", 30, 896, 175),
-        ("H40", 15, 720, 500),
-        ("H40", 15, 760, 360),
-        ("H40", 15, 1040, 400),
-        ("H40", 15, 1120, 360),
-        ("H40", 24, 1120, 200),
-        ("H40", 30, 1120, 180),
+        (15, 360),
+        (24, 225),
+        (30, 180),
     )
-    for mode, fps, active_tiles, cap in expected:
-        assert av_config.cold_cap_for_fps(fps, mode, active_tiles) == cap
-        assert av_config.cold_realized_ceiling_for_fps(
-            fps, mode, active_tiles) == cap
+    for fps, cap in expected:
+        assert av_config.cold_cap_for_fps(fps) == cap
+        assert av_config.cold_realized_ceiling_for_fps(fps) == cap
         raised = av_config.cold_cap_qualification(
-            fps, mode, active_tiles, requested_cap=cap + 10)
+            fps, requested_cap=cap + 10)
         assert raised.cap == cap + 10
         assert raised.baseline_cap == cap
         assert raised.source == "profile"
         try:
             av_config.cold_cap_qualification(
-                fps, mode, active_tiles, requested_cap=cap - 1)
+                fps, requested_cap=cap - 1)
         except ValueError as exc:
             assert "below baseline" in str(exc)
         else:
-            raise AssertionError(
-                f"below-baseline profile cap accepted: {mode}/{fps}/{active_tiles}")
-    print("Cold caps: OK (mode/fps/active-tile sim and pack limits agree)")
-    for fps, mode, active_tiles in (
-            (24, "H32", 500),
-            (15, "H40", 900),
-            (15, "H40", 1119),
-            (15, "H32", 896),
-            (15, "MODE4", 896)):
-        try:
-            av_config.cold_cap_for_fps(fps, mode, active_tiles)
-        except av_config.ColdCapMeasurementRequired:
-            pass
-        else:
-            raise AssertionError(
-                f"unmeasured tuple unexpectedly accepted: {mode}/{fps}/{active_tiles}")
-    print("Cold caps: OK (unmeasured tuples require qualification)")
+            raise AssertionError(f"below-baseline profile cap accepted: {fps}")
+    print("Cold caps: OK (fps-derived sim and pack limits agree)")
 
 
 def main() -> None:

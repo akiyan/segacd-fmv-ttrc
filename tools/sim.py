@@ -278,11 +278,10 @@ QUALITY_BUDGET_BYTES = QUALITY_BUDGET_KB * 1024
 UPGRADE_ON = os.environ.get("CBRSIM_UPGRADE", "1") != "0"
 # cold(=新規パターン転送: Raw+Buf)の1コマ上限。実機MDの実時間デコード天井対策
 # (BUDGETS.md 'Encoder cap')。超過セルは Flbk近似 or Miss繰越。0=無効。
-# 1コマの cold 上限は、モード/fps/activeタイル数が完全一致する
-# 全編計測済みtupleから選ぶ。計測のない組合せは明示エラーにし、未計測値や
-# inherited envへfallbackしない。frame0 は下の frame_max_cold で別途免除。
-COLD_CAP_QUALIFICATION = av_config.cold_cap_qualification(
-    FPS, MODE, ACTIVE_TILES)
+# 1コマの cold baseline はfpsだけから導出する。モードと画面タイル数は
+# baselineに関与しない。profileは全編認定済みの上限へ引き上げられる。
+# frame0 は下の frame_max_cold で別途免除。
+COLD_CAP_QUALIFICATION = av_config.cold_cap_qualification(FPS)
 MAX_COLD = COLD_CAP_QUALIFICATION.cap
 MAX_RUN_CONTROL_BYTES = stream_schedule.max_run_control_reservation(
     MAX_COLD, ACTIVE_TILES)
@@ -1365,9 +1364,8 @@ def main():
         else MAX_COLD)
     print(
         f"  cold cap={MAX_COLD}: source={COLD_CAP_QUALIFICATION.source} "
-        f"baseline={baseline_cap}; {COLD_CAP_QUALIFICATION.mode} "
-        f"{COLD_CAP_QUALIFICATION.fps:g}fps qualification measured at "
-        f"{COLD_CAP_QUALIFICATION.active_tiles} active tiles")
+        f"baseline={baseline_cap}; "
+        f"fps={COLD_CAP_QUALIFICATION.fps:g}")
 
     # The source WAV remains the packer's input.  Analysis must instead audition
     # the exact stream reconstructed by the Sub CPU and quantized for RF5C164.

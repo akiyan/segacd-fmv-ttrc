@@ -246,8 +246,8 @@ prefetch`, i.e. every 32-byte pattern newly written to VRAM from any physical
 supply). The bar stacks the corresponding category/source colours and blue
 prefetch;
 full-scale = `cold_cap_for_fps`
-(`av_config.py`, selected only when mode/fps/active tiles exactly match a
-measured tuple; an unmeasured tuple is rejected before encoding).
+(`av_config.py`, calculated as `round(5400 / fps)` unless the profile raises
+it; display mode and active tile count do not affect the baseline).
 Frame 0 is outside this timing calculation and is displayed as `Cold:000`.
 Its Raw/Same category counts remain visible in the legend.
 This visualises the value the hardware slip investigations were fought over.
