@@ -71,7 +71,12 @@ def as_int(row: dict[str, str], column: str) -> int:
     text = row.get(column, "").strip()
     if not text:
         return 0
-    return int(round(float(text)))
+    try:
+        return int(round(float(text)))
+    except ValueError:
+        # The analyzer preserves some HUD-native fields, notably H40's V
+        # counter, as hexadecimal glyph text such as "EE".
+        return int(text, 16)
 
 
 def hex_value(value: int, digits: int = 2) -> str:
