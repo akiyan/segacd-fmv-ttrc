@@ -12,7 +12,12 @@ width = 288
 height = 200
 fit = "pad"
 master_denoise = false
-master_filter = "setsar=1"
+# The TrueMotion source contains a one-pixel checkerboard dither. A radius-1
+# guided filter suppresses that pattern on smooth areas while using the source
+# itself as the guide to retain drawn edges and gentle sky gradients. eps=0.002
+# keeps the edge threshold strict; planes=15 applies it to luma and chroma.
+# The codec's normal position-fixed Bayer output dither remains enabled.
+master_filter = "setsar=1,guided=radius=1:eps=0.002:planes=15"
 raw_filter = "setsar=1"
 
 [output]
@@ -21,7 +26,6 @@ reuse = false
 emit_decisions = true
 
 [encoder]
-dither = false
 cold_cap = 190
 
 [palette]

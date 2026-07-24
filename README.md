@@ -89,9 +89,8 @@ Sega CD-specific compression is the "Encode" step.
    image-quality trick, not a hardware one. The encoder then canonicalizes the
    palette rows and indices, remapping tile attributes and pixel indices so the
    rendered RGB333 image stays exactly the same.
-4. **Quantize** each 8x8 tile to the chosen Genesis palettes. Position-fixed
-   Bayer dithering is on by default and can be disabled for a source that
-   already carries visible dithering.
+4. **Quantize** each 8x8 tile to the chosen Genesis palettes (position-fixed
+   Bayer dithering).
 5. **Plan and encode (the codec):** dry-run the exact target to predict
    name-table and cold-pattern demand, spread any capacity-unavoidable
    Miss-risk shortage across that burst, and build backwards reserve curves

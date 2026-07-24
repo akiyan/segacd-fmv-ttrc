@@ -55,7 +55,6 @@ ENV_MAP = {
     ("output", "directory"): "CBRSIM_OUT",
     ("output", "reuse"): "CBRSIM_REUSE",
     ("output", "emit_decisions"): "CBRSIM_EMIT_DEC",
-    ("encoder", "dither"): "CBRSIM_DITHER",
     ("encoder", "raw_prefetch"): "CBRSIM_RAW_PREFETCH",
     ("encoder", "cold_cap"): "CBRSIM_COLD_CAP",
     ("palette", "algorithm"): "CBRSIM_PAL_ALGO",
@@ -207,10 +206,6 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
     source_fps = float(Fraction(str(data["source"]["fps"])))
     baseline_cold_cap = av_config.baseline_cold_cap_for_fps(source_fps)
     requested_cold_cap = data.get("encoder", {}).get("cold_cap")
-    requested_dither = data.get("encoder", {}).get("dither")
-    if requested_dither is not None and not isinstance(requested_dither, bool):
-        raise ValueError(
-            f"{profile_path}: encoder.dither must be a boolean")
     if requested_cold_cap is not None:
         if isinstance(requested_cold_cap, bool) or not isinstance(
                 requested_cold_cap, int):

@@ -11,10 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
-#   e112: Allow a source profile to disable the default position-fixed Bayer
-#         output dither. Sonic Jam H40 disables its second dither pass because
-#         the already-dithered source otherwise maps isolated sky pixels to the
-#         segment palette's globally brightest colour.
+#   e112: Remove Sonic Jam H40's source-side checkerboard dither with a
+#         radius-1 guided filter before the normal position-fixed Bayer output
+#         dither. The filter uses the source as its own guide to retain drawn
+#         edges and gentle gradients while preventing isolated sky pixels from
+#         mapping to the segment palette's globally brightest colour.
 #   p89: Keep BODY.DAT stopped while Main initializes, builds, and displays
 #        frame 0. Delay the existing COMCMD1 BODY-start acknowledgement until
 #        build_frame returns, then pre-drain frame 1 and enter timed playback.

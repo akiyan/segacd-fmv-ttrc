@@ -140,7 +140,10 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "900")
         self.assertEqual(env["CBRSIM_GEOMETRY_FIT"], "pad")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
-        self.assertEqual(env["CBRSIM_MASTER_VF"], "setsar=1")
+        self.assertEqual(
+            env["CBRSIM_MASTER_VF"],
+            "setsar=1,guided=radius=1:eps=0.002:planes=15",
+        )
         self.assertEqual(env["CBRSIM_RAW_VF"], "setsar=1")
         self.assertEqual(
             profile.section("analysis")["source_canvas"], [320, 224])
@@ -216,21 +219,6 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             env = apply_profile_env(
                 load_profile(path), {"CBRSIM_COLD_CAP": "999"})
         self.assertEqual(env["CBRSIM_COLD_CAP"], "180")
-
-    def test_sonic_h40_disables_output_dither(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        sonic = load_profile(root / "configs/sonic-jam-op-h40.toml")
-        env = apply_profile_env(sonic, {"CBRSIM_DITHER": "1"})
-        self.assertEqual(env["CBRSIM_DITHER"], "0")
-
-    def test_profile_dither_must_be_boolean(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "bad-dither.toml"
-            path.write_text(PROFILE.replace(
-                "[palette]", "[encoder]\ndither = 0\n\n[palette]"))
-            with self.assertRaisesRegex(
-                    ValueError, "encoder.dither must be a boolean"):
-                load_profile(path)
 
     def test_profile_cold_cap_below_baseline_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

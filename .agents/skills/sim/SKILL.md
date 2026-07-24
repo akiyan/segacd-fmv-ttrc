@@ -45,12 +45,11 @@ Argument: source MP4 path, optionally plus display name or upload instruction.
 
 Other fixed defaults:
 
-- GPU, the full 1,535-tile VRAM pool, `SEGPAL`, `NEAR`, boot VRAM prefetch,
-  whole-movie quality planning, and the unified Prg/Wr0/Wr1/Dic pattern supply
-  are on. Position-fixed Bayer output dithering is also on by default. Disable
-  it only for a source that already contains visible dithering when a
-  frame-level A/B proves that the second pass creates isolated palette-extreme
-  pixels and increases error against the source.
+- All features on: GPU, the full 1,535-tile VRAM pool, `DITHER`, `SEGPAL`,
+  `NEAR`, boot VRAM prefetch, whole-movie quality planning, and the unified
+  Prg/Wr0/Wr1/Dic pattern supply at every supported cadence. Remove a source's
+  existing dither with an edge-preserving `video.master_filter` before the
+  fixed output dither; verify candidate filters on source gradients and edges.
 - Audio = `adpcm22`. Use `pcm13` only when explicitly requested or when a
   physical-console-qualified fallback is required.
 - PrgBuf and offline quality-budget ceilings come from `tools/av_config.py`.
@@ -133,11 +132,9 @@ Create one strict `schema_version = 3` profile under `configs/` for each
 source/mode combination. Use the schema in `CONFIG.md`; the checked-in Bad
 Apple H32/H40 profiles are complete examples. The profile must name the source,
 native fps, exact duration, full mode raster, HAR-aware `fit`, the selected
-output directory, optional output `dither`, optional timed `raw_prefetch`,
-optional qualified `cold_cap`, and palette algorithm. Do not add fixed GPU,
-VRAM, segmented-palette, Near, boot-prefetch, forward-fill, or startup-audio
-keys. Omit `dither` for the normal enabled default; a false value requires the
-source-grounded A/B evidence described above.
+output directory, optional timed `raw_prefetch`, optional qualified `cold_cap`,
+and palette algorithm. Do not add fixed GPU, VRAM, dither, segmented-palette,
+Near, boot-prefetch, forward-fill, or startup-audio keys.
 
 Before every `/sim`, perform these steps in this exact order:
 
