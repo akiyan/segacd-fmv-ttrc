@@ -20,6 +20,7 @@ SCRIPT = Path(__file__).resolve()
 REPO = SCRIPT.parents[4]
 TOOLS = REPO / "tools"
 sys.path.insert(0, str(TOOLS))
+import analysis_style as style  # noqa: E402
 import av_config  # noqa: E402
 import layout_preview as layout  # noqa: E402
 import tmpfs_workspace  # noqa: E402
@@ -33,7 +34,6 @@ GRID = (52, 54, 62)
 MAJOR_GRID = (75, 77, 88)
 WARN = (246, 190, 72)
 FAIL = (244, 87, 87)
-NORMAL = (136, 139, 149)
 PASS_GUIDE = (84, 204, 139)
 LIMIT = (248, 174, 58)
 NORMAL_LIMIT = (246, 220, 96)
@@ -45,6 +45,7 @@ class RowSpec:
     label: str
     unit: str
     maximum: float
+    color: tuple[int, int, int]
     gate_key: str | None = None
     eight_bit_scale: bool = False
     normal_value: float | None = None
@@ -235,6 +236,7 @@ def row_specs(
             "VBLANK",
             "display VBlanks/frame",
             max(capacity_floor, display_vblank_max),
+            PASS_GUIDE,
             normal_value=(
                 float(display_vblank_expected)
                 if display_vblank_expected is not None
@@ -243,44 +245,49 @@ def row_specs(
         ),
         RowSpec(
             "slip", "S  SLIP", "cumulative", max(1, limits["S"]),
-            "S", height=23, show_unit=False,
+            PASS_GUIDE, "S", height=23, show_unit=False,
         ),
         RowSpec(
             "desync", "D  DESYNC", "cumulative", max(1, limits["D"]),
-            "D", height=23, show_unit=False,
+            PASS_GUIDE, "D", height=23, show_unit=False,
         ),
         RowSpec(
             "resync", "R  RESYNC", "cumulative", max(1, limits["R"]),
-            "R", height=23, show_unit=False,
+            PASS_GUIDE, "R", height=23, show_unit=False,
         ),
         RowSpec("cd_wait", "C  CD WAIT", "sectors/frame",
                 max(1, limits["C"], float(data["cd_wait"].max(initial=0))),
-                "C"),
+                WARN, "C"),
         RowSpec("main_vblank_wait", "M  MAIN WAIT", "VBlanks/frame",
                 max(1, limits["M"], float(data["main_vblank_wait"].max(initial=0))),
-                "M"),
+                (238, 135, 73), "M"),
         RowSpec("prgbuf_jitter_peak_kib", "J  PRG JITTER", "sticky peak KiB",
                 max(
                     1,
                     limits["J"],
                     float(data["prgbuf_jitter_peak_kib"].max(initial=0)),
                     float(gate.get("jitter_headroom_kib", 0))),
-                "J"),
-        RowSpec("lead_256b", "L  AUDIO LEAD", "256-byte units", lead_max),
+                style.COL_PRG, "J"),
+        RowSpec("lead_256b", "L  AUDIO LEAD", "256-byte units", lead_max,
+                (82, 153, 232)),
         RowSpec("sub_wait_lines", "W  SUB HANDOFF", "approx. scanlines", 255,
-                eight_bit_scale=True),
+                (176, 112, 224), eight_bit_scale=True),
         RowSpec("sub_adpcm_decode_units", "A  ADPCM", "0.12288 ms units", 255,
-                eight_bit_scale=True),
-        RowSpec("main_pattern_ms", "U  PATTERN", "ms, 12-bit wrap", 125.83),
+                (218, 112, 171), eight_bit_scale=True),
+        RowSpec("main_pattern_ms", "U  PATTERN", "ms, 12-bit wrap", 125.83,
+                (81, 202, 211)),
         RowSpec("cold_runs_low8", "N  COLD RUNS", "runs, low byte", 255,
-                eight_bit_scale=True, show_zero=False),
+                style.COL_RUN, eight_bit_scale=True, show_zero=False),
     ]
     optional = (
-        ("flip_vcounter", "V  FLIP", "VDP line, frame F-1"),
-        ("flip_interval_excess_ticks", "O  INTERVAL", "30.72 us ticks, F-1"),
-        ("pass2_entry_q4", "E  PASS2 ENTRY", "4 ticks"),
+        ("flip_vcounter", "V  FLIP", "VDP line, frame F-1",
+         (124, 193, 113)),
+        ("flip_interval_excess_ticks", "O  INTERVAL", "30.72 us ticks, F-1",
+         (112, 178, 216)),
+        ("pass2_entry_q4", "E  PASS2 ENTRY", "4 ticks",
+         (223, 182, 91)),
     )
-    for key, label, unit in optional:
+    for key, label, unit, color in optional:
         if key in data:
             rows.append(
                 RowSpec(
@@ -288,6 +295,7 @@ def row_specs(
                     label,
                     unit,
                     255,
+                    color,
                     eight_bit_scale=True,
                     show_zero=False,
                 )
@@ -300,14 +308,14 @@ def value_color(value: float, spec: RowSpec, gate: dict) -> tuple[int, int, int]
         if value <= 0:
             return FAIL
         if math.isclose(value, spec.normal_value, abs_tol=0.01):
-            return NORMAL
+            return spec.color
         return WARN
     if spec.gate_key is None:
-        return NORMAL
+        return spec.color
     limit = float(gate["limits"][spec.gate_key])
     if value > limit:
         return FAIL
-    return NORMAL
+    return spec.color
 
 
 def fmt_hex(value: float) -> str:
@@ -672,6 +680,7 @@ def main() -> None:
                 "label": spec.label,
                 "unit": spec.unit,
                 "maximum": spec.maximum,
+                "color": list(spec.color),
                 "gate_key": spec.gate_key,
                 "eight_bit_scale": spec.eight_bit_scale,
                 "normal_value": spec.normal_value,

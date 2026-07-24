@@ -97,9 +97,12 @@ tools/python.sh .agents/skills/timeline/scripts/publish_gist.py \
   HUD units instead of normalizing each recording to its observed peak. Every
   HUD vertical axis shows only its maximum label; omit all midpoint and zero
   labels.
-- Use one neutral gray for all normal playback values, regardless of metric.
-  Reserve yellow for actual `WARNING` samples and red for actual `FAIL`
-  samples. Do not give healthy values category colors or a green PASS color.
+- Preserve the established per-metric colors for normal playback values:
+  C yellow, M orange, J and W purple, L blue, A pink, U cyan, N orange, and
+  the corresponding established colors for V/O/E. Only override that metric
+  color when the individual sample is `WARNING` or `FAIL`; use yellow for a
+  warning and red for a failure. Do not recolor an entire row because another
+  frame or another metric changed the overall gate status.
   Keep the guide scale colorful: gate limits are orange, J's normal jitter
   interval is yellow, and the VBLANK normal cadence is green. The one
   deliberate severity exception is a `C` over-limit sample: the gate remains
