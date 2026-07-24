@@ -88,6 +88,69 @@ class PatternSupplyPlannerTests(unittest.TestCase):
             budget.total, prediction.exact_cold + 1)
         self.assertEqual(int(budget.total[0]), 0)
 
+    def test_hardship_prefers_miss_risk_below_cold_cap(self):
+        prediction = DemandPrediction(
+            exact_bytes=np.array([0, 0, 128, 0, 96]),
+            protected_bytes=np.array([0, 0, 128, 0, 96]),
+            exact_cold=np.array([0, 0, 4, 0, 3]),
+            protected_cold=np.array([0, 0, 4, 0, 3]),
+        )
+        budget = supply.plan_frame_budgets(
+            prediction,
+            wr_patterns=1,
+            dic_patterns=0,
+            cold_cap=4,
+            prg_supply_patterns=np.array([0, 0, 0, 4, 0]),
+            prg_capacity_patterns=100,
+        )
+
+        # Frame 2 has the larger raw burst, but it already reaches the cap.
+        # The one credit can remove risk from below-cap frame 4 instead.
+        np.testing.assert_array_equal(budget.wr, [0, 0, 0, 0, 1])
+        np.testing.assert_array_equal(budget.cold_headroom, [4, 4, 0, 4, 1])
+
+    def test_hardship_prefers_low_seed_prgbuf(self):
+        prediction = DemandPrediction(
+            exact_bytes=np.array([0, 128, 64, 0, 64]),
+            protected_bytes=np.array([0, 128, 64, 0, 64]),
+            exact_cold=np.array([0, 4, 2, 0, 2]),
+            protected_cold=np.array([0, 4, 2, 0, 2]),
+        )
+        budget = supply.plan_frame_budgets(
+            prediction,
+            wr_patterns=1,
+            dic_patterns=0,
+            cold_cap=2,
+            prg_supply_patterns=np.array([1, 1, 1, 5, 1]),
+            prg_capacity_patterns=8,
+        )
+
+        self.assertEqual(int(budget.wr[2]), 1)
+        self.assertEqual(int(budget.wr[4]), 0)
+        self.assertLess(
+            int(budget.seed_prg_without_wr[2]),
+            int(budget.seed_prg_without_wr[4]),
+        )
+
+    def test_hardship_still_water_fills_multiple_frames(self):
+        prediction = DemandPrediction(
+            exact_bytes=np.array([0, 0, 64, 0, 64, 0, 64]),
+            protected_bytes=np.array([0, 0, 64, 0, 64, 0, 64]),
+            exact_cold=np.array([0, 0, 2, 0, 2, 0, 2]),
+            protected_cold=np.array([0, 0, 2, 0, 2, 0, 2]),
+        )
+        budget = supply.plan_frame_budgets(
+            prediction,
+            wr_patterns=2,
+            dic_patterns=0,
+            cold_cap=2,
+            prg_supply_patterns=np.full(7, 2),
+            prg_capacity_patterns=8,
+        )
+
+        self.assertEqual(int(np.count_nonzero(budget.wr[::2])), 2)
+        self.assertEqual(int(budget.wr[::2].sum()), 2)
+
     def test_whole_runs_are_assigned_and_pattern_order_is_preserved(self):
         # Frame 1 has one two-pattern run; frame 2 has two one-pattern runs.
         per = [

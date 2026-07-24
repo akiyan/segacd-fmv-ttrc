@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e116: Reweight finite WordBuf allocation toward protected frames whose
+#         predicted cold demand remains below the cap and whose dry-run PrgBuf
+#         seed level is low. Recompute both parity banks after each 32-byte
+#         credit so the existing water-fill remains distributed.
 #   e115: Apply a newly trained CRAM palette on the frame after the selected
 #         dark/uniform transition frame. This lets the transition display once
 #         under the old CRAM and removes Machi OP H40/15 frame 0x03DB's
@@ -797,5 +801,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260724
-e=115
+e=116
 p=90

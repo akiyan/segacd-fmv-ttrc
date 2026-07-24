@@ -1713,8 +1713,35 @@ def main():
             )
             if boot_prefetch_plan else baseline_demand_prediction
         )
+        # Estimate how many fresh Prg patterns the nominal BODY allowance can
+        # carry after the dry run's name entries and conservative per-cold run
+        # descriptors. This guides WordBuf placement only; the later physical
+        # schedule still proves the exact control and payload trace.
+        seed_name_bytes = np.maximum(
+            demand_prediction.exact_bytes
+            - demand_prediction.exact_cold * PATTERN_BYTES,
+            0,
+        )
+        seed_prg_supply_patterns = (
+            np.maximum(
+                upgrade_supply
+                - seed_name_bytes
+                - (
+                    demand_prediction.exact_cold
+                    * stream_schedule.RUN_DESCRIPTOR_BYTES
+                ),
+                0,
+            )
+            // PATTERN_BYTES
+        )
         supply_budget = pattern_supply.plan_frame_budgets(
-            demand_prediction, enabled=PATTERN_SUPPLY_ON)
+            demand_prediction,
+            enabled=PATTERN_SUPPLY_ON,
+            cold_cap=MAX_COLD,
+            prg_supply_patterns=seed_prg_supply_patterns,
+            prg_capacity_patterns=(
+                PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
+        )
         if RAW_PREFETCH_ON:
             prefetch_forecast = raw_prefetch.forecast_requests(
                 Q_pidx,
@@ -1858,6 +1885,32 @@ def main():
         f"frames={int(np.count_nonzero(supply_budget.total))}",
         flush=True,
     )
+    supply_seed_prg_without_wr = (
+        np.asarray(supply_budget.seed_prg_without_wr, np.int64)
+        if supply_budget.seed_prg_without_wr is not None
+        else np.zeros(n, np.int64)
+    )
+    supply_seed_prg_with_wr = (
+        np.asarray(supply_budget.seed_prg_with_wr, np.int64)
+        if supply_budget.seed_prg_with_wr is not None
+        else np.zeros(n, np.int64)
+    )
+    supply_cold_headroom = (
+        np.asarray(supply_budget.cold_headroom, np.int64)
+        if supply_budget.cold_headroom is not None
+        else np.zeros(n, np.int64)
+    )
+    if supply_budget.seed_prg_without_wr is not None:
+        print(
+            "  WordBuf hardship seed: "
+            f"Prg min "
+            f"{int(supply_seed_prg_without_wr.min())}->"
+            f"{int(supply_seed_prg_with_wr.min())} patterns; "
+            f"mean "
+            f"{float(supply_seed_prg_without_wr.mean()):.1f}->"
+            f"{float(supply_seed_prg_with_wr.mean()):.1f}",
+            flush=True,
+        )
     print(
         "raw VRAM prefetch: "
         f"boot={int(BOOT_VRAM_PREFETCH_ON)} "
@@ -3702,7 +3755,7 @@ def main():
         # silently drive any of the four hardware meters.
         np.savez(
             OUT / "buffer_remaining.npz",
-            schema_version=np.int64(6),
+            schema_version=np.int64(7),
             remaining_kind=np.array("three_consumptive_plus_dicbuf"),
             # Compatibility aliases for offline readers predating schema 4.
             remaining=prg_remaining,
@@ -3729,6 +3782,9 @@ def main():
             exact_demand_bytes=demand_prediction.exact_bytes,
             protected_demand_bytes=demand_prediction.protected_bytes,
             preload_credit_bytes=preload_credit_bytes,
+            word_seed_prg_without_wr=supply_seed_prg_without_wr,
+            word_seed_prg_with_wr=supply_seed_prg_with_wr,
+            word_cold_headroom=supply_cold_headroom,
             upgrade_demand_bytes=upgrade_demand,
             upgrade_planned_demand_bytes=upgrade_demand,
             upgrade_unavoidable_shortfall_bytes=np.zeros(
@@ -3865,11 +3921,17 @@ def main():
                 ),
             },
             "pattern_supply": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "enabled": bool(PATTERN_SUPPLY_ON),
                 "sources": supply_sources_log,
                 "planned_wr": np.asarray(supply_budget.wr, np.uint16),
                 "planned_dic": np.asarray(supply_budget.dic, np.uint16),
+                "seed_prg_without_wr": np.asarray(
+                    supply_seed_prg_without_wr, np.int64),
+                "seed_prg_with_wr": np.asarray(
+                    supply_seed_prg_with_wr, np.int64),
+                "cold_headroom": np.asarray(
+                    supply_cold_headroom, np.int64),
                 "dic_dictionary": list(
                     supply_budget.dic_dictionary_packed),
                 "prg_loads": prg_loads.astype(np.uint16),
