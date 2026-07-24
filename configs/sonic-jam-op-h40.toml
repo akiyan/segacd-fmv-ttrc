@@ -1,16 +1,19 @@
 schema_version = 3
 
 [source]
-path = "assets/SonicJamOp.mp4"
+path = "assets/SonicJamOp.avi"
 fps = "30"
-duration = "90.466016"
-sar = "25:27"
+duration = "90.466667"
+sar = "32:35"
 
 [video]
 mode = "H40"
 width = 320
 height = 224
-fit = "crop"
+fit = "pad"
+master_denoise = false
+master_filter = "setsar=1,pad=320:224:16:12:color=black"
+raw_filter = "setsar=1,pad=320:224:16:12:color=black"
 
 [output]
 directory = "videos/SonicJamOp_H40_320x224_adpcm22/tmp"

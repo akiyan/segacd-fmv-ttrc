@@ -126,6 +126,26 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertTrue(env["CBRSIM_OUT"].endswith(
             "videos/BadApple_H32_256x224_adpcm22/tmp"))
 
+    def test_sonic_h40_centers_native_truemotion_raster_without_scaling(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        profile = load_profile(root / "configs/sonic-jam-op-h40.toml")
+        env = apply_profile_env(profile, {})
+        self.assertTrue(env["CBRSIM_SRC"].endswith("assets/SonicJamOp.avi"))
+        self.assertEqual(env["CBRSIM_FPS"], "30")
+        self.assertEqual(env["CBRSIM_DURATION"], "90.466667")
+        self.assertEqual(env["CBRSIM_SOURCE_SAR"], "32:35")
+        self.assertEqual(env["CBRSIM_MODE"], "H40")
+        self.assertEqual(env["CBRSIM_W"], "320")
+        self.assertEqual(env["CBRSIM_H"], "224")
+        self.assertEqual(env["CBRSIM_GEOMETRY_FIT"], "pad")
+        self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
+        self.assertEqual(
+            env["CBRSIM_MASTER_VF"],
+            "setsar=1,pad=320:224:16:12:color=black")
+        self.assertEqual(
+            env["CBRSIM_RAW_VF"],
+            "setsar=1,pad=320:224:16:12:color=black")
+
     def test_machi_op_uses_confirmed_black_bar_crop_and_native_h40_sar(self) -> None:
         root = Path(__file__).resolve().parents[1]
         profile = load_profile(root / "configs/machi-op-h40.toml")
