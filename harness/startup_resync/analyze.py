@@ -429,10 +429,13 @@ def upload_gate_limits(content_fps: float) -> tuple[dict[str, int], str]:
     fps = float(content_fps)
     if fps <= 0:
         raise ValueError(f"content fps must be positive, got {content_fps!r}")
-    if av_config.uses_fixed_n2_cadence(fps):
-        cadence = "fixed_n2"
+    fixed_n = av_config.fixed_vblank_interval(fps)
+    if fixed_n is not None:
+        cadence = f"fixed_n{fixed_n}"
         c_limit = 0
-        m_limit = 1
+        # Pattern work may consume the N-1 intervening VBlanks; the Nth is the
+        # fixed display-flip deadline.
+        m_limit = fixed_n - 1
     else:
         cadence = "delivery_paced"
         sector_num, sector_mod = av_config.cd_sector_rate(fps)

@@ -6,13 +6,16 @@ from pathlib import Path
 import player_constants
 import ttrc_routing
 import pattern_supply
+import av_config
 
 
 def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x345,
                 supply_counts=(0, 0, 0), pool=1400, base=1,
                 tcols=None, trows=28):
     if features is None:
-        features = ttrc_routing.FEATURE_COLD_RUNS | ttrc_routing.FEATURE_FIXED_N2
+        features = ttrc_routing.FEATURE_COLD_RUNS
+        if av_config.uses_fixed_n_cadence(fps):
+            features |= ttrc_routing.FEATURE_FIXED_N
     if tcols is None:
         tcols = 32 if mode == 0 else 40
     cells = tcols * trows
@@ -24,7 +27,7 @@ def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x3
         b"TTRC", ttrc_routing.VERSION, frames, tcols, trows, cells,
         pool, base, ttrc_routing.FRAME_SECTORS, 13,
         12416, ttrc_routing.routing_sector_count(frames), 194, 12416,
-        mode, 0, 2, 14, 1, 2 if fps >= 24 else 4,
+        mode, 0, 2, 14, 1, av_config.vsync_n_for_fps(fps),
         audio_bytes, fps, audio_fd, 30, features,
     )
     sector = bytearray(prefix + bytes(128) + bytes(player_constants.SECTOR - 192))
@@ -65,14 +68,18 @@ class PlayerConstantsTest(unittest.TestCase):
         self.assertEqual(values.pump_mask, 0x03FF)
         self.assertEqual(values.wave_pump_mask, 0x01FF)
 
-    def test_h40_15fps_uses_legacy_sector_accumulator(self):
+    def test_h40_15fps_uses_fixed_n4_sector_accumulator(self):
         values = player_constants.parse_header_sector(
-            make_header(mode=1, fps=15, features=ttrc_routing.FEATURE_COLD_RUNS))
+            make_header(
+                mode=1, fps=15,
+                features=(ttrc_routing.FEATURE_COLD_RUNS
+                          | ttrc_routing.FEATURE_FIXED_N)))
         self.assertEqual(values.screen_cols, 40)
+        self.assertEqual(values.vsync_n, 4)
         self.assertEqual(values.vbudget, 3400)
         self.assertEqual(values.audio_bytes, 1472)
-        self.assertEqual((values.sec_num, values.sec_mod), (75, 15))
-        self.assertEqual((values.sec_base, values.sec_rem), (5, 0))
+        self.assertEqual((values.sec_num, values.sec_mod), (1001, 200))
+        self.assertEqual((values.sec_base, values.sec_rem), (5, 1))
         self.assertEqual(values.pump_mask, 0x003F)
         self.assertEqual(values.wave_pump_mask, 0x00FF)
         self.assertEqual(values.prg_buf_cap_patterns, 382 * 1024 // 32)
@@ -112,7 +119,7 @@ class PlayerConstantsTest(unittest.TestCase):
     def test_adpcm_derives_control_and_table_sizes(self):
         values = player_constants.parse_header_sector(make_header(
             features=(ttrc_routing.FEATURE_COLD_RUNS
-                      | ttrc_routing.FEATURE_FIXED_N2),
+                      | ttrc_routing.FEATURE_FIXED_N),
             audio_bytes=736,
         ))
         self.assertEqual(values.audio_bytes, 736)
@@ -128,7 +135,7 @@ class PlayerConstantsTest(unittest.TestCase):
     def test_pattern_supply_extension(self):
         values = player_constants.parse_header_sector(make_header(
             features=(ttrc_routing.FEATURE_COLD_RUNS
-                      | ttrc_routing.FEATURE_FIXED_N2
+                      | ttrc_routing.FEATURE_FIXED_N
                       | ttrc_routing.FEATURE_PATTERN_SUPPLY
                       | ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS),
             supply_counts=(880, 879, 256),
@@ -139,26 +146,34 @@ class PlayerConstantsTest(unittest.TestCase):
         self.assertEqual((values.wr0_sectors, values.wr1_sectors, values.dic_sectors),
                          (14, 14, 4))
 
-    def test_pattern_supply_uses_low_rate_poll_constants_at_15fps(self):
+    def test_pattern_supply_uses_fixed_n4_and_low_rate_polls_at_15fps(self):
         values = player_constants.parse_header_sector(make_header(
             mode=1,
             fps=15,
             features=(ttrc_routing.FEATURE_COLD_RUNS
+                      | ttrc_routing.FEATURE_FIXED_N
                       | ttrc_routing.FEATURE_PATTERN_SUPPLY
                       | ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS),
             supply_counts=(880, 880, 256),
         ))
-        self.assertEqual((values.sec_num, values.sec_mod), (75, 15))
+        self.assertEqual((values.sec_num, values.sec_mod), (1001, 200))
         self.assertEqual(values.pump_mask, 0x003F)
         self.assertEqual(values.wave_pump_mask, 0x00FF)
         self.assertEqual(values.wr0_patterns, 880)
         self.assertEqual(values.wr1_patterns, 880)
 
+    def test_fixed_n_rejects_a_stale_vsync_hint(self):
+        header = bytearray(make_header(fps=15))
+        header[52:54] = struct.pack(">H", 2)
+        header = player_constants.stamp_header_sector(header)
+        with self.assertRaisesRegex(ValueError, "fixed-N header"):
+            player_constants.parse_header_sector(header)
+
     def test_pattern_supply_requires_indexed_dicbuf_feature(self):
         with self.assertRaisesRegex(ValueError, "indexed DicBuf"):
             player_constants.parse_header_sector(make_header(
                 features=(ttrc_routing.FEATURE_COLD_RUNS
-                          | ttrc_routing.FEATURE_FIXED_N2
+                          | ttrc_routing.FEATURE_FIXED_N
                           | ttrc_routing.FEATURE_PATTERN_SUPPLY),
                 supply_counts=(1, 1, 1),
             ))

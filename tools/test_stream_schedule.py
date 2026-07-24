@@ -88,6 +88,12 @@ class ControlLengthTests(unittest.TestCase):
 
 
 class BodyDeliveryRateTests(unittest.TestCase):
+    def test_15fps_fixed_n4_includes_one_six_sector_slot_per_cycle(self) -> None:
+        deltas = schedule.rate_deltas(201, 15)[1:]
+        self.assertEqual(int(deltas.sum()), 1001)
+        self.assertEqual(int(np.count_nonzero(deltas == 5)), 199)
+        self.assertEqual(int(np.count_nonzero(deltas == 6)), 1)
+
     def test_rate_uses_each_slots_physical_cd_time(self) -> None:
         rate = schedule.body_delivery_rate_bps(
             [0, 2048, 1024, 3072], [0, 2048, 2048, 4096])
@@ -120,7 +126,8 @@ class PayloadRingScheduleTests(unittest.TestCase):
             [64, 64, 64, 1],
             [100, 2050, 10, 0],
             fps=15,
-            ring_capacity_patterns=64,
+            ring_capacity_patterns=128,
+            prebuffer_capacity_patterns=64,
             frame_sectors=5,
             fill=True,
         )
@@ -134,6 +141,16 @@ class PayloadRingScheduleTests(unittest.TestCase):
         self.assertEqual(int(useful_payload.sum()), 65 * 32)
         np.testing.assert_array_equal(
             useful_control + useful_payload + pad, physical)
+        loads = np.asarray([64, 64, 64, 1], np.int64)
+        np.testing.assert_array_equal(
+            result["ring_occupancy_before_consume"],
+            result["ring_occupancy"]
+            + np.asarray([0, *loads[1:]], np.int64),
+        )
+        self.assertEqual(
+            result["ring_peak"],
+            int(result["ring_occupancy_before_consume"].max()),
+        )
 
     def test_continuous_control_bytes_are_counted_in_delivery_slot(self) -> None:
         trace = schedule.useful_body_delivery_trace(
@@ -168,7 +185,7 @@ class PayloadRingScheduleTests(unittest.TestCase):
             [0, 96, 96, 96, 96, 96, 96, 96, 96, 0, 0],
             [0] * 11,
             fps=30,
-            ring_capacity_patterns=128,
+            ring_capacity_patterns=256,
             frame_sectors=3,
             fill=True,
         )
@@ -221,7 +238,7 @@ class PayloadRingScheduleTests(unittest.TestCase):
         self.assertEqual(caught.exception.kind, "payload_capacity")
         self.assertEqual(caught.exception.details["failure_frame"], 1)
         self.assertEqual(caught.exception.details["origin_frame"], 2)
-        self.assertEqual(caught.exception.details["patterns_to_remove"], 32)
+        self.assertEqual(caught.exception.details["patterns_to_remove"], 96)
 
     def test_pack_wrapper_uses_the_shared_schedule_exactly(self) -> None:
         old_fps, old_fill = pack.FPS, pack.PACK_FILL
@@ -249,6 +266,7 @@ class PayloadRingScheduleTests(unittest.TestCase):
         packed = {
             "blk_len": np.array([10, 12]),
             "ring_occupancy": np.array([64, 32]),
+            "ring_occupancy_before_consume": np.array([64, 64]),
             "n_pay_sec": np.array([0, 1]),
             "n_ctrl_sec": np.array([0, 1]),
             "body_useful_payload_bytes": np.array([0, 32]),
@@ -261,6 +279,7 @@ class PayloadRingScheduleTests(unittest.TestCase):
                 "schema_version": schedule.STREAM_SCHEDULE_SCHEMA_VERSION,
                 "block_lengths": np.array([10, 12]),
                 "ring_occupancy": np.array([64, 31]),
+                "ring_occupancy_before_consume": np.array([64, 64]),
                 "payload_sectors": np.array([0, 1]),
                 "control_sectors": np.array([0, 1]),
                 "body_useful_payload_bytes": np.array([0, 32]),
@@ -276,6 +295,7 @@ class PayloadRingScheduleTests(unittest.TestCase):
         packed = {
             "blk_len": np.array([10, 12]),
             "ring_occupancy": np.array([64, 32]),
+            "ring_occupancy_before_consume": np.array([64, 64]),
             "n_pay_sec": np.array([0, 1]),
             "n_ctrl_sec": np.array([0, 1]),
             "body_useful_payload_bytes": np.array([0, 32]),
@@ -288,6 +308,7 @@ class PayloadRingScheduleTests(unittest.TestCase):
                 "schema_version": schedule.STREAM_SCHEDULE_SCHEMA_VERSION,
                 "block_lengths": np.array([10, 12]),
                 "ring_occupancy": np.array([64, 32]),
+                "ring_occupancy_before_consume": np.array([64, 64]),
                 "payload_sectors": np.array([0, 1]),
                 "control_sectors": np.array([0, 1]),
                 "body_useful_payload_bytes": np.array([0, 32]),

@@ -164,10 +164,10 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
             f"HEADER.DAT signature 0x{signature:08X} != expected "
             f"0x{expected_signature:08X}")
 
-    fixed_n2 = bool(features & ttrc_routing.FEATURE_FIXED_N2)
+    fixed_n = bool(features & ttrc_routing.FEATURE_FIXED_N)
     known_features = (
         ttrc_routing.FEATURE_COLD_RUNS
-        | ttrc_routing.FEATURE_FIXED_N2
+        | ttrc_routing.FEATURE_FIXED_N
         | ttrc_routing.FEATURE_PATTERN_SUPPLY
         | ttrc_routing.FEATURE_SHADOW_UPDATE_LISTS
         | ttrc_routing.FEATURE_VRAM_RAW_PREFETCH
@@ -185,7 +185,15 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
     audio_control_bytes = ima_adpcm.encoded_bytes(audio_bytes)
     adpcm_table_sectors = (
         ima_adpcm.FULL_TABLE_BYTES + SECTOR - 1) // SECTOR
-    sec_num, sec_mod = (1001, 400) if fixed_n2 else (75, fps_int)
+    if fixed_n:
+        expected_n = av_config.fixed_vblank_interval(fps_int)
+        if expected_n != vsync_n:
+            raise ValueError(
+                f"fixed-N header vsync_n={vsync_n} disagrees with "
+                f"fps={fps_int} (expected {expected_n})")
+        sec_num, sec_mod = av_config.fixed_cd_sector_rate(vsync_n)
+    else:
+        sec_num, sec_mod = 75, fps_int
     sec_base, sec_rem = divmod(sec_num, sec_mod)
     fast_poll = fps_int >= 24
 
@@ -250,7 +258,7 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
         f0_ctrl_sec=f0_ctrl_sec,
         f0_pat_sec=f0_pat_sec,
         paltab_sec=paltab_sec,
-        vsync_n=2 if fixed_n2 else vsync_n,
+        vsync_n=vsync_n,
         audio_bytes=audio_bytes,
         audio_control_bytes=audio_control_bytes,
         adpcm_table_sectors=adpcm_table_sectors,

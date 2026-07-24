@@ -11,6 +11,16 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e115: Apply a newly trained CRAM palette on the frame after the selected
+#         dark/uniform transition frame. This lets the transition display once
+#         under the old CRAM and removes Machi OP H40/15 frame 0x03DB's
+#         one-frame-early palette corruption.
+#   e114/p90: Generalize header feature bit 1 from fixed N2 to authoritative
+#        fixed N. Machi OP H40/15 now flips every four NTSC VBlanks and uses
+#        the matching 1001/200 CD-sector accumulator in sim, packer, Sub, and
+#        Main; 24fps remains delivery-paced with its 2/3-VBlank loop. Model
+#        BODY arrival before same-frame cold consumption so the scheduled
+#        PrgBuf peak matches the live continuous pump.
 #   e113: Keep the exact PrgBuf delivery schedule one physical 2KiB CD
 #         sector below the player's 424KiB pump back-pressure boundary. The
 #         e112 Sonic H40 stream reproducibly reached equality and entered
@@ -787,5 +797,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260724
-e=113
-p=89
+e=115
+p=90

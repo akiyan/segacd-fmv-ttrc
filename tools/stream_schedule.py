@@ -20,7 +20,7 @@ CD_BYTES_PER_SECOND = av_config.CD_BYTES_PER_SECOND
 PATTERN_BYTES = 32
 PATTERNS_PER_SECTOR = SECTOR_BYTES // PATTERN_BYTES
 RUN_DESCRIPTOR_BYTES = 4
-STREAM_SCHEDULE_SCHEMA_VERSION = 3
+STREAM_SCHEDULE_SCHEMA_VERSION = 4
 
 
 class ScheduleError(ValueError):
@@ -408,8 +408,11 @@ def schedule_payload_ring(
     """Schedule control JIT and payload prefetch, including physical RING use.
 
     ``ring_occupancy[i]`` is the number of 32-byte pattern slots physically in
-    PrgBuf at the end of frame ``i``.  It includes padding in the last
-    payload sector because the player receives and advances whole sectors.
+    PrgBuf at the end of frame ``i``. ``ring_occupancy_before_consume[i]`` is
+    the safety-critical peak after slot-i payload may have arrived but before
+    frame-i cold is consumed. The player pumps continuously while Main waits,
+    so delivery is allowed to precede that consumption. Both include padding
+    in the last payload sector because the player advances whole sectors.
     Frame 0 is loaded from HEADER.DAT and does not consume this RING.
 
     ``prebuffer_capacity_patterns`` is the normal fps-specific PrgBuf ceiling.
@@ -454,6 +457,7 @@ def schedule_payload_ring(
     n_load_body = n_load.copy()
     n_load_body[0] = 0
     consumed = np.cumsum(n_load_body)
+    consumed_before = consumed - n_load_body
     total_patterns = int(consumed[-1])
     consumed_sec = -(-consumed // PATTERNS_PER_SECTOR)
     total_payload_sec = int(-(-total_patterns // PATTERNS_PER_SECTOR))
@@ -492,8 +496,11 @@ def schedule_payload_ring(
         for i in range(1, nfr):
             due = int(ratedelta[i]) - rate_lead
             soft_pay = max(0, due - int(nc[i]))
+            # BODY may be pumped while Main still displays the previous frame.
+            # Bound cumulative delivery against what has been consumed through
+            # frame i-1, not against frame i's not-yet-guaranteed pop.
             hi_ring = (
-                int(consumed[i]) + physical_capacity
+                int(consumed_before[i]) + physical_capacity
             ) // PATTERNS_PER_SECTOR
             hi = min(prev + int(cap_sec[i]), total_payload_sec, int(hi_ring))
             lo = max(prev, int(need[i]))
@@ -543,6 +550,8 @@ def schedule_payload_ring(
     n_pay_sec[0] = delivered[0] - prebuffer_sec
     n_pay_sec[1:] = delivered[1:] - delivered[:-1]
     occupancy = delivered * PATTERNS_PER_SECTOR - consumed
+    occupancy_before_consume = (
+        delivered * PATTERNS_PER_SECTOR - consumed_before)
     # Independent of the rate-shaped choice above, this is the most Prg
     # payload that could physically have arrived before each frame after
     # reserving its control sectors. It is the safe cumulative catch-up
@@ -629,13 +638,14 @@ def schedule_payload_ring(
         "ring_capacity_patterns": physical_capacity,
         "jitter_headroom_patterns": (
             physical_capacity - prebuffer_capacity),
-        "ring_peak": int(occupancy.max()),
+        "ring_peak": int(occupancy_before_consume.max()),
         "ring_jitter_peak": max(
-            0, int(occupancy.max()) - prebuffer_capacity),
+            0, int(occupancy_before_consume.max()) - prebuffer_capacity),
         "ring_min": int(occupancy.min()),
         "ring_min_evaluation": int(evaluation_occupancy.min()),
         "evaluation_end_frame": int(evaluation_end_frame),
         "ring_occupancy": occupancy,
+        "ring_occupancy_before_consume": occupancy_before_consume,
         "max_cumulative_prg_consumption": (
             max_cumulative_prg_consumption),
         "ready_min": ready_min,

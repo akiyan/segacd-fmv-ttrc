@@ -100,13 +100,14 @@
 .equ CPU_DIRECT_MAX_WORDS, 32	/* 1-2 tiles: CPU writes beat per-run DMA setup
 				   (128 was measured no better: transfer time is
 				   VRAM-slot bound, not issue-mechanism bound) */
-.equ FEATURE_FIXED_N2_BIT, 1	/* header features bit 1 */
+.equ FEATURE_FIXED_N_BIT, 1	/* header features bit 1 */
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
 .equ FEATURE_BOOT_VRAM_SIDECAR_BIT, 7
 .equ SHADOW_UPDATE_LIST_BIT, 15
 .equ SHADOW_UPDATE_COUNT_MASK, 0x7FFF
 .equ SHADOW_OFFSET_MASK, 0x0FFE	/* 4KB physical shadow, even word offsets */
-.equ PACE_N2_ARM_TICKS, 800	/* 24.576ms: safely between VBlank 1 and 2 */
+.equ PACE_VBLANK_TICKS, 543	/* one NTSC VBlank in 30.72us stopwatch ticks */
+.equ PACE_ARM_BIAS_TICKS, 286	/* preserves the proven N2 arm point: 2*543-286=800 */
 
 .ifdef DEBUG
 .ifdef PLAYER_SPECIALIZED
@@ -116,6 +117,8 @@
 
 .ifdef PLAYER_SPECIALIZED
 	.include "player_constants.inc"
+.equ PACE_FIXED_ARM_TICKS, PC_VSYNC_N*PACE_VBLANK_TICKS-PACE_ARM_BIAS_TICKS
+.equ PACE_FIXED_HUD_TICKS, PC_VSYNC_N*512
 .endif
 
 .ifdef HUD_HEX_TABLE
@@ -129,7 +132,7 @@
 .ifdef PLAYER_SPECIALIZED
 .if (PC_FEATURES & 0x0002) != 0
 .if PC_MODE == 1
-/* Fixed-N2 specialized H40 builds copy the back name table with one linear
+/* Fixed-N specialized H40 builds copy the back name table with one linear
    Main-RAM DMA inside the flip VBlank (64-entry-pitch staging, ~18 blank
    lines) instead of the FIFO-throttled CPU blit (~8 ms of active display).
    The complete 40x28 visible aperture is staged so a smaller encoded grid
@@ -298,15 +301,17 @@ ip_entry:
 	bne	1f
 	moveq	#4, d0
 1:
-	/* v8 feature bit 1 is the authoritative fixed-N2 contract. Force N=2
-	   from that bit so a stale hint cannot desynchronise display and BODY. */
-	clr.w	md_fixed_n2
-	btst	#FEATURE_FIXED_N2_BIT, 63(a0)
+	/* Feature bit 1 makes the header's N authoritative. Feature-clear N=2
+	   remains only a hint, so 24fps keeps its delivery-paced 2/3-VBlank loop. */
+	clr.w	md_fixed_n
+	btst	#FEATURE_FIXED_N_BIT, 63(a0)
 	beq	1f
-	moveq	#2, d0
-	move.w	#1, md_fixed_n2
+	move.w	#1, md_fixed_n
 1:
 	move.w	d0, md_vsync_n
+	mulu.w	#PACE_VBLANK_TICKS, d0
+	subi.w	#PACE_ARM_BIAS_TICKS, d0
+	move.w	d0, md_pace_arm_ticks
 	/* Select the VDP width from the stream's mode byte, not from N.
 	   N is the frame pacing interval (2 at 30fps, 4 at 15fps), so testing
 	   it here made every v4 stream fall through to H40. */
@@ -461,8 +466,8 @@ ip_entry:
 .endif
 .endif
 play_loop:
-	/* v8: feature bit 1ならSubの1001/400 sector rateと対になるflip直前N2
-	   deadlineで1/3 VBlankの表示揺れを除く。bit clearの24/15fpsはCD配送律速。 */
+	/* Feature bit 1 pairs the Main fixed-N flip deadline with the Sub's exact
+	   fixed-N CD rate. Feature-clear 24fps remains delivery paced. */
 	tst.w	started
 	beq	1f
 	bsr	swap_or_end			/* CMD_SWAP → READY(継続) or END(映画終端) */
@@ -1169,7 +1174,7 @@ bf_flip:
 	bsr	wait_vb_start			/* 頭から使える新しいvblank(CRAM+flipが確実に収まる) */
 .endif
 .else
-	tst.w	md_fixed_n2
+	tst.w	md_fixed_n
 	beq.s	1f
 	bsr	wait_fixed_palette_flip		/* cadence target plus a fresh CRAM VBlank */
 	bra.s	2f
@@ -1218,7 +1223,7 @@ bf_doflip:
 .endif
 .endif
 .else
-	tst.w	md_fixed_n2
+	tst.w	md_fixed_n
 	beq.s	1f
 	bsr	wait_fixed_flip			/* normal frame: exactly N flip-to-flip VBlanks */
 1:
@@ -1272,48 +1277,48 @@ wait_vb_start:
 	rts
 
 /* Make frame 0 immediately eligible: its synthetic preceding flip is one
-   midpoint threshold in the past. Trashes d0. */
+   fixed-N arm threshold in the past. Trashes d0. */
 prime_fixed_cadence:
 .ifdef PLAYER_SPECIALIZED
 .if (PC_FEATURES & 0x0002) != 0
 	move.w	(GA_STOPWATCH).l, d0
-	sub.w	#PACE_N2_ARM_TICKS, d0
+	sub.w	#PACE_FIXED_ARM_TICKS, d0
 	andi.w	#0x0FFF, d0
 	move.w	d0, pace_flip_tick
 .endif
 .else
-	tst.w	md_fixed_n2
+	tst.w	md_fixed_n
 	beq.s	1f
 	move.w	(GA_STOPWATCH).l, d0
-	sub.w	#PACE_N2_ARM_TICKS, d0
+	sub.w	md_pace_arm_ticks, d0
 	andi.w	#0x0FFF, d0
 	move.w	d0, pace_flip_tick
 1:
 .endif
 	rts
 
-/* The stopwatch midpoint is safely after VBlank 1 ends and before VBlank 2
-   begins for any legal flip phase.  do_flip performs the authoritative VBlank
-   and end-of-blank guard immediately beside the precomputed register write. */
+/* The stopwatch arm point is safely after VBlank N-1 ends and before VBlank N
+   begins. do_flip performs the authoritative VBlank/end guard immediately
+   beside the precomputed register write. */
 wait_fixed_flip:
 1:
 	move.w	(GA_STOPWATCH).l, d0
 	sub.w	pace_flip_tick, d0
 	andi.w	#0x0FFF, d0
-	cmpi.w	#PACE_N2_ARM_TICKS, d0
+	PC_CMP_W md_pace_arm_ticks, PACE_FIXED_ARM_TICKS, d0
 	bcc.s	2f
 	bra.s	1b
 2:
 	rts
 
-/* CRAM replacement needs a fresh VBlank. At the midpoint we are between the
-   first and second VBlanks, so the next fresh start is exactly VBlank 2. */
+/* CRAM replacement needs a fresh VBlank. At the arm point the next fresh
+   start is exactly the fixed-N target VBlank. */
 wait_fixed_palette_flip:
 1:
 	move.w	(GA_STOPWATCH).l, d0
 	sub.w	pace_flip_tick, d0
 	andi.w	#0x0FFF, d0
-	cmpi.w	#PACE_N2_ARM_TICKS, d0
+	PC_CMP_W md_pace_arm_ticks, PACE_FIXED_ARM_TICKS, d0
 	bcc.s	2f
 	bra.s	1b
 2:
@@ -1357,7 +1362,7 @@ do_flip:
 	move.w	d1, d0
 	sub.w	pace_flip_tick, d0
 	andi.w	#0x0FFF, d0
-	subi.w	#1024, d0			/* nominal N2 interval is ~1086 ticks */
+	subi.w	#PACE_FIXED_HUD_TICKS, d0	/* coarse fixed-N interval baseline */
 	bpl.s	8f
 	moveq	#0, d0				/* frame0/loop priming can restamp early */
 8:
@@ -1373,7 +1378,7 @@ do_flip:
 .endif
 .endif
 .else
-	tst.w	md_fixed_n2
+	tst.w	md_fixed_n
 	beq.s	1f
 	move.w	(GA_STOPWATCH).l, pace_flip_tick	/* exact flip-to-flip deadline */
 1:
@@ -2002,13 +2007,15 @@ md_mode:
 	.space 2
 md_vsync_n:
 	.space 2				/* v4: 1コマの表示VBLANK数(15fps=4, 30fps=2) */
-md_fixed_n2:
-	.space 2				/* v8 header feature bit 1; 24fps N2 hint alone stays unpaced */
+md_fixed_n:
+	.space 2				/* feature bit 1; 24fps N2 hint alone stays unpaced */
+md_pace_arm_ticks:
+	.space 2				/* stopwatch arm point between VBlank N-1 and N */
 .endif
 vsync_acc:
 	.space 2				/* v4: 現コマで消費したVBLANK数(ペーシング用) */
 pace_flip_tick:
-	.space 2				/* v8: GA stopwatch tick at preceding fixed-N2 flip */
+	.space 2				/* GA stopwatch tick at preceding fixed-N flip */
 .ifndef PLAYER_SPECIALIZED
 md_tcols:
 	.space 2

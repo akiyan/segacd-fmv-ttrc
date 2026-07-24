@@ -44,12 +44,13 @@ cold-slot run descriptors after audio without moving any legacy field.
 control-sector count and total-sector count. This doubled the resident-table
 limit from 8192 to 16384 frames without changing the BODY sector order.
 **v8** retained that one-byte routing layout and every header-field offset, but
-defined feature bit 1 (`FEATURE_FIXED_N2`) as the authoritative fixed-cadence
-contract. When set, the Main CPU flips once every two VBlanks and the Sub CPU
-assigns 1001 sectors per 400 frames. This changes the rate-padding boundaries
-in `BODY.DAT`, so an old v7 player must not read a v8 stream. The current packer
-sets the bit only for rates classified by `uses_fixed_n2_cadence`; 24fps and
-15fps leave it clear and retain their delivery-paced `75 / fps_int` schedule.
+defined feature bit 1 as the authoritative fixed-cadence contract. It was
+originally named `FEATURE_FIXED_N2` and selected two VBlanks plus 1001 sectors
+per 400 frames. The current v16 implementation generalizes the same bit as
+`FEATURE_FIXED_N`: header `vsync_n` is authoritative, so N=2 uses 1001/400 and
+N=4 uses 1001/200. The packer sets it only for rates classified by
+`uses_fixed_n_cadence`; 24fps leaves it clear and retains delivery-paced
+`75 / fps_int`.
 **v9** introduced checkpointed continuous IMA ADPCM. Header offset 54 is the
 decoded RF5C164 sample count, while live controls store a four-byte checkpoint
 plus one nibble per sample. Offset 58 became the RF5C164 frequency delta, and a
@@ -202,7 +203,7 @@ Next 16 bytes: `struct ">LLLL"`.
 | 22  | 4    | prebuf_pat   | `Bpat`: number of Prg patterns pre-buffered before frame 1 |
 | 26  | 4    | routing_sec  | sectors occupied by the routing table |
 | 30  | 4    | prebuf_sec   | sectors occupied by the prebuffer |
-| 34  | 4    | ring_peak    | peak physical PrgBuf usage (patterns), for buffer sizing |
+| 34  | 4    | ring_peak    | peak physical PrgBuf usage after a BODY payload may arrive and before that frame consumes its cold patterns, for buffer sizing |
 
 The player reserves the final 16 KiB of each 1M Word-RAM bank for an identical
 ROUTING copy. A v7+ stream uses one byte per frame and may therefore contain at
@@ -224,17 +225,19 @@ Then:
 - offset 52: `u16 vsync_n` (v4) — nearest display-VBlank interval
   `N = round(59.94/fps)` (15fps→4, 24/30fps→2). This is a cadence/performance
   hint, not a request to round delivery-paced 24fps to 29.97fps. `0` in v2/v3
-  streams (player defaults to 4 = 15fps). In v8 this remains a hint when
-  `FEATURE_FIXED_N2` is clear. When that feature is set, it is authoritative
-  and the Main CPU forces N=2 even if this hint is stale. A 24fps stream stores
-  `N = 2` but leaves the feature clear, so it remains delivery-paced;
+  streams (player defaults to 4 = 15fps). This remains a hint when
+  `FEATURE_FIXED_N` is clear. When that feature is set, it is authoritative
+  and must agree with the nominal rate. A 15fps stream fixes N=4, while a
+  24fps stream stores the N=2 hint but leaves the feature clear and remains
+  delivery-paced;
 - offset 54: `u16 audio_bytes` — even decoded RF5C164 samples per effective
   playback frame, normally 1472 at 15fps, 920 at 24fps, and 736 at 30fps. The
   live ADPCM control size is `4 + audio_bytes / 2`;
 - offset 56: `u16 fps_int` (v4) — nominal fps (15/24/30). When
-  `FEATURE_FIXED_N2` is clear, the Sub CPU uses this as the modulus of the
-  delivery-paced 75/fps sector schedule (see Routing/Frame). The fixed-N2
-  feature instead selects 1001/400. Historical v2/v3 streams stored `0`; the
+  `FEATURE_FIXED_N` is clear, the Sub CPU uses this as the modulus of the
+  delivery-paced 75/fps sector schedule (see Routing/Frame). Fixed-N instead
+  selects the exact `1001*N/800` rate, reduced to 1001/400 at N=2 and
+  1001/200 at N=4. Historical v2/v3 streams stored `0`; the
   v8+ players require a nonzero nominal fps and reject `0`;
 - offset 58: `u16 audio_fd` (v9) — RF5C164 frequency delta derived from the
   fixed decoded chunk size and effective playback cadence. Older formats used
@@ -244,11 +247,11 @@ Then:
   wave-RAM capacity and the decoded chunk size;
 - offset 62: `u16 features` (v6+ optional extensions). Bit 0
   (`FEATURE_COLD_RUNS`) means every control block appends the cold-slot run
-  suffix described below. Bit 1 (`FEATURE_FIXED_N2`, v8) is the authoritative
-  two-VBlank timing flag: it makes the Main CPU force N=2 and the Sub CPU use
-  the 1001/400 sector accumulator. The packer derives it with
-  `uses_fixed_n2_cadence`; 24fps leaves it clear even though its nearest
-  `vsync_n` hint is also 2. Bit 2 is reserved in v16. Bit 3
+  suffix described below. Bit 1 (`FEATURE_FIXED_N`, introduced as
+  `FEATURE_FIXED_N2` in v8) makes `vsync_n` authoritative for both Main display
+  flips and the Sub CD accumulator. The packer derives it with
+  `uses_fixed_n_cadence`; 24fps leaves it clear even though its nearest
+  `vsync_n` hint is 2. Bit 2 is reserved in v16. Bit 3
   (`FEATURE_PATTERN_SUPPLY`, v10) means update/run source bits are active,
   the `PSUP` extension is present, and the three boot-preload regions follow
   the ADPCM table. Bit 4 (`FEATURE_SHADOW_UPDATE_LISTS`, v11) means
@@ -447,16 +450,17 @@ above.
 of sectors CD 1x delivers in one frame's display time. Both packer and player
 generate the same integer sequence with a numerator/modulus accumulator.
 
-For a v8+ stream with `FEATURE_FIXED_N2` set, the Main CPU forces N=2 and flips
-every exactly two VBlanks; the Sub CPU rate accumulator uses numerator 1001,
-modulus 400:
-`acc += 1001; ratedelta = acc // 400; acc %= 400`. Every complete 400-frame
-cycle therefore contains 199 two-sector frames and 201 three-sector frames,
-for exactly 1001 sectors total. When the feature is clear, including current
-24fps and 15fps streams, v8+ retains the earlier delivery-paced accumulator:
+For a current stream with `FEATURE_FIXED_N` set, the Main CPU flips every
+exactly `vsync_n` VBlanks. The Sub CPU uses the matching reduced
+`1001*N/800` sector accumulator. N=2 is 1001/400: each complete cycle contains
+199 two-sector frames and 201 three-sector frames. N=4 is 1001/200: each
+complete cycle contains 199 five-sector frames and one six-sector frame. The
+sixth sector can be pad; the routing byte still caps useful control plus
+payload at five sectors. When the feature is clear, including 24fps, the
+player retains the delivery-paced accumulator:
 `acc += 75; ratedelta = acc // fps_int;
-acc %= fps_int`. This gives 3.125 sectors/frame at 24fps and a constant 5 at
-15fps. v4-v7 used that same 75/fps rule for all supported nominal rates,
+acc %= fps_int`. This gives 3.125 sectors/frame at 24fps. v4-v7 used that same
+75/fps rule for all supported nominal rates,
 including the old 2.5-sector average at 30fps.
 
 `lead` starts at zero and increases by
@@ -472,18 +476,21 @@ otherwise-unused rate padding with future payload while PrgBuf space is
 available. It exceeds the allowance only when a backwards deadline proof says
 a later cold-pattern burst cannot otherwise be armed within the five-sector
 routing cap. The normal `lead` repayment then removes padding from following
-light frames. In particular, a full startup PrgBuf is not refilled with all five
-sectors merely to keep it full; with `FEATURE_FIXED_N2`, an ordinary light
-region remains on the 1001/400 two-or-three-sector sequence.
+light frames. In particular, a full startup PrgBuf is not refilled to the
+routing cap merely to keep it full; fixed-N light regions remain on their exact
+N2 or N4 physical sector sequence.
 
 The player's opportunistic pump applies back-pressure by the next sector's
 routed destination, not by every buffer at once. A control sector checks APPLY
 space, a payload sector checks PrgBuf space, and a padding sector checks neither
 because it is discarded. This distinction is required by the continuous CD
 read: a full PrgBuf must not prevent an unrelated control or padding sector
-from being acknowledged. When frame expansion consumes PrgBuf patterns through
-a local copy cursor, the player publishes that cursor before its post-cold
-refill poll so newly freed space is visible immediately.
+from being acknowledged. BODY payload for a frame may arrive while Main still
+displays the previous frame, before the current frame consumes its cold
+patterns. The scheduler therefore limits and reports the pre-consumption peak,
+not only the smaller end-of-frame occupancy. When frame expansion consumes
+PrgBuf patterns through a local copy cursor, the player publishes that cursor
+before its post-cold refill poll so newly freed space is visible immediately.
 
 ## Prebuffer
 

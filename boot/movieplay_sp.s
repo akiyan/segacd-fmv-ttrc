@@ -115,7 +115,7 @@
 .equ ROUTING_TOTAL_SHIFT,   3
 .equ ROUTING_MAX_ENTRY,     0x002D
 .equ FEATURE_COLD_RUNS_BIT, 0
-.equ FEATURE_FIXED_N2_BIT,  1
+.equ FEATURE_FIXED_N_BIT,   1
 .equ FEATURE_PATTERN_SUPPLY_BIT, 3
 .equ FEATURE_SHADOW_UPDATE_LISTS_BIT, 4
 .equ FEATURE_VRAM_RAW_PREFETCH_BIT, 5
@@ -403,16 +403,23 @@ pm_set:
 	lsr.w	#1, d1
 	addq.w	#4, d1				/* predictor.w + index.b + reserved.b */
 	move.w	d1, h_audio_control_bytes
-	/* v9: feature bit 1なら2 NTSC VBlankに正確な1001/400 sectors/frame
-	   (base=2, rem=201, mod=400)。bit clearの24/15fpsは従来の75/fpsを維持する。
-	   packerと同じ累積器まで各コマをpadし、表示よりCDが先行してRINGを圧迫しない。 */
-	move.w	56(a0), d0			/* 名目fps(15/30) */
+	/* Feature bit 1 selects the exact fixed-N NTSC display cadence:
+	   75 * N * 1001/60000 = 1001*N/800 sectors/frame.  The unreduced
+	   runtime fraction produces the same accumulator sequence as the packer's
+	   reduced N2=1001/400 or N4=1001/200 form. Feature-clear 24fps keeps
+	   75/fps delivery pacing. */
+	move.w	56(a0), d0			/* nominal fps */
 	move.w	d0, d2				/* legacy modulus = nominal fps */
 	move.w	#75, d1				/* precompute 75/fps quotient+remainder once */
-	btst	#FEATURE_FIXED_N2_BIT, 63(a0)	/* v8 fixed-N2 feature; 24fps leaves it clear */
+	btst	#FEATURE_FIXED_N_BIT, 63(a0)
 	beq	2f
-	move.w	#1001, d1			/* exact CD sectors across 400 fixed-N2 frames */
-	move.w	#400, d2
+	move.w	52(a0), d1			/* authoritative fixed VBlank interval N */
+	tst.w	d1
+	beq	bad_header
+	cmpi.w	#4, d1				/* current routing/stopwatch contract supports N1..N4 */
+	bhi	bad_header
+	mulu.w	#1001, d1
+	move.w	#800, d2
 2:
 	move.w	d2, sec_mod
 	divu.w	d2, d1
@@ -1012,8 +1019,9 @@ dls_loop:
    BODYの control→payload→pad 順に apply/PRG ring/捨て場へ振り分け。
    (CDC_TRN→PRG直行はリトライ中にセクタが滑る事故が起きる: 実測+1/2フレーム) */
 /* v4+ レートマッチpadding。各フレーム = fsec = max(n_pay+n_ctrl, ratedelta-lead) セクタ。
-   ratedelta はv8 feature bit 1で1001/400、それ以外は75/fpsの整数割当(累積器sec_acc)。
-   15fpsでは常に5、24fpsは75/24、固定N2は400コマに2×199+3×201。n_pay+n_ctrl を超える
+   ratedelta はfeature bit 1で固定N由来、それ以外は75/fpsの整数割当(累積器sec_acc)。
+   固定N4は200コマに5×199+6×1、24fpsは75/24、固定N2は400コマに
+   2×199+3×201。n_pay+n_ctrl を超える
    ぶん(pad)は読んで捨てる。fsec はコマ先頭(drain_k==0)で1回計算し cur_fsec に保持。
 	   routingはコマ先頭でcacheし、drain1(BIOS呼びでd1等破壊)後はcacheから復元。 */
 /* Non-preserving sector pump. Every caller either reloads its live state from
@@ -2166,13 +2174,13 @@ h_fps_int:
 h_audio_pre_sec:
 	.space 2				/* v5: STARTUP_AUDIO sector count (one chunk per sector) */
 h_features:
-	.space 2				/* offset 62: bit0 cold runs, bit1 authoritative fixed N2 */
+	.space 2				/* offset 62: bit0 cold runs, bit1 authoritative fixed N */
 sec_base:
 	.space 2				/* floor(rate numerator/sec_mod), precomputed at header load */
 sec_rem:
 	.space 2				/* rate numerator mod sec_mod, precomputed at header load */
 sec_mod:
-	.space 2				/* rate accumulator modulus: fixed N2=400, otherwise fps */
+	.space 2				/* rate accumulator modulus: fixed N uses 800, otherwise fps */
 .endif
 sec_acc:
 	.space 2				/* v4: CD 1x レート累積器の余り(0..sec_mod-1) */

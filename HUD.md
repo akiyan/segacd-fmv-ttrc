@@ -80,11 +80,12 @@ cover active picture content; it is not repositioned around letterboxing.
 For any recording that can proceed to compilation or upload, the complete first
 movie loop is a mandatory gate with three results: `PASS`, `WARNING`, and
 `FAIL`. `WARNING` remains upload-capable. `S/D/R` must remain zero. `C/M` and
-`J` thresholds follow the profile's player cadence. Fixed-N2 warns when
-`C>00` and fails when `M>01`. Delivery-paced content may use all but the
-already-armed control sector on the current Sub path and all display fields in
-one content frame: 15 fps warns when `C>04` and fails when `M>04`; 24 fps warns
-when `C>03` and fails when `M>03`. The largest passing `J` is
+`J` thresholds follow the profile's player cadence. Fixed-N warns when
+`C>00` and allows the `N-1` intervening pattern-work fields: fixed N2 fails
+when `M>01`, while fixed N4 fails when `M>03`. Delivery-paced content may use
+all but the already-armed control sector on the current Sub path and all
+display fields in one content frame; 24 fps warns when `C>03` and fails when
+`M>03`. The largest passing `J` is
 normal-ceiling-to-physical-end minus one
 KiB: `2D` at 15fps, `1E` at 24fps, and `19` at 30fps. Values above the normal
 jitter interval (`28`, `19`, or `14` respectively) show that
@@ -205,8 +206,8 @@ using the profile's effective playback sample rate.
 Each pump drains one physical sector. `C=00` means the needed control was
 already armed when `process_frame` reached it. A small nonzero value is not a
 sector slip; it means delivery work landed directly on the current frame's
-critical path. The profile-derived threshold is zero for fixed-N2 and follows
-the slot allowance for delivery-paced 15/24 fps. Above-threshold `C` produces
+critical path. The profile-derived threshold is zero for fixed-N and follows
+the slot allowance for delivery-paced content. Above-threshold `C` produces
 `WARNING`, not `FAIL`: it identifies Sub/CD deadline pressure for review while
 remaining upload-capable. Persistent C, especially with rising `W`, is stronger
 diagnostic evidence than an isolated peak.
@@ -229,11 +230,11 @@ the current frame. Display cadence waiting is deliberately excluded. This
 makes `M` a deadline diagnostic rather than a restatement of 15/24/30 fps
 pacing.
 
-For fixed-N2 playback, `M=00` or `01` is the normal region and `M>=02` proves
-that pattern work spilled into an additional VBlank. Delivery-paced 15/24 fps
-has more display fields per content frame, so its automatic limit is
-`ceil(60000/1001/fps)`: four at 15 fps and three at 24 fps. Correlate `M` with
-`U` and `N` to distinguish total transfer volume from run fragmentation.
+For fixed-N playback, the normal region is `M=00..N-1`; reaching `N` proves
+that pattern work spilled into the fixed display deadline. Thus fixed N2 allows
+`M<=01`, and fixed N4 allows `M<=03`. Delivery-paced content uses the automatic
+limit `ceil(60000/1001/fps)`. Correlate `M` with `U` and `N` to distinguish
+total transfer volume from run fragmentation.
 
 ### `A`: Sub ADPCM decode time
 
@@ -296,10 +297,11 @@ stream's normal boundary.
 display flip's register write. `E0` (line 224) is a flip taken exactly at
 the VBlank start — the dominant healthy value; higher blank lines mean the
 flip ran late inside its blank, and the guarded terminal lines (`FC..FF`)
-are never accepted. `O` is the flip-to-flip stopwatch interval minus 1024
-ticks, clamped to `0..FF`: the nominal fixed-N2 interval of ~1086 ticks
-reads as about `3E` (62), late-in-blank flips read higher, and a slipped
-3-field frame saturates at `FF`. Both describe the flip that published the
+are never accepted. `O` is the flip-to-flip stopwatch interval minus `N*512`
+ticks, clamped to `0..FF`: the nominal fixed-N2 interval of ~1086 ticks reads
+as about `3E` (62), while fixed N4's ~2172 ticks reads as about `7C` (124).
+Late-in-blank flips read higher, and a sufficiently slipped frame saturates at
+`FF`. Both describe the flip that published the
 *previous* frame (see above).
 
 `E` is sampled at the Pass2 entry (`bf_dma`), before its VBlank wait: the

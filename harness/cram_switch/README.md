@@ -81,9 +81,10 @@ Finding — the two sources differ:
   frames from a boundary), F1579 (white-out). Switching right after each gives a
   huge colour gain: F1163 → 73 %, F1581 → 49 %, F1884 → 83 % — as good as the
   best existing boundaries. So generalizing `dark >= 0.90` to `uniform >= thr`
-  (black OR white OR any flat colour; seam at the most-uniform frame; everything
-  downstream unchanged) directly adds high-value switch points on op. Low risk:
-  it only broadens the existing safe mechanism.
+  (black OR white OR any flat colour; the most-uniform frame is displayed once,
+  then the seam starts on the following frame; everything downstream unchanged)
+  directly adds high-value switch points on op. Low risk: it only broadens the
+  existing safe mechanism.
 - **machi_ed does NOT.** Segment 12 (122 s) has essentially zero non-black
   uniform frames — its transitions are detailed-to-detailed **hard cuts** (a
   single-frame MAD spike over a busy ~11 MAD background, screen never flat,

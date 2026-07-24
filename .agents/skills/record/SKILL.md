@@ -233,7 +233,7 @@ Check the raw MKV and reports before trusting a capture:
    The first loop must contain every frame. Thresholds are:
 
    - fixed-N2: `S/D/R=00`, `C` warning above `00`, `M<=01`;
-   - delivery-paced 15 fps: `S/D/R=00`, `C` warning above `04`, `M<=04`;
+   - fixed-N4: `S/D/R=00`, `C` warning above `00`, `M<=03`;
    - delivery-paced 24 fps: `S/D/R=00`, `C` warning above `03`, `M<=03`;
    - every cadence: `S/D/R=00`; `J<=2D` at 15fps, `J<=1E` at 24fps,
      or `J<=19` at 30fps.
