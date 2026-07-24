@@ -13,28 +13,30 @@ class RingGeometryTests(unittest.TestCase):
     def test_full_reclaimed_ring_geometry(self) -> None:
         self.assertEqual(av_config.RING_SIZE_KB, 428)
         self.assertEqual(av_config.RING_PHYSICAL_GUARD_KB, 4)
+        self.assertEqual(av_config.RING_DELIVERY_GUARD_KB, 2)
         self.assertEqual(av_config.RING_JITTER_HEADROOM_KB, 20)
         self.assertEqual(av_config.FRAME0_PATTERN_STAGING_KB, 36)
-        self.assertEqual(av_config.RING_CAP_KB, 404)
-        self.assertEqual(av_config.PRG_BUF_CAP_KB, 404)
-        self.assertEqual(av_config.QUALITY_BUDGET_KB, 404)
+        self.assertEqual(av_config.RING_CAP_KB, 402)
+        self.assertEqual(av_config.PRG_BUF_CAP_KB, 402)
+        self.assertEqual(av_config.QUALITY_BUDGET_KB, 402)
         self.assertEqual(av_config.BACKPRESSURE_KB, 424)
+        self.assertEqual(av_config.DELIVERY_CAP_KB, 422)
         self.assertEqual(
-            av_config.BACKPRESSURE_KB - av_config.RING_CAP_KB, 20)
+            av_config.DELIVERY_CAP_KB - av_config.RING_CAP_KB, 20)
 
     def test_jitter_reserve_scales_with_frame_interval(self) -> None:
         self.assertEqual(av_config.ring_jitter_headroom_kb(30), 20)
         self.assertEqual(av_config.ring_jitter_headroom_kb(24), 25)
         self.assertEqual(av_config.ring_jitter_headroom_kb(15), 40)
-        self.assertEqual(av_config.prg_buf_cap_kb(30), 404)
-        self.assertEqual(av_config.prg_buf_cap_kb(24), 399)
-        self.assertEqual(av_config.prg_buf_cap_kb(15), 384)
+        self.assertEqual(av_config.prg_buf_cap_kb(30), 402)
+        self.assertEqual(av_config.prg_buf_cap_kb(24), 397)
+        self.assertEqual(av_config.prg_buf_cap_kb(15), 382)
         for fps in (15, 24, 30):
-            self.assertEqual(av_config.physical_delivery_cap_kb(fps), 424)
+            self.assertEqual(av_config.physical_delivery_cap_kb(fps), 422)
             self.assertEqual(
                 av_config.prg_buf_cap_kb(fps)
                 + av_config.ring_jitter_headroom_kb(fps),
-                av_config.BACKPRESSURE_KB,
+                av_config.DELIVERY_CAP_KB,
             )
 
     def test_ntsc_like_rates_use_named_content_cadence(self) -> None:

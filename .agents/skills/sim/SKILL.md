@@ -177,8 +177,9 @@ that intentionally have no profile.
 After completion:
 
 - Confirm the fps-derived Prg geometry printed by sim: normal prebuffer /
-  jitter / physical delivery is 384/40/424 KiB at 15fps,
-  399/25/424 KiB at 24fps, or 404/20/424 KiB at 30fps.
+  jitter / scheduled delivery is 382/40/422 KiB at 15fps,
+  397/25/422 KiB at 24fps, or 402/20/422 KiB at 30fps. The physical ring
+  remains 428 KiB and player pump back-pressure remains 424 KiB.
 - Physical delivery failure is terminal for that sim. Do not lower the cold
   cap, synthesize local per-frame caps, or repeat allocation in response.
   Report the exact failing frame/resource so the user can choose the next
@@ -303,7 +304,19 @@ PY=~/.config/youtube/venv/bin/python
 ```
 
 Analysis-video titles should be descriptive, not version-number titles such as
-`vNNN`. Upload as unlisted, category 20. See `[[youtube-upload-convention]]`.
+`vNNN`. Write the exact UTF-8 description to
+`videos/<stem>_analysis_description.txt`, target 4,800 characters or fewer,
+and hard-fail before upload when its Python character count exceeds YouTube's
+5,000-character limit:
+
+```sh
+tools/python.sh -c 'from pathlib import Path; p=Path("videos/<stem>_analysis_description.txt"); n=len(p.read_text(encoding="utf-8")); print(f"description_chars={n}"); assert n <= 5000'
+```
+
+Shorten optional explanatory prose first; preserve the mandatory CRAM
+chapters, specs/layout/technique sections, both project links, and current
+timeline links. Upload as unlisted, category 20. See
+`[[youtube-upload-convention]]`.
 
 ## Cautions
 

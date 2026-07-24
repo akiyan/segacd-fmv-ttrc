@@ -121,9 +121,14 @@ H32とH40は異なるドット幅で同じ64:49の表示領域を表す。YouTub
    の扱いは `AGENTS.md` の「YouTube Upload Style」を唯一の規約として使う。ここへ
    同じ規約を複製しない。アップロードはunlisted、category 20とし、説明文の英日
    両方に `https://github.com/akiyan/segacd-fmv-ttrc` を含める。
+   送信する説明文はUTF-8 text fileへ保存し、YouTubeの上限である5,000文字以下を
+   事前にPythonの文字数で確認する。運用目標は4,800文字以下。超えた場合は説明部分を
+   短くし、CRAM chapters、必須spec/layout/technique節、英日両方のproject linkを
+   削ってはならない。上限超過のままuploadを試してAPIのrejectを待たない。
 
    ```sh
    PY="$HOME/.config/youtube/venv/bin/python"
+   tools/python.sh -c 'from pathlib import Path; p=Path("videos/STEM_emu_description.txt"); n=len(p.read_text(encoding="utf-8")); print(f"description_chars={n}"); assert n <= 5000'
    "$PY" "$HOME/.claude/skills/youtube/youtube.py" upload \
      videos/STEM_emu.mp4 \
      --title "$TITLE" --desc "$DESCRIPTION" \

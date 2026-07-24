@@ -11,6 +11,11 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e113: Keep the exact PrgBuf delivery schedule one physical 2KiB CD
+#         sector below the player's 424KiB pump back-pressure boundary. The
+#         e112 Sonic H40 stream reproducibly reached equality and entered
+#         slip/re-seek recovery (S01); scheduled delivery is now capped at
+#         422KiB and the 15/24/30fps normal ceilings are 382/397/402KiB.
 #   e112: Remove Sonic Jam H40's source-side checkerboard dither with a
 #         radius-1 guided filter before the normal position-fixed Bayer output
 #         dither. The filter uses the source as its own guide to retain drawn
@@ -782,5 +787,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260724
-e=112
+e=113
 p=89

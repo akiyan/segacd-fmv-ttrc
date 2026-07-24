@@ -16,6 +16,8 @@ borrow more virtual budget than the hardware can schedule, causing live
 underruns even when the encode looked feasible.
 
 Here we define the physical ring **once** and derive every capacity from it.
+The exact schedule stays one physical CD sector below the player's pump
+back-pressure boundary, so the pump never has to reject a sector at equality.
 Delivery jitter scales with the time represented by one content frame: 20 KiB
 at 30 fps, 40 KiB at 15 fps, and 25 KiB at 24 fps. The
 player's ``RING_SIZE`` is asserted equal to
@@ -37,10 +39,13 @@ from dataclasses import dataclass
 RING_SIZE_KB = 428
 
 # Keep the physical overflow guard distinct from delivery-jitter headroom. The
-# player throttles its CD pump at RING_SIZE-4KB (back-pressure). The normal
-# PrgBuf/prebuffer ceiling stays an fps-derived jitter interval below that
-# threshold, while the exact physical schedule may use the reserved interval.
+# player throttles its CD pump at RING_SIZE-4KB (back-pressure). Exact schedules
+# stop one 2KiB physical CD sector before that equality boundary; otherwise a
+# schedule that reaches 424KiB can make pump_poll reject the next arrived
+# sector and enter slip/re-seek recovery. The normal PrgBuf/prebuffer ceiling
+# stays an fps-derived jitter interval below the scheduled delivery ceiling.
 RING_PHYSICAL_GUARD_KB = 4
+RING_DELIVERY_GUARD_KB = 2
 RING_JITTER_REFERENCE_FPS = 30.0
 RING_JITTER_REFERENCE_KB = 20
 
@@ -50,6 +55,7 @@ FRAME0_PATTERN_STAGING_KB = 36
 
 # Derived fixed physical limits — do not set these independently anywhere else.
 BACKPRESSURE_KB = RING_SIZE_KB - RING_PHYSICAL_GUARD_KB
+DELIVERY_CAP_KB = BACKPRESSURE_KB - RING_DELIVERY_GUARD_KB
 
 
 def _nominal_content_fps(fps):
@@ -77,10 +83,10 @@ def ring_jitter_headroom_kb(fps):
 
 def prg_buf_cap_kb(fps):
     """Return the normal PrgBuf/prebuffer ceiling below physical jitter."""
-    cap = BACKPRESSURE_KB - ring_jitter_headroom_kb(fps)
+    cap = DELIVERY_CAP_KB - ring_jitter_headroom_kb(fps)
     if cap <= 0:
         raise ValueError(
-            f"fps {fps!r} requires all {BACKPRESSURE_KB} KiB of PrgBuf "
+            f"fps {fps!r} requires all {DELIVERY_CAP_KB} KiB of PrgBuf "
             "for delivery jitter")
     return cap
 
@@ -92,7 +98,7 @@ def quality_budget_kb(fps):
 
 def physical_delivery_cap_kb(_fps):
     """Return the hard scheduled occupancy limit before pump back-pressure."""
-    return BACKPRESSURE_KB
+    return DELIVERY_CAP_KB
 
 
 # Compatibility aliases are the 30 fps reference values. Runtime encode, pack,
@@ -102,7 +108,7 @@ RING_CAP_KB = prg_buf_cap_kb(30)
 PRG_BUF_CAP_KB = RING_CAP_KB
 QUALITY_BUDGET_KB = quality_budget_kb(30)
 
-assert BACKPRESSURE_KB - RING_CAP_KB == RING_JITTER_HEADROOM_KB
+assert DELIVERY_CAP_KB - RING_CAP_KB == RING_JITTER_HEADROOM_KB
 
 # --- Fixed encoder/player resources ---
 # The resident movie-pattern pool starts at tile 1 and ends immediately before

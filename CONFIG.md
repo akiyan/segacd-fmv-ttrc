@@ -40,12 +40,13 @@ can schedule.
 | `RING_SIZE` / `RING_SIZE_KB` | 428 KB (0x6B000) | sp / cfg | Internal circular allocation backing `PrgBuf`, from 0x0C000 up to `APPLY_BASE`. The `RING_*` spelling describes the implementation, not a fifth public object. |
 | `ring_jitter_headroom_kb(fps)` | 15fps: 40 KB; 24fps: 25 KB; 30fps: 20 KB | cfg | Timed-delivery headroom scaled as `20 * 30 / fps`, rounded up to a whole KiB. It is built into the codec and is not a profile setting. |
 | `RING_PHYSICAL_GUARD_KB` | 4 KB | cfg | Separate overflow guard between pump back-pressure and the 428 KB physical ring end. It is not counted as jitter headroom. |
-| `prg_buf_cap_kb(fps)` | 15fps: 384 KB; 24fps: 399 KB; 30fps: 404 KB | cfg -> sim / pack / player | Normal `PrgBuf` prebuffer and quality ceiling = 424 KB back-pressure minus the cadence-scaled jitter interval. `PRG_BUF_CAP_KB` and `RING_CAP_KB` remain 30fps compatibility aliases only. |
-| `physical_delivery_cap_kb(fps)` | 424 KB | cfg -> sim / pack | Hard exact-schedule occupancy ceiling. Physical delivery may temporarily use the cadence-scaled jitter interval above the normal PrgBuf ceiling. |
+| `RING_DELIVERY_GUARD_KB` | 2 KB | cfg | One physical sector reserved below pump back-pressure. It prevents an exact schedule at the boundary from making `pump_poll` reject an already-arrived sector. |
+| `prg_buf_cap_kb(fps)` | 15fps: 382 KB; 24fps: 397 KB; 30fps: 402 KB | cfg -> sim / pack / player | Normal `PrgBuf` prebuffer and quality ceiling = the 422 KB scheduled-delivery ceiling minus the cadence-scaled jitter interval. `PRG_BUF_CAP_KB` and `RING_CAP_KB` remain 30fps compatibility aliases only. |
+| `physical_delivery_cap_kb(fps)` | 422 KB | cfg -> sim / pack | Hard exact-schedule occupancy ceiling. Scheduled delivery may temporarily use the cadence-scaled jitter interval above the normal PrgBuf ceiling, while staying one sector below pump back-pressure. |
 | `quality_budget_kb(fps)` | same as normal `PrgBuf` | cfg -> sim | Capacity of offline quality accounting. It has an independent trace and no physical meter. It is derived from fps, not a profile or environment knob. |
 | `WordBuf0` / `WordBuf1` | 880 patterns each (27.5 KB each) | sp / ip / sim / pack | Different boot-preloaded sequences in the two physical Word-RAM banks at offset `+0x15200..+0x1C000`. Wr0 serves even timed frames and Wr1 odd timed frames; they are not duplicated copies. |
 | `DicBuf` | 256 patterns (8 KB) | ip / sim / pack | Persistent dictionary boot-staged at Word-RAM `+0xD000`, then copied once to Main RAM `0xFF6600..0xFF8600`. Either frame parity may reuse entries by 8-bit index without consuming them. |
-| `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. Normal prebuffer stays below it; the exact schedule may use up to this boundary as jitter. |
+| `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. The exact schedule stops one 2 KB sector below this boundary. |
 | routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v16 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
 | Prg prebuffer | up to `prg_buf_cap_kb(fps)` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both the cadence-derived normal Prg capacity and the clip's future Prg load total. |
@@ -283,9 +284,10 @@ sector schedule remains a separate exact proof in `stream_schedule.py`. See
 
 The first logical seed pass also supplies conservative control lengths and Prg
 demand to that physical proof. Prebuffering is limited by the cadence-derived
-normal PrgBuf capacity (384/399/404 KiB at 15/24/30fps), while subsequent
-delivery may occupy the fixed 424 KiB back-pressure range. The difference is
-the automatic jitter interval; no TOML value controls it.
+normal PrgBuf capacity (382/397/402 KiB at 15/24/30fps), while subsequent
+scheduled delivery may occupy up to 422 KiB. The difference is the automatic
+jitter interval; no TOML value controls it. The schedule remains one physical
+sector below the player's 424 KiB pump back-pressure boundary.
 
 If independently sectorized control and payload still cannot meet a future
 deadline within those two limits, sim stops with the exact failing frame and
@@ -471,4 +473,4 @@ red indicator because they do not have the HUD.
 | `A` | 2 | Sub ADPCM decode phase time. One displayed unit is four 30.72 us stopwatch ticks (about 0.1229 ms); PCM builds display zero. H40 Sonic ADPCM measured `3E..42`, about 7.62..8.11 ms. At low frame rates this phase includes any opportunistic CDC pump performed inside the longer decode. |
 | `U` | 4 | Main pattern-transfer time in Mega-CD stopwatch ticks, measured from the first run through the final DMA repair or CPU-direct write. One tick is 30.72 us; the 12-bit counter wraps after 4096 ticks (about 125.83 ms). |
 | `N` | 2 | Low byte of the source-aware packed cold-run descriptor count for this frame. This is the fragmentation count before a long run is split by the VBlank word budget and wraps at 256. |
-| `J` | 2 | Sticky maximum streamed PrgBuf occupancy above the fps-derived normal ceiling since BODY streaming began, in ceil-KiB units. Normal ceiling/jitter is 384/40 KiB at 15fps, 399/25 KiB at 24fps, and 404/20 KiB at 30fps. The passing limits below the physical ring end are `2B`, `1C`, and `17` respectively. Frame-0 boot staging is excluded. |
+| `J` | 2 | Sticky maximum streamed PrgBuf occupancy above the fps-derived normal ceiling since BODY streaming began, in ceil-KiB units. Normal ceiling/jitter is 382/40 KiB at 15fps, 397/25 KiB at 24fps, and 402/20 KiB at 30fps. The passing limits below the physical ring end are `2D`, `1E`, and `19` respectively. Values above `28`, `19`, or `14` have crossed the scheduled-delivery ceiling and entered its 2 KiB back-pressure guard or the separate 4 KiB physical guard. Frame-0 boot staging is excluded. |

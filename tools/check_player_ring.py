@@ -145,8 +145,9 @@ if ring_bytes != want_bytes:
         f"(single source of truth = tools/av_config.py).")
 print(
     f"check_player_ring: OK  RING_SIZE={ring_bytes//1024}KB "
-    f"== av_config.RING_SIZE_KB (delivery limit "
-    f"{av_config.BACKPRESSURE_KB}KB; normal PrgBuf "
+    f"== av_config.RING_SIZE_KB (pump back-pressure "
+    f"{av_config.BACKPRESSURE_KB}KB; scheduled delivery "
+    f"{av_config.physical_delivery_cap_kb(30)}KB; normal PrgBuf "
     f"15/24/30fps={av_config.prg_buf_cap_kb(15)}/"
     f"{av_config.prg_buf_cap_kb(24)}/"
     f"{av_config.prg_buf_cap_kb(30)}KB)")
