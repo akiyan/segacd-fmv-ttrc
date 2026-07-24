@@ -21,6 +21,7 @@ reuse = false
 emit_decisions = true
 
 [encoder]
+dither = false
 cold_cap = 190
 
 [palette]

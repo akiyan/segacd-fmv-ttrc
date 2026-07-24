@@ -324,8 +324,9 @@ NEAR_KEEP_ACCURATE_ONLY = os.environ.get("CBRSIM_NEAR_ACCURATE_ONLY", "1") != "0
 
 # 出力量子化で「位置固定の規則ディザ(Bayer 8x8)」を掛ける。同じ画面座標は常に同じ閾値なので
 # 静止タイルは毎コマ同一の333のまま=差分/使い回しを壊さない(誤差拡散は波及するので不採用)。
-# 前処理のディザ除去(master抽出)はそのまま。掛け直すのは出力の333化のここだけ。
-DITHER_ON = True
+# 前処理のディザ除去(master抽出)はそのまま。掛け直すのは出力の333化のここだけ。既に
+# ディザを含む素材では二重ディザによる孤立色を避けるためプロファイルから無効化できる。
+DITHER_ON = os.environ.get("CBRSIM_DITHER", "1") != "0"
 # Optional source preprocessing, applied before both the master and raw paths.
 # Out-of-range defaults disable it for profiles without endpoint_snap.
 PREPROCESS_BLACK_MAX = int(os.environ.get(

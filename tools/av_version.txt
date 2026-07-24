@@ -11,6 +11,10 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e112: Allow a source profile to disable the default position-fixed Bayer
+#         output dither. Sonic Jam H40 disables its second dither pass because
+#         the already-dithered source otherwise maps isolated sky pixels to the
+#         segment palette's globally brightest colour.
 #   p89: Keep BODY.DAT stopped while Main initializes, builds, and displays
 #        frame 0. Delay the existing COMCMD1 BODY-start acknowledgement until
 #        build_frame returns, then pre-drain frame 1 and enter timed playback.
@@ -777,5 +781,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260724
-e=111
+e=112
 p=89
