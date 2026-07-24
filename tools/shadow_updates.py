@@ -68,6 +68,11 @@ def bitmap_bytes(total_cells: int) -> int:
     return (cells + 7) // 8
 
 
+def aligned_bitmap_bytes(total_cells: int) -> int:
+    """Return the v16 bitmap span through the word-aligned entry boundary."""
+    return (bitmap_bytes(total_cells) + 1) & ~1
+
+
 def build_bitmap(cells, total_cells: int) -> bytes:
     out = bytearray(bitmap_bytes(total_cells))
     previous = -1

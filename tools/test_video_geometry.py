@@ -32,6 +32,23 @@ class VideoGeometryTests(unittest.TestCase):
             "setsar=1,crop=500:384:6:0,scale=512:448:flags=lanczos,"
             "hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=256:224:flags=lanczos")
 
+    def test_native_h40_source_needs_only_identity_crop(self) -> None:
+        plan = geometry_plan(
+            "H40", 320, 224, 320, 224,
+            src_sar_num=32, src_sar_den=35, fit="crop")
+        self.assertEqual(plan["crop"], [320, 224, 0, 0])
+        self.assertEqual(
+            raw_filter(
+                "H40", 320, 224, 320, 224,
+                src_sar_num=32, src_sar_den=35, fit="crop"),
+            "setsar=1,crop=320:224:0:0")
+        self.assertEqual(
+            source_filter(
+                "H40", 320, 224, 320, 224,
+                src_sar_num=32, src_sar_den=35, fit="crop",
+                denoise=False),
+            "setsar=1,crop=320:224:0:0")
+
     def test_pad_preserves_complete_source_and_adds_bars(self) -> None:
         self.assertEqual(
             raw_filter("H32", 256, 224, 512, 384, fit="pad"),

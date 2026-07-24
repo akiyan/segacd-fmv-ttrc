@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mixed Timeline"
+  short_description: "Stack codec and playback HUD timelines"
+  default_prompt: "Use $mixline to align and stack the matching $timeline and $hudline images, then publish the combined diagnostic image."

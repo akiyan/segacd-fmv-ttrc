@@ -331,10 +331,10 @@ def draw_global_chart(path, global_data, source_frames):
     image.save(path)
 
 
-def write_csvs(output, palettes, usage, frame_seg, fps, upload_offset, global_data):
+def write_tsvs(output, palettes, usage, frame_seg, fps, upload_offset, global_data):
     ranges = segment_ranges(frame_seg)
-    with (output / "palette_slots.csv").open("w", newline="") as dst:
-        writer = csv.writer(dst)
+    with (output / "palette_slots.tsv").open("w", newline="") as dst:
+        writer = csv.writer(dst, delimiter="\t", lineterminator="\n")
         writer.writerow([
             "segment", "start_frame", "end_frame", "content_start_s", "upload_start_s",
             "palette", "index", "reserved_transparent", "rgb333", "cram_word",
@@ -353,8 +353,8 @@ def write_csvs(output, palettes, usage, frame_seg, fps, upload_offset, global_da
 
     keys, slot_count, pixel_count, locations, segments, source_hist = global_data
     total = max(1, sum(pixel_count.values()))
-    with (output / "palette_global.csv").open("w", newline="") as dst:
-        writer = csv.writer(dst)
+    with (output / "palette_global.tsv").open("w", newline="") as dst:
+        writer = csv.writer(dst, delimiter="\t", lineterminator="\n")
         writer.writerow([
             "rgb333", "cram_word", "digital_rgb888", "displayed_pixel_frames",
             "displayed_fraction", "source_after_bayer_pixels", "paltab_slots",
@@ -424,7 +424,7 @@ def main() -> int:
     draw_global_chart(
         args.output_dir / "palette_global.png", global_data, source_frames,
     )
-    write_csvs(
+    write_tsvs(
         args.output_dir, palettes, usage, frame_seg, fps, args.upload_offset,
         global_data,
     )
@@ -436,8 +436,8 @@ def main() -> int:
     print(f"segments={len(palettes)} displayed_unique={len(keys)} "
           f"paltab_unique={len(slot_count)} source_unique={np.count_nonzero(source_hist)}")
     for name in (
-        "palette_by_segment.png", "palette_global.png", "palette_slots.csv",
-        "palette_global.csv", "summary.txt",
+        "palette_by_segment.png", "palette_global.png", "palette_slots.tsv",
+        "palette_global.tsv", "summary.txt",
     ):
         print(args.output_dir / name)
     return 0

@@ -74,6 +74,25 @@ class PlayerConstantsTest(unittest.TestCase):
         self.assertEqual((values.sec_base, values.sec_rem), (5, 0))
         self.assertEqual(values.pump_mask, 0x003F)
         self.assertEqual(values.wave_pump_mask, 0x00FF)
+        self.assertEqual(values.prg_buf_cap_patterns, 384 * 1024 // 32)
+        self.assertEqual(values.prg_delivery_cap_patterns, 424 * 1024 // 32)
+        self.assertEqual(values.jitter_headroom_kb, 40)
+
+    def test_prg_jitter_constants_follow_content_fps(self):
+        expected = {
+            15: (384, 40),
+            24: (399, 25),
+            30: (404, 20),
+        }
+        for fps, (normal_kb, jitter_kb) in expected.items():
+            with self.subTest(fps=fps):
+                values = player_constants.parse_header_sector(
+                    make_header(fps=fps))
+                self.assertEqual(
+                    values.prg_buf_cap_patterns, normal_kb * 1024 // 32)
+                self.assertEqual(
+                    values.prg_delivery_cap_patterns, 424 * 1024 // 32)
+                self.assertEqual(values.jitter_headroom_kb, jitter_kb)
 
     def test_changed_fixed_header_rejects_stale_signature(self):
         sector = bytearray(make_header())
@@ -111,6 +130,21 @@ class PlayerConstantsTest(unittest.TestCase):
         self.assertEqual((values.wr0_sectors, values.wr1_sectors, values.dic_sectors),
                          (14, 14, 4))
 
+    def test_pattern_supply_uses_low_rate_poll_constants_at_15fps(self):
+        values = player_constants.parse_header_sector(make_header(
+            mode=1,
+            fps=15,
+            features=(ttrc_routing.FEATURE_COLD_RUNS
+                      | ttrc_routing.FEATURE_PATTERN_SUPPLY
+                      | ttrc_routing.FEATURE_DICBUF_INDEXED_RUNS),
+            supply_counts=(880, 880, 256),
+        ))
+        self.assertEqual((values.sec_num, values.sec_mod), (75, 15))
+        self.assertEqual(values.pump_mask, 0x003F)
+        self.assertEqual(values.wave_pump_mask, 0x00FF)
+        self.assertEqual(values.wr0_patterns, 880)
+        self.assertEqual(values.wr1_patterns, 880)
+
     def test_pattern_supply_requires_indexed_dicbuf_feature(self):
         with self.assertRaisesRegex(ValueError, "indexed DicBuf"):
             player_constants.parse_header_sector(make_header(
@@ -136,6 +170,11 @@ class PlayerConstantsTest(unittest.TestCase):
             self.assertIn(".equ PC_AUDIO_CONTROL_BYTES, 0x0174", text)
             self.assertIn(".equ PC_AUDIO_FD, 0x0345", text)
             self.assertIn(".equ PC_SEC_REM, 0x00C9", text)
+            self.assertIn(
+                ".equ PC_PRG_BUF_CAP_PATTERNS, 0x3280", text)
+            self.assertIn(
+                ".equ PC_PRG_DELIVERY_CAP_PATTERNS, 0x3500", text)
+            self.assertIn(".equ PC_JITTER_HEADROOM_KB, 0x0014", text)
 
 
 if __name__ == "__main__":

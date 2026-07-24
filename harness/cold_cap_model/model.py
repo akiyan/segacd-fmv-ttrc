@@ -29,8 +29,8 @@ reproduced (gates G2/G3 of the investigation plan).
 
 Usage:
   tools/python.sh harness/cold_cap_model/model.py \
-      --frames frames_195.csv \
-      --hud videos/SonicJamOp_H40_cold195_emu_hud.csv \
+      --frames frames_195.tsv \
+      --hud videos/SonicJamOp_H40_cold195_emu_hud.tsv \
       [--k0-us N] [--k1-ns N] [--sweep]
 """
 
@@ -50,14 +50,14 @@ ARM_US = 800 * TICK_US                    # PACE_N2_ARM_TICKS
 CRAM_US = 64 * 1.6                        # 64 CRAM word writes, ~0.1 ms
 
 
-def load_joined(frames_csv: Path, hud_csv: Path):
+def load_joined(frames_tsv: Path, hud_tsv: Path):
     packs = {}
-    with frames_csv.open() as fh:
-        for r in csv.DictReader(fh):
+    with frames_tsv.open() as fh:
+        for r in csv.DictReader(fh, delimiter="\t"):
             packs[int(r["frame"])] = r
     rows = []
-    with hud_csv.open() as fh:
-        for r in csv.DictReader(fh):
+    with hud_tsv.open() as fh:
+        for r in csv.DictReader(fh, delimiter="\t"):
             if r["loop"] != "0":
                 continue
             f = int(r["frame"])
@@ -148,6 +148,9 @@ def main() -> None:
     ap.add_argument("--sweep", action="store_true",
                     help="sweep K0/phase and report break-set matches")
     args = ap.parse_args()
+    for name in ("frames", "hud"):
+        if getattr(args, name).suffix.lower() != ".tsv":
+            ap.error(f"--{name} input must use the .tsv extension")
 
     rows = load_joined(args.frames, args.hud)
     obs = observed_breaks(rows)

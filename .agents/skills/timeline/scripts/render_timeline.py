@@ -36,6 +36,13 @@ GRID = (52, 54, 62)
 SEGMENT = (105, 105, 118)
 TAIL = (105, 42, 42, 82)
 
+PLOT_LEFT = 220
+TIMELINE_TOP = 185
+REQ_HEIGHT = 347
+SUPPLY_HEIGHT = 60
+RUN_HEIGHT = 32
+BAND_HEIGHT = 32
+
 REQ_ORDER = tuple(style.REQ_TIMELINE_CATS)
 REQ_COLORS = {name: style.CATEGORY_COLORS[name] for name in REQ_ORDER}
 SUPPLY_ORDER = tuple(style.METER_SUPPLY_ORDER)
@@ -52,6 +59,7 @@ REQUIRED_COLUMNS = {
     "body_physical_bytes", "body_useful_bytes",
     "quality_budget_remaining_bytes",
 }
+OPTIONAL_COLUMNS = set()
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +89,7 @@ def load_tsv(path: Path) -> tuple[list[dict[str, str]], dict[str, np.ndarray]]:
         missing = REQUIRED_COLUMNS - set(reader.fieldnames or ())
         if missing:
             raise SystemExit(f"timeline TSV lacks columns: {sorted(missing)}")
+        fieldnames = set(reader.fieldnames or ())
         rows = list(reader)
     if not rows:
         raise SystemExit("timeline TSV contains no frames")
@@ -89,7 +98,9 @@ def load_tsv(path: Path) -> tuple[list[dict[str, str]], dict[str, np.ndarray]]:
         raise SystemExit("timeline TSV frames must be contiguous and start at zero")
     arrays = {
         key: np.asarray([number(row[key]) for row in rows], np.float64)
-        for key in REQUIRED_COLUMNS - {"frame"}
+        for key in (
+            (REQUIRED_COLUMNS | (OPTIONAL_COLUMNS & fieldnames)) - {"frame"}
+        )
     }
     arrays["frame"] = frames
     return rows, arrays
@@ -295,6 +306,18 @@ def fmt_int(value: float | int) -> str:
     return f"{int(round(float(value))):,}"
 
 
+def fmt_frame(frame_index: int, frames: int) -> str:
+    width = max(3, len(f"{max(frames - 1, 0):X}"))
+    return f"f0x{frame_index:0{width}X}"
+
+
+def prg_cap_summary(measured_cap: int) -> str:
+    """Describe the fixed cap now that delivery feedback is not applied."""
+    return (
+        f"Cold cap fixed at {measured_cap}; automatic local Prg/cold cap "
+        "feedback is disabled")
+
+
 def true_run_lengths(mask: np.ndarray) -> np.ndarray:
     values = np.asarray(mask, bool)
     padded = np.r_[False, values, False]
@@ -421,7 +444,6 @@ def metadata_lines(
     hardware = (
         decisions.get("hardware", {})
         or (decisions.get("config", {}).get("hardware", {})))
-    physical_delivery = decisions.get("physical_delivery", {})
     slot_locality = decisions.get("slot_locality", {})
     player_execution = str(slot_locality.get("player_execution", "unknown"))
     physical_map = np.asarray(
@@ -436,19 +458,15 @@ def metadata_lines(
     run_trace = np.asarray(
         (decisions.get("pattern_transfers") or {}).get("runs", ()), np.int64)
     run_max = fmt_int(run_trace[1:].max(initial=0)) if run_trace.size else "?"
-    frame_caps = np.asarray(
-        physical_delivery.get("frame_cold_caps", ()), np.int64)
-    limited_frames = np.asarray(
-        physical_delivery.get("limited_frames", ()), np.int64)
-    delivery_summary = "Physical delivery feedback=none"
-    if limited_frames.size and frame_caps.size:
-        delivery_summary = (
-            "Physical delivery feedback=%s frames; minimum envelope=%s; "
-            "measured cold cap unchanged" % (
-                fmt_int(len(limited_frames)),
-                fmt_int(frame_caps[limited_frames].min()),
-            )
+    delivery_summary = (
+        "Physical Prg delivery: normal=%s KiB + jitter=%s KiB; "
+        "limit=%s KiB; ring=%s KiB; local-cap feedback=disabled" % (
+            hardware.get("prg_buf_kb", "?"),
+            hardware.get("prg_jitter_headroom_kb", "?"),
+            hardware.get("prg_delivery_cap_kb", "?"),
+            hardware.get("prg_physical_ring_kb", "?"),
         )
+    )
     reserve_mode = buffer.get("quality_reserve_mode", np.array("forecast_pair"))
     reserve_mode = str(np.asarray(reserve_mode).item())
     reserve = np.asarray(buffer.get("upgrade_reserve_bytes", ()), np.float64)
@@ -461,7 +479,7 @@ def metadata_lines(
             fmt_int(len(data["frame"])), data["time_seconds"][-1] + 1 / fps,
             fps, fmt_int(data["cells"][0]), fmt_int(data["active_tiles"][0]),
             fmt_int(len(np.unique(data["palette_segment"])))),
-        "VRAM=%s tiles; cold cap=%s; PrgBuf=%s KiB; quality cap=%s KiB" % (
+        "VRAM=%s tiles; cold cap=%s; normal PrgBuf=%s KiB; quality cap=%s KiB" % (
             hardware.get("vram_tiles", config.get("encoder", {}).get("vram_tiles", "?")),
             fmt_int(data["cold_cap_tiles"][0]),
             hardware.get("prg_buf_kb", "?"), hardware.get("quality_budget_kb", "?")),
@@ -526,7 +544,10 @@ def draw_timeline(
     draw = ImageDraw.Draw(image)
     n = len(data["frame"])
     width = n * ppf
-    req_h, supply_h, run_h, band_h = 520, 150, 65, 65
+    req_h = REQ_HEIGHT
+    supply_h = SUPPLY_HEIGHT
+    run_h = RUN_HEIGHT
+    band_h = BAND_HEIGHT
     req_top = top
     supply_top = req_top + req_h
     run_top = supply_top + supply_h
@@ -607,8 +628,12 @@ def draw_timeline(
         maximum: float,
         *,
         percent: bool = False,
+        show_midpoint: bool = True,
     ) -> None:
-        for fraction in (1.0, 0.5, 0.0):
+        fractions = (1.0, 0.5, 0.0) if show_midpoint else (1.0, 0.0)
+        row_scale_font = font(13) if row_height <= 32 else scale_font
+        edge_offset = 8 if row_height <= 32 else 11
+        for fraction in fractions:
             y = row_top + int(round((1.0 - fraction) * (row_height - 1)))
             draw.line(
                 (left, y, left + width - 1, y),
@@ -621,21 +646,27 @@ def draw_timeline(
                 label = fmt_int(maximum * fraction)
             label_y = y
             if fraction == 1.0:
-                label_y += 11
+                label_y += edge_offset
             elif fraction == 0.0:
-                label_y -= 11
+                label_y -= edge_offset
             draw.text(
                 (left - 10, label_y),
                 label,
                 fill=(185, 187, 196),
-                font=scale_font,
+                font=row_scale_font,
                 anchor="rm",
             )
 
     draw_scale(req_top, req_h, cells)
     draw_scale(supply_top, supply_h, total_capacity)
-    draw_scale(run_top, run_h, run_capacity)
-    draw_scale(band_top, band_h, 1.0, percent=True)
+    draw_scale(run_top, run_h, run_capacity, show_midpoint=False)
+    draw_scale(
+        band_top,
+        band_h,
+        1.0,
+        percent=True,
+        show_midpoint=False,
+    )
 
     fps = 1.0 / (data["time_seconds"][1] - data["time_seconds"][0]) if n > 1 else 1.0
     duration = n / fps
@@ -647,7 +678,12 @@ def draw_timeline(
         draw.line((x, req_top, x, bottom), fill=color, width=1)
         if major:
             draw.text((x + 3, bottom + 10), f"{second}s", fill=DIM, font=font(19))
-            draw.text((x + 3, bottom + 35), f"f{frame_index}", fill=(115, 117, 126), font=font(16))
+            draw.text(
+                (x + 3, bottom + 35),
+                fmt_frame(frame_index, n),
+                fill=(115, 117, 126),
+                font=font(16),
+            )
 
     segments = data["palette_segment"].astype(np.int64)
     for frame_index in np.flatnonzero(np.r_[False, segments[1:] != segments[:-1]]):
@@ -661,7 +697,12 @@ def draw_timeline(
         odraw = ImageDraw.Draw(overlay)
         odraw.rectangle((x, req_top, left + width, bottom), fill=TAIL)
         odraw.line((x, req_top, x, bottom), fill=(255, 100, 100, 255), width=3)
-        odraw.text((x + 8, req_top + 28), f"evaluation ends f{evaluation_end}", fill=(255, 180, 180, 255), font=font(19))
+        odraw.text(
+            (x + 8, req_top + 28),
+            f"evaluation ends {fmt_frame(evaluation_end, n)}",
+            fill=(255, 180, 180, 255),
+            font=font(19),
+        )
         image.alpha_composite(overlay)
 
     label_font = font(22)
@@ -671,10 +712,8 @@ def draw_timeline(
     draw.text((18, req_top + 37), "cells", fill=DIM, font=small)
     draw.text((18, supply_top + 8), "SUPPLY", fill=TEXT, font=label_font)
     draw.text((18, supply_top + 37), "patterns", fill=DIM, font=small)
-    draw.text((18, run_top + 8), "RUN", fill=TEXT, font=label_font)
-    draw.text((18, run_top + 37), "runs", fill=DIM, font=small)
-    draw.text((18, band_top + 8), "BAND", fill=TEXT, font=label_font)
-    draw.text((18, band_top + 37), "Raw+Prg+ctrl / slot", fill=DIM, font=small)
+    draw.text((18, run_top + 3), "RUN", fill=TEXT, font=label_font)
+    draw.text((18, band_top + 3), "BAND", fill=TEXT, font=label_font)
     return width, bottom
 
 
@@ -693,15 +732,23 @@ def main() -> None:
     if args.evaluation_end_frame is not None and args.evaluation_end_frame <= 1:
         raise SystemExit("evaluation end frame must be greater than frame 1")
     buffer = load_npz(sim_out / "buffer_remaining.npz") if sim_out else {}
+    measured_cold_cap = int(round(float(data["cold_cap_tiles"][0])))
     evaluation_end = args.evaluation_end_frame
     if evaluation_end is None:
         evaluation_end = infer_evaluation_end(buffer, n)
 
-    left = 220
-    timeline_top = 150
+    left = PLOT_LEFT
+    timeline_top = TIMELINE_TOP
     timeline_width = n * ppf
     width = left + timeline_width + 45
-    height = timeline_top + 520 + 150 + 65 + 65 + 105
+    height = (
+        timeline_top
+        + REQ_HEIGHT
+        + SUPPLY_HEIGHT
+        + RUN_HEIGHT
+        + BAND_HEIGHT
+        + 105
+    )
     image = Image.new("RGBA", (width, height), BG + (255,))
     draw = ImageDraw.Draw(image)
     title = args.label or tsv.stem
@@ -710,6 +757,11 @@ def main() -> None:
         (24, 68),
         f"Detailed codec timeline | {n} frames | {ppf} px/frame | {tsv}",
         fill=DIM, font=font(20),
+    )
+    draw.text(
+        (24, 101),
+        prg_cap_summary(measured_cold_cap),
+        fill=style.COL_PRG_CAP, font=font(18),
     )
     draw_legend(draw, left, timeline_top - 42)
     _, bottom = draw_timeline(
@@ -748,6 +800,74 @@ def main() -> None:
             png_lease.release()
         if sim_lease is not None:
             sim_lease.release()
+
+    fps = (
+        1.0 / (data["time_seconds"][1] - data["time_seconds"][0])
+        if n > 1 else 0.0
+    )
+    receipt = {
+        "schema_version": 1,
+        "kind": "timeline",
+        "label": title,
+        "image": str(output),
+        "image_sha256": hashlib.sha256(output.resolve().read_bytes()).hexdigest(),
+        "tsv": str(tsv),
+        "tsv_sha256": hashlib.sha256(tsv.read_bytes()).hexdigest(),
+        "config": str(config_path) if config_path else None,
+        "config_sha256": (
+            hashlib.sha256(config_path.read_bytes()).hexdigest()
+            if config_path else None
+        ),
+        "sim_out": str(sim_out) if sim_out else None,
+        "frames": n,
+        "fps": fps,
+        "pixels_per_frame": ppf,
+        "plot_left": left,
+        "plot_top": timeline_top,
+        "plot_width": timeline_width,
+        "frame_x": "plot_left + frame * pixels_per_frame",
+        "frame_label_format": "f0xHEX",
+        "evaluation_end_frame": evaluation_end,
+        "cold_cap_tiles": measured_cold_cap,
+        "prg_cap_summary": prg_cap_summary(measured_cold_cap),
+        "rows": [
+            {
+                "key": "req",
+                "top": timeline_top,
+                "height": REQ_HEIGHT,
+                "unit": "cells",
+            },
+            {
+                "key": "supply",
+                "top": timeline_top + REQ_HEIGHT,
+                "height": SUPPLY_HEIGHT,
+                "unit": "patterns",
+            },
+            {
+                "key": "run",
+                "top": timeline_top + REQ_HEIGHT + SUPPLY_HEIGHT,
+                "height": RUN_HEIGHT,
+                "unit": "runs",
+            },
+            {
+                "key": "band",
+                "top": (
+                    timeline_top
+                    + REQ_HEIGHT
+                    + SUPPLY_HEIGHT
+                    + RUN_HEIGHT
+                ),
+                "height": BAND_HEIGHT,
+                "unit": "percent of physical slot",
+            },
+        ],
+    }
+    receipt_path = Path(str(output) + ".json")
+    receipt_path.write_text(
+        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(receipt_path)
 
 
 if __name__ == "__main__":

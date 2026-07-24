@@ -35,7 +35,7 @@ def main() -> None:
     )
     parser.add_argument("--header", type=Path, required=True)
     parser.add_argument("--body", type=Path, required=True)
-    parser.add_argument("--csv", type=Path, required=True)
+    parser.add_argument("--tsv", type=Path, required=True)
     parser.add_argument(
         "--min-confidence",
         type=float,
@@ -48,30 +48,32 @@ def main() -> None:
         help="HUD N column (default: cold_runs_low8, then legacy dma_calls)",
     )
     args = parser.parse_args()
+    if args.tsv.suffix.lower() != ".tsv":
+        parser.error("--tsv input must use the .tsv extension")
 
     expected = packed_run_counts(args.header, args.body)
     compared = 0
     skipped_confidence = 0
     skipped_empty = 0
     mismatches: list[tuple[int, int, int, float]] = []
-    with args.csv.open(newline="", encoding="utf-8-sig") as handle:
-        rows = csv.DictReader(handle)
+    with args.tsv.open(newline="", encoding="utf-8") as handle:
+        rows = csv.DictReader(handle, delimiter="\t")
         fields = rows.fieldnames or []
         column = args.column
         if not column:
             if "cold_runs_low8" in fields:
                 column = "cold_runs_low8"
             elif "dma_calls" in fields:
-                # Early p45 diagnostic CSVs used this name before N was
+                # Early p45 diagnostic logs used this name before N was
                 # documented as a descriptor count. It is not a DMA-call count.
                 column = "dma_calls"
             else:
                 raise SystemExit(
-                    "CSV has neither cold_runs_low8 nor legacy dma_calls")
+                    "TSV has neither cold_runs_low8 nor legacy dma_calls")
         if column not in fields:
-            raise SystemExit(f"CSV has no {column!r} column")
+            raise SystemExit(f"TSV has no {column!r} column")
         if "frame" not in fields:
-            raise SystemExit("CSV has no 'frame' column")
+            raise SystemExit("TSV has no 'frame' column")
 
         for row in rows:
             value = (row.get(column) or "").strip()
@@ -86,7 +88,7 @@ def main() -> None:
             frame = int(frame_text)
             if not 0 <= frame < len(expected):
                 raise SystemExit(
-                    f"CSV frame {frame} is outside packed stream 0..{len(expected) - 1}")
+                    f"TSV frame {frame} is outside packed stream 0..{len(expected) - 1}")
             observed = int(value)
             packed_low8 = expected[frame] & 0xFF
             compared += 1

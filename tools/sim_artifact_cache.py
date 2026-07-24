@@ -2,14 +2,13 @@
 """Stable identities and validation for completed sim artifacts.
 
 The cache identity deliberately ignores profile filenames, TOML formatting,
-and output paths.  It authenticates the source bytes, every effective
-``CBRSIM_*`` input that can affect the encode, pack settings, and the encoder
-implementation instead.
+output paths, and individual source-file hashes. It authenticates the source
+bytes, every effective ``CBRSIM_*`` input, and the public encoder version.
+Output-affecting code or fixed-policy changes must bump that version.
 """
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import os
@@ -18,16 +17,15 @@ import pickle
 from typing import Any, Mapping
 
 import numpy as np
+from analysis_logs import encoder_version
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 3
 
 # Performance controls and per-pass plumbing do not change encoded decisions.
 _IGNORED_ENV_EXACT = {
     "CBRSIM_CONFIG",
-    "CBRSIM_DELIVERY_COLD_CAPS",
-    "CBRSIM_DELIVERY_REPAIR_REQUEST",
     "CBRSIM_EMIT_DEC",
     "CBRSIM_FORCE_REENCODE",
     "CBRSIM_LOOP_PROFILE_INTERVAL",
@@ -46,53 +44,8 @@ _IGNORED_ENV_EXACT = {
     "CBRSIM_WORKERS",
 }
 
-# Keep this list focused on files that can change sim decisions or their
-# physical accounting.  Render-only layout/style changes must not force a sim.
-ENCODER_FILES = (
-    "tools/sim.py",
-    "tools/av_config.py",
-    "tools/gpu_quant.py",
-    "tools/ima_adpcm.py",
-    "tools/palette_algorithms.py",
-    "tools/pattern_supply.py",
-    "tools/quantize_global4_tiles.py",
-    "tools/quantize_md_video.py",
-    "tools/raw_prefetch.py",
-    "tools/shadow_updates.py",
-    "tools/sim_pass_cache.py",
-    "tools/stream_schedule.py",
-    "tools/tile_alloc.py",
-    "tools/ttrc_routing.py",
-    "tools/upgrade_planner.py",
-    "tools/video_geometry.py",
-)
-
-
 class CacheValidationError(RuntimeError):
     pass
-
-
-class _DocstringStripper(ast.NodeTransformer):
-    def _strip(self, node: ast.AST) -> ast.AST:
-        body = getattr(node, "body", None)
-        if (isinstance(body, list) and body
-                and isinstance(body[0], ast.Expr)
-                and isinstance(body[0].value, ast.Constant)
-                and isinstance(body[0].value.value, str)):
-            node.body = body[1:]
-        return node
-
-    def visit_Module(self, node: ast.Module) -> ast.AST:
-        return self.generic_visit(self._strip(node))
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        return self.generic_visit(self._strip(node))
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
-        return self.generic_visit(self._strip(node))
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
-        return self.generic_visit(self._strip(node))
 
 
 def _sha256_file(path: Path) -> str:
@@ -100,24 +53,6 @@ def _sha256_file(path: Path) -> str:
     with path.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
-    return digest.hexdigest()
-
-
-def _python_semantic_bytes(path: Path) -> bytes:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    tree = _DocstringStripper().visit(tree)
-    ast.fix_missing_locations(tree)
-    return ast.dump(
-        tree, annotate_fields=True, include_attributes=False).encode("utf-8")
-
-
-def encoder_fingerprint() -> str:
-    digest = hashlib.sha256()
-    for relative in ENCODER_FILES:
-        path = PROJECT_ROOT / relative
-        digest.update(relative.encode("utf-8") + b"\0")
-        digest.update(_python_semantic_bytes(path))
-        digest.update(b"\0")
     return digest.hexdigest()
 
 
@@ -147,7 +82,6 @@ def effective_environment(
 def build_identity(
         *,
         source: str | os.PathLike[str],
-        pack: Mapping[str, Any],
         emit_decisions: bool,
         environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -155,9 +89,8 @@ def build_identity(
         "schema_version": CACHE_SCHEMA_VERSION,
         "source": source_identity(source),
         "effective_environment": effective_environment(environ),
-        "pack": dict(sorted(pack.items())),
         "emit_decisions": bool(emit_decisions),
-        "encoder_sha256": encoder_fingerprint(),
+        "encoder_version": encoder_version(),
     }
     return identity
 
@@ -181,7 +114,6 @@ def readable_key(
     source = identity["source"]
     settings = {
         "effective_environment": identity["effective_environment"],
-        "pack": identity["pack"],
         "emit_decisions": identity["emit_decisions"],
     }
     settings_sha = identity_sha256(settings)
@@ -189,7 +121,7 @@ def readable_key(
         f"{source['name']}-{mode.upper()}-{width}x{height}-{fps}fps-"
         f"fit-{fit}-cold{cold_cap}-"
         f"src{source['sha256'][:8]}-cfg{settings_sha[:8]}-"
-        f"enc{identity['encoder_sha256'][:8]}"
+        f"enc-{identity['encoder_version']}"
     )
 
 

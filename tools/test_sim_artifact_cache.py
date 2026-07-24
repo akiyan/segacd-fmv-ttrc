@@ -35,31 +35,31 @@ class SimArtifactCacheTests(unittest.TestCase):
                 "CBRSIM_CONFIG": "/two/renamed.toml",
             }
             with patch.object(
-                    cache, "encoder_fingerprint", return_value="a" * 64):
+                    cache, "encoder_version", return_value="e123"):
                 first = cache.build_identity(
-                    source=source, pack={"fill": True},
+                    source=source,
                     emit_decisions=True, environ=first_env)
                 second = cache.build_identity(
-                    source=source, pack={"fill": True},
+                    source=source,
                     emit_decisions=True, environ=second_env)
             self.assertEqual(first, second)
 
-    def test_output_setting_and_source_content_change_identity(self) -> None:
+    def test_encoder_setting_and_source_content_change_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "movie.mp4"
             source.write_bytes(b"revision one")
             env = {"CBRSIM_COLD_CAP": "190"}
             with patch.object(
-                    cache, "encoder_fingerprint", return_value="b" * 64):
+                    cache, "encoder_version", return_value="e123"):
                 first = cache.build_identity(
-                    source=source, pack={"fill": True},
+                    source=source,
                     emit_decisions=True, environ=env)
                 changed_setting = cache.build_identity(
-                    source=source, pack={"fill": False},
-                    emit_decisions=True, environ=env)
+                    source=source, emit_decisions=True,
+                    environ={**env, "CBRSIM_COLD_CAP": "191"})
                 source.write_bytes(b"revision two")
                 changed_source = cache.build_identity(
-                    source=source, pack={"fill": True},
+                    source=source,
                     emit_decisions=True, environ=env)
             self.assertNotEqual(
                 cache.identity_sha256(first),
@@ -72,9 +72,8 @@ class SimArtifactCacheTests(unittest.TestCase):
         identity = {
             "source": {"name": "SonicJamOp", "sha256": "1" * 64},
             "effective_environment": {"CBRSIM_COLD_CAP": "190"},
-            "pack": {"fill": True},
             "emit_decisions": True,
-            "encoder_sha256": "2" * 64,
+            "encoder_version": "e123",
         }
         key = cache.readable_key(
             identity,
@@ -82,7 +81,19 @@ class SimArtifactCacheTests(unittest.TestCase):
             fit="crop", cold_cap=190)
         self.assertIn("SonicJamOp-H40-320x224-30fps-fit-crop-cold190", key)
         self.assertIn("src11111111", key)
-        self.assertIn("enc22222222", key)
+        self.assertIn("enc-e123", key)
+
+    def test_encoder_version_change_invalidates_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "movie.mp4"
+            source.write_bytes(b"same source")
+            with patch.object(
+                    cache, "encoder_version", side_effect=("e123", "e124")):
+                first = cache.build_identity(
+                    source=source, emit_decisions=True, environ={})
+                second = cache.build_identity(
+                    source=source, emit_decisions=True, environ={})
+            self.assertNotEqual(first, second)
 
 
 if __name__ == "__main__":

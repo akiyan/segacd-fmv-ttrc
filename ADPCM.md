@@ -1,6 +1,6 @@
 # 22.05 kHz IMA ADPCM playback
 
-TTRC v15 uses 22.05 kHz mono IMA ADPCM as its only audio format. The Sub CPU
+TTRC v16 uses 22.05 kHz mono IMA ADPCM as its only audio format. The Sub CPU
 decodes each timed control chunk and writes the reconstructed 8-bit
 sign-magnitude samples to the RF5C164.
 
@@ -23,7 +23,7 @@ and RF5C164 output on the Sub CPU.
 - `HEADER.DAT` startup audio is already reconstructed RF5C164 data, one chunk
   per sector. Timed control blocks carry future checkpointed ADPCM chunks so
   the wave-RAM write reserve remains persistent.
-- Header offset 54 is the decoded RF5C164 sample count per frame. TTRC v15
+- Header offset 54 is the decoded RF5C164 sample count per frame. TTRC v16
   derives the control size as `4 + decoded_samples / 2`.
 - Header offset 58 stores the RF5C164 frequency delta calculated from the fixed
   chunk size and actual playback cadence.

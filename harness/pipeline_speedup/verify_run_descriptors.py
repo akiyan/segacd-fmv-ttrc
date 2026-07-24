@@ -7,7 +7,7 @@ absolute-address alignment pad:
     n_runs:u16, repeated v12 indexed four-byte descriptors
 
 This checker does not import the packer.  It independently reads the real split
-TTRC v15 files and reconstructs every current control and payload byte. The
+TTRC v16 files and reconstructs every current control and payload byte. The
 display entries remain in cell order, while the p39 suffix and physical pattern
 payload independently follow ascending VRAM-slot order.  The checker proves both
 views against the same decisions and proves the suffix consumes each physical
@@ -184,7 +184,8 @@ def parse_control(
 
     bitmap_start = 8
     bitmap_bytes = (cells + 7) // 8
-    entries_start = bitmap_start + bitmap_bytes
+    bitmap_end = bitmap_start + bitmap_bytes
+    entries_start = (bitmap_end + 1) & ~1
     entries_end = entries_start + 2 * n_upd
     if use_list:
         entries_start = bitmap_start
@@ -209,7 +210,9 @@ def parse_control(
         bitmap = bytes(bitmap_mut)
         entries = tuple(entries_mut)
     else:
-        bitmap = raw[bitmap_start:entries_start]
+        bitmap = raw[bitmap_start:bitmap_end]
+        if any(raw[bitmap_end:entries_start]):
+            raise AssertionError(f"frame {seq}: bitmap alignment pad is nonzero")
         entries = (
             tuple(struct.unpack_from(f">{n_upd}H", raw, entries_start))
             if n_upd else ()
@@ -245,9 +248,9 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, pool, base = struct.unpack_from(
         ">4sHHHHHHH", header
     )
-    if magic != b"TTRC" or version != 15:
+    if magic != b"TTRC" or version != 16:
         raise AssertionError(
-            f"expected split TTRC v15, got {magic!r} v{version}")
+            f"expected split TTRC v16, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 
@@ -307,7 +310,13 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
             features,
         )
     ]
-    frame0_cold = sum(bool(entry & 0x8000) for entry in controls[0].entries)
+    frame0_runs = decode_descriptors(
+        controls[0].descriptor_suffix or b"",
+        bool(features & FEATURE_PATTERN_SUPPLY),
+    )
+    frame0_cold = sum(
+        count for _slot, count, source, _dic_index in frame0_runs
+        if source == SOURCE_PRG)
     frame0_payload_start = frame0_offset + f0_ctrl_sectors * SECTOR
     frame0_payload = header[
         frame0_payload_start : frame0_payload_start + frame0_cold * PATTERN_BYTES
@@ -557,7 +566,7 @@ def verify_descriptor_alignment() -> None:
     """Prove the assembly's absolute alignment for even and odd audio starts."""
     for bitmap_bytes in range(1, 141):
         for audio_bytes in (372, 443, 887, 444, 888):
-            audio_start = 8 + bitmap_bytes + 2 * 17
+            audio_start = 8 + ((bitmap_bytes + 1) & ~1) + 2 * 17
             packed_suffix = (audio_start + audio_bytes + 1) & ~1
             player_suffix = audio_start + audio_bytes
             if player_suffix & 1:
@@ -660,8 +669,6 @@ def main() -> None:
         if seq == 0:
             if control.use_list:
                 raise AssertionError("frame 0 must use the boot cold-entry form")
-            if not all(bool(entry & 0x8000) for entry in control.entries):
-                raise AssertionError("frame 0 contains a non-cold display entry")
             packed_slots = expanded_slots(decoded_packed_runs)
             if any(source != SOURCE_PRG for _slot, source in packed_slots):
                 raise AssertionError("frame 0 boot runs use a non-boot source")
@@ -673,17 +680,25 @@ def main() -> None:
                 if previous != pattern:
                     raise AssertionError(
                         f"frame 0 slot {slot} maps to conflicting patterns")
-            descriptor_slots = tuple(slot for slot, _source in packed_slots)
-            if descriptor_slots != tuple(sorted(slot_patterns)):
-                raise AssertionError(
-                    "frame 0 descriptors do not cover display slots in "
-                    "physical order")
-            expected_frame_payload = b"".join(
-                slot_patterns[slot] for slot in descriptor_slots)
             physical_payload = stream.source_payloads[0]
-            if physical_payload != expected_frame_payload:
+            descriptor_slots = tuple(slot for slot, _source in packed_slots)
+            useful_payload = len(descriptor_slots) * 32
+            if len(physical_payload) < useful_payload or any(
+                    physical_payload[useful_payload:]):
                 raise AssertionError(
-                    "frame 0 physical payload differs from decisions")
+                    "frame 0 payload length differs from descriptor demand")
+            physical_payload = physical_payload[:useful_payload]
+            physical_by_slot = {
+                slot: physical_payload[index * 32:(index + 1) * 32]
+                for index, slot in enumerate(descriptor_slots)
+            }
+            if not set(slot_patterns).issubset(physical_by_slot):
+                raise AssertionError(
+                    "frame 0 descriptors do not cover every displayed slot")
+            for slot, pattern in slot_patterns.items():
+                if physical_by_slot[slot] != pattern:
+                    raise AssertionError(
+                        "frame 0 physical payload differs at a displayed slot")
             source_positions[0] = len(physical_payload)
             total_updates += len(control.entries)
             total_cold += len(descriptor_slots)
@@ -693,20 +708,23 @@ def main() -> None:
             continue
 
         if control.use_list:
-            expanded = iter(expanded_slots(decoded_packed_runs))
-            pending = next(expanded, None)
+            source_by_slot = {}
+            for slot, source in expanded_slots(decoded_packed_runs):
+                if slot in source_by_slot:
+                    raise AssertionError(
+                        f"frame {seq}: duplicate physical run slot {slot}")
+                source_by_slot[slot] = source
             inferred_colds = []
             inferred_sources = []
             for entry in control.entries:
                 slot = (entry & 0x07FF) - stream.base
-                is_cold = pending is not None and slot == pending[0]
+                source = source_by_slot.pop(slot, None)
+                is_cold = source is not None
                 inferred_colds.append(is_cold)
-                inferred_sources.append(pending[1] if is_cold else 0)
-                if is_cold:
-                    pending = next(expanded, None)
-            if pending is not None:
+                inferred_sources.append(source if is_cold else 0)
+            if source_by_slot and not stream.features & FEATURE_VRAM_RAW_PREFETCH:
                 raise AssertionError(
-                    f"frame {seq}: run suffix is not a subsequence of update slots")
+                    f"frame {seq}: run suffix contains non-update slots")
             colds = tuple(inferred_colds)
             sources = tuple(inferred_sources)
         else:
@@ -728,7 +746,7 @@ def main() -> None:
                 strict=True)
             if cold
         ]
-        if not control.use_list and packed_suffix is not None:
+        if packed_suffix is not None:
             # Bitmap/list entries intentionally remain in cell order.  The
             # packed suffix and source payload are independently ordered by
             # physical VRAM slot so the player can issue longer contiguous
@@ -753,7 +771,8 @@ def main() -> None:
         suffix = packed_suffix or expected_suffix
         if packed_suffix is not None and suffix != expected_suffix:
             raise AssertionError(
-                f"frame {seq}: packed descriptor bytes differ from physical runs"
+                f"frame {seq}: packed descriptor bytes differ from physical runs "
+                f"(packed={suffix.hex()} expected={expected_suffix.hex()})"
             )
         decoded_runs = decode_descriptors(suffix, source_aware)
         if decoded_runs != expected_runs:

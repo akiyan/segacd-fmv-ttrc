@@ -160,18 +160,22 @@ def source_filter(mode: str, width: int, height: int, src_w: int, src_h: int,
         # Scale it to the complete coded raster: this is object-fit: cover,
         # not merely removal of black source margins.
         iw, ih = width, height
+        current_w, current_h = cw, ch
     else:
         # Normalize source SAR, then scale the complete source to the largest
         # raster with the target mode's displayed aspect. Padding never drops
         # source pixels; crop remains an explicit opt-in.
         vf = ["setsar=1"]
         iw, ih = fw, fh
+        current_w, current_h = src_w, src_h
     if denoise:
         # Keep the source's displayed shape during the denoise pass. Scaling
         # to the MD raster before cropping/padding would apply the HAR twice.
         vf += [f"scale={iw * 2}:{ih * 2}:flags={resize_filter}",
                "hqdn3d=6:6:8:8", "gblur=sigma=1.6"]
-    vf.append(f"scale={iw}:{ih}:flags={resize_filter}")
+        current_w, current_h = iw * 2, ih * 2
+    if (current_w, current_h) != (iw, ih):
+        vf.append(f"scale={iw}:{ih}:flags={resize_filter}")
     if fit == "pad":
         vf.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
     return ",".join(vf)

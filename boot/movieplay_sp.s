@@ -30,10 +30,9 @@
 .endif
 .endif
 
-/* The packed cold-run parser is used by every pattern-supply stream and by
-   the dense 24/30fps cadence. A specialized lower-rate build always takes the
-   proven legacy entry walker, so do not spend scarce 4 KiB boot-SP space on
-   an unreachable parser. */
+/* The packed cold-run parser is used by every unified pattern-supply stream
+   and by the dense 24/30fps cadence.  A legacy lower-rate plain-Prg diagnostic
+   build may still omit it to preserve the entry walker. */
 .ifdef INCLUDE_PATTERN_SUPPLY
 .equ INCLUDE_COLD_RUN_FASTPATH, 1
 .else
@@ -105,8 +104,8 @@
 
 .equ SUB_BANK_1M, 0x000C0000
 
-/* --- TTRC v15 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
-.equ ROUTING_VERSION,       15
+/* --- TTRC v16 packed-routing/audio contract (checked by tools/check_player_ring.py) --- */
+.equ ROUTING_VERSION,       16
 .equ ROUTING_BYTES,         16384
 .equ ROUTING_MAX_FRAMES,    16384
 .equ ROUTING_SECTOR_BYTES,  2048
@@ -133,11 +132,10 @@
 .equ SP_STACK,    0x0007FF00        /* スタック最上位(apply端0x7F800の上, 1.8KB) */
 /* 0x9800-0xC000は連続読み中にBIOSが踏む(回収を試みたら化けた)。RINGは0xC000から。 */
 .equ RING_BASE,   0x0000C000
-.equ RING_SIZE,   0x0006B000        /* 428KB。APPLY直前までの物理上限、20KB jitter余白は維持 */
+.equ RING_SIZE,   0x0006B000        /* 428KB。APPLY直前までの物理上限。fps別jitterはpackで予約 */
 .equ RING_END,    RING_BASE+RING_SIZE     /* 0x77000 = APPLY_BASE */
 .equ RING_PATTERNS, RING_SIZE/32
-.equ RING_CAP_END,0x00071000        /* usable cap 404KBの終端。424KB backpressureまで20KB。 */
-.equ F0PAT_TMP,   0x00071000        /* boot限定: H40最大1120 patterns=36KBをjitter tailから
+.equ F0PAT_TMP,   0x00071000        /* boot限定: H40最大1120 patterns=36KBを固定scratchから
                                        未使用APPLY先頭まで連続配置し、BODY前に展開する。 */
 .equ APPLY_BASE,  0x00077000
 .equ APPLY_SIZE,  0x00008800        /* 34KB(16KBは頭詰まり→滑りを実測。42KB→34KBはrouting移設分) */
@@ -214,7 +212,7 @@
 
 .equ HEADER_SECTORS,  1
 /* frames/tcols/trows/cells/pool/base/prebuf/routing/mode は HEADER.DAT の
-   v15ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
+   v16ヘッダから起動時に読む(h_* 変数)。焼き込み定数の手動更新は廃止。 */
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
@@ -368,8 +366,8 @@ bad_header:
 	moveq	#12, d0
 1:
 	move.w	d0, h_paltab_sec
-	/* Adapt both mid-expand and wave-writer polls to nominal fps.  24fps also
-	   needs the cold-run fast path; lower rates use the proven dense cadence. */
+	/* Adapt both mid-expand and wave-writer polls to nominal fps.  Pattern
+	   supply independently selects the cold-run parser at every cadence. */
 	move.w	#0x03FF, d1
 	move.w	#0x01FF, d2
 	move.w	56(a0), d0			/* nominal fps; zero safely selects dense polling */
@@ -388,9 +386,9 @@ pm_set:
 	tst.w	d1
 	beq	bad_header
 	move.w	d1, h_audio_fd
-	move.w	62(a0), h_features		/* v15 optional stream features */
+	move.w	62(a0), h_features		/* v16 optional stream features */
 	btst	#2, h_features+1
-	bne	bad_header			/* removed audio-codec flag is reserved in v15 */
+	bne	bad_header			/* removed audio-codec flag is reserved in v16 */
 	move.w	h_features, d1
 	andi.w	#0x0010, d1
 	beq.s	1f
@@ -502,8 +500,8 @@ ap_done:
 	PC_MOVE_W h_f0_ctrl_sec, PC_F0_CTRL_SEC, d0
 	lea	CTRL_SCR, a0
 	bsr	drain_lin_staged
-	/* frame0 patterns はusable cap後方から未使用APPLY先頭へ一時保持する。
-	   BODY開始前に展開済みなので20KB timed jitter余白とは同時利用しない。 */
+	/* frame0 patterns は固定boot scratchから未使用APPLY先頭へ一時保持する。
+	   BODY開始前に展開済みなのでfps別timed jitter余白とは同時利用しない。 */
 	move.l	#F0PAT_TMP, f0_pat_addr
 	moveq	#0, d0
 	PC_MOVE_W h_f0_pat_sec, PC_F0_PAT_SEC, d0
@@ -1026,7 +1024,7 @@ p1_top:
 	PC_CMP_W h_frames, PC_FRAMES, d0
 	bhs	p1_ret				/* ストリーム終端: 読まずに戻る */
 	tst.w	drain_k
-	bne	p1_read				/* コマ途中: cur_fsec は計算済み */
+	bne.s	p1_read				/* コマ途中: cur_fsec は計算済み */
 	/* --- コマ先頭: v7+ routingを展開し cur_fsec を計算 --- */
 	lea	ROUTING, a0
 	moveq	#0, d2
@@ -1042,7 +1040,7 @@ p1_top:
 	move.w	sec_acc, d0
 	PC_ADD_W sec_rem, PC_SEC_REM, d0
 	PC_CMP_W sec_mod, PC_SEC_MOD, d0
-	blo	1f
+	blo.s	1f
 	PC_SUB_W sec_mod, PC_SEC_MOD, d0
 	addq.w	#1, d5
 1:
@@ -1050,7 +1048,7 @@ p1_top:
 	move.w	d5, d6				/* delta = ratedelta - lead(先行ぶん, 負可) */
 	sub.w	lead, d6
 	cmp.w	d6, d2				/* cur_fsec = max(total, delta) 符号付き */
-	bge	1f				/* total >= delta → cur_fsec = total */
+	bge.s	1f				/* total >= delta → cur_fsec = total */
 	move.w	d6, d2				/* else cur_fsec = delta */
 1:
 	move.w	d2, cur_fsec
@@ -1059,7 +1057,7 @@ p1_top:
 	sub.w	d5, d6
 	move.w	d6, lead
 	tst.w	cur_fsec			/* fsec==0(total=0かつ先行中)= ディスク上0セクタ */
-	bne	p1_read
+	bne.s	p1_read
 	addq.w	#1, drain_frame			/* 前進のみ、read無し(データは先行配送済み) */
 	clr.w	drain_k
 	bra	p1_top
@@ -1070,17 +1068,17 @@ p1_read:
 	move.w	cur_total, d4			/* stage_copy preserves cached routing in memory */
 	move.w	drain_k, d3
 	cmp.w	d1, d3
-	blo	p1_apply			/* k < n_ctrl: BODY control comes first */
+	blo.s	p1_apply			/* k < n_ctrl: BODY control comes first */
 	cmp.w	d4, d3
-	blo	p1_ring				/* n_ctrl <= k < total: payload */
-	bra	p1_adv				/* k >= total: pad セクタ(捨て) */
+	blo.s	p1_ring				/* n_ctrl <= k < total: payload */
+	bra.s	p1_adv				/* k >= total: pad セクタ(捨て) */
 p1_ring:
 	movea.l	ring_tail, a1
 	bsr	stage_copy			/* STAGE→PRG 2048B CPUコピー */
 	movea.l	ring_tail, a0
 	lea	0x800(a0), a0
 	cmpa.l	#RING_END, a0
-	blo	1f
+	blo.s	1f
 	movea.l	#RING_BASE, a0
 1:
 	move.l	a0, ring_tail
@@ -1099,14 +1097,14 @@ p1_ring:
 	move.w	d0, (COMSTAT2).l
 3:
 .endif
-	bra	p1_adv
+	bra.s	p1_adv
 p1_apply:
 	movea.l	apply_tail, a1
 	bsr	stage_copy
 	movea.l	apply_tail, a0
 	lea	0x800(a0), a0
 	cmpa.l	#APPLY_END, a0
-	blo	1f
+	blo.s	1f
 	movea.l	#APPLY_BASE, a0
 1:
 	move.l	a0, apply_tail
@@ -1114,7 +1112,7 @@ p1_adv:
 	addq.w	#1, drain_k
 	move.w	drain_k, d3
 	cmp.w	cur_fsec, d3			/* v4: fsec(=max(total,rate) レートマッチ)セクタで1コマ完了 */
-	blo	p1_ret
+	blo.s	p1_ret
 	clr.w	drain_k
 	addq.w	#1, drain_frame
 p1_ret:
@@ -1153,33 +1151,62 @@ pump_poll:
 	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
+/* a4 is the local PrgBuf pop cursor during expansion. Publish completed pops
+   before a refill poll; otherwise pump_poll sees the previous frame's full
+   ring until ef_store and suppresses the only post-cold refill opportunity. */
+pump_poll_after_pop:
+	tst.w	f0_expand
+	bne.s	1f
+	move.l	a4, ring_head
+1:
+	bra.s	pump_poll
+
 pump_poll_core:
 	move.w	drain_frame, d0
-	beq	pp_done				/* v2: frame0展開中は drain_frame=0。ここで pump すると
+	beq.s	pp_done				/* v2: frame0展開中は drain_frame=0。ここで pump すると
 						   routing[0]=0 によりframe1の実セクタをpad扱いで捨て、
 						   CD位置とdrain_k/frameが N セクタ desync → frame1が化ける。
 						   streaming state(drain_frame>=1)確立まで pump しない。 */
 	PC_CMP_W h_frames, PC_FRAMES, d0
-	bcc	pp_done				/* ストリーム終端 */
-	/* リング余裕: occupied = (tail-head) mod SIZE が SIZE-0x1000 以上なら見送り */
+	bcc.s	pp_done				/* ストリーム終端 */
+	/* Guard only the destination of the next physical sector.  The old pair
+	   of unconditional guards stopped control and padding whenever PrgBuf was
+	   full (and stopped payload whenever APPLY was full), so the continuously
+	   arriving CD sectors slipped even though their actual destination had
+	   room.  ROUTING is valid in both physical Word-RAM banks. */
+	lea	ROUTING, a0
+	moveq	#0, d2
+	move.b	0(a0,d0.w), d2
+	moveq	#ROUTING_CTRL_MASK, d1
+	and.w	d2, d1				/* n_ctrl */
+	move.w	drain_k, d3
+	cmp.w	d3, d1
+	bhi.s	pp_apply_space			/* k < n_ctrl: control -> APPLY only */
+	lsr.w	#ROUTING_TOTAL_SHIFT, d2	/* total useful sectors */
+	cmp.w	d3, d2
+	bls.s	pp_cdc				/* k >= total: padding -> no buffer guard */
+	/* Payload -> PrgBuf only. occupied=(tail-head) mod SIZE. */
 	move.l	ring_tail, d0
 	sub.l	ring_head, d0
-	bpl	1f
+	bpl.s	1f
 	add.l	#RING_SIZE, d0
 1:
 	cmp.l	#RING_SIZE-0x1000, d0
-	bcc	pp_done
-	/* apply余裕 */
+	bcc.s	pp_done
+	bra.s	pp_cdc
+pp_apply_space:
+	/* Control -> APPLY only. */
 	move.l	apply_tail, d0
 	sub.l	apply_cur, d0
-	bpl	2f
+	bpl.s	2f
 	add.l	#APPLY_SIZE, d0
 2:
 	cmp.l	#APPLY_SIZE-0x1000, d0
-	bcc	pp_done
+	bcc.s	pp_done
+pp_cdc:
 	/* CDCにセクタ準備できてる? (CDC_STAT: キャリー=未準備) */
 	BIOSCALL BIOS_CDC_STAT
-	bcs	pp_done
+	bcs.s	pp_done
 	bsr	pump1_core
 pp_done:
 	rts
@@ -1194,26 +1221,26 @@ process_frame:
 pf_pump:
 	move.w	frame_idx, d0			/* pump1_core may trash d0; reload each pass */
 	cmp.w	drain_frame, d0
-	blo	pf_ready			/* drain_frame > frame_idx: full frame already drained */
-	bhi	pf_body_blocked			/* BODY is still draining an older frame */
+	blo.s	pf_ready			/* drain_frame > frame_idx: full frame already drained */
+	bhi.s	pf_body_blocked			/* BODY is still draining an older frame */
 	/* Same frame: control-first means drain_k>=n_ctrl is sufficient.  n_ctrl=0
 	   is intentionally ready immediately because its bytes arrived earlier. */
 	lea	ROUTING, a0
 	moveq	#ROUTING_CTRL_MASK, d1
 	and.b	(a0,d0.w), d1			/* v7+ low three bits = n_ctrl */
 	cmp.w	drain_k, d1
-	bls	pf_ready
+	bls.s	pf_ready
 .ifdef DEBUG
 	addq.w	#1, pf_ctrl_wait
 .endif
-	bra	pf_need_pump
+	bra.s	pf_need_pump
 pf_body_blocked:
 .ifdef DEBUG
 	addq.w	#1, pf_body_wait
 .endif
 pf_need_pump:
 	bsr	pump1_core			/* non-preserving blocking sector pump */
-	bra	pf_pump
+	bra.s	pf_pump
 pf_ready:
 	addq.w	#1, frame_idx
 	bsr	fetch_control			/* apply循環 → CTRL_SCR 線形化 */
@@ -1224,7 +1251,7 @@ pf_ready:
 	move.w	frame_idx, d1
 	subq.w	#1, d1				/* 期待 seq */
 	cmp.w	d1, d0
-	bne	pf_desync
+	bne.s	pf_desync
 	bsr	pump_poll_core
 	bsr	expand_frame			/* CTRL_SCR → Word-RAM 出力 + 音声 */
 	rts
@@ -1267,7 +1294,7 @@ fetch_control:
 	move.l	#APPLY_END, d0
 	sub.l	a0, d0				/* d0 = APPLY_END - a0 (bytes) */
 	cmp.w	d6, d0
-	bcc	fc_nowrap			/* d0 >= 残 なら折返し無し */
+	bcc.s	fc_nowrap			/* d0 >= 残 なら折返し無し */
 	/* 折返し: first=d0 バイト, 残り d6-d0 */
 	move.w	d0, d5				/* first bytes */
 	sub.w	d5, d6				/* 残り */
@@ -1282,7 +1309,7 @@ fc_done:
 	movea.l	apply_cur, a0
 	adda.w	d7, a0
 	cmpa.l	#APPLY_END, a0
-	blo	3f
+	blo.s	3f
 	suba.l	#APPLY_SIZE, a0
 3:
 	move.l	a0, apply_cur
@@ -1346,8 +1373,20 @@ ef_bm:
 .equ ISO_DUMP_OFF, 0
 	btst	#SHADOW_UPDATE_LIST_BIT, d7
 	bne.s	ef_list_audio
-	PC_MOVE_W h_bmbytes, PC_BMBYTES, d0
+	/* v16 aligns the 16-bit entry array after an odd-sized bitmap. The
+	   specialized player folds that alignment into the immediate and adds no
+	   runtime branch or code-size cost to the full 4 KiB Sub image. */
+.ifdef PLAYER_SPECIALIZED
+	move.w	#((PC_BMBYTES+1)&0xFFFE), d0
 	adda.w	d0, a0				/* entries */
+.else
+	move.w	h_bmbytes, d0
+	adda.w	d0, a0
+	btst	#0, d0
+	beq.s	1f
+	addq.l	#1, a0
+1:
+.endif
 	/* Feed this frame's PCM before the variable-cost bitmap/cold expansion.
 	   The control block is already linear and complete, so the audio position is
 	   known now.  This only advances the time of the same writes; write_ptr and
@@ -1494,11 +1533,33 @@ ef_run_pattern:
 1:
 	dbra	d3, ef_run_pattern
 ef_run_next:
+	/* The low-rate legacy walker polls every 64 entries. Pattern-supply
+	   descriptors replaced that walk, but a single end-only poll leaves long
+	   15fps frames with no CDC service after PrgBuf space starts opening.
+	   Poll every four descriptors at low rate; d7 is already the persistent
+	   descriptor countdown, so this adds no state or format field. */
+.ifdef PLAYER_SPECIALIZED
+.if PC_PUMP_MASK != 0x03FF
+	move.w	d7, d0
+	andi.w	#3, d0
+	bne.s	1f
+	bsr	pump_poll_after_pop
+1:
+.endif
+.else
+	cmpi.w	#0x03FF, pump_mask
+	beq.s	1f
+	move.w	d7, d0
+	andi.w	#3, d0
+	bne.s	1f
+	bsr	pump_poll_after_pop
+1:
+.endif
 	dbra	d7, ef_run
 ef_runs_polled:
 	tst.w	d5				/* legacy path polls once iff at least one entry exists */
 	beq	ef_store
-	bsr	pump_poll
+	bsr	pump_poll_after_pop
 	bra	ef_store
 .endif
 .ifndef INCLUDE_PATTERN_SUPPLY
@@ -1558,7 +1619,7 @@ ef_entry_done:
 	   30fps, every 64 entries for <=20fps. Sparse frames finish sooner and need
 	   no bitmap-time polls for cells the Sub no longer processes. */
 	dbra	d1, 1f
-	bsr	pump_poll
+	bsr	pump_poll_after_pop
 	PC_MOVE_W pump_mask, PC_PUMP_MASK, d1
 1:
 	dbra	d7, ef_entry
@@ -1580,7 +1641,7 @@ ef_store:
 	move.w	pf_body_wait, (O_BODYWAIT).l
 .endif
 	tst.w	f0_expand
-	bne	1f
+	bne.s	1f
 	move.l	a4, ring_head			/* frame0はring_head書き戻さない(0xC000維持=frame1がPREBUF1から) */
 1:
 	rts
@@ -1591,7 +1652,7 @@ swap_settle:
 	   clears when the new mapping is usable.  Wait for the hardware condition
 	   instead of burning a fixed 0x400-iteration delay after every frame. */
 	btst	#1, (MEMMODE+1).l
-	bne	1b
+	bne.s	1b
 	rts
 
 read_cd:
@@ -1605,20 +1666,20 @@ read_cd:
 	BIOSCALL BIOS_ROM_READN
 wait_stat:
 	BIOSCALL BIOS_CDC_STAT
-	bcs	wait_stat
+	bcs.s	wait_stat
 wait_read:
 	BIOSCALL BIOS_CDC_READ
-	bcc	wait_read
+	bcc.s	wait_read
 wait_transfer:
 	movea.l	8(a5), a0
 	lea	12(a5), a1
 	BIOSCALL BIOS_CDC_TRN
-	bcc	wait_transfer
+	bcc.s	wait_transfer
 	BIOSCALL BIOS_CDC_ACK
 	addq.l	#1, (a5)
 	addi.l	#0x0800, 8(a5)
 	subq.l	#1, 4(a5)
-	bne	wait_stat
+	bne.s	wait_stat
 	movem.l	(sp)+, d0-d7/a0-a6
 	rts
 
@@ -1653,10 +1714,10 @@ read_filename_start:
 find_first_char:
 	movea.l	a1, a2
 	cmp.b	(a1)+, d0
-	bne	find_first_char
+	bne.s	find_first_char
 check_chars:
 	move.b	(a6)+, d0
-	beq	get_info
+	beq.s	get_info
 	cmp.b	(a1)+, d0
 	bne	read_filename_start
 	bra	check_chars

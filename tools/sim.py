@@ -11,7 +11,8 @@
 - パレット: 4本×15色をクリップ全体から学習し固定・共有(per-frameではない)。
 - 分散が非常に低い(=ほぼ単色)タイルだけ平均色へ均して単純化(FLATTEN_STD)。
   ディザ除去済みなので閾値は低めでよい。
-- ディザは行わない(圧縮効率優先, 実機フォーマットは無変更)。
+- 出力量子化では位置固定Bayerディザを常に使う。同じ画面座標には同じ
+  閾値を使うため、静止タイルの差分は増やさない。
 - **タイル重複排除(dedup)**: MDのネームテーブルは各セル→(パターンslot, パレット)。
   パターン(8x8 idx配列)はパレット非依存なので、同じidxパターンは VRAM に1つ
   だけ置き、複数セル(パレット違いも可)で使い回す。パターン転送32Bを共有でき、
@@ -123,8 +124,7 @@ AUDIO_RATE, AUDIO_PCM_BYTES, AUDIO_CONTROL_BYTES = av_config.audio_frame_layout(
 AUDIO_PLAYBACK_RATE = int(round(AUDIO_PCM_BYTES * FPS))
 PATTERN_BYTES = 32              # 4bpp 8x8 パターン
 NAME_BYTES = 2                  # ネームテーブル1エントリ(tile index + palette + priority)
-VRAM_TILES = int(os.environ.get("CBRSIM_VRAM_TILES", "1518"))   # VRAM常駐パターン数(LRU)。
-# デバッグオーバーレイのフォント予約分だけ実機側で減らす(例 1360)ときは env で指定。
+VRAM_TILES = av_config.VRAM_PATTERN_POOL_TILES
 FLATTEN_STD = 0.12              # rgb333(0-7)タイル内std平均。ディザ除去済みなので低め
 DETAIL_ALPHA = float(os.environ.get("CBRSIM_DETAIL_ALPHA", "0.0"))
 BORDER_TILES = 2
@@ -182,7 +182,7 @@ RESIDENT_K = int(os.environ.get("CBRSIM_RESIDENT_K", "24"))
 RESIDENT_BW = 24
 # Near(F3): 変化タイルのうち「表示中(old)とtarget(real)が見た目ほぼ同じ」を更新省略。
 # 常に old(表示中) vs target を比較するのでドリフトはF3の距離で頭打ち。env CBRSIM_NEAR=1 で有効。
-NEAR_ON = os.environ.get("CBRSIM_NEAR", "1") != "0"        # 既定ON(全機能ON)。OFFは CBRSIM_NEAR=0
+NEAR_ON = True
 NEAR_F3 = dict(Ym=float(os.environ.get("CBRSIM_NEAR_YM", "10")),   # 画素輝度差の平均しきい(厳格化)
                Yp=float(os.environ.get("CBRSIM_NEAR_YP", "28")),   # 画素輝度差の最大しきい(形は軽く効く)
                C=float(os.environ.get("CBRSIM_NEAR_C", "24")))     # 画素色差の平均しきい
@@ -259,18 +259,19 @@ SLOT_LOCALITY_FINAL_ITERATIONS = 160
 SLOT_LOCALITY_HEAVY_RUN_TARGET = 30
 SLOT_LOCALITY_RETRY_EXIT = 75
 SLOT_LOCALITY_MAX_ACCOUNTING_PASSES = 4
-DELIVERY_SCHEDULE_RETRY_EXIT = 76
-DELIVERY_SCHEDULE_MAX_REPAIR_PASSES = 16
 # PRG-RAM先読みバッファ: 再生前にPRGへ載せた静的タイル集合(pickle set of pattern keys)。
 # ここにあるパターンは再生中いつでもCD 0バイト(RAM→VRAM DMAのみ)で出せる=Fill扱い。
 PRG_PRELOAD_PATH = os.environ.get("CBRSIM_PRG_PRELOAD", "")
 # Whole-movie quality budget: easy frames retain virtual bytes and demanding
 # frames spend them.  This is encoder accounting, not a fifth physical buffer.
-# Its ceiling matches usable PrgBuf capacity so the encoder cannot assume more
-# temporal freedom than the player can schedule.
+# Its ceiling matches the normal fps-specific PrgBuf capacity. The exact
+# physical delivery proof separately owns the larger back-pressure ceiling and
+# may use only the cadence-scaled jitter interval above this normal capacity.
 QUALITY_BUDGET_ON = True
-QUALITY_BUDGET_KB = int(os.environ.get(
-    "CBRSIM_QUALITY_BUDGET_KB", str(av_config.QUALITY_BUDGET_KB)))
+PRG_BUF_CAP_KB = av_config.prg_buf_cap_kb(FPS)
+PRG_DELIVERY_CAP_KB = av_config.physical_delivery_cap_kb(FPS)
+PRG_JITTER_HEADROOM_KB = av_config.ring_jitter_headroom_kb(FPS)
+QUALITY_BUDGET_KB = av_config.quality_budget_kb(FPS)
 QUALITY_BUDGET_BYTES = QUALITY_BUDGET_KB * 1024
 # 格上げパス(既定ON): 当該フレームの余り + 画質予算で、近似(Near/Flbk)や持ち越しをRaw/Bufに格上げ。
 # 0で無効(=従来の帯域余し挙動に戻せる, 比較用)。
@@ -289,18 +290,15 @@ MAX_RUN_CONTROL_BYTES = stream_schedule.max_run_control_reservation(
 # free resident slots.  It is default-on because it adds no timed BODY work.
 # Optional runtime prefetch remains profile-gated: only spare cold/BODY
 # capacity may move next-frame work earlier, and visible work always wins.
-BOOT_VRAM_PREFETCH_ON = (
-    os.environ.get("CBRSIM_BOOT_VRAM_PREFETCH", "1") != "0")
+BOOT_VRAM_PREFETCH_ON = True
 RAW_PREFETCH_ON = os.environ.get("CBRSIM_RAW_PREFETCH", "0") != "0"
 RAW_PREFETCH_LOOKAHEAD = 1
 RAW_PREFETCH_MAX_REQUESTS_PER_FRAME = 32
 RAW_PREFETCH_MIN_BATCH = 4
 RAW_PREFETCH_BUDGET_FLOOR_PATTERNS = 256
-# The current boot-preload player path is qualified for dense 24/30 fps
-# streams.  Lower-rate ADPCM still uses its separate periodic CDC service path;
-# keep its quality decisions on Prg-only supply until that combination is
-# measured end to end.
-PATTERN_SUPPLY_ON = FPS >= 24.0
+# PrgBuf, both parity-specific WordBuf banks, and DicBuf are the single
+# physical pattern-supply algorithm at every supported cadence.
+PATTERN_SUPPLY_ON = True
 # The specialized Sub-CPU player consumes the packed cold-run suffix at 24fps
 # and above, or whenever the multi-source pattern-supply path requires it.
 # Lower-rate plain-Prg streams deliberately retain the legacy 64-entry polling
@@ -328,7 +326,7 @@ NEAR_KEEP_ACCURATE_ONLY = os.environ.get("CBRSIM_NEAR_ACCURATE_ONLY", "1") != "0
 # 出力量子化で「位置固定の規則ディザ(Bayer 8x8)」を掛ける。同じ画面座標は常に同じ閾値なので
 # 静止タイルは毎コマ同一の333のまま=差分/使い回しを壊さない(誤差拡散は波及するので不採用)。
 # 前処理のディザ除去(master抽出)はそのまま。掛け直すのは出力の333化のここだけ。
-DITHER_ON = os.environ.get("CBRSIM_DITHER", "1") != "0"   # 既定ON。OFFは CBRSIM_DITHER=0（例外時のみ）
+DITHER_ON = True
 # Optional source preprocessing, applied before both the master and raw paths.
 # Out-of-range defaults disable it for profiles without endpoint_snap.
 PREPROCESS_BLACK_MAX = int(os.environ.get(
@@ -338,10 +336,10 @@ PREPROCESS_WHITE_MIN = int(os.environ.get(
 SOURCE_PREPROCESS_VF = endpoint_snap_filter(
     PREPROCESS_BLACK_MAX, PREPROCESS_WHITE_MIN)
 # 深い暗転で区切り、暗転の瞬間に区間別60色パレットへ差し替える(CRAM総入替)。
-SEGPAL_ON = os.environ.get("CBRSIM_SEGPAL", "1") != "0"   # 既定ON。OFFは CBRSIM_SEGPAL=0（例外時のみ）
+SEGPAL_ON = True
 PAL_ALGO = normalize_palette_algo()                          # stl4 (legacy) / mosaic-gm (opt-in while tuning)
-PAL_SEAM_WEIGHT = float(os.environ.get("CBRSIM_PAL_SEAM_WEIGHT", "8.0"))
-PAL_SEAM_ITERATIONS = max(1, int(os.environ.get("CBRSIM_PAL_SEAM_ITERATIONS", "2")))
+PAL_SEAM_WEIGHT = av_config.PALETTE_SEAM_WEIGHT
+PAL_SEAM_ITERATIONS = av_config.PALETTE_SEAM_ITERATIONS
 PAL_WRITE_BYTES = 0             # CRAM pre-load(PALTAB): 全区間パレットはヘッダ直後のPALTAB領域で
                                 # 一括配送しMain-RAM表から引くので、切替フレームの予算控除は無し
                                 # (ストリームには1Bの区間参照だけ。旧: in-stream 128B/切替)
@@ -481,12 +479,8 @@ def segment_and_train(frames, frame_cache=None):
         }
         return pals_arr, seg_pals, frame_seg, seg_bounds, stats
 
-    sample_counts = sorted({
-        max(1, int(value))
-        for value in os.environ.get("CBRSIM_PAL_SAMPLE_COUNTS", "120,240,480").split(",")
-        if value.strip()
-    })
-    validation_count = int(os.environ.get("CBRSIM_PAL_VALIDATE_FRAMES", "120"))
+    sample_counts = av_config.PALETTE_SAMPLE_COUNTS
+    validation_count = av_config.PALETTE_VALIDATE_FRAMES
     validation_indices = sample_indices(0, n, validation_count, half_step=True)
     if frame_cache is None:
         validation_tiles = load_tiles(validation_indices)
@@ -580,10 +574,10 @@ def segment_and_train(frames, frame_cache=None):
 
     segments = detect_palette_segments(
         frames, None if frame_cache is None else frame_cache.segment_metrics)
-    segment_train_count = int(os.environ.get("CBRSIM_PAL_SEG_TRAIN_FRAMES", "240"))
-    segment_validation_count = int(os.environ.get("CBRSIM_PAL_SEG_VALIDATE_FRAMES", "60"))
-    segment_rel = float(os.environ.get("CBRSIM_PAL_SEG_GAIN_REL", "0.005"))
-    segment_abs = float(os.environ.get("CBRSIM_PAL_SEG_GAIN_ABS", "0.002"))
+    segment_train_count = av_config.PALETTE_SEGMENT_TRAIN_FRAMES
+    segment_validation_count = av_config.PALETTE_SEGMENT_VALIDATE_FRAMES
+    segment_rel = av_config.PALETTE_SEGMENT_GAIN_RELATIVE
+    segment_abs = av_config.PALETTE_SEGMENT_GAIN_PER_PIXEL
     selected = []
     segment_stats = []
     for start, end in segments:
@@ -1311,28 +1305,6 @@ def main():
     _t = _mark("展開(reuse)" if cached else "抽出(ffmpeg)", _t)
     frames = sorted(master_dir.glob("*.png"))
     n = len(frames)
-    delivery_cold_caps = np.full(n, MAX_COLD, np.int64)
-    delivery_caps_path = os.environ.get(
-        "CBRSIM_DELIVERY_COLD_CAPS", "").strip()
-    if delivery_caps_path and Path(delivery_caps_path).is_file():
-        delivery_cold_caps = np.asarray(
-            np.load(delivery_caps_path), np.int64)
-        if delivery_cold_caps.shape != (n,):
-            raise SystemExit(
-                "delivery cold-cap trace does not match the frame count")
-        if ((delivery_cold_caps < 0).any()
-                or (delivery_cold_caps > MAX_COLD).any()):
-            raise SystemExit(
-                "delivery cold-cap trace is outside 0..measured cold cap")
-        limited = np.flatnonzero(delivery_cold_caps[1:] < MAX_COLD) + 1
-        if limited.size:
-            print(
-                "physical delivery feedback: "
-                f"{len(limited)} frames constrained below cold cap "
-                f"(minimum {int(delivery_cold_caps[limited].min())}, "
-                f"measured cap remains {MAX_COLD})",
-                flush=True,
-            )
     pass_cache_payload = None
     pass_cache_metadata = None
     if _PASS_CACHE_PATH:
@@ -1364,7 +1336,6 @@ def main():
                 f"accounting pass cache is missing: {cache_path}")
         else:
             print(f"sim pass cache: seed will create {cache_path}", flush=True)
-    pack_config = dict(CONFIG_PROFILE.section("pack") if CONFIG_PROFILE else {})
     body_fresh = stream_schedule.body_fresh_byte_supply(
         n,
         FPS,
@@ -1595,6 +1566,7 @@ def main():
     transfer_runs_log = []     # pack/player照合用: packed cold-run record数
     supply_sources_log = []    # per-frame update-aligned Prg/Wr/Dic source codes
     prg_loads_log = []         # physical PrgBuf pattern consumption
+    prg_cold_cells_log = []    # physical Prg loads mapped to cells (-1=prefetch)
     wr0_loads_log = []         # physical boot-preload consumption by source
     wr1_loads_log = []
     dic_loads_log = []
@@ -2086,6 +2058,7 @@ def main():
         prg_hits = 0
         spent_tiles = 0
         cold_spent = 0             # このコマのcold数(Raw+Buf=実機のパターンDMA数)
+        prg_spent = 0              # このコマの物理PrgBuf消費数
         frame_wr_budget = int(supply_budget.wr[i])
         wr_used = 0
         dic_used = 0
@@ -2130,6 +2103,19 @@ def main():
             else:
                 raise AssertionError("Prg is not a preload source")
             preload_sources[key] = source
+
+        def prg_source_fits(source, cell=None):
+            return (
+                source != pattern_supply.SOURCE_PRG
+                or prg_spent < frame_max_prg
+            )
+
+        def commit_prg_source(source, cell=None):
+            nonlocal prg_spent
+            if source == pattern_supply.SOURCE_PRG:
+                if not prg_source_fits(source, cell):
+                    raise AssertionError("per-frame cold cap exceeded by Prg")
+                prg_spent += 1
         # Candidate eligibility is shared by every cell in one mean-colour
         # bucket until this frame loads/revalidates a pattern in that bucket.
         # Cache both the exact legacy key order and its contiguous descriptors.
@@ -2212,7 +2198,8 @@ def main():
 
         # frame0はDAT冒頭ヘッダで別ロード(リング非消費)なので常にcold上限を免除=全面フルロード。
         cold_limit_active = i > 0
-        frame_max_cold = int(delivery_cold_caps[i]) if i > 0 else 0
+        frame_max_cold = MAX_COLD if i > 0 else 0
+        frame_max_prg = MAX_COLD if i > 0 else 0
 
         def commit_plain(c):
             # Legacy non-unified path: exact resident/L3/preload/cold only.
@@ -2235,16 +2222,20 @@ def main():
                 dedup_saved += 1; dedup_mask[c] = True
                 activate_exact_pattern(key, c)
             elif in_prg:
-                if cold_limit_active and cold_spent >= frame_max_cold:
-                    return False                                  # cold上限: 今コマは見送り(Miss繰越)
+                if ((cold_limit_active and cold_spent >= frame_max_cold)
+                        or not prg_source_fits(source, c)):
+                    return False
                 cold_spent += 1
+                commit_prg_source(source, c)
                 prg_hits += 1; prg_mask[c] = True; loaded_keys.add(key)
             elif in_l3:
                 l3_hits += 1; loaded_keys.add(key); l3.pop(key, None)
             else:                                                # cold: exact pattern load (Raw or saved/preload-funded Buf)
-                if cold_limit_active and cold_spent >= frame_max_cold:
-                    return False                                  # cold上限: 今コマは見送り(Miss繰越)
+                if ((cold_limit_active and cold_spent >= frame_max_cold)
+                        or not prg_source_fits(source, c)):
+                    return False
                 cold_spent += 1
+                commit_prg_source(source, c)
                 loaded_keys.add(key)
                 if preload:
                     commit_preload(key, source)
@@ -2468,10 +2459,12 @@ def main():
                 if (decision_fits(cost, extra_cold=1)
                         and decision_fits(
                             cost, extra_cold=1, limit=limit)
+                        and prg_source_fits(source, c)
                         and not (
                             cold_limit_active
                             and cold_spent >= frame_max_cold)):
                     cold_spent += 1
+                    commit_prg_source(source, c)
                     loaded_keys.add(key)
                     if preload:
                         commit_preload(key, source)
@@ -2632,14 +2625,19 @@ def main():
                             extra_cold=int(not in_vram),
                             limit=lim):
                         return
-                    if (not in_vram) and cold_limit_active and cold_spent >= frame_max_cold:
-                        return                                   # cold上限: 格上げ見送り(近似のまま)
+                    if ((not in_vram)
+                            and (
+                                (cold_limit_active
+                                 and cold_spent >= frame_max_cold)
+                                or not prg_source_fits(source, c))):
+                        return
                     near_mask[c] = False; flbk_mask[c] = False   # 近似を取消
                     if in_vram:
                         dedup_saved += 1; dedup_mask[c] = True
                         activate_exact_pattern(key, c)
                     else:
                         cold_spent += 1
+                        commit_prg_source(source, c)
                         loaded_keys.add(key)
                         if preload:
                             commit_preload(key, source)
@@ -2814,6 +2812,7 @@ def main():
                 frame_max_cold - cold_spent
                 if cold_limit_active
                 else RAW_PREFETCH_MAX_REQUESTS_PER_FRAME)
+            prg_room = frame_max_prg - prg_spent
             body_room = max(
                 0,
                 (prefetch_spend_limit - current_reserved_spend())
@@ -2823,6 +2822,7 @@ def main():
                 RAW_PREFETCH_MAX_REQUESTS_PER_FRAME,
                 request_room,
                 cold_room,
+                prg_room,
                 body_room,
             )
             if capacity >= RAW_PREFETCH_MIN_BATCH:
@@ -2848,6 +2848,8 @@ def main():
                             (key, deadline, logical_slot))
                         if cold:
                             cold_spent += 1
+                            commit_prg_source(
+                                pattern_supply.SOURCE_PRG)
                             spent_tiles += PATTERN_BYTES
                             prefetch_cold_slots.append(
                                 int(physical_by_logical[logical_slot]))
@@ -2923,7 +2925,22 @@ def main():
         prefetch_cold_log.append(len(prefetch_cold_slots))
         prg_used = sum(
             source == pattern_supply.SOURCE_PRG for source in dma_sources)
+        if i > 0 and prg_used != prg_spent:
+            raise AssertionError(
+                f"frame {i}: selected Prg={prg_spent} differs from "
+                f"physical Prg loads={prg_used}")
         prg_loads_log.append(prg_used)
+        frame_prg_cells = [
+            int(upd_ck[index][0])
+            for index in transfer_order
+            if frame_sources[index] == pattern_supply.SOURCE_PRG
+        ]
+        frame_prg_cells.extend([-1] * len(prefetch_cold_slots))
+        if len(frame_prg_cells) != prg_used:
+            raise AssertionError(
+                f"frame {i}: Prg cell trace {len(frame_prg_cells)} != "
+                f"physical loads {prg_used}")
+        prg_cold_cells_log.append(frame_prg_cells)
         wr0_loads_log.append(
             wr_used if i % 2 == 0 else 0)
         wr1_loads_log.append(
@@ -3494,52 +3511,53 @@ def main():
     shadow_cells = [[int(item[0]) for item in frame] for frame in dec_frames]
     shadow_costs = tuple(
         shadow_updates.frame_cost(cells, C_CELLS) for cells in shadow_cells)
-    shadow_plan = stream_schedule.select_shadow_update_lists(
-        shadow_cells,
-        np.asarray(transfer_runs_log, np.int64),
-        prg_loads,
-        cells=C_CELLS,
-        fps=FPS,
-        ring_capacity_patterns=(
-            av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
-        frame_sectors=ttrc_routing.FRAME_SECTORS,
-        audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        fill=bool(pack_config.get("fill", True)),
-    ) if PATTERN_SUPPLY_ON else None
-    shadow_list_flags = (
-        np.asarray(shadow_plan["selected"], np.bool_)
-        if shadow_plan is not None else np.zeros(len(dec_frames), np.bool_)
-    )
-    control_lengths = (
-        np.asarray(shadow_plan["block_lengths"], np.int64)
-        if shadow_plan is not None else stream_schedule.control_block_lengths(
-            stats[:, 3].astype(np.int64),
-            np.asarray(transfer_runs_log, np.int64),
-            cells=C_CELLS,
-            audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        )
-    )
-    exact_body_work = stream_schedule.body_funded_work_bytes(
-        prg_loads,
-        stats[:, 3].astype(np.int64),
-        np.asarray(transfer_runs_log, np.int64),
-        cells=C_CELLS,
-        audio_frame_bytes=AUDIO_CONTROL_BYTES,
-        update_lists=shadow_list_flags,
-    )
     legacy_lengths = stream_schedule.control_block_lengths(
         stats[:, 3].astype(np.int64),
         np.asarray(transfer_runs_log, np.int64),
         cells=C_CELLS,
         audio_frame_bytes=AUDIO_CONTROL_BYTES,
     )
-    fb = fb_baseline + control_lengths - legacy_lengths
-    if not np.array_equal(fb.astype(np.int64), exact_body_work):
-        bad = int(np.flatnonzero(fb.astype(np.int64) != exact_body_work)[0])
-        raise AssertionError(
-            f"frame {bad}: encoder BODY accounting {int(fb[bad])}B != "
-            f"exact useful demand {int(exact_body_work[bad])}B")
     try:
+        # Shadow-list selection runs the same exact physical schedule as the
+        # final pack.  Keep it inside the delivery-feedback boundary: its
+        # legacy baseline can be the first place a real payload deadline is
+        # discovered, before ``physical_schedule`` below has been assigned.
+        shadow_plan = stream_schedule.select_shadow_update_lists(
+            shadow_cells,
+            np.asarray(transfer_runs_log, np.int64),
+            prg_loads,
+            cells=C_CELLS,
+            fps=FPS,
+            ring_capacity_patterns=(
+                PRG_DELIVERY_CAP_KB * 1024 // PATTERN_BYTES),
+            prebuffer_capacity_patterns=(
+                PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
+            frame_sectors=ttrc_routing.FRAME_SECTORS,
+            audio_frame_bytes=AUDIO_CONTROL_BYTES,
+            fill=av_config.PACK_FORWARD_FILL,
+        ) if PATTERN_SUPPLY_ON else None
+        shadow_list_flags = (
+            np.asarray(shadow_plan["selected"], np.bool_)
+            if shadow_plan is not None else np.zeros(len(dec_frames), np.bool_)
+        )
+        control_lengths = (
+            np.asarray(shadow_plan["block_lengths"], np.int64)
+            if shadow_plan is not None else legacy_lengths
+        )
+        exact_body_work = stream_schedule.body_funded_work_bytes(
+            prg_loads,
+            stats[:, 3].astype(np.int64),
+            np.asarray(transfer_runs_log, np.int64),
+            cells=C_CELLS,
+            audio_frame_bytes=AUDIO_CONTROL_BYTES,
+            update_lists=shadow_list_flags,
+        )
+        fb = fb_baseline + control_lengths - legacy_lengths
+        if not np.array_equal(fb.astype(np.int64), exact_body_work):
+            bad = int(np.flatnonzero(fb.astype(np.int64) != exact_body_work)[0])
+            raise AssertionError(
+                f"frame {bad}: encoder BODY accounting {int(fb[bad])}B != "
+                f"exact useful demand {int(exact_body_work[bad])}B")
         physical_schedule = (
             shadow_plan["schedule"] if shadow_plan is not None
             else stream_schedule.schedule_payload_ring(
@@ -3547,56 +3565,14 @@ def main():
                 control_lengths,
                 fps=FPS,
                 ring_capacity_patterns=(
-                    av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
+                    PRG_DELIVERY_CAP_KB * 1024 // PATTERN_BYTES),
+                prebuffer_capacity_patterns=(
+                    PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
                 frame_sectors=ttrc_routing.FRAME_SECTORS,
-                fill=bool(pack_config.get("fill", True)),
+                fill=av_config.PACK_FORWARD_FILL,
             )
         )
     except stream_schedule.ScheduleError as exc:
-        request_path = os.environ.get(
-            "CBRSIM_DELIVERY_REPAIR_REQUEST", "").strip()
-        if request_path and exc.kind == "payload_capacity":
-            if EMIT_DEC:
-                import pickle
-                # The seed pass has already completed every logical decision.
-                # Preserve only what the existing slot-map derivation needs so
-                # physical feedback can flow directly into the mandatory
-                # accounting pass instead of repeating the seed loop.
-                with Path(EMIT_DEC).open("wb") as provisional:
-                    pickle.dump({
-                        "geom": (
-                            int(TCOLS), int(TROWS), int(C_CELLS), int(TILE)),
-                        "frames": dec_frames,
-                        "vram_tiles": int(VRAM_TILES),
-                        "max_cold": int(MAX_COLD),
-                        "pattern_supply": {
-                            "sources": supply_sources_log,
-                        },
-                        "raw_prefetch": {
-                            "requests": prefetch_requests_log,
-                            "boot_inline_requests": int(
-                                boot_inline_requests),
-                        },
-                    }, provisional, protocol=4)
-            request = {
-                "schema_version": 1,
-                "error": str(exc),
-                "details": exc.details,
-                "prg_loads": np.asarray(prg_loads_log, np.int64).tolist(),
-                "cold_loads": np.asarray(
-                    transfer_tiles_log, np.int64).tolist(),
-                "delivery_cold_caps": delivery_cold_caps.tolist(),
-            }
-            request_file = Path(request_path)
-            request_file.parent.mkdir(parents=True, exist_ok=True)
-            request_file.write_text(
-                json.dumps(request, indent=2), encoding="utf-8")
-            print(
-                "sim: requesting automatic physical-delivery feedback: "
-                f"{exc}",
-                flush=True,
-            )
-            raise SystemExit(DELIVERY_SCHEDULE_RETRY_EXIT) from exc
         raise SystemExit(
             f"sim: physical PrgBuf schedule failed: {exc}") from exc
     except ValueError as exc:
@@ -3634,8 +3610,6 @@ def main():
     body_useful_bytes = body_payload_bytes + body_control_bytes
     body_useful_bps = stream_schedule.average_body_delivery_rate_bps(
         body_useful_bytes, body_physical_bytes)
-    delivery_limited_frames = np.flatnonzero(
-        delivery_cold_caps[1:] < MAX_COLD) + 1
 
     report = "\n".join([
         f"resolution={W}x{H} cells/frame={C_CELLS} active_tiles={ACTIVE_TILES} fps={FPS}",
@@ -3647,9 +3621,13 @@ def main():
         f"incremental_run_control_reservation="
         f"{stream_schedule.RUN_DESCRIPTOR_BYTES}B/cold "
         f"({MAX_RUN_CONTROL_BYTES}B cap); unused bytes refunded after exact run charge",
-        f"physical_delivery_feedback={len(delivery_limited_frames)} frames "
-        f"(measured cold cap={MAX_COLD}, minimum frame envelope="
-        f"{int(delivery_cold_caps[delivery_limited_frames].min()) if len(delivery_limited_frames) else MAX_COLD})",
+        "physical_delivery_feedback=disabled (schedule failure stops sim)",
+        f"PrgBuf_geometry=normal {PRG_BUF_CAP_KB}KiB + "
+        f"jitter {PRG_JITTER_HEADROOM_KB}KiB = "
+        f"delivery {PRG_DELIVERY_CAP_KB}KiB; "
+        f"physical ring {av_config.RING_SIZE_KB}KiB; "
+        f"scheduled jitter peak "
+        f"{int(physical_schedule['ring_jitter_peak']) * PATTERN_BYTES / 1024:.1f}KiB",
         f"avg_codec_work_bytes_per_frame={fb.mean():.1f}",
         f"VRAM_tiles={VRAM_TILES}  L3(PRG-RAM)_tiles={L3_TILES}",
         f"avg_PrgBuf_loads_per_frame={prg_loads.mean():.1f}",
@@ -3676,7 +3654,9 @@ def main():
            f"min={quality_budget_remaining.min()}"
            if QUALITY_BUDGET_ON else ""),
         f"PrgBuf: start={prg_remaining[0]} end={prg_remaining[-1]} "
-        f"min={prg_remaining.min()} peak={prg_remaining.max()}patterns",
+        f"min={prg_remaining.min()} peak={prg_remaining.max()}patterns "
+        f"(normal={PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES}, "
+        f"delivery={PRG_DELIVERY_CAP_KB * 1024 // PATTERN_BYTES})",
         f"starved_frames={starved_frames} ({starved_frames/n*100:.1f}%)",
         f"codec_work_bps={fb.mean()*FPS:.0f} (quality-allocation diagnostic)",
         f"body_useful_bps={body_useful_bps:.0f} "
@@ -3718,7 +3698,6 @@ def main():
     ], np.int64)
     np.savez(OUT / "stats.npz", stats=stats, cols=cols, fps=FPS, cells=C_CELLS,
              active_tiles=ACTIVE_TILES, max_cold=MAX_COLD,
-             delivery_cold_caps=delivery_cold_caps,
              raw_prefetch=np.asarray(prefetch_cold_log, np.int64),
              raw_prefetch_cap=np.int64(max(
                  1, RAW_PREFETCH_MAX_REQUESTS_PER_FRAME)),
@@ -3740,16 +3719,19 @@ def main():
         # silently drive any of the four hardware meters.
         np.savez(
             OUT / "buffer_remaining.npz",
-            schema_version=np.int64(5),
+            schema_version=np.int64(6),
             remaining_kind=np.array("three_consumptive_plus_dicbuf"),
             # Compatibility aliases for offline readers predating schema 4.
             remaining=prg_remaining,
-            total=av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES,
+            total=PRG_DELIVERY_CAP_KB * 1024 // PATTERN_BYTES,
             prg_remaining=prg_remaining,
             wr0_remaining=wr0_remaining,
             wr1_remaining=wr1_remaining,
             dic_remaining=dic_remaining,
-            prg_capacity=av_config.PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES,
+            prg_capacity=PRG_DELIVERY_CAP_KB * 1024 // PATTERN_BYTES,
+            prg_normal_capacity=PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES,
+            prg_jitter_headroom=(
+                PRG_JITTER_HEADROOM_KB * 1024 // PATTERN_BYTES),
             wr0_capacity=pattern_supply.WORD_BUF_PATTERNS,
             wr1_capacity=pattern_supply.WORD_BUF_PATTERNS,
             dic_capacity=pattern_supply.DIC_BUF_PATTERNS,
@@ -3761,7 +3743,6 @@ def main():
             wr1_preloaded=np.int64(wr1_loads.sum()),
             dic_preloaded=np.int64(supply_budget.dic_patterns),
             quality_budget_remaining=quality_budget_remaining,
-            delivery_cold_caps=delivery_cold_caps,
             exact_demand_bytes=demand_prediction.exact_bytes,
             protected_demand_bytes=demand_prediction.protected_bytes,
             preload_credit_bytes=preload_credit_bytes,
@@ -3836,7 +3817,10 @@ def main():
             },
             "hardware": {
                 "vram_tiles": int(VRAM_TILES),
-                "prg_buf_kb": int(av_config.PRG_BUF_CAP_KB),
+                "prg_buf_kb": int(PRG_BUF_CAP_KB),
+                "prg_delivery_cap_kb": int(PRG_DELIVERY_CAP_KB),
+                "prg_jitter_headroom_kb": int(PRG_JITTER_HEADROOM_KB),
+                "prg_physical_ring_kb": int(av_config.RING_SIZE_KB),
                 "quality_budget_kb": int(QUALITY_BUDGET_KB),
                 "max_cold": int(MAX_COLD),
                 "baseline_cold_cap": int(
@@ -3866,7 +3850,6 @@ def main():
                 "algorithm": PAL_ALGO, "seam_weight": float(PAL_SEAM_WEIGHT),
                 "seam_iterations": int(PAL_SEAM_ITERATIONS),
             },
-            "pack": dict(CONFIG_PROFILE.section("pack") if CONFIG_PROFILE else {}),
         }
         pickle.dump({
             "config": frozen_config,
@@ -3939,12 +3922,6 @@ def main():
                     prefetch_forecast.protected_cold, np.uint16),
                 "forecast_requested": np.asarray(
                     prefetch_forecast.requested_patterns, np.uint16),
-            },
-            "physical_delivery": {
-                "schema_version": 1,
-                "measured_cold_cap": int(MAX_COLD),
-                "frame_cold_caps": delivery_cold_caps.astype(np.uint16),
-                "limited_frames": delivery_limited_frames.astype(np.uint16),
             },
             # simが決めた値をpackで全frame再計算し、descriptor/HUD Nとのズレを即時検出する。
             "pattern_transfers": {
@@ -4020,7 +3997,10 @@ def main():
             "vram_tiles": int(VRAM_TILES),
             # エンコード時の実効パラメータを焼き込む(pack/解析が同一値を使い二重管理を防ぐ)。
             "max_cold": int(MAX_COLD),
-            "prg_buf_kb": int(av_config.PRG_BUF_CAP_KB),
+            "prg_buf_kb": int(PRG_BUF_CAP_KB),
+            "prg_delivery_cap_kb": int(PRG_DELIVERY_CAP_KB),
+            "prg_jitter_headroom_kb": int(PRG_JITTER_HEADROOM_KB),
+            "prg_physical_ring_kb": int(av_config.RING_SIZE_KB),
             "quality_budget_kb": int(QUALITY_BUDGET_KB),
         }, open(EMIT_DEC, "wb"), protocol=4)
         print(f"  実機決定ログ: {EMIT_DEC} ({len(dec_frames)} frames)")
@@ -4112,69 +4092,14 @@ def _derive_completed_slot_map(decision_log, output_path):
     )
 
 
-def _apply_delivery_feedback(request_path, caps_path):
-    """Tighten only the frames responsible for a physical payload deadline."""
-    request = json.loads(Path(request_path).read_text(encoding="utf-8"))
-    if int(request.get("schema_version", 0)) != 1:
-        raise SystemExit("unsupported physical-delivery feedback schema")
-    details = request.get("details") or {}
-    repairs = details.get("repairs")
-    if not isinstance(repairs, list) or not repairs:
-        repairs = [details]
-    prg_loads = np.asarray(request.get("prg_loads", ()), np.int64)
-    cold_loads = np.asarray(request.get("cold_loads", ()), np.int64)
-    caps = np.asarray(request.get("delivery_cold_caps", ()), np.int64)
-    if (prg_loads.ndim != 1 or cold_loads.shape != prg_loads.shape
-            or caps.shape != prg_loads.shape):
-        raise SystemExit("physical-delivery feedback traces are inconsistent")
-
-    changes = []
-    for repair in sorted(
-            repairs, key=lambda item: int(item.get("origin_frame", -1))):
-        origin = int(repair.get("origin_frame", -1))
-        remaining = int(repair.get("patterns_to_remove", 0))
-        if not 1 <= origin < len(prg_loads) or remaining <= 0:
-            raise SystemExit(
-                "physical-delivery feedback has no repairable deadline")
-        for frame in range(origin, 0, -1):
-            if remaining <= 0:
-                break
-            removable = min(int(prg_loads[frame]), remaining)
-            if removable <= 0:
-                continue
-            next_cap = max(0, int(cold_loads[frame]) - removable)
-            if next_cap >= int(caps[frame]):
-                continue
-            caps[frame] = next_cap
-            remaining = max(0, remaining - removable)
-            changes.append((frame, next_cap, removable))
-        if remaining:
-            raise SystemExit(
-                "physical-delivery feedback could not remove enough Prg demand")
-    Path(caps_path).parent.mkdir(parents=True, exist_ok=True)
-    np.save(caps_path, caps)
-    summary = ", ".join(
-        f"f{frame}->{cap} (-{removed})"
-        for frame, cap, removed in changes[:8])
-    if len(changes) > 8:
-        summary += f", +{len(changes) - 8} more"
-    print(
-        "physical delivery feedback applied without changing measured cap: "
-        f"{summary}",
-        flush=True,
-    )
-
-
 def _run_slot_locality_pipeline():
-    """Use the seed once, then converge delivery inside accounting passes."""
+    """Use one logical seed and bounded slot-map accounting passes."""
     import subprocess
 
     command = [sys.executable, *_ORIGINAL_ARGV]
     stem = str(os.getpid())
     map_path = Path("tmp") / f"slot_locality_seed_{stem}.npy"
     retry_path = Path("tmp") / f"slot_locality_retry_{stem}.npy"
-    delivery_caps_path = Path("tmp") / f"delivery_cold_caps_{stem}.npy"
-    delivery_request_path = Path("tmp") / f"delivery_repair_{stem}.json"
     workspace_lease = _activate_sim_tmpfs()
     if workspace_lease is not None and workspace_lease.reused:
         print(
@@ -4194,12 +4119,7 @@ def _run_slot_locality_pipeline():
         common_env["CBRSIM_TMPFS_PREPARED"] = "1"
         common_env["CBRSIM_PASS_CACHE"] = str(cache_path)
         common_env["CBRSIM_PASS_CACHE_INVOCATION"] = cache_lease.entry.name
-        common_env["CBRSIM_DELIVERY_COLD_CAPS"] = str(
-            delivery_caps_path.resolve())
-        common_env["CBRSIM_DELIVERY_REPAIR_REQUEST"] = str(
-            delivery_request_path.resolve())
 
-        delivery_request_path.unlink(missing_ok=True)
         seed_env = common_env.copy()
         seed_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "seed"
         seed_env["CBRSIM_NOPANELS"] = "1"
@@ -4207,25 +4127,14 @@ def _run_slot_locality_pipeline():
         seed_env.pop("CBRSIM_SLOT_LOCALITY_REUSE", None)
         print("slot locality seed pass: logical decisions", flush=True)
         result = subprocess.run(command, env=seed_env, check=False)
-        if result.returncode == DELIVERY_SCHEDULE_RETRY_EXIT:
-            if not delivery_request_path.is_file() or not Path(EMIT_DEC).is_file():
-                raise SystemExit(
-                    "physical-delivery seed feedback lacks its provisional trace")
-            _apply_delivery_feedback(
-                delivery_request_path, delivery_caps_path)
-        else:
-            result.check_returncode()
+        result.check_returncode()
 
-        # A failed physical schedule does not invalidate the completed logical
-        # seed decisions. Derive the map from their provisional trace and feed
-        # the corrected envelope straight into the already-required accounting
-        # pass; never repeat the expensive seed loop.
+        # Physical delivery is a proof, not an automatic cold-cap tuning loop.
+        # If it fails, stop this run and report that layer unchanged.
         _derive_completed_slot_map(EMIT_DEC, map_path)
         accounting_pass = 1
-        delivery_repairs = int(delivery_caps_path.is_file())
         while accounting_pass <= SLOT_LOCALITY_MAX_ACCOUNTING_PASSES:
             retry_path.unlink(missing_ok=True)
-            delivery_request_path.unlink(missing_ok=True)
             final_env = common_env.copy()
             final_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "final"
             final_env["CBRSIM_SLOT_LOCALITY_MAP"] = str(map_path.resolve())
@@ -4244,20 +4153,6 @@ def _run_slot_locality_pipeline():
             result = subprocess.run(command, env=final_env, check=False)
             if result.returncode == 0:
                 break
-            if result.returncode == DELIVERY_SCHEDULE_RETRY_EXIT:
-                if not delivery_request_path.is_file():
-                    raise SystemExit(
-                        "physical-delivery retry requested without evidence")
-                delivery_repairs += 1
-                if delivery_repairs > DELIVERY_SCHEDULE_MAX_REPAIR_PASSES:
-                    raise SystemExit(
-                        "physical-delivery feedback did not converge within "
-                        f"{DELIVERY_SCHEDULE_MAX_REPAIR_PASSES} passes")
-                _apply_delivery_feedback(
-                    delivery_request_path, delivery_caps_path)
-                # The map and precomputed future data remain valid. Re-run only
-                # the accounting pass under the tighter physical envelope.
-                continue
             if result.returncode != SLOT_LOCALITY_RETRY_EXIT:
                 result.check_returncode()
             if not retry_path.is_file():
@@ -4279,8 +4174,6 @@ def _run_slot_locality_pipeline():
     finally:
         map_path.unlink(missing_ok=True)
         retry_path.unlink(missing_ok=True)
-        delivery_caps_path.unlink(missing_ok=True)
-        delivery_request_path.unlink(missing_ok=True)
         if cache_lease is not None:
             tmpfs_workspace.remove_run_directory(cache_lease)
         if workspace_lease is not None:
@@ -4297,10 +4190,6 @@ def _sim_cache_identity():
     if _SIM_CACHE_IDENTITY is None:
         _SIM_CACHE_IDENTITY = sim_artifact_cache.build_identity(
             source=SRC,
-            pack=(
-                CONFIG_PROFILE.section("pack")
-                if CONFIG_PROFILE is not None else {}
-            ),
             emit_decisions=bool(EMIT_DEC),
         )
     return _SIM_CACHE_IDENTITY

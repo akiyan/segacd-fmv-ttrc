@@ -191,6 +191,23 @@ class PayloadRingScheduleTests(unittest.TestCase):
         )
         self.assertEqual(result["ring_occupancy"].tolist(), [64, 54, 54])
 
+    def test_runtime_delivery_may_use_reserved_jitter_above_prebuffer(self) -> None:
+        result = schedule.schedule_payload_ring(
+            [0, 32, 64, 64, 64, 64, 64, 64, 0],
+            [0] * 9,
+            fps=15,
+            ring_capacity_patterns=160,
+            prebuffer_capacity_patterns=128,
+            frame_sectors=5,
+            fill=True,
+        )
+        self.assertTrue(result["feasible"])
+        self.assertEqual(result["prebuf_pat"], 128)
+        self.assertEqual(result["ring_peak"], 160)
+        self.assertEqual(result["ring_jitter_peak"], 32)
+        self.assertEqual(result["prebuffer_capacity_patterns"], 128)
+        self.assertEqual(result["ring_capacity_patterns"], 160)
+
     def test_payload_failure_identifies_the_causal_deadline(self) -> None:
         with self.assertRaises(schedule.ScheduleError) as caught:
             schedule.schedule_payload_ring(
@@ -218,7 +235,8 @@ class PayloadRingScheduleTests(unittest.TestCase):
                 loads,
                 np.zeros(len(loads), np.int64),
                 fps=pack.FPS,
-                ring_capacity_patterns=pack.RING_CAP_PAT,
+                ring_capacity_patterns=pack.RING_DELIVERY_CAP_PAT,
+                prebuffer_capacity_patterns=pack.RING_CAP_PAT,
                 frame_sectors=pack.FRAME_SECTORS,
                 fill=pack.PACK_FILL,
             )

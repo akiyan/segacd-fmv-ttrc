@@ -36,11 +36,11 @@ Run it against the lossless output from `/record`:
 ```sh
 tools/python.sh harness/startup_resync/analyze.py \
   videos/SonicJamOp_startup_audio2_ab_debug_lossless.mkv \
-  --csv videos/SonicJamOp_startup_audio2_ab_debug_hud.csv
+  --tsv videos/SonicJamOp_startup_audio2_ab_debug_hud.tsv
 ```
 
 The console report shows every `R` transition, its movie-frame number in hex and
-decimal, and the surrounding `L/C/W/M/A` values. The CSV contains one row per
+decimal, and the surrounding `L/C/W/M/A` values. The TSV contains one row per
 aggregated movie frame. Transition rows additionally carry the previous and next
 lead, which makes preload-to-live boundary failures easy to compare between A/B
 recordings.

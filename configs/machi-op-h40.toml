@@ -1,46 +1,28 @@
-schema_version = 2
+schema_version = 3
 
 [source]
 path = "assets/machi_op.mp4"
 fps = "15"
 duration = "152.866667"
-sar = "1:1"
+sar = "32:35"
 
 [video]
 mode = "H40"
 width = 320
-height = 224
-# The whole-movie non-black union is retained from source rows 34..185, then
-# HAR-corrected to a 320x139 picture at y=42. It still touches 18 tile rows.
-active_tiles = 720
-fit = "pad"
-master_filter = "setsar=1,crop=320:152:0:34,scale=640:278:flags=lanczos,hqdn3d=6:6:8:8,gblur=sigma=1.6,scale=320:139:flags=lanczos,pad=320:224:0:42:color=black,setsar=1"
-raw_filter = "setsar=1,crop=320:152:0:34,scale=320:139:flags=lanczos,pad=320:224:0:42:color=black,setsar=1"
+height = 152
+fit = "crop"
+master_denoise = false
+master_filter = "setsar=1,crop=320:152:0:34"
+raw_filter = "setsar=1,crop=320:152:0:34"
 
 [output]
-directory = "videos/machi_op_H40_320x224_adpcm22/tmp"
+directory = "videos/machi_op_H40_320x152_adpcm22/tmp"
 reuse = false
 emit_decisions = true
 
 [encoder]
-gpu = true
-vram_tiles = 1535
-dither = true
-segment_palettes = true
-near = true
-boot_vram_prefetch = true
-raw_prefetch = false
+cold_cap = 480
+raw_prefetch = true
 
 [palette]
 algorithm = "mosaic-gm"
-map_weight = 1.0
-seam_weight = 8.0
-seam_iterations = 2
-sample_counts = [120, 240, 480]
-validate_frames = 120
-segment_train_frames = 240
-segment_validate_frames = 60
-
-[pack]
-fill = true
-startup_audio_frames = 30

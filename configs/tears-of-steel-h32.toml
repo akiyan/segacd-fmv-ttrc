@@ -1,4 +1,4 @@
-schema_version = 2
+schema_version = 3
 
 [source]
 path = "assets/TOS.mp4"
@@ -17,23 +17,5 @@ directory = "videos/TOS_H32_256x224_adpcm22/tmp"
 reuse = false
 emit_decisions = true
 
-[encoder]
-gpu = true
-vram_tiles = 1535
-dither = true
-segment_palettes = true
-near = true
-
 [palette]
 algorithm = "mosaic-gm"
-map_weight = 1.0
-seam_weight = 8.0
-seam_iterations = 2
-sample_counts = [120, 240, 480]
-validate_frames = 120
-segment_train_frames = 240
-segment_validate_frames = 60
-
-[pack]
-fill = true
-startup_audio_frames = 30

@@ -160,6 +160,18 @@ Titles and descriptions for the codec analysis videos follow this fixed style.
 - Do not reintroduce game-specific extraction notes or copyrighted sample
   metadata.
 
+## Delimited Log Format
+
+- Use TSV for every project-owned delimited log, diagnostic table, and
+  machine-readable row series. Write UTF-8, a header row, tab separators, LF
+  line endings, and the `.tsv` extension.
+- Do not create `.csv` files or comma-delimited internal logs. Python may use
+  the standard `csv` module as an implementation detail only when
+  `delimiter="\t"` is explicit.
+- Name CLI options and documentation after the format (`--tsv`, `--hud-tsv`),
+  not `--csv`. CSV is allowed only when an external system explicitly requires
+  that interchange format; keep such conversion at the external boundary.
+
 ## Canonical Path
 
 This project is the **Tile Texture Reuse Codec** (name may change; file names
@@ -182,7 +194,7 @@ within Sega CD limits, not fixed presets:
 - Frame rate = the source's native rate.
 - Audio = checkpointed 22.05 kHz mono IMA ADPCM, decoded directly by the Sub
   CPU through full lookup tables duplicated in both physical 1M Word-RAM
-  banks. It is the only TTRC v15 audio format. Physical hardware and additional
+  banks. It is the only TTRC v16 audio format. Physical hardware and additional
   modes/cadences are broader compatibility checks rather than implementation
   blockers (see [ADPCM.md](ADPCM.md)). Z80 offload remains shelved because
   BUSREQ-based feeding contends with Main CPU video work.
@@ -356,6 +368,14 @@ tools/python.sh tools/tmpfs_workspace.py run-file \
 
 ## Debugging Method — additions
 
+- **Treat failures near the first frames as startup-sequence failures until
+  proven otherwise.** The boot/header drain, frame-0 expansion, PrgBuf
+  prebuffer, Word-RAM handoff, continuous `BODY.DAT` read start, first routing
+  entry, and PCM start make this window different from steady playback. Before
+  changing a steady-state knob such as cold cap, compare the first bad HUD
+  frame with the first timed pattern load and inspect those handoffs in order.
+  If `S`, `C`, `D`, or another fault begins before timed cold loads begin, do
+  not attribute it to cold cap; diagnose the startup path first.
 - **Transient vs persistent artifacts**: if an `ISO_HOLD_N` freeze of frame N
   is clean but live playback of the same frame shows artifacts, the corruption
   is stochastic per run (timing/phase dependent), not deterministic data
@@ -399,6 +419,15 @@ tools/python.sh tools/tmpfs_workspace.py run-file \
 ## Recording Rules
 
 - Use emulator-synchronized A/V output for verification.
+- After every full DEBUG recording, render the complete first-loop HUD TSV with
+  `.agents/skills/hudline/scripts/render_hudline.py`, inspect and show the PNG,
+  and publish it to a public Gist. Preserve the image, its layout JSON, and Gist
+  receipt next to the recording. The HUD gate has `PASS`, `WARNING`, and
+  `FAIL` results. A `C` threshold overage is `WARNING` and remains
+  upload-capable; publish and report its exact frames. Publish failed gates too
+  as diagnostic evidence, but do not proceed to analysis/playback uploads after
+  `FAIL`. `/hudline` keeps the same frame-axis geometry as `/timeline` for future
+  `/mixline` composition.
 - Extract visual-check stills with `tools/extract_verification_frames.sh`. It
   creates a never-reused directory and a source-hashed manifest for each
   invocation, then builds the montage from that invocation's explicit frame

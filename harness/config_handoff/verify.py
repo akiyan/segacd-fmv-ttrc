@@ -25,7 +25,6 @@ PER_SOURCE_ENV = {
     "CBRSIM_MASTER_VF", "CBRSIM_RAW_VF", "CBRSIM_OUT",
     "CBRSIM_VRAM_TILES", "CBRSIM_QUALITY_BUDGET_KB", "CBRSIM_RING_CAP_KB",
     "CBRSIM_MAX_COLD", "CBRSIM_COLD_CAP", "CBRSIM_COLD_CAP_DIAG",
-    "CBRSIM_PACK_FILL", "CBRSIM_STARTUP_AUDIO_FRAMES",
 }
 POLLUTED = {
     "CBRSIM_SRC": "wrong.mp4", "CBRSIM_FPS": "15", "CBRSIM_MODE": "H40",
@@ -33,8 +32,6 @@ POLLUTED = {
     "CBRSIM_VRAM_TILES": "7", "CBRSIM_QUALITY_BUDGET_KB": "1",
     "CBRSIM_RING_CAP_KB": "1", "CBRSIM_MAX_COLD": "1",
     "CBRSIM_COLD_CAP": "1",
-    "CBRSIM_PACK_FILL": "0",
-    "CBRSIM_STARTUP_AUDIO_FRAMES": "1",
 }
 ARTIFACTS = ("HEADER.DAT", "BODY.DAT", "MOVIE.DAT", "palettes.bin")
 
@@ -108,7 +105,9 @@ def check_cold_caps() -> None:
         ("H32", 24, 896, 219),
         ("H32", 30, 896, 175),
         ("H40", 15, 720, 500),
+        ("H40", 15, 760, 360),
         ("H40", 15, 1040, 400),
+        ("H40", 15, 1120, 360),
         ("H40", 24, 1120, 200),
         ("H40", 30, 1120, 180),
     )
@@ -133,7 +132,7 @@ def check_cold_caps() -> None:
     for fps, mode, active_tiles in (
             (24, "H32", 500),
             (15, "H40", 900),
-            (15, "H40", 1120),
+            (15, "H40", 1119),
             (15, "H32", 896),
             (15, "MODE4", 896)):
         try:

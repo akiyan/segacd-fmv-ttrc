@@ -78,17 +78,21 @@ The HUD always occupies row 0 of the native 256x224 or 320x224 raster. It can
 cover active picture content; it is not repositioned around letterboxing.
 
 For any recording that can proceed to compilation or upload, the complete first
-movie loop is a mandatory gate. `S/D/R` must remain zero and `J` must remain at
-most `17` (23 KiB). `C/M` limits follow the profile's player cadence. Fixed-N2
-content requires `C=00` and `M<=01`. Delivery-paced content may use all but the
+movie loop is a mandatory gate with three results: `PASS`, `WARNING`, and
+`FAIL`. `WARNING` remains upload-capable. `S/D/R` must remain zero. `C/M` and
+`J` thresholds follow the profile's player cadence. Fixed-N2 warns when
+`C>00` and fails when `M>01`. Delivery-paced content may use all but the
 already-armed control sector on the current Sub path and all display fields in
-one content frame: 15 fps permits `C<=04`, `M<=04`; 24 fps permits `C<=03`,
-`M<=03`. The `J` limit proves the 404 KiB schedule plus measured excess stayed
-below the 428 KiB physical ring end despite upward KiB rounding. `J` above `14`
-means the 20 KiB jitter headroom was exhausted and sector-granular back-pressure
-entered the separate 4 KiB physical guard. Report the value, but `J<=17` does
-not by itself require another confirmation or fail the recording. Report all
-six maxima on PASS. When the enclosing task already authorizes publication,
+one content frame: 15 fps warns when `C>04` and fails when `M>04`; 24 fps warns
+when `C>03` and fails when `M>03`. The largest passing `J` is
+normal-ceiling-to-physical-end minus one
+KiB: `2B` at 15fps, `1C` at 24fps, and `17` at 30fps. Values above the normal
+jitter interval (`28`, `19`, or `14` respectively) show that
+sector-granular back-pressure entered the separate 4 KiB physical guard.
+Report the value, but a `J` within the cadence-specific passing limit does not
+by itself require another confirmation or fail the recording. Report all gate
+maxima on PASS or WARNING, and report every C warning frame. When the enclosing
+task already authorizes publication,
 continue without requesting another approval merely because the gate ran.
 
 ## At-a-glance field reference
@@ -107,7 +111,7 @@ continue without requesting another approval merely because the gate ran.
 | `A` | Sub | per frame | ADPCM decode phase time | Stable band for the same profile |
 | `U` | Main | per frame | Main pattern-transfer elapsed time | Below the frame's available transfer window |
 | `N` | Main | per frame | Source-aware cold-run descriptor count | Content-dependent; correlate with `U` |
-| `J` | Sub | cumulative peak | Maximum streamed PrgBuf occupancy above 404 KiB | `00` means the jitter headroom was never used |
+| `J` | Sub | cumulative peak | Maximum streamed PrgBuf occupancy above the fps-derived normal ceiling | `00` means the jitter headroom was never used |
 | `V` | Main | previous frame | V-counter at the last accepted display flip (H40 only) | `E0` = flip at the VBlank start; higher blank lines mean the flip ran late inside its blank |
 | `O` | Main | previous frame | That flip's interval excess over 1024 stopwatch ticks (H40 only) | About `3E` (62 = nominal 1086-tick N2 interval); `FF` marks a slipped 3-field frame |
 | `E` | Main | per frame | Pass2 entry delay since the previous flip, in 4-tick units (H40 only) | Below one field (`88` = 544 ticks) with margin; approaching the field-1 blank end means the transfer is about to miss its VBlank |
@@ -200,10 +204,11 @@ using the profile's effective playback sample rate.
 Each pump drains one physical sector. `C=00` means the needed control was
 already armed when `process_frame` reached it. A small nonzero value is not a
 sector slip; it means delivery work landed directly on the current frame's
-critical path. This is rejected in fixed-N2 playback, whose control must already
-be armed, but is expected within the profile-derived slot allowance at
-delivery-paced 15/24 fps. Persistent or above-allowance `C`, especially with
-rising `W`, identifies the Sub/CD side as the likely deadline pressure.
+critical path. The profile-derived threshold is zero for fixed-N2 and follows
+the slot allowance for delivery-paced 15/24 fps. Above-threshold `C` produces
+`WARNING`, not `FAIL`: it identifies Sub/CD deadline pressure for review while
+remaining upload-capable. Persistent C, especially with rising `W`, is stronger
+diagnostic evidence than an isolated peak.
 
 ### `W`: Main wait for the Sub CPU
 
@@ -269,19 +274,20 @@ hardware transfer choices.
 
 ### `J`: streamed PrgBuf jitter-reserve high-water mark
 
-`J` is the maximum simultaneous streamed PrgBuf occupancy above the 404 KiB
-scheduling ceiling observed since BODY streaming began. It is rounded upward
-to KiB and displayed in hexadecimal. `J=00` proves that occupancy never crossed
-the ceiling; `J=01` means a nonzero excess of at most 1 KiB, and `J=0A` means a
-maximum excess of at most 10 KiB.
+`J` is the maximum simultaneous streamed PrgBuf occupancy above the
+fps-derived normal ceiling observed since BODY streaming began. That ceiling
+is 384 KiB at 15fps, 399 KiB at 24fps, and 404 KiB at 30fps. It is rounded
+upward to KiB and displayed in hexadecimal. `J=00` proves that occupancy never
+crossed the ceiling; `J=01` means a nonzero excess of at most 1 KiB, and
+`J=0A` means a maximum excess of at most 10 KiB.
 
 The Sub CPU samples occupancy immediately after each BODY payload sector is
 appended. Only an append can raise the high-water mark, so polling and pattern
 consumption need no extra sampling. The separate frame-0 block temporarily
 stored at `F0PAT_TMP` does not pass through this path and is deliberately
 excluded. The field measures simultaneous occupancy, not whether a circular
-read or write pointer happened to enter the physical address range above the
-404 KiB boundary.
+read or write pointer happened to enter the physical address range above that
+stream's normal boundary.
 
 ### `V` / `O` / `E`: flip phase and Pass2 entry phase (H40 DEBUG builds)
 
@@ -382,6 +388,19 @@ For a complete recording, `harness/startup_resync/analyze.py` groups repeated
 60 Hz capture frames by `F`, retains per-field confidence, and reports counter
 transitions. HUD timing is diagnostic only: do not use OCR to trim publication
 recordings or place YouTube chapters.
+
+Write the complete per-frame series as the canonical project TSV:
+
+```sh
+tools/python.sh harness/startup_resync/analyze.py \
+  videos/STEM_emu_lossless.mkv configs/PROFILE.toml \
+  --tsv videos/STEM_emu_hud.tsv \
+  --gate-json videos/STEM_emu_hud_gate.json \
+  --expected-frames FRAME_COUNT
+```
+
+The log is UTF-8 with a header row, tab separators, LF line endings, and a
+`.tsv` extension. Project-owned HUD logs are never comma-delimited.
 
 The reproducible glyph/layout proof is:
 

@@ -10,11 +10,11 @@ recordings.
 ## Tools
 
 - `extract_frames.py` — parses a packed `HEADER.DAT` + `BODY.DAT` pair
-  (TTRC v15) and emits one CSV row per frame: cell updates, physical
+  (TTRC v16) and emits one TSV row per frame: cell updates, physical
   pattern loads by source (Prg/Wr/Dic), cold-run descriptor structure
   (count, short runs, max run length), Pass2 word total, palette-switch
   flag, control bytes, and the CD slot schedule (control/payload sectors,
-  rated allowance, delivery lead). With `--hud-csv` it cross-checks the
+  rated allowance, delivery lead). With `--hud-tsv` it cross-checks the
   parsed per-frame run count against the DEBUG HUD `N` column of a
   recording; a full-length match also proves that recording played exactly
   that stream.
@@ -29,8 +29,8 @@ recordings.
 
 ```sh
 tools/python.sh harness/cold_cap_model/extract_frames.py \
-    out/sonic-jam-op-h40 --csv frames_175.csv \
-    --hud-csv videos/SonicJamOp_H40_jitter_final_hud.csv
+    out/sonic-jam-op-h40 --tsv frames_175.tsv \
+    --hud-tsv videos/SonicJamOp_H40_jitter_final_hud.tsv
 
 tools/python.sh harness/cold_cap_model/verify_slot_locality.py \
     videos/SonicJamOp_H40_320x224_adpcm22/tmp/decisions.pkl

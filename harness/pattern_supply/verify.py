@@ -20,7 +20,7 @@ from pathlib import Path
 
 SECTOR = 2048
 PATTERN_BYTES = 32
-VERSION = 15
+VERSION = 16
 FEATURE_COLD_RUNS = 0x0001
 FEATURE_FIXED_N2 = 0x0002
 FEATURE_PATTERN_SUPPLY = 0x0008
@@ -74,7 +74,8 @@ def parse_control(raw: bytes, seq: int, cells: int, audio_bytes: int) -> Control
 
     bitmap_start = 8
     bitmap_bytes = (cells + 7) // 8
-    entries_start = bitmap_start + bitmap_bytes
+    bitmap_end = bitmap_start + bitmap_bytes
+    entries_start = (bitmap_end + 1) & ~1
     entries_end = entries_start + n_upd * 2
     if use_list:
         entries_start = bitmap_start
@@ -103,7 +104,9 @@ def parse_control(raw: bytes, seq: int, cells: int, audio_bytes: int) -> Control
         bitmap = bytes(bitmap_mut)
         entries = tuple(entries_mut)
     else:
-        bitmap = raw[bitmap_start:entries_start]
+        bitmap = raw[bitmap_start:bitmap_end]
+        if any(raw[bitmap_end:entries_start]):
+            raise AssertionError(f"frame {seq}: bitmap alignment pad is nonzero")
         entries = (
             tuple(struct.unpack_from(f">{n_upd}H", raw, entries_start))
             if n_upd else ()
@@ -230,15 +233,15 @@ def main() -> None:
     vsync_n, decoded_audio, fps, _audio_fd, audio_preload, features = struct.unpack_from(
         ">6H", header, 52)
     required_supply_features = (
-        FEATURE_COLD_RUNS | FEATURE_FIXED_N2 | FEATURE_PATTERN_SUPPLY
+        FEATURE_COLD_RUNS | FEATURE_PATTERN_SUPPLY
         | FEATURE_DICBUF_INDEXED_RUNS)
     if features & required_supply_features != required_supply_features:
         raise SystemExit(
-            f"expected v12 cold-run/fixed-N2/pattern-supply features, "
+            f"expected v16 cold-run/pattern-supply/indexed-DicBuf features, "
             f"got 0x{features:04X}")
     if features & FEATURE_SHADOW_UPDATE_LISTS and not features & FEATURE_PATTERN_SUPPLY:
         raise SystemExit("shadow update lists require pattern supply")
-    if vsync_n <= 0 or fps < 24:
+    if vsync_n <= 0 or fps <= 0:
         raise SystemExit(f"invalid supply timing N={vsync_n} fps={fps}")
     audio_bytes = 4 + decoded_audio // 2
     signature = struct.unpack_from(">L", header, 192)[0]
@@ -262,8 +265,25 @@ def main() -> None:
                 f"{label}: count/sectors {count}/{sectors}, capacity={capacity}")
 
     cursor = SECTOR
-    _paltab, cursor = take_region(
-        header, cursor, paltab_sectors, nseg * 128, "PALTAB")
+    boot_stage = header[cursor:cursor + paltab_sectors * SECTOR]
+    if len(boot_stage) != paltab_sectors * SECTOR:
+        raise AssertionError("boot stage is truncated")
+    _paltab = boot_stage[0x1000:0x1000 + nseg * 128]
+    if len(_paltab) != nseg * 128:
+        raise AssertionError("PALTAB is truncated inside the boot stage")
+    sidecar_vram = {}
+    if boot_stage[0x0FC0:0x0FC4] == b"BVRM":
+        region_counts = struct.unpack_from(">3H", boot_stage, 0x0FC4)
+        region_offsets = (0x0000, 0x1000 + nseg * 128, 0x5000)
+        for offset, count in zip(region_offsets, region_counts, strict=True):
+            for index in range(count):
+                record = offset + index * 34
+                slot = struct.unpack_from(">H", boot_stage, record)[0]
+                pattern = boot_stage[record + 2:record + 34]
+                if len(pattern) != 32 or slot in sidecar_vram:
+                    raise AssertionError("invalid/duplicate boot sidecar record")
+                sidecar_vram[slot] = pattern
+    cursor += len(boot_stage)
     cursor += 5 * SECTOR
     wr0, cursor = take_region(header, cursor, wr0_sec, wr0_count * 32, "Wr0")
     wr1, cursor = take_region(header, cursor, wr1_sec, wr1_count * 32, "Wr1")
@@ -279,7 +299,9 @@ def main() -> None:
     if any(f0_region[f0_len:]):
         raise AssertionError("frame 0 control sector padding is nonzero")
     cursor += len(f0_region)
-    f0_cold = sum(bool(entry & 0x8000) for entry in f0_control.entries)
+    f0_cold = sum(
+        count for _slot, count, source, _dic_index in f0_control.runs
+        if source == SOURCE_PRG)
     f0_patterns, cursor = take_region(
         header, cursor, f0_pattern_sectors, f0_cold * 32, "frame 0 patterns")
 
@@ -344,7 +366,7 @@ def main() -> None:
             dic_blob[pos:pos + 32] for pos in range(0, len(dic_blob), 32)),
     }
     consumed = {name: 0 for name in sources}
-    vram: dict[int, bytes] = {}
+    vram: dict[int, bytes] = dict(sidecar_vram)
     total_updates = total_cold = 0
 
     for frame, (decision_frame, control) in enumerate(
@@ -355,7 +377,7 @@ def main() -> None:
             raise AssertionError(f"frame {frame}: bitmap cells differ from decisions")
         if len(ordered) != len(control.entries):
             raise AssertionError(f"frame {frame}: decision/update count differs")
-        if not control.use_list:
+        if not control.use_list and frame:
             expected_slots = tuple(
                 ((entry & 0x07FF) - base,
                  (entry & SOURCE_MASK) >> SOURCE_SHIFT)
@@ -364,7 +386,7 @@ def main() -> None:
                 (slot, source)
                 for start, count, source, _dic in control.runs
                 for slot in range(start, start + count))
-            if actual_slots != expected_slots:
+            if actual_slots != tuple(sorted(expected_slots)):
                 raise AssertionError(
                     f"frame {frame}: source-coded cold runs differ from entries")
 
@@ -372,36 +394,37 @@ def main() -> None:
         for item, entry in zip(ordered, control.entries, strict=True):
             expected_by_slot[(entry & 0x07FF) - base] = packed_pattern(bytes(item[2]))
 
-        if frame:
-            armed_slots = set()
-            for run_slot, run_count, source_id, dic_index in control.runs:
-                source_name = (
-                    "Prg" if source_id == SOURCE_PRG else
-                    ("Wr1" if frame & 1 else "Wr0") if source_id == SOURCE_WR else
-                    "Dic" if source_id == SOURCE_DIC else "reserved"
-                )
-                for slot in range(run_slot, run_slot + run_count):
-                    if slot in armed_slots or slot not in expected_by_slot:
+        armed_slots = set()
+        for run_slot, run_count, source_id, dic_index in control.runs:
+            source_name = (
+                "F0" if frame == 0 and source_id == SOURCE_PRG else
+                "Prg" if source_id == SOURCE_PRG else
+                ("Wr1" if frame & 1 else "Wr0") if source_id == SOURCE_WR else
+                "Dic" if source_id == SOURCE_DIC else "reserved"
+            )
+            for slot in range(run_slot, run_slot + run_count):
+                if slot in armed_slots or (
+                        frame and slot not in expected_by_slot):
+                    raise AssertionError(
+                        f"frame {frame}: run arms invalid/duplicate slot {slot}")
+                if source_name not in sources or not sources[source_name]:
+                    raise AssertionError(
+                        f"frame {frame}: {source_name} is empty before slot {slot}")
+                if source_name == "Dic":
+                    index = dic_index + (slot - run_slot)
+                    if index >= len(sources["Dic"]):
                         raise AssertionError(
-                            f"frame {frame}: run arms invalid/duplicate slot {slot}")
-                    if source_name not in sources or not sources[source_name]:
-                        raise AssertionError(
-                            f"frame {frame}: {source_name} is empty before slot {slot}")
-                    if source_name == "Dic":
-                        index = dic_index + (slot - run_slot)
-                        if index >= len(sources["Dic"]):
-                            raise AssertionError(
-                                f"frame {frame}: Dic index {index} is out of range")
-                        actual = sources["Dic"][index]
-                    else:
-                        actual = sources[source_name].popleft()
-                    consumed[source_name] += 1
-                    if actual != expected_by_slot[slot]:
-                        raise AssertionError(
-                            f"frame {frame}: {source_name} pattern differs at slot {slot}")
-                    vram[slot] = actual
-                    armed_slots.add(slot)
-                    total_cold += 1
+                            f"frame {frame}: Dic index {index} is out of range")
+                    actual = sources["Dic"][index]
+                else:
+                    actual = sources[source_name].popleft()
+                consumed[source_name] += 1
+                if slot in expected_by_slot and actual != expected_by_slot[slot]:
+                    raise AssertionError(
+                        f"frame {frame}: {source_name} pattern differs at slot {slot}")
+                vram[slot] = actual
+                armed_slots.add(slot)
+                total_cold += 1
 
         for item, entry in zip(ordered, control.entries, strict=True):
             expected = packed_pattern(bytes(item[2]))
@@ -411,19 +434,6 @@ def main() -> None:
             slot = (entry & 0x07FF) - base
             if not 0 <= slot < pool:
                 raise AssertionError(f"frame {frame}: VRAM slot {slot} is outside the pool")
-            if frame == 0 and entry & 0x8000:
-                source_id = (entry & SOURCE_MASK) >> SOURCE_SHIFT
-                source_name = "F0"
-                if source_name not in sources or not sources[source_name]:
-                    raise AssertionError(
-                        f"frame {frame}: {source_name} is empty before slot {slot}")
-                actual = sources[source_name].popleft()
-                consumed[source_name] += 1
-                if actual != expected:
-                    raise AssertionError(
-                        f"frame {frame}: {source_name} pattern differs at slot {slot}")
-                vram[slot] = actual
-                total_cold += 1
             if vram.get(slot) != expected:
                 raise AssertionError(
                     f"frame {frame}: resident/reused pattern differs at slot {slot}")

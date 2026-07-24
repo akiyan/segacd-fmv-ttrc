@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import av_config
 from quantize_global4_tiles import (
     edge_strengths, palette15, palette_lut, rgb333_keys,
 )
@@ -318,8 +319,9 @@ def score_palettes(tiles, palettes, evaluator=None, mapping_weight=None, core_co
     source edges.
     """
     evaluator = evaluator or PaletteEvaluator(tiles)
-    mapping_weight = (float(os.environ.get("CBRSIM_PAL_MAP_WEIGHT", "1.0"))
-                      if mapping_weight is None else float(mapping_weight))
+    mapping_weight = (
+        av_config.PALETTE_MAP_WEIGHT
+        if mapping_weight is None else float(mapping_weight))
     palettes = [np.asarray(palette, dtype=np.uint8) for palette in palettes]
     errors = evaluator.errors(palettes)
     assign = errors.argmin(1).astype(np.int8)

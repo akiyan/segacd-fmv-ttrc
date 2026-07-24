@@ -20,7 +20,7 @@ from encode_config import (
 
 
 PROFILE = """\
-schema_version = 2
+schema_version = 3
 
 [source]
 path = "assets/source.mp4"
@@ -39,19 +39,16 @@ emit_decisions = true
 
 [palette]
 algorithm = "mosaic-gm"
-
-[pack]
-fill = true
 """
 
 
 class EncodeProfileArtifactTests(unittest.TestCase):
-    def test_removed_schema_v1_is_rejected(self) -> None:
+    def test_removed_schema_v2_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "old-schema.toml"
             path.write_text(PROFILE.replace(
-                "schema_version = 2", "schema_version = 1"))
-            with self.assertRaisesRegex(ValueError, "schema_version must be 2"):
+                "schema_version = 3", "schema_version = 2"))
+            with self.assertRaisesRegex(ValueError, "schema_version must be 3"):
                 load_profile(path)
 
     def test_required_profile_is_consumed_as_first_positional_argument(self) -> None:
@@ -94,6 +91,8 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         inherited = {
             "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX": "9",
             "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN": "246",
+            "CBRSIM_QUALITY_BUDGET_KB": "999",
+            "CBRSIM_RING_CAP_KB": "999",
         }
         env = apply_profile_env(h40, inherited)
         self.assertTrue(env["CBRSIM_SRC"].endswith("BadApple.mp4"))
@@ -108,9 +107,9 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertTrue(
             env["CBRSIM_OUT"].endswith(
                 "videos/BadApple_H40_320x224_adpcm22/tmp"))
-        self.assertEqual(
-            env["CBRSIM_QUALITY_BUDGET_KB"],
-            str(av_config.QUALITY_BUDGET_KB))
+        self.assertNotIn("CBRSIM_QUALITY_BUDGET_KB", env)
+        self.assertNotIn("CBRSIM_QUALITY_BUDGET_KB", inherited)
+        self.assertNotIn("CBRSIM_RING_CAP_KB", inherited)
 
     def test_bad_apple_h32_is_full_cover_adpcm22(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -127,17 +126,34 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertTrue(env["CBRSIM_OUT"].endswith(
             "videos/BadApple_H32_256x224_adpcm22/tmp"))
 
-    def test_machi_op_declares_its_confirmed_active_tile_area(self) -> None:
+    def test_machi_op_uses_confirmed_black_bar_crop_and_native_h40_sar(self) -> None:
         root = Path(__file__).resolve().parents[1]
         profile = load_profile(root / "configs/machi-op-h40.toml")
         env = apply_profile_env(profile, {"CBRSIM_ACTIVE_TILES": "1"})
-        self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "720")
+        self.assertEqual(env["CBRSIM_H"], "152")
+        self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "760")
+        self.assertEqual(env["CBRSIM_SOURCE_SAR"], "32:35")
+        self.assertEqual(env["CBRSIM_GEOMETRY_FIT"], "crop")
+        self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
+        self.assertEqual(
+            env["CBRSIM_MASTER_VF"], "setsar=1,crop=320:152:0:34")
+        self.assertEqual(
+            env["CBRSIM_RAW_VF"], "setsar=1,crop=320:152:0:34")
+        # The hardware baseline remains 360; this qualified profile explicitly
+        # raises the encoder ceiling to the cap-480 result.
+        self.assertEqual(
+            av_config.baseline_cold_cap_for_fps(15, "H40", 760), 360)
+        self.assertEqual(env["CBRSIM_COLD_CAP"], "480")
 
-    def test_machi_ed_declares_its_confirmed_active_tile_area(self) -> None:
+    def test_machi_ed_uses_full_h40_grid_and_profile_cap_380(self) -> None:
         root = Path(__file__).resolve().parents[1]
         profile = load_profile(root / "configs/machi-ed-h40.toml")
         env = apply_profile_env(profile, {"CBRSIM_ACTIVE_TILES": "1"})
-        self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "1040")
+        self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "1120")
+        self.assertEqual(env["CBRSIM_SOURCE_SAR"], "32:35")
+        self.assertEqual(env["CBRSIM_GEOMETRY_FIT"], "crop")
+        self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
+        self.assertEqual(env["CBRSIM_COLD_CAP"], "380")
 
     def test_profile_without_preprocess_clears_inherited_snap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -155,6 +171,14 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "1")
         self.assertEqual(env["CBRSIM_RAW_PREFETCH"], "0")
         self.assertEqual(env["CBRSIM_COLD_CAP"], "175")
+        self.assertEqual(
+            env["CBRSIM_VRAM_TILES"],
+            str(av_config.VRAM_PATTERN_POOL_TILES))
+        self.assertEqual(env["CBRSIM_GPU"], "1")
+        self.assertEqual(env["CBRSIM_DITHER"], "1")
+        self.assertEqual(env["CBRSIM_SEGPAL"], "1")
+        self.assertEqual(env["CBRSIM_NEAR"], "1")
+        self.assertEqual(env["CBRSIM_BOOT_VRAM_PREFETCH"], "1")
 
     def test_profile_cold_cap_may_raise_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -218,21 +242,16 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "video.active_tiles"):
                 load_profile(path)
 
-    def test_vram_pool_must_stay_below_movie_name_table(self) -> None:
+    def test_vram_pool_is_fixed_and_profile_key_is_rejected(self) -> None:
         self.assertEqual(MAX_RESIDENT_VRAM_TILES, 1535)
         with tempfile.TemporaryDirectory() as tmp:
-            valid = Path(tmp) / "valid-vram.toml"
-            valid.write_text(PROFILE.replace(
+            path = Path(tmp) / "profile-vram.toml"
+            path.write_text(PROFILE.replace(
                 "[palette]",
                 f"[encoder]\nvram_tiles = {MAX_RESIDENT_VRAM_TILES}\n\n[palette]"))
-            load_profile(valid)
-
-            invalid = Path(tmp) / "invalid-vram.toml"
-            invalid.write_text(PROFILE.replace(
-                "[palette]",
-                f"[encoder]\nvram_tiles = {MAX_RESIDENT_VRAM_TILES + 1}\n\n[palette]"))
-            with self.assertRaisesRegex(ValueError, "vram_tiles must be within"):
-                load_profile(invalid)
+            with self.assertRaisesRegex(
+                    ValueError, "unknown \\[encoder\\] keys.*vram_tiles"):
+                load_profile(path)
 
     def test_profile_without_measured_cold_cap_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -279,9 +298,9 @@ class EncodeProfileArtifactTests(unittest.TestCase):
     def test_removed_pack_output_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad-apple-h40.toml"
-            path.write_text(PROFILE.replace(
-                "fill = true", 'fill = true\noutput = "out/legacy/MOVIE.DAT"'))
-            with self.assertRaisesRegex(ValueError, "unknown \\[pack\\] keys.*output"):
+            path.write_text(
+                PROFILE + '\n[pack]\noutput = "out/legacy/MOVIE.DAT"\n')
+            with self.assertRaisesRegex(ValueError, "unknown sections.*pack"):
                 load_profile(path)
 
     def test_unsafe_filename_is_rejected(self) -> None:

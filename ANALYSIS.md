@@ -29,9 +29,9 @@ corresponding encoder values remain available in the `stat_*` columns.
 
 | Columns | Definition |
 |---|---|
-| `schema_version` | TSV schema version, currently `2`. |
+| `schema_version` | TSV schema version, currently `6`. |
 | `frame`, `frame_hex`, `time_seconds`, `palette_segment` | Decimal frame, HUD-style hexadecimal frame, exact playback time, and CRAM palette-segment index. |
-| `cells`, `active_tiles`, `budget_tiles`, `cold_cap_tiles`, `prefetch_cap_tiles` | Raster and configured per-frame limits repeated on every row for self-contained filtering. |
+| `cells`, `active_tiles`, `budget_tiles`, `cold_cap_tiles`, `prefetch_cap_tiles` | Raster and limits repeated on every row for self-contained filtering. `cold_cap_tiles` is the fixed effective profile/base cap over every physical cold source. Physical delivery failure stops sim and does not create a local per-frame cap. |
 | `legend_raw`, `legend_same`, `legend_dic`, `legend_prg`, `legend_wr`, `legend_wr0`, `legend_wr1`, `legend_near`, `legend_flbk`, `legend_miss` | Per-frame category counts. `legend_wr` is the displayed Wr0+Wr1 total; the two source banks are also kept separately. |
 | `status_req`, `status_miss`, `status_cold`, `status_pre`, `status_band_kib_s`, `status_prg`, `status_wr0`, `status_wr1`, `status_dma`, `status_run` | Numeric values printed in the bottom status bar, including the frame-0 untimed display rule. |
 | `body_payload_bytes`, `body_control_bytes`, `body_pad_bytes`, `body_physical_bytes`, `body_useful_bytes`, `body_band_bps` | Exact physical BODY delivery-slot accounting behind the Band display. Slot 0 is zero because frame 0 comes from `HEADER.DAT`. |
