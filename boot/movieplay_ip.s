@@ -107,7 +107,6 @@
 .equ SHADOW_UPDATE_COUNT_MASK, 0x7FFF
 .equ SHADOW_OFFSET_MASK, 0x0FFE	/* 4KB physical shadow, even word offsets */
 .equ PACE_N2_ARM_TICKS, 800	/* 24.576ms: safely between VBlank 1 and 2 */
-.equ PRG_BUF_CAP_PATTERNS, 0x3280 /* 404 KiB / 32 B; checked against av_config.py */
 
 .ifdef DEBUG
 .ifdef PLAYER_SPECIALIZED
@@ -791,6 +790,17 @@ bf_upd:
 	bne	bf_update_list
 	movea.l	a0, a2				/* bitmap */
 	PC_ADDA_W md_bmbytes, PC_BMBYTES, a0	/* entries */
+.ifdef PLAYER_SPECIALIZED
+.if (PC_BMBYTES & 1)
+	addq.l	#1, a0				/* v16: align the 16-bit entry array */
+.endif
+.else
+	move.w	md_bmbytes, d0
+	btst	#0, d0
+	beq.s	1f
+	addq.l	#1, a0
+1:
+.endif
 	lea	shadow, a1
 	PC_MOVE_W md_bmbytes, PC_BMBYTES, d5
 	subq.w	#1, d5
@@ -1799,12 +1809,12 @@ prepare_dbg:
 	move.w	n_runs, d4
 	DBG_PUT2
 	/* COMSTAT2 holds Sub's exact sticky high-water occupancy in patterns.
-	   Convert only the excess above the shared 404KB scheduling cap, rounding
+	   Convert only the excess above the fps-specific normal PrgBuf cap, rounding
 	   upward so any use of the physical jitter reserve displays J>=01. */
 	move.w	(GA_COMSTAT2).l, d4
-	cmp.w	#PRG_BUF_CAP_PATTERNS, d4
+	cmp.w	#PC_PRG_BUF_CAP_PATTERNS, d4
 	bls.s	1f
-	sub.w	#PRG_BUF_CAP_PATTERNS, d4
+	sub.w	#PC_PRG_BUF_CAP_PATTERNS, d4
 	add.w	#31, d4
 	lsr.w	#5, d4				/* 32 patterns = 1 KiB */
 	bra.s	2f

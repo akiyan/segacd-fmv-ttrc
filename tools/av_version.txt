@@ -11,6 +11,63 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e110: Enable one-frame timed Raw VRAM prefetch for the cropped Machi OP
+#        H40/15 profile at cold cap 480, targeting the two scene-cut frames
+#        whose DEBUG playback reached C=5 with the option disabled.
+#   e109: Raise the cropped Machi OP H40/15 profile cold cap from its 360
+#        baseline to 480 for the requested full sim, playback-gate, and
+#        visual-quality comparison.
+#   p87: Restore mid-expansion CDC service for low-rate pattern-supply streams.
+#        Poll every four packed run descriptors at 15fps instead of waiting
+#        until every run has completed; the 24/30fps sparse-poll path is
+#        unchanged.
+#   p86: Publish completed PrgBuf pops before the post-cold refill poll. The
+#        first dense frame after a cold-free startup plateau can now refill
+#        from its newly freed space instead of seeing the previous frame's
+#        stale full-ring head until the end of expansion.
+#   p85: Make opportunistic CDC back-pressure follow the next routed sector's
+#        actual destination. Payload checks PrgBuf, control checks APPLY, and
+#        padding checks neither, so a full PrgBuf can no longer block unrelated
+#        control/pad draining and cause an avoidable continuous-read slip.
+#   e108/p84: Advance the stream format to TTRC v16 and word-align bitmap
+#        entry arrays. Odd bitmap sizes such as H40 40x19 (95 bytes) now carry
+#        one zero byte before their 16-bit entries, preventing a 68000 address
+#        error while preserving the complete control length and BODY schedule.
+#   e107/p83: Scale PrgBuf delivery jitter with the content frame interval:
+#        20 KiB at 30fps, 25 KiB at 24fps, and 40 KiB at 15fps. Keep the
+#        physical 424 KiB delivery
+#        ceiling fixed while reducing normal prebuffer/quality capacity to
+#        404/399/384 KiB respectively. HUD J and its recording gate now use
+#        the generated per-stream normal ceiling. Physical scheduling failure
+#        stops the sim unchanged instead of feeding local cold/Prg caps back
+#        into another encoder pass.
+#   e106: Lower the cropped 760-tile Machi OP H40/15 baseline and explicit
+#        profile cap from 500 to 380 for the delivery experiment. The result
+#        was not adopted as the measured baseline; e107 restores the baseline
+#        to 360 and keeps 380 only as Machi OP's explicit profile request.
+#   e105: Bound physical-delivery refinement at four whole-envelope accounting
+#        passes. Each pass freezes the complete remaining congestion interval;
+#        the former one-causal-frame retry loop is not used.
+#   e104: Make automatic physical-delivery feedback Prg-specific. Freeze
+#        rejected cells plus a physical cumulative catch-up ceiling, retain a
+#        one-sector planning reserve, and bound exact residency refinement to
+#        two accounting passes. Preserve effective local Prg caps in analysis
+#        TSV/timelines. This replaces the over-conservative e103 cumulative
+#        selected-demand experiment.
+#   e103: Replace per-frame physical-delivery retry passes with a one-shot
+#        whole-congestion envelope. The logical seed projects rejected Prg/cold
+#        work forward in physical 64-pattern sectors, freezes every causal
+#        local cap at once, and runs the stateful accounting pass only once.
+#        Preserve those local caps in analysis TSV/timelines. Authenticate sim
+#        artifact reuse by source/settings plus this encoder version rather
+#        than individual code-file hashes.
+#   e102: Simplify schema-v3 profiles to source geometry, output identity,
+#        optional timed Raw prefetch/source-qualified cold cap, and palette
+#        algorithm. Fix the resident VRAM pool, core encoder features, palette
+#        training constants, forward fill, and startup audio in shared code.
+#        Enable the existing Prg/Wr0/Wr1/Dic supply path at 15fps and add H40/15
+#        baselines for the cropped 760-tile Machi OP (500, requalified by the
+#        current full run) and the full 1120-tile raster (360).
 #   e101 : Add optional profile-bound encoder.cold_cap. Omission uses the exact
 #        mode/fps/active-tile baseline, a lower value is rejected before sim,
 #        and pack authenticates the same effective cap against frozen
@@ -709,6 +766,6 @@
 #   e17: Raise requested startup PCM arming from 32 to 45 frames. The pack
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
-date=20260723
-e=101
-p=82
+date=20260724
+e=110
+p=87

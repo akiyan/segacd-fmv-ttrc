@@ -20,6 +20,8 @@ Use this skill to:
 - validate timing, video, audio, logs, and optional diagnostic counters;
 - run the mandatory `S/D/R/C/M/J` HUD upload gate for any capture that may
   proceed to `compilation` or another upload step;
+- render the complete HUD TSV through the `hudline` skill, show it inline, and
+  publish the PNG to a public Gist after every full recording;
 - return the raw lossless MKV, sidecars, and verification preview.
 
 Do not apply upload PAR/upscaling, create YouTube metadata, or upload here. Pass the verified
@@ -212,45 +214,56 @@ Check the raw MKV and reports before trusting a capture:
    with a same-Replay `--realtime-lossless` comparison and a second offline run through
    `tools/compare_recordings.py`. Also requalify any suspect result.
 7. Before handing a recording to `compilation` or any upload step, OCR one
-   complete movie loop and write a passing HUD gate sidecar:
+   complete movie loop and write an upload-capable HUD gate sidecar:
 
    ```sh
    tools/python.sh harness/startup_resync/analyze.py \
      videos/STEM_emu_lossless.mkv configs/PROFILE.toml \
-     --csv videos/STEM_emu_hud.csv \
+     --tsv videos/STEM_emu_hud.tsv \
      --gate-json videos/STEM_emu_hud_gate.json --expected-frames FRAME_COUNT
    ```
 
    Add `--flip-fields` for a specialized H40 DEBUG build so its appended
-   `V/O/E` phase fields are preserved in the CSV. They are diagnostic and do
+   `V/O/E` phase fields are preserved in the TSV. They are diagnostic and do
    not change the six-field upload gate.
 
    The profile is mandatory and positional because the C/M limits follow the
-   packed player's cadence. The command exits nonzero unless the first loop
-   contains every frame and all cadence-aware limits pass:
+   packed player's cadence. The gate result is `PASS`, `WARNING`, or `FAIL`.
+   `WARNING` exits zero and remains upload-capable; `FAIL` exits nonzero.
+   The first loop must contain every frame. Thresholds are:
 
-   - fixed-N2: `S/D/R/C=00`, `M<=01`;
-   - delivery-paced 15 fps: `S/D/R=00`, `C<=04`, `M<=04`;
-   - delivery-paced 24 fps: `S/D/R=00`, `C<=03`, `M<=03`;
-   - every cadence: `J<=17`.
+   - fixed-N2: `S/D/R=00`, `C` warning above `00`, `M<=01`;
+   - delivery-paced 15 fps: `S/D/R=00`, `C` warning above `04`, `M<=04`;
+   - delivery-paced 24 fps: `S/D/R=00`, `C` warning above `03`, `M<=03`;
+   - every cadence: `S/D/R=00`; `J<=2B` at 15fps, `J<=1C` at 24fps,
+     or `J<=17` at 30fps.
 
-   Delivery-paced C permits all but the already-armed control sector to finish
-   on the current Sub path. Its M limit permits all display fields available
-   to one content frame. The `J` limit is derived from the current 404 KiB cap
-   plus the complete 24 KiB tail: `17` is 23 KiB and proves the circular ring
-   never became completely full. `J` above `14` means the 20 KiB jitter
-   headroom was exhausted and sector-granular back-pressure entered the
-   separate physical guard; report this explicitly, but a value at or below
-   the passing `17` limit does not by itself require another confirmation or
-   fail the recording.
+   Delivery-paced C's threshold marks work beyond all but the already-armed
+   control sector on the current Sub path. Above-threshold C is diagnostic
+   evidence, but not playback failure by itself, so it produces `WARNING`.
+   The M limit permits all display fields available to one content frame. The
+   `J` limit is derived from the stream's generated
+   normal PrgBuf ceiling: normal/jitter is 384/40 KiB at 15fps,
+   399/25 KiB at 24fps, and 404/20 KiB at 30fps. A value above `28`, `19`, or
+   `14` respectively means sector-granular back-pressure entered the separate
+   physical guard; report this explicitly, but a value at or below the
+   cadence-specific passing limit does not by itself require another
+   confirmation or fail the recording.
    Do not waive, hand-edit, or reuse a gate JSON from another recording.
 
-   On PASS, report all six maxima. A standalone `record` request ends with the
+   On PASS or WARNING, report all six maxima and every warning frame. A
+   standalone `record` request ends with the
    verified recording because it did not authorize publication. Under `$run`,
    the existing upload authorization is sufficient; continue without asking
    again merely because the gate ran.
-   Continue only after the user explicitly reviews and approves that exact
-   recording's result. This manual pause is mandatory for `$run` too.
+
+8. Immediately invoke the `hudline` skill with this exact HUD TSV, gate JSON,
+   profile, and recording identity. Render and inspect the full first-loop PNG,
+   show it inline, and publish it to a public Gist even when the gate fails.
+   Preserve the PNG, its layout receipt, and Gist receipt next to the recording.
+   A `FAIL` still stops compilation and uploads after its diagnostic image has
+   been published. Under `$run`, `PASS` and `WARNING` continue without another
+   approval pause.
 
 Structural audio presence is not a substitute for listening. Claim that the
 sound is clean or free of audible clicks only after listening to the final file.
@@ -278,10 +291,13 @@ Both modes use `xxxx xx xx xx xx xx xx xx xx xx xxxx xx xx`. `F` and `U`
 contain four hexadecimal digits; every other value contains two. Read the
 requested counters over the complete loop. `U` is the Main pattern-transfer
 time in 30.72 us Mega-CD stopwatch ticks, `N` is the packed cold-run count's low
-byte, and `J` is the sticky ceil-KiB streamed PrgBuf excess above 404 KiB. A
-passing `S/D/R/C/M/J` gate JSON plus explicit user approval after reviewing its
-maxima are required handoff conditions. Its HUD timing must never be reused as
-a publication trim or chapter point.
+byte, and `J` is the sticky ceil-KiB streamed PrgBuf excess above the
+fps-derived normal ceiling. A `PASS` or `WARNING` `S/D/R/C/M/J` gate JSON is
+the required handoff condition. When the
+enclosing request already authorizes a full run, reviewing its maxima is not a
+separate approval pause. Its HUD timing must never be reused as a publication
+trim or chapter point. The matching `hudline` PNG and public-Gist receipt are
+required recording sidecars.
 
 ## Existing recordings and smoke tests
 
@@ -325,4 +341,5 @@ whether human listening was performed. For offline runs also report the Replay
 path, requested/max frame count, wall time, and speed. When the run requalifies
 the fast path, additionally report the exact-comparison JSON/pass state and
 repeat-run result. For an upload-capable capture, report the HUD gate JSON,
-complete-loop frame count, `S/D/R/C/M/J` maxima, and PASS state.
+complete-loop frame count, `S/D/R/C/M/J` maxima, gate state, hudline PNG, and
+the public Gist/raw image URLs.

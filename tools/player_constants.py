@@ -19,7 +19,7 @@ from pathlib import Path
 import ttrc_routing
 import ima_adpcm
 import pattern_supply
-import encode_config
+import av_config
 
 
 SECTOR = 2048
@@ -99,6 +99,9 @@ class PlayerConstants:
     sec_mod: int
     sec_base: int
     sec_rem: int
+    prg_buf_cap_patterns: int
+    prg_delivery_cap_patterns: int
+    jitter_headroom_kb: int
     wr0_patterns: int
     wr1_patterns: int
     dic_patterns: int
@@ -138,10 +141,10 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
     if tcols > screen_cols or trows > screen_rows:
         raise ValueError(
             f"tile grid {tcols}x{trows} exceeds {screen_cols}x{screen_rows} display")
-    if base + pool > encode_config.VRAM_FIRST_MOVIE_NT_TILE:
+    if base + pool > av_config.VRAM_FIRST_MOVIE_NT_TILE:
         raise ValueError(
             f"resident pool base {base} + {pool} tiles overlaps "
-            f"movie name-table tile {encode_config.VRAM_FIRST_MOVIE_NT_TILE}")
+            f"movie name-table tile {av_config.VRAM_FIRST_MOVIE_NT_TILE}")
     expected_routing_sec = ttrc_routing.routing_sector_count(frames)
     if routing_sec != expected_routing_sec:
         raise ValueError(
@@ -214,8 +217,6 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
             if sectors != expected_sectors:
                 raise ValueError(
                     f"{name} preload sectors {sectors} != {expected_sectors} for {count} patterns")
-        if not fast_poll:
-            raise ValueError("pattern supply currently requires a 24fps-or-faster profile")
     else:
         if supply_magic != b"\0\0\0\0" or any(supply_values[1:]):
             raise ValueError("pattern-supply extension is present while feature bit 3 is clear")
@@ -244,8 +245,8 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
         col0=(screen_cols - tcols) // 2,
         row0=(screen_rows - trows) // 2,
         vbudget=vbudget,
-        font_vtile=encode_config.VRAM_HUD_FONT_TILE,
-        font_addr=encode_config.VRAM_HUD_FONT_TILE * 32,
+        font_vtile=av_config.VRAM_HUD_FONT_TILE,
+        font_addr=av_config.VRAM_HUD_FONT_TILE * 32,
         f0_ctrl_sec=f0_ctrl_sec,
         f0_pat_sec=f0_pat_sec,
         paltab_sec=paltab_sec,
@@ -263,6 +264,11 @@ def parse_header_sector(sector: bytes) -> PlayerConstants:
         sec_mod=sec_mod,
         sec_base=sec_base,
         sec_rem=sec_rem,
+        prg_buf_cap_patterns=(
+            av_config.prg_buf_cap_kb(fps_int) * 1024 // 32),
+        prg_delivery_cap_patterns=(
+            av_config.physical_delivery_cap_kb(fps_int) * 1024 // 32),
+        jitter_headroom_kb=av_config.ring_jitter_headroom_kb(fps_int),
         wr0_patterns=wr0_patterns,
         wr1_patterns=wr1_patterns,
         dic_patterns=dic_patterns,
@@ -281,6 +287,8 @@ INCLUDE_ORDER = (
     "audio_control_bytes", "adpcm_table_sectors", "fps_int",
     "audio_fd", "audio_preload_sec", "features", "pump_mask",
     "wave_pump_mask", "sec_num", "sec_mod", "sec_base", "sec_rem",
+    "prg_buf_cap_patterns", "prg_delivery_cap_patterns",
+    "jitter_headroom_kb",
     "wr0_patterns", "wr1_patterns", "dic_patterns",
     "wr0_sectors", "wr1_sectors", "dic_sectors",
 )

@@ -133,9 +133,9 @@ SCREEN_A = L.screen_aspect(MODE)               # 画面の表示アスペクト(
 BUF = np.load(f"{SIM}/buffer_remaining.npz")
 BUF_SCHEMA = int(BUF["schema_version"]) if "schema_version" in BUF else 1
 BUF_KIND = str(BUF["remaining_kind"]) if "remaining_kind" in BUF else "legacy"
-if BUF_SCHEMA < 5 or BUF_KIND != "three_consumptive_plus_dicbuf":
+if BUF_SCHEMA < 6 or BUF_KIND != "three_consumptive_plus_dicbuf":
     raise SystemExit(
-        f"analysis requires DicBuf pattern supply schema 5, got "
+        f"analysis requires fps-jitter pattern supply schema 6, got "
         f"schema={BUF_SCHEMA} kind={BUF_KIND!r}; re-run sim")
 SUPPLY_CAPACITIES = {
     "Prg": int(BUF["prg_capacity"]),
@@ -723,7 +723,7 @@ def analysis_tsv_row(i):
     data = frame_data(i)
     cn = data["counts"]
     row = {
-        "schema_version": 3,
+        "schema_version": 6,
         "frame": i,
         "frame_hex": f"0x{i:04X}",
         "time_seconds": format(i / FPS, ".9f"),

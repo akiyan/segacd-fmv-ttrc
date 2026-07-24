@@ -22,6 +22,35 @@ class RingGeometryTests(unittest.TestCase):
         self.assertEqual(
             av_config.BACKPRESSURE_KB - av_config.RING_CAP_KB, 20)
 
+    def test_jitter_reserve_scales_with_frame_interval(self) -> None:
+        self.assertEqual(av_config.ring_jitter_headroom_kb(30), 20)
+        self.assertEqual(av_config.ring_jitter_headroom_kb(24), 25)
+        self.assertEqual(av_config.ring_jitter_headroom_kb(15), 40)
+        self.assertEqual(av_config.prg_buf_cap_kb(30), 404)
+        self.assertEqual(av_config.prg_buf_cap_kb(24), 399)
+        self.assertEqual(av_config.prg_buf_cap_kb(15), 384)
+        for fps in (15, 24, 30):
+            self.assertEqual(av_config.physical_delivery_cap_kb(fps), 424)
+            self.assertEqual(
+                av_config.prg_buf_cap_kb(fps)
+                + av_config.ring_jitter_headroom_kb(fps),
+                av_config.BACKPRESSURE_KB,
+            )
+
+    def test_ntsc_like_rates_use_named_content_cadence(self) -> None:
+        self.assertEqual(
+            av_config.ring_jitter_headroom_kb(30_000 / 1001), 20)
+        self.assertEqual(
+            av_config.ring_jitter_headroom_kb(24_000 / 1001), 25)
+
+    def test_fixed_encoder_and_pack_resources(self) -> None:
+        self.assertEqual(av_config.VRAM_PATTERN_BASE_TILE, 1)
+        self.assertEqual(av_config.VRAM_FIRST_MOVIE_NT_TILE, 1536)
+        self.assertEqual(av_config.VRAM_PATTERN_POOL_TILES, 1535)
+        self.assertEqual(av_config.VRAM_HUD_FONT_TILE, 1664)
+        self.assertTrue(av_config.PACK_FORWARD_FILL)
+        self.assertEqual(av_config.STARTUP_AUDIO_PREFETCH_FRAMES, 30)
+
     def test_boot_sidecar_capacity_preserves_fixed_word_ram_holes(self) -> None:
         # A one-segment Sonic-style clip has 469 physical record slots.  The
         # resident-pool limit, rather than this stage, caps its 398 requests.
@@ -104,7 +133,9 @@ class ColdCapTests(unittest.TestCase):
 
     def test_h40_15fps_measurements_require_exact_active_tiles(self) -> None:
         self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 720), 500)
+        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 760), 360)
         self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 1040), 400)
+        self.assertEqual(av_config.cold_cap_for_fps(15, "H40", 1120), 360)
 
     def test_full_h40_measurements_require_exact_active_tiles(self) -> None:
         self.assertEqual(av_config.cold_cap_for_fps(24, "H40", 1120), 200)
@@ -136,6 +167,7 @@ class ColdCapTests(unittest.TestCase):
             (15, "H40", 721),
             (15, "H40", 900),
             (15, "H40", 1041),
+            (15, "H40", 1119),
             (24, "H40", 720),
             (30, "H40", 720),
             (15, "H32", 896),
@@ -152,14 +184,20 @@ class ColdCapTests(unittest.TestCase):
     def test_measurement_error_lists_available_tuples(self) -> None:
         with self.assertRaisesRegex(
                 av_config.ColdCapMeasurementRequired,
-                "720 tiles -> cap 500, 1040 tiles -> cap 400"):
+                "720 tiles -> cap 500, 760 tiles -> cap 360, "
+                "1040 tiles -> cap 400, "
+                "1120 tiles -> cap 360"):
             av_config.cold_cap_for_fps(15, "H40", 900)
 
     def test_pack_ceiling_uses_the_same_measurement_selector(self) -> None:
         self.assertEqual(
             av_config.cold_realized_ceiling_for_fps(15, "H40", 720), 500)
         self.assertEqual(
+            av_config.cold_realized_ceiling_for_fps(15, "H40", 760), 360)
+        self.assertEqual(
             av_config.cold_realized_ceiling_for_fps(15, "H40", 1040), 400)
+        self.assertEqual(
+            av_config.cold_realized_ceiling_for_fps(15, "H40", 1120), 360)
         self.assertEqual(
             av_config.cold_realized_ceiling_for_fps(24, "H40", 1120), 200)
         self.assertEqual(

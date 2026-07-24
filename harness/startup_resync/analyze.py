@@ -5,7 +5,7 @@ The player renders values only in one fixed 30-cell order in both modes:
 
     H32/H40: xxxx xx xx xx xx xx xx xx xx xx xxxx xx xx
 
-The corresponding keys are F/P/S/D/R/L/C/W/M/A/U/N/J in the CSV and report.
+The corresponding keys are F/P/S/D/R/L/C/W/M/A/U/N/J in the TSV and report.
 
 Frames are decoded sequentially through ffmpeg.  High-confidence OCR samples
 with the same F value are combined before R transitions are reported.  This is
@@ -356,7 +356,7 @@ def print_report(groups: list[FrameGroup], context: int) -> list[int]:
     return transitions
 
 
-def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> None:
+def write_tsv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> None:
     transition_set = set(transitions)
     path.parent.mkdir(parents=True, exist_ok=True)
     columns = [
@@ -370,7 +370,12 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
         "prev_lead_256b", "next_frame", "next_lead_256b",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=columns,
+            delimiter="\t",
+            lineterminator="\n",
+        )
         writer.writeheader()
         for index, group in enumerate(groups):
             values = group.values
@@ -416,7 +421,7 @@ def write_csv(path: Path, groups: list[FrameGroup], transitions: list[int]) -> N
                 "next_frame": following.values["F"] if following else "",
                 "next_lead_256b": following.values["L"] if following else "",
             })
-    print(f"CSV: {path}")
+    print(f"TSV: {path}")
 
 
 def upload_gate_limits(content_fps: float) -> tuple[dict[str, int], str]:
@@ -446,7 +451,11 @@ def upload_gate_limits(content_fps: float) -> tuple[dict[str, int], str]:
         # J is ceil-KiB. Leave one complete KiB below the physical ring end so
         # an accepted value proves head and tail never became equal at full.
         # Values beyond jitter headroom remain visible for mandatory review.
-        "J": av_config.RING_SIZE_KB - av_config.PRG_BUF_CAP_KB - 1,
+        "J": (
+            av_config.RING_SIZE_KB
+            - av_config.prg_buf_cap_kb(fps)
+            - 1
+        ),
     }, cadence
 
 
@@ -457,10 +466,11 @@ def evaluate_upload_gate(
     content_fps: float = 30.0,
     profile: encode_config.EncodeProfile | None = None,
 ) -> dict:
-    """Require a complete clean first loop before a recording may be uploaded."""
+    """Classify a complete first loop as PASS, WARNING, or FAIL."""
     first_loop = [group for group in groups if group.loop == 0]
     fields = ("S", "D", "R", "C", "M", "J")
     failures: list[str] = []
+    warnings: list[str] = []
     missing = [field for field in fields if field not in first_loop[0].values]
     maxima = {
         field: max(group.values.get(field, 0) for group in first_loop)
@@ -488,14 +498,19 @@ def evaluate_upload_gate(
     limits, cadence = upload_gate_limits(content_fps)
     for field, limit in limits.items():
         if maxima[field] > limit:
-            failures.append(
+            target = warnings if field == "C" else failures
+            target.append(
                 f"{field} peak {maxima[field]:02X} exceeds upload limit {limit:02X}"
             )
 
     stat = recording.stat()
+    status = "FAIL" if failures else "WARNING" if warnings else "PASS"
     result = {
-        "schema_version": 1,
-        "pass": not failures,
+        "schema_version": 2,
+        # WARNING remains upload-capable. Keep the compatibility boolean so
+        # older consumers only stop for a real FAIL.
+        "pass": status != "FAIL",
+        "status": status,
         "recording": str(recording.resolve()),
         "recording_size": stat.st_size,
         "recording_mtime_ns": stat.st_mtime_ns,
@@ -505,10 +520,15 @@ def evaluate_upload_gate(
         "cadence": cadence,
         "maxima": maxima,
         "limits": limits,
-        "prg_buf_cap_kib": av_config.PRG_BUF_CAP_KB,
+        "prg_buf_cap_kib": av_config.prg_buf_cap_kb(content_fps),
+        "jitter_headroom_kib": (
+            av_config.ring_jitter_headroom_kb(content_fps)),
+        "delivery_limit_kib": (
+            av_config.physical_delivery_cap_kb(content_fps)),
         "backpressure_kib": av_config.BACKPRESSURE_KB,
         "physical_ring_kib": av_config.RING_SIZE_KB,
         "requires_explicit_upload_approval": False,
+        "warnings": warnings,
         "failures": failures,
     }
     if profile is not None:
@@ -520,7 +540,7 @@ def evaluate_upload_gate(
 def write_gate_json(path: Path, result: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-    state = "PASS" if result["pass"] else "FAIL"
+    state = result["status"]
     maxima = result["maxima"]
     print(
         f"HUD record gate: {state}  "
@@ -531,6 +551,8 @@ def write_gate_json(path: Path, result: dict) -> None:
     )
     for failure in result["failures"]:
         print(f"  gate failure: {failure}")
+    for warning in result["warnings"]:
+        print(f"  gate warning: {warning}")
     print(f"HUD gate JSON: {path}")
 
 
@@ -543,10 +565,14 @@ def parse_args() -> argparse.Namespace:
         "profile", nargs="?", type=Path,
         help="encode profile; required positionally with --gate-json",
     )
-    parser.add_argument("--csv", type=Path, help="write all aggregated movie frames to CSV")
+    parser.add_argument(
+        "--tsv",
+        type=Path,
+        help="write all aggregated movie frames as tab-separated values",
+    )
     parser.add_argument(
         "--gate-json", type=Path,
-        help="write the mandatory pre-upload review and fail on unsafe SDRCMJ values",
+        help="write the mandatory PASS/WARNING/FAIL pre-upload review",
     )
     parser.add_argument(
         "--expected-frames", type=int,
@@ -599,6 +625,8 @@ def parse_args() -> argparse.Namespace:
         parser.error(f"profile not found: {args.profile}")
     if args.expected_frames is not None and args.expected_frames < 1:
         parser.error("--expected-frames must be at least 1")
+    if args.tsv is not None and args.tsv.suffix.lower() != ".tsv":
+        parser.error("--tsv output must use the .tsv extension")
     return args
 
 
@@ -616,8 +644,8 @@ def main() -> int:
     )
     groups = select_movie_groups(raw_groups, args.anchor_run, args.max_frame_step)
     transitions = print_report(groups, args.context)
-    if args.csv:
-        write_csv(args.csv, groups, transitions)
+    if args.tsv:
+        write_tsv(args.tsv, groups, transitions)
     if args.gate_json:
         profile = encode_config.load_profile(args.profile)
         content_fps = float(Fraction(str(profile.data["source"]["fps"])))

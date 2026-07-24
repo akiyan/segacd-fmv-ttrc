@@ -151,11 +151,14 @@ def parse_entries(block: bytes, seq: int, cells: int) -> tuple[int, ...]:
 
     bitmap_start = 8
     bitmap_len = (cells + 7) // 8
-    entries_start = bitmap_start + bitmap_len
+    bitmap_end = bitmap_start + bitmap_len
+    entries_start = (bitmap_end + 1) & ~1
     entries_end = entries_start + 2 * n_upd
     if entries_end > len(block):
         raise AssertionError(f"frame {seq}: entries exceed the control block")
-    bitmap = block[bitmap_start:entries_start]
+    bitmap = block[bitmap_start:bitmap_end]
+    if any(block[bitmap_end:entries_start]):
+        raise AssertionError(f"frame {seq}: bitmap alignment pad is nonzero")
     if sum(byte.bit_count() for byte in bitmap) != n_upd:
         raise AssertionError(f"frame {seq}: bitmap population differs from n_upd")
     if not n_upd:
@@ -169,8 +172,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, _cols, _rows, cells = struct.unpack_from(
         ">4sHHHHH", header
     )
-    if magic != b"TTRC" or version != 15:
-        raise AssertionError(f"expected split TTRC v15, got {magic!r} v{version}")
+    if magic != b"TTRC" or version != 16:
+        raise AssertionError(f"expected split TTRC v16, got {magic!r} v{version}")
 
     routing_sec = struct.unpack_from(">L", header, 26)[0]
     prebuf_sec = struct.unpack_from(">L", header, 30)[0]

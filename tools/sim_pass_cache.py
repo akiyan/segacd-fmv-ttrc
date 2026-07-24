@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 import pickle
@@ -12,38 +11,11 @@ from typing import Any
 from analysis_logs import encoder_version
 
 
-SCHEMA_VERSION = 1
-TOOLS = Path(__file__).resolve().parent
-CODE_FILES = (
-    "sim.py",
-    "upgrade_planner.py",
-    "tile_alloc.py",
-    "pattern_supply.py",
-    "raw_prefetch.py",
-    "palette_algorithms.py",
-    "quantize_md_video.py",
-    "quantize_global4_tiles.py",
-    "gpu_quant.py",
-    "stream_schedule.py",
-    "av_config.py",
-    "encode_config.py",
-    "video_geometry.py",
-)
+SCHEMA_VERSION = 2
 
 
 class PassCacheError(RuntimeError):
     pass
-
-
-def code_identity() -> str:
-    digest = hashlib.sha256()
-    for name in CODE_FILES:
-        path = TOOLS / name
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def source_identity(path: str | os.PathLike[str]) -> dict[str, Any]:
@@ -75,7 +47,6 @@ def expected_metadata(
         "profile_path": str(Path(profile.path).resolve()),
         "source": source_identity(source),
         "encoder_version": encoder_version(),
-        "code_sha256": code_identity(),
         "geometry": {
             "width": int(width),
             "height": int(height),

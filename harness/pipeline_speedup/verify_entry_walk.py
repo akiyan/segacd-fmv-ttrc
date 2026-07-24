@@ -162,8 +162,10 @@ def verify_block(
         cold = 0
         prg_cold = 0
         for index in range(n_runs):
-            slot, encoded = struct.unpack_from(">HH", block, suffix + index * 4)
-            count = encoded & 0x3FFF
+            slot_word, encoded = struct.unpack_from(
+                ">HH", block, suffix + index * 4)
+            slot = slot_word & 0x07FF
+            count = encoded & 0x07FF
             source = encoded >> 14
             if not count or slot + count > pool or source > 2:
                 raise AssertionError(f"frame {seq}: invalid run descriptor")
@@ -172,11 +174,14 @@ def verify_block(
                 prg_cold += count
         return n_upd, cold, prg_cold
     bitmap_len = (cells + 7) // 8
-    entries_off = bitmap_off + bitmap_len
+    bitmap_end = bitmap_off + bitmap_len
+    entries_off = (bitmap_end + 1) & ~1
     entries_end = entries_off + 2 * n_upd
     if entries_end > len(block):
         raise AssertionError(f"frame {seq}: entries exceed control block")
-    bitmap = block[bitmap_off:entries_off]
+    bitmap = block[bitmap_off:bitmap_end]
+    if any(block[bitmap_end:entries_off]):
+        raise AssertionError(f"frame {seq}: bitmap alignment pad is nonzero")
     direct = list(struct.unpack_from(f">{n_upd}H", block, entries_off)) if n_upd else []
 
     old: list[int] = []
@@ -241,8 +246,8 @@ def main() -> None:
     magic, version, nfr, _cols, _rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", data, 0
     )
-    if magic != b"TTRC" or version != 15:
-        raise SystemExit(f"expected TTRC v15, got {magic!r} v{version}")
+    if magic != b"TTRC" or version != 16:
+        raise SystemExit(f"expected TTRC v16, got {magic!r} v{version}")
     prebuf_pat = struct.unpack_from(">L", data, 22)[0]
     routing_sec = struct.unpack_from(">L", data, 26)[0]
     prebuf_sec = struct.unpack_from(">L", data, 30)[0]

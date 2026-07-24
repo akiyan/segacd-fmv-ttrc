@@ -90,6 +90,12 @@ remain evenly aligned.
 **v15** removes the audio-codec choice and its feature bit. Every control uses
 checkpointed IMA ADPCM, every header includes the five-sector decoder table,
 and offset 54 always means the even decoded-sample count.
+**v16** word-aligns the entry array after bitmap controls. When
+`ceil(cells / 8)` is odd, one zero byte follows the bitmap before the first
+16-bit entry. This prevents an address error on the 68000; list controls are
+already word-aligned and do not add this byte. The run-suffix alignment and
+the complete control length are unchanged because the former pre-suffix pad
+moves to the bitmap boundary.
 
 ## File layout
 
@@ -147,10 +153,11 @@ visible cell count. For H40/320x224 with 1,518 resident slots, a frame containin
 These patterns are speculative; later visible work may reclaim them before
 their predicted first use.
 
-During boot, frame 0's pattern stream temporarily occupies the 36 KiB boot-only
-staging area. That area combines 20 KiB of timed-delivery jitter headroom, the
-4 KiB physical guard, and 12 KiB of not-yet-active APPLY space; the largest H40
-frame needs 36 KiB after sector rounding. The on-disc routing table is
+During boot, frame 0's pattern stream temporarily occupies the fixed 36 KiB
+boot-only staging area at the top of PRG RAM and the not-yet-active APPLY
+space; the largest H40 frame needs 36 KiB after sector rounding. This staging
+layout is independent of the timed stream's fps-derived normal PrgBuf and
+jitter boundary. The on-disc routing table is
 staged in the not-yet-active APPLY ring,
 then copied identically into the final 16 KiB of both 1M Word-RAM banks after
 `HEADER.DAT` has been drained. Frame 0 is expanded before `BODY.DAT` can reuse
@@ -240,7 +247,7 @@ Then:
   two-VBlank timing flag: it makes the Main CPU force N=2 and the Sub CPU use
   the 1001/400 sector accumulator. The packer derives it with
   `uses_fixed_n2_cadence`; 24fps leaves it clear even though its nearest
-  `vsync_n` hint is also 2. Bit 2 is reserved in v15. Bit 3
+  `vsync_n` hint is also 2. Bit 2 is reserved in v16. Bit 3
   (`FEATURE_PATTERN_SUPPLY`, v10) means update/run source bits are active,
   the `PSUP` extension is present, and the three boot-preload regions follow
   the ADPCM table. Bit 4 (`FEATURE_SHADOW_UPDATE_LISTS`, v11) means
@@ -456,7 +463,7 @@ including the old 2.5-sector average at 30fps.
 light frames omit padding until that temporary lead is repaid. The complete
 stream converges to the CD 1x display-rate total without overflowing PrgBuf.
 Historical v2/v3 players defaulted `fps_int = 0` to 15, yielding the constant 5
-and reproducing the old fixed-slot behaviour. The current player accepts only v15 and
+and reproducing the old fixed-slot behaviour. The current player accepts only v16 and
 rejects a zero nominal fps before entering this schedule.
 
 The v6-and-later packer first spends that frame's allowance on control, then replaces
@@ -468,13 +475,22 @@ light frames. In particular, a full startup PrgBuf is not refilled with all five
 sectors merely to keep it full; with `FEATURE_FIXED_N2`, an ordinary light
 region remains on the 1001/400 two-or-three-sector sequence.
 
+The player's opportunistic pump applies back-pressure by the next sector's
+routed destination, not by every buffer at once. A control sector checks APPLY
+space, a payload sector checks PrgBuf space, and a padding sector checks neither
+because it is discarded. This distinction is required by the continuous CD
+read: a full PrgBuf must not prevent an unrelated control or padding sector
+from being acknowledged. When frame expansion consumes PrgBuf patterns through
+a local copy cursor, the player publishes that cursor before its post-cold
+refill poll so newly freed space is visible immediately.
+
 ## Prebuffer
 
 The final `prebuf_sec` sectors of `HEADER.DAT` hold the first `Bpat`
 Prg-sourced patterns (32 bytes each) of frames 1 onward. Frame 0's patterns are
 in the earlier FRAME 0 region. The prebuffer is loaded into PrgBuf before
-playback and is capped by the 404 KiB usable Prg scheduling ceiling, so frame 1
-starts armed.
+playback and is capped by the fps-derived normal PrgBuf ceiling (384 KiB at
+15fps, 399 KiB at 24fps, or 404 KiB at 30fps), so frame 1 starts armed.
 
 ## Frame (`fsec` sectors, rate-matched; frames 1..nfr-1)
 
@@ -511,8 +527,8 @@ pixels `(hi<<4)|lo`.
 | 2    | frame_seq   | frame sequence number (low 16 bits). The player checks this against the frame it expects; a mismatch means the stream desynced (e.g. a dropped CD sector) — the frame's updates are discarded (previous frame held) and the desync counter increments. |
 | 2    | n_upd/format | bits 0-14 = number of cell updates; bit 15 = v11 completed-list layout |
 | 2    | pal         | v14+ stores the v3 palette reference as a `u16`: `segment index + 1` switches CRAM this frame to that entry of the pre-loaded PALTAB; `0` means no change. (v1/v2 used a 0/1 flag followed by a 128-byte in-stream CRAM payload.) |
-| variable | shadow updates | legacy: `ceil(cells/8)` bitmap then `n_upd x 2` source-coded entries; completed list: `n_upd x 4` offset/final-entry pairs (see below) |
-| PCM: audio_bytes; ADPCM22: 4 + audio_bytes/2 | audio | PCM stores RF5C164 sign-magnitude bytes directly. ADPCM22 stores `s16 predictor, u8 step_index, u8 reserved_zero`, then low-nibble-first IMA codes. Current prefetched streams carry this logical source chunk `audio_preload_sec` frames ahead. |
+| variable | shadow updates | legacy: `ceil(cells/8)` bitmap, a zero byte if that size is odd, then `n_upd x 2` source-coded entries; completed list: `n_upd x 4` offset/final-entry pairs (see below) |
+| 4 + audio_bytes/2 | audio | `s16 predictor, u8 step_index, u8 reserved_zero`, then low-nibble-first IMA codes. Current prefetched streams carry this logical source chunk `audio_preload_sec` frames ahead. |
 | 0/1  | audio pad   | zero byte when needed to align the optional suffix to a word boundary and keep the legacy block end even |
 | 2    | n_runs      | present when header feature bit 0 is set; number of cold-slot runs |
 | n_runs x 4 | cold runs | present when feature bit 0 is set; repeated v12 indexed descriptor pairs in pattern-consumption order |

@@ -1,21 +1,24 @@
 """Single source of truth for the streaming geometry shared by the whole pipeline.
 
 The encoder (``tools/sim.py``), the packer (``tools/pack_stream.py``) and the
-on-disc player (``boot/movieplay_sp.s``) share one safe PrgBuf capacity.
-Their objects are not identical: sim has a virtual quality budget, while pack
-and player schedule and hold physical PrgBuf sectors. Historically each side
-had its own capacity knob:
+on-disc player (``boot/movieplay_sp.s``) share one physical PrgBuf geometry.
+Their objects are not identical: sim has a virtual quality budget, the packer
+has an fps-derived normal prebuffer ceiling plus a physical delivery ceiling,
+and the player holds the real sectors. Historically each side had its own
+capacity knob:
 
 * player  ``.equ RING_SIZE``       = 428 KB   (the physical buffer)
-* pack    ``CBRSIM_RING_CAP_KB``    = 404 KB   (legacy internal scheduler name)
+* pack    normal prebuffer ceiling  = fps-derived
 * sim     quality budget             = 440 KB   (*larger than PrgBuf!*)
 
 Three independent capacity values are a double-management trap: the sim can
 borrow more virtual budget than the hardware can schedule, causing live
 underruns even when the encode looked feasible.
 
-Here we define the physical ring **once** and derive both safe capacity ceilings
-from it. The player's ``RING_SIZE`` is asserted equal to
+Here we define the physical ring **once** and derive every capacity from it.
+Delivery jitter scales with the time represented by one content frame: 20 KiB
+at 30 fps, 40 KiB at 15 fps, and 25 KiB at 24 fps. The
+player's ``RING_SIZE`` is asserted equal to
 ``RING_SIZE_KB`` at build time (``tools/check_player_ring.py``, run by the
 Makefile). This module also owns the measured cold-cap qualification table used
 by the encoder, packer, profile validator, and analysis renderer. The packer
@@ -34,23 +37,100 @@ from dataclasses import dataclass
 RING_SIZE_KB = 428
 
 # Keep the physical overflow guard distinct from delivery-jitter headroom. The
-# player throttles its CD pump at RING_SIZE-4KB (back-pressure), and the pack
-# schedules another 20KB below that threshold. The sim may borrow no more
-# quality budget than the same cap; its occupancy remains separate.
+# player throttles its CD pump at RING_SIZE-4KB (back-pressure). The normal
+# PrgBuf/prebuffer ceiling stays an fps-derived jitter interval below that
+# threshold, while the exact physical schedule may use the reserved interval.
 RING_PHYSICAL_GUARD_KB = 4
-RING_JITTER_HEADROOM_KB = 20
+RING_JITTER_REFERENCE_FPS = 30.0
+RING_JITTER_REFERENCE_KB = 20
 
 # Frame 0 is staged only during boot and may span the jitter tail plus the
 # otherwise-unused APPLY ring. It is not part of the timed PrgBuf occupancy.
 FRAME0_PATTERN_STAGING_KB = 36
 
-# Derived — do not set these independently anywhere else.
+# Derived fixed physical limits — do not set these independently anywhere else.
 BACKPRESSURE_KB = RING_SIZE_KB - RING_PHYSICAL_GUARD_KB
-RING_CAP_KB = BACKPRESSURE_KB - RING_JITTER_HEADROOM_KB  # internal scheduler name
-PRG_BUF_CAP_KB = RING_CAP_KB                         # public physical-buffer name
-QUALITY_BUDGET_KB = PRG_BUF_CAP_KB                   # virtual quality ceiling
+
+
+def _nominal_content_fps(fps):
+    """Normalize NTSC-like profile rates to their named content cadence."""
+    value = float(fps)
+    if value <= 0:
+        raise ValueError(f"fps must be positive, got {fps!r}")
+    nearest = round(value)
+    if nearest > 0 and math.isclose(
+            value, nearest, rel_tol=0.0, abs_tol=0.1):
+        return float(nearest)
+    return value
+
+
+def ring_jitter_headroom_kb(fps):
+    """Return fps-scaled jitter reserve rounded up to a whole KiB."""
+    nominal_fps = _nominal_content_fps(fps)
+    nominal_kb = (
+        RING_JITTER_REFERENCE_KB
+        * RING_JITTER_REFERENCE_FPS
+        / nominal_fps
+    )
+    return int(math.ceil(nominal_kb))
+
+
+def prg_buf_cap_kb(fps):
+    """Return the normal PrgBuf/prebuffer ceiling below physical jitter."""
+    cap = BACKPRESSURE_KB - ring_jitter_headroom_kb(fps)
+    if cap <= 0:
+        raise ValueError(
+            f"fps {fps!r} requires all {BACKPRESSURE_KB} KiB of PrgBuf "
+            "for delivery jitter")
+    return cap
+
+
+def quality_budget_kb(fps):
+    """Keep offline time-shifting within the normal fps-specific PrgBuf."""
+    return prg_buf_cap_kb(fps)
+
+
+def physical_delivery_cap_kb(_fps):
+    """Return the hard scheduled occupancy limit before pump back-pressure."""
+    return BACKPRESSURE_KB
+
+
+# Compatibility aliases are the 30 fps reference values. Runtime encode, pack,
+# player constants, analysis, and HUD gates must call the fps-aware functions.
+RING_JITTER_HEADROOM_KB = ring_jitter_headroom_kb(30)
+RING_CAP_KB = prg_buf_cap_kb(30)
+PRG_BUF_CAP_KB = RING_CAP_KB
+QUALITY_BUDGET_KB = quality_budget_kb(30)
 
 assert BACKPRESSURE_KB - RING_CAP_KB == RING_JITTER_HEADROOM_KB
+
+# --- Fixed encoder/player resources ---
+# The resident movie-pattern pool starts at tile 1 and ends immediately before
+# the first movie name table at VRAM 0xC000.  The HUD font lives in the gap at
+# 0xD000, so DEBUG and release builds share the same full pool.
+VRAM_PATTERN_BASE_TILE = 1
+VRAM_FIRST_MOVIE_NT_TILE = 0xC000 // 32
+VRAM_HUD_FONT_TILE = 0xD000 // 32
+VRAM_PATTERN_POOL_TILES = (
+    VRAM_FIRST_MOVIE_NT_TILE - VRAM_PATTERN_BASE_TILE)
+
+# These are pipeline policy, not per-source choices.  Forward fill uses safe
+# physical-slot padding for future Prg payload, while startup audio is clamped
+# later to the decoded chunk size and wave-RAM capacity.
+PACK_FORWARD_FILL = True
+STARTUP_AUDIO_PREFETCH_FRAMES = 30
+
+# Palette algorithm parameters are fixed across sources.  Only the algorithm
+# name remains a TOML choice.
+PALETTE_MAP_WEIGHT = 1.0
+PALETTE_SEAM_WEIGHT = 8.0
+PALETTE_SEAM_ITERATIONS = 2
+PALETTE_SAMPLE_COUNTS = (120, 240, 480)
+PALETTE_VALIDATE_FRAMES = 120
+PALETTE_SEGMENT_TRAIN_FRAMES = 240
+PALETTE_SEGMENT_VALIDATE_FRAMES = 60
+PALETTE_SEGMENT_GAIN_RELATIVE = 0.005
+PALETTE_SEGMENT_GAIN_PER_PIXEL = 0.002
 
 # --- v13 boot stage / CRAM pre-load table (PALTAB) capacity ---
 # A fixed 24 KiB boot stage ships right after the header.  All segment palettes
@@ -248,7 +328,9 @@ COLD_CAP_QUALIFICATIONS = (
     ColdCapQualification("H32", 24.0, 896, 219),
     ColdCapQualification("H32", 30.0, 896, 175),
     ColdCapQualification("H40", 15.0, 720, 500),
+    ColdCapQualification("H40", 15.0, 760, 360),
     ColdCapQualification("H40", 15.0, 1040, 400),
+    ColdCapQualification("H40", 15.0, 1120, 360),
     ColdCapQualification("H40", 24.0, 1120, 200),
     ColdCapQualification("H40", 30.0, 1120, 180),
 )

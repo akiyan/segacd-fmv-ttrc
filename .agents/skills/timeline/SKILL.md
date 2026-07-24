@@ -32,7 +32,9 @@ tools/python.sh .agents/skills/timeline/scripts/render_timeline.py \
 ```
 
 5. Inspect the PNG with `view_image`. Check that the full time axis, tail
-   marker, category colours, four row scales, and labels are legible.
+   marker, category colours, four row scales, and labels are legible. Confirm
+   that the fixed effective cold cap and fps-derived normal/jitter/delivery
+   PrgBuf values match the sim metadata.
 6. Publish the PNG as a public GitHub Gist. The helper creates a Git-backed
    public Gist so the binary PNG is preserved exactly, writes a
    `<image>.gist.json` receipt, and returns both the Gist page and raw PNG URL:
@@ -75,21 +77,31 @@ Keep these parts in every image:
 
 - The canonical four whole-movie rows, using the analysis colours and fixed
   scales: Req categories; physical Prg plus combined Wrd remaining; physical
-  cold-run count versus the measured cold cap; and useful BODY delivery split
-  into Raw payload, Prg charge, and control versus physical slot bytes. Raw is
-  the bottom Band segment, matching its leftmost position in the status bar.
-  Keep Supply and Band compact so the dedicated RUN row remains visible without
-  increasing the overall timeline height.
+  cold-run count versus the fixed effective cold cap; and useful BODY delivery split into Raw payload, Prg
+  charge, and control versus physical slot bytes. Raw is the bottom Band
+  segment, matching its leftmost position in the status bar. State above the
+  timeline that automatic local Prg/cold cap feedback is disabled.
+  Keep the Req row at the fixed 347 px height; this is also the upper panel
+  height used by `/mixline`.
+  Keep Supply at 60 px and RUN and Band at 32 px so these secondary rows do
+  not dominate the image.
 - Show explicit vertical-axis ticks and horizontal guides at zero, half-scale,
-  and full-scale on every row. Put the units below each row heading, not on
-  every tick: Req uses cells, Supply uses patterns, and RUN uses runs. Band
-  remains a percentage of each frame's physical slot.
-- Segment boundaries, five-second labels, exact frame-per-pixel mapping, and a
-  clearly shaded excluded tail when requested.
+  and full-scale on Req and Supply. Show only zero and full-scale on the
+  compact RUN and Band rows. Put the unit below the Req and Supply headings;
+  the compact RUN and Band headings have no unit subheading. Req uses cells
+  and Supply uses patterns. Band's axis remains a percentage of each frame's
+  physical slot.
+- Segment boundaries, five-second labels, hexadecimal `f0xHEX` frame labels,
+  exact frame-per-pixel mapping, and a clearly shaded excluded tail when
+  requested.
 
 Use at least two pixels per frame when practical. Do not normalize each run to
 its own observed peak: fixed scales are what make successive images visually
 comparable.
+
+Write a `<output>.json` layout receipt with the input hashes, frame mapping,
+row geometry, and evaluation boundary. `/mixline` must consume this receipt
+instead of inferring alignment from image dimensions.
 
 ## Interpretation safeguards
 

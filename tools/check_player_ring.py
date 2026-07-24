@@ -143,22 +143,69 @@ if ring_bytes != want_bytes:
         f"!= av_config.RING_SIZE_KB={av_config.RING_SIZE_KB} "
         f"({want_bytes} / 0x{want_bytes:X}). Update one so they agree "
         f"(single source of truth = tools/av_config.py).")
-print(f"check_player_ring: OK  RING_SIZE={ring_bytes//1024}KB "
-      f"== av_config.RING_SIZE_KB (PrgBuf cap {av_config.PRG_BUF_CAP_KB}KB, "
-      f"quality budget {av_config.QUALITY_BUDGET_KB}KB)")
+print(
+    f"check_player_ring: OK  RING_SIZE={ring_bytes//1024}KB "
+    f"== av_config.RING_SIZE_KB (delivery limit "
+    f"{av_config.BACKPRESSURE_KB}KB; normal PrgBuf "
+    f"15/24/30fps={av_config.prg_buf_cap_kb(15)}/"
+    f"{av_config.prg_buf_cap_kb(24)}/"
+    f"{av_config.prg_buf_cap_kb(30)}KB)")
 
-ip_prg_cap_patterns = _equ(ip_text, "PRG_BUF_CAP_PATTERNS", IP)
-want_prg_cap_patterns = av_config.PRG_BUF_CAP_KB * 1024 // 32
-if ip_prg_cap_patterns != want_prg_cap_patterns:
+# Opportunistic polling must guard only the next sector's real destination.
+# If both physical rings are checked unconditionally, a full PrgBuf prevents
+# control and padding from being drained even though neither uses PrgBuf. The
+# continuously arriving CD stream then slips before the first timed pattern
+# load. Keep this build-time structural check next to the memory-map checks.
+poll_start = text.index("pump_poll_core:")
+poll_end = text.index("pp_done:", poll_start)
+poll = text[poll_start:poll_end]
+poll_contract = (
+    "lea\tROUTING, a0",
+    "bhi.s\tpp_apply_space",
+    "bls.s\tpp_cdc",
+    "move.l\tring_tail, d0",
+    "pp_apply_space:",
+    "move.l\tapply_tail, d0",
+    "pp_cdc:",
+)
+missing = [part for part in poll_contract if part not in poll]
+if missing:
     sys.exit(
-        "check_player_ring: Main HUD PrgBuf cap does not match av_config: "
-        f"{ip_prg_cap_patterns} patterns != {want_prg_cap_patterns}")
+        "check_player_ring: route-aware pump guard is incomplete: "
+        + ", ".join(repr(part) for part in missing))
+route_pos = poll.index("lea\tROUTING, a0")
+ring_pos = poll.index("move.l\tring_tail, d0")
+apply_label_pos = poll.index("pp_apply_space:")
+apply_pos = poll.index("move.l\tapply_tail, d0")
+cdc_pos = poll.index("pp_cdc:")
+if not route_pos < ring_pos < apply_label_pos < apply_pos < cdc_pos:
+    sys.exit(
+        "check_player_ring: pump guards must route payload to PrgBuf, control "
+        "to APPLY, and padding directly to CDC")
+print(
+    "check_player_ring: OK  route-aware pump guard "
+    "(payload=PrgBuf, control=APPLY, padding=unguarded)")
+
+after_pop_start = text.index("pump_poll_after_pop:")
+after_pop_end = text.index("pump_poll_core:", after_pop_start)
+after_pop = text[after_pop_start:after_pop_end]
+if ("move.l\ta4, ring_head" not in after_pop
+        or "bra.s\tpump_poll" not in after_pop
+        or text.count("bsr\tpump_poll_after_pop") < 3
+        or "andi.w\t#3, d0" not in text):
+    sys.exit(
+        "check_player_ring: post-cold and low-rate run polls must publish the "
+        "local PrgBuf pop cursor before checking refill back-pressure")
+print(
+    "check_player_ring: OK  post-cold/low-rate run refills publish consumed "
+    "PrgBuf head")
 
 # --- Boot-time PRG staging and resident Word-RAM routing map ---
 # Frame 0 is allowed to load the whole H40 raster, unlike timed frames. Its
-# sector-rounded pattern block starts at the usable cap and may extend from the
-# jitter tail into APPLY during boot. ROUTING_TMP follows the maximum frame-0
-# block inside APPLY. Both are gone before steady streaming. The validated table is duplicated at the end
+# sector-rounded pattern block uses one fixed boot-only scratch address,
+# independent of the fps-derived timed boundary. ROUTING_TMP follows the
+# maximum frame-0 block inside APPLY. Both are gone before steady streaming.
+# The validated table is duplicated at the end
 # of both 128 KiB Word-RAM banks, so routing remains visible after every swap.
 route_bytes = ttrc_routing.ROUTE_BYTES
 sector = ttrc_routing.SECTOR_BYTES
@@ -168,7 +215,6 @@ if max_f0_bytes != av_config.FRAME0_PATTERN_STAGING_KB * 1024:
         "check_player_ring: configured frame-0 staging does not match H40 maximum: "
         f"{av_config.FRAME0_PATTERN_STAGING_KB}KB != {max_f0_bytes // 1024}KB")
 ring_base = _equ(text, "RING_BASE", SP)
-ring_cap_end = _equ(text, "RING_CAP_END", SP)
 f0pat_tmp = _equ(text, "F0PAT_TMP", SP)
 apply_base = _equ(text, "APPLY_BASE", SP)
 apply_size = _equ(text, "APPLY_SIZE", SP)
@@ -176,12 +222,6 @@ routing_tmp = _equ(text, "ROUTING_TMP", SP)
 sub_bank = _equ(text, "SUB_BANK_1M", SP)
 routing = _equ(text, "ROUTING", SP)
 
-expected_cap_end = ring_base + av_config.RING_CAP_KB * 1024
-if ring_cap_end != expected_cap_end or f0pat_tmp != ring_cap_end:
-    sys.exit(
-        "check_player_ring: frame-0 staging must start exactly at the usable "
-        f"ring cap: RING_CAP_END={ring_cap_end:#x}, F0PAT_TMP={f0pat_tmp:#x}, "
-        f"expected={expected_cap_end:#x}")
 ring_end = ring_base + ring_bytes
 if ring_base % sector or ring_bytes % sector or ring_bytes % 32:
     sys.exit(
@@ -195,12 +235,6 @@ if ring_end != apply_base:
     sys.exit(
         f"check_player_ring: relocated routing leaves reclaimable PRG RAM: "
         f"RING_END={ring_end:#x}, APPLY_BASE={apply_base:#x}")
-total_headroom_kb = (
-    av_config.RING_JITTER_HEADROOM_KB + av_config.RING_PHYSICAL_GUARD_KB)
-if ring_end - ring_cap_end != total_headroom_kb * 1024:
-    sys.exit(
-        "check_player_ring: physical-to-usable ring gap does not match the "
-        f"configured jitter headroom plus guard: {ring_end - ring_cap_end} bytes")
 f0pat_end = f0pat_tmp + max_f0_bytes
 if f0pat_end > apply_base + apply_size:
     sys.exit(

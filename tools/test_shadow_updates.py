@@ -9,6 +9,12 @@ import shadow_updates
 
 
 class ShadowUpdateTests(unittest.TestCase):
+    def test_v16_bitmap_entry_boundary_is_word_aligned(self) -> None:
+        self.assertEqual(shadow_updates.bitmap_bytes(760), 95)
+        self.assertEqual(shadow_updates.aligned_bitmap_bytes(760), 96)
+        self.assertEqual(shadow_updates.bitmap_bytes(1120), 140)
+        self.assertEqual(shadow_updates.aligned_bitmap_bytes(1120), 140)
+
     def test_bitmap_requires_sorted_unique_in_range_cells(self) -> None:
         self.assertEqual(
             shadow_updates.build_bitmap([0, 7, 8, 15], 16), b"\x81\x81")

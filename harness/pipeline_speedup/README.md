@@ -314,7 +314,7 @@ recording with the exact descriptors in the recorded disc, run:
 ```sh
 tools/python.sh harness/pipeline_speedup/verify_run_hud.py \
   --header out/PROFILE/HEADER.DAT --body out/PROFILE/BODY.DAT \
-  --csv videos/RECORDING.csv
+  --tsv videos/RECORDING.tsv
 ```
 
 The checker uses high-confidence observations by default and compares every one

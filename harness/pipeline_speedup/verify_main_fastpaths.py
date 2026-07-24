@@ -149,7 +149,8 @@ def parse_control(raw: bytes, seq: int, cells: int) -> ControlBlock:
 
     bitmap_start = 8
     bitmap_len = (cells + 7) // 8
-    entries_start = bitmap_start + bitmap_len
+    bitmap_end = bitmap_start + bitmap_len
+    entries_start = (bitmap_end + 1) & ~1
     entries_end = entries_start + n_upd * 2
     if use_list:
         entries_start = bitmap_start
@@ -173,7 +174,9 @@ def parse_control(raw: bytes, seq: int, cells: int) -> ControlBlock:
         bitmap = bytes(bitmap_mut)
         entries = tuple(entries_mut)
     else:
-        bitmap = raw[bitmap_start:entries_start]
+        bitmap = raw[bitmap_start:bitmap_end]
+        if any(raw[bitmap_end:entries_start]):
+            raise AssertionError(f"frame {seq}: bitmap alignment pad is nonzero")
         entries = (
             struct.unpack_from(f">{n_upd}H", raw, entries_start) if n_upd else ()
         )
@@ -190,8 +193,8 @@ def read_stream(header_path: Path, body_path: Path) -> Stream:
     magic, version, nfr, cols, rows, cells, _pool = struct.unpack_from(
         ">4sHHHHHH", header
     )
-    if magic != b"TTRC" or version != 15:
-        raise AssertionError(f"expected split TTRC v15, got {magic!r} v{version}")
+    if magic != b"TTRC" or version != 16:
+        raise AssertionError(f"expected split TTRC v16, got {magic!r} v{version}")
     if cols * rows != cells:
         raise AssertionError(f"grid {cols}x{rows} does not equal {cells} cells")
 

@@ -45,8 +45,9 @@ Argument: source MP4 path, optionally plus display name or upload instruction.
 
 Other fixed defaults:
 
-- All features on: `DITHER`, `SEGPAL`, `NEAR`, whole-movie quality planning,
-  and the qualified four-source pattern supply.
+- All features on: GPU, the full 1,535-tile VRAM pool, `DITHER`, `SEGPAL`,
+  `NEAR`, boot VRAM prefetch, whole-movie quality planning, and the unified
+  Prg/Wr0/Wr1/Dic pattern supply at every supported cadence.
 - Audio = `adpcm22`. Use `pcm13` only when explicitly requested or when a
   physical-console-qualified fallback is required.
 - PrgBuf and offline quality-budget ceilings come from `tools/av_config.py`.
@@ -125,12 +126,13 @@ Rules:
 
 This can take about 10-13 minutes for 2700-3100 frames.
 
-Create one strict `schema_version = 1` profile under `configs/` for each
+Create one strict `schema_version = 3` profile under `configs/` for each
 source/mode combination. Use the schema in `CONFIG.md`; the checked-in Bad
 Apple H32/H40 profiles are complete examples. The profile must name the source,
 native fps, exact duration, full mode raster, HAR-aware `fit`, the selected
-`pcm13` or `adpcm22` audio,
-output directory, encoder/palette settings, and DEBUG pack settings.
+output directory, optional timed `raw_prefetch`, optional qualified `cold_cap`,
+and palette algorithm. Do not add fixed GPU, VRAM, dither, segmented-palette,
+Near, boot-prefetch, forward-fill, or startup-audio keys.
 
 Before every `/sim`, perform these steps in this exact order:
 
@@ -147,10 +149,11 @@ Before every `/sim`, perform these steps in this exact order:
 3. Check the shared-machine exclusion rule below.
 4. Do not manually clean the simulation output directory. Let `sim.py` inspect
    its authenticated completed-artifact cache. It reuses only when source
-   bytes, effective encoder/TOML settings, and output-affecting encoder code
-   match; profile filenames, TOML formatting, and output paths are not part of
-   the encode identity. An interrupted artifact has no completion marker and
-   is reset automatically.
+   bytes, effective encoder/TOML settings, and the encoder `e` version match;
+   profile filenames, TOML formatting, output paths, and individual code-file
+   hashes are not part of the encode identity. Output-affecting changes must
+   bump `tools/av_version.txt`. An interrupted artifact has no completion
+   marker and is reset automatically.
 5. Run the sim and report whether it printed `sim artifact cache: hit` or
    started a clean seed pass. Use `CBRSIM_FORCE_REENCODE=1` only when the user
    explicitly asks for a fresh encode or cache validation itself is the test.
@@ -171,6 +174,13 @@ that intentionally have no profile.
 
 After completion:
 
+- Confirm the fps-derived Prg geometry printed by sim: normal prebuffer /
+  jitter / physical delivery is 384/40/424 KiB at 15fps,
+  399/25/424 KiB at 24fps, or 404/20/424 KiB at 30fps.
+- Physical delivery failure is terminal for that sim. Do not lower the cold
+  cap, synthesize local per-frame caps, or repeat allocation in response.
+  Report the exact failing frame/resource so the user can choose the next
+  non-cap investigation.
 - Check the completion line: `starved_frames=N (X%)`.
 - Check `body_useful_bps`, the mean useful BODY delivery rate shown by Band.
   It is weighted by total physical BODY read time, and each slot must remain at
@@ -277,7 +287,8 @@ Important rendering notes:
 ### 5. Upload If Requested
 
 Under `$run`, this section is forbidden until the matching DEBUG recording has
-a complete `pass: true` HUD gate JSON. Standalone `/sim` uploads are unaffected.
+a complete `PASS` or `WARNING` HUD gate JSON (`pass: true`). Standalone `/sim`
+uploads are unaffected.
 
 ```sh
 PY=~/.config/youtube/venv/bin/python

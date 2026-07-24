@@ -38,16 +38,17 @@ can schedule.
 | Name | Value | Where | Meaning |
 |---|---|---|---|
 | `RING_SIZE` / `RING_SIZE_KB` | 428 KB (0x6B000) | sp / cfg | Internal circular allocation backing `PrgBuf`, from 0x0C000 up to `APPLY_BASE`. The `RING_*` spelling describes the implementation, not a fifth public object. |
-| `RING_JITTER_HEADROOM_KB` | 20 KB | cfg | Timed-delivery headroom between the 404 KB scheduling ceiling and 424 KB pump back-pressure. |
+| `ring_jitter_headroom_kb(fps)` | 15fps: 40 KB; 24fps: 25 KB; 30fps: 20 KB | cfg | Timed-delivery headroom scaled as `20 * 30 / fps`, rounded up to a whole KiB. It is built into the codec and is not a profile setting. |
 | `RING_PHYSICAL_GUARD_KB` | 4 KB | cfg | Separate overflow guard between pump back-pressure and the 428 KB physical ring end. It is not counted as jitter headroom. |
-| `PRG_BUF_CAP_KB` | 404 KB (derived) | cfg -> sim / pack | Public usable `PrgBuf` schedule/prefetch ceiling = `BACKPRESSURE_KB - RING_JITTER_HEADROOM_KB`. `RING_CAP_KB` remains an internal compatibility alias. |
-| `QUALITY_BUDGET_KB` | 404 KB (derived) | cfg -> sim | Capacity of offline quality accounting. It matches the usable Prg ceiling but has an independent trace and no physical meter. Configured runs overwrite inherited `CBRSIM_QUALITY_BUDGET_KB`. |
+| `prg_buf_cap_kb(fps)` | 15fps: 384 KB; 24fps: 399 KB; 30fps: 404 KB | cfg -> sim / pack / player | Normal `PrgBuf` prebuffer and quality ceiling = 424 KB back-pressure minus the cadence-scaled jitter interval. `PRG_BUF_CAP_KB` and `RING_CAP_KB` remain 30fps compatibility aliases only. |
+| `physical_delivery_cap_kb(fps)` | 424 KB | cfg -> sim / pack | Hard exact-schedule occupancy ceiling. Physical delivery may temporarily use the cadence-scaled jitter interval above the normal PrgBuf ceiling. |
+| `quality_budget_kb(fps)` | same as normal `PrgBuf` | cfg -> sim | Capacity of offline quality accounting. It has an independent trace and no physical meter. It is derived from fps, not a profile or environment knob. |
 | `WordBuf0` / `WordBuf1` | 880 patterns each (27.5 KB each) | sp / ip / sim / pack | Different boot-preloaded sequences in the two physical Word-RAM banks at offset `+0x15200..+0x1C000`. Wr0 serves even timed frames and Wr1 odd timed frames; they are not duplicated copies. |
 | `DicBuf` | 256 patterns (8 KB) | ip / sim / pack | Persistent dictionary boot-staged at Word-RAM `+0xD000`, then copied once to Main RAM `0xFF6600..0xFF8600`. Either frame parity may reuse entries by 8-bit index without consuming them. |
-| `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. The Prg schedule ceiling must stay below it. |
-| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v15 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
+| `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. Normal prebuffer stays below it; the exact schedule may use up to this boundary as jitter. |
+| routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v16 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
 | `APPLY_SIZE` | 34 KB (0x8800) | sp | Control-block apply ring (the per-frame update/cram/audio blocks). |
-| Prg prebuffer | up to `PRG_BUF_CAP_KB` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both usable Prg capacity and the clip's future Prg load total. |
+| Prg prebuffer | up to `prg_buf_cap_kb(fps)` | sim / pack | Final region of `HEADER.DAT`; a boot-time Prg payload burst before frame 1. It is capped by both the cadence-derived normal Prg capacity and the clip's future Prg load total. |
 | frame-0 inline staging | 36 KB max | sp | Boot-only PRG region `0x71000..0x7A000` plus the ordinary `O_LOADS` path. It holds every exact frame-0 display pattern and as much future preload as still fits the grid-sized path. The additional boot sidecar below fills otherwise-free resident VRAM slots, so total frame-0 exact plus prefetch is capped by the resident pool rather than by visible cells. |
 | boot VRAM sidecar stage | 24 KB | pack / sp / ip | Temporary Word-RAM image at bank `+0xA000..+0x10000`. PALTAB remains at `+0xB000`; sidecar records use preserved holes around `O_HDR`, diagnostics, palettes, and Dic staging. Before starting the continuous BODY read, Sub performs a boot-only bank handoff and Main writes the records directly to their final backside-VRAM slots. The same handshake runs on movie restart. It adds no timed BODY control, PrgBuf jitter use, or playback-loop work. |
 
@@ -109,13 +110,15 @@ profile-bound physical qualification, not a runtime quality knob.
 | H32 | 24 | 896 | 219 |
 | H32 | 30 | 896 | 175 |
 | H40 | 15 | 720 | 500 |
+| H40 | 15 | 760 | 360 |
 | H40 | 15 | 1,040 | 400 |
+| H40 | 15 | 1,120 | 360 |
 | H40 | 24 | 1,120 | 200 |
 | H40 | 30 | 1,120 | 180 |
 
-For example, H40/15 at 720 or 1,040 active tiles uses its respective measured
-cap of 500 or 400. H40/15 at 900 or 1,120 tiles has no exact measurement and is
-rejected until that tuple is measured. The sim and pack use ONE tile allocator
+For example, H40/15 at 720, 760, 1,040, or 1,120 active tiles uses its exact
+baseline of 500, 360, 400, or 360. H40/15 at 900 tiles has no exact
+measurement and is rejected. The sim and pack use ONE tile allocator
 (`tools/tile_alloc.py`), so the pack's realized cold exactly matches the sim's
 selected cold and never exceeds the cap (the old +overhead from
 LRU-vs-contig re-loads is gone).
@@ -134,7 +137,14 @@ underrun. The cadence-aware DEBUG gate passed with `S/D/R=0`, `C/M=4`, and
 `J=8 KiB`; run count was at most 134 and Main pattern-transfer time was at most
 1,669 ticks (51.29 ms).
 
-Higher probes exposed non-monotonic phase sensitivity rather than a useful
+The cropped 760-active-tile Machi OP profile has a baseline of 360 and
+explicitly requests 380 for full-run qualification. That profile override is
+kept separate from PrgBuf delivery feasibility: an exact physical-schedule
+failure stops the sim and must not lower cold cap or create per-frame local
+caps. Cold-cap adjustment belongs to a completed recording whose cadence-aware
+`C/W/A/S/D/R` evidence shows player-side load trouble.
+
+Higher 720-tile probes exposed non-monotonic phase sensitivity rather than a useful
 portable increase. A cap720 stream realized cold 689 and passed, and a cap689
 stream also passed while reaching 65.37 ms. Cap680 then failed the same gate at
 `M=5`, with 2,193 ticks (67.37 ms), despite its lower cap. The larger caps also
@@ -163,15 +173,15 @@ at most 99 lines and the pattern-transfer timer was at most 539 ticks. The two
 recordings also matched exactly in decoded video frames, PCM samples, packet
 timelines, and stream metadata.
 
-The H40/15 fps/1,040-active-tile value of 400 is full-length-qualified with the
+The historical H40/15 fps/1,040-active-tile value of 400 is full-length-qualified with the
 3,998-frame Machi ED stream. Its 320x204 picture touches 40x26 tile cells after
 being placed at y=10 in the 320x224 raster. The pack had `under=0`, a one-pattern
 minimum ready payload, and exact reconstruction. Across the 3,997 timed DEBUG
 HUD groups, `S`, `D`, and `R` stayed zero, Main-CPU VBlank waits were at most
 two, cold-run count was at most 221, and the longest pattern-update interval was
 1,648 ticks (50.63 ms). The lossless recording passed packet, frame, audio, and
-extracted-frame checks. Full 1,120-active-tile H40/15 has no exact
-qualification and is rejected until it is measured.
+extracted-frame checks. Current full-raster H40/15 profiles use the separate
+1,120-tile baseline of 360.
 
 ## C. Audio sync throttles
 
@@ -179,7 +189,7 @@ RF5C164 playback is a fixed rate, so playback must trail the write pointer by a 
 lead drifts out of `[SYNC_MIN, SYNC_MAX]`, the writer jumps (a re-sync = an
 audible click). See the `R`/`L` HUD readouts below.
 
-TTRC v15 has one audio path: checkpointed 22.05 kHz mono IMA ADPCM decoded by
+TTRC v16 has one audio path: checkpointed 22.05 kHz mono IMA ADPCM decoded by
 the Sub CPU and written to the RF5C164. Profiles contain no audio-format knob.
 Physical hardware and additional cadence/display combinations remain broader
 compatibility checks.
@@ -198,7 +208,7 @@ profile-specialized 24/30 fps decoder omits that counter and call entirely.
 | ADPCM full table | 8,800 B at Word-RAM `+0x12800`, copied to both physical banks | pack / sp | Five sectors after the v13 boot stage contain next-index, signed-delta, and RF5C164-output tables. Boot duplicates them once; timed decode never copies tables across a bank handoff. |
 | ADPCM PCM buffer | 1,536 B reserved at Word-RAM `+0x14C00`, per physical bank | sp | Holds one reconstructed chunk before the existing batched wave-RAM writer. |
 | `SYNC_LEAD` | 0x3000 (12288 B, ~0.92 s) | sp | Write-ahead lead in wave RAM. PCM starts at this address; the ring's initial silence is not played, so the first source sample aligns with the first visible movie frame. |
-| `pack.startup_audio_frames` | requested 30 | TOML -> decision log -> pack/sp | Persistent decoded-PCM prefetch. It is clamped by wave-RAM capacity and decoded chunk size; H40/N2 ADPCM queues 19 chunks. The next source chunk goes in frame 0's live control. Playback still begins with chunk 0 at frame 0. |
+| startup audio prefetch | requested 30 frames | av_config -> pack/sp | Fixed persistent decoded-PCM prefetch. It is clamped by wave-RAM capacity and decoded chunk size; H40/N2 ADPCM queues 19 chunks. The next source chunk goes in frame 0's live control. Playback still begins with chunk 0 at frame 0. |
 | `SYNC_MIN` | 0 (0 B) | sp | Lower lead bound. The persistent prefetch should keep the writer far above it; reaching zero indicates a real supply or clock problem. |
 | `SYNC_MAX` | 0x6800 (26624 B, ~2.0 s) | sp | Upper lead bound. Above it -> re-sync. |
 | `WAVE_RING_END` | 0x8000 (32 KB) | sp | RF5C164 wave-RAM ring size. |
@@ -209,14 +219,21 @@ Startup is deliberately two-phase: read `HEADER.DAT` through PREBUFFER, fully
 expand frame 0 after that request ends, then start one continuous `BODY.DAT`
 read at frame 1. The steady read delivers 75 sectors/s, so the Sub must drain it
 continuously.
-`pump_poll` grabs one ready sector if the receivers have room.
+`pump_poll` grabs one ready sector if that sector's actual receiver has room.
+The routing byte is checked before back-pressure: a control sector consults
+only APPLY, a payload sector consults only PrgBuf, and padding consults neither
+buffer. A full destination must not stop an unrelated sector while the CD read
+continues. During cold expansion the Sub CPU also publishes its completed
+PrgBuf pops before the refill poll. Otherwise the poll would see the previous
+frame's stale full-ring position until expansion ended, which is especially
+harmful at the first dense frame after a cold-free startup plateau.
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| pump_poll frequency | every 64 entries at <=20 fps; one end poll for a non-empty 24-30 fps descriptor frame | sp `expand_frame` | Runtime-selected cadence. A high-fps block with at most 1024 updates consumes packed cold-run descriptors directly and preserves the old end-of-frame poll. Larger H40 blocks and <=20fps streams retain the entry walker. Frame 0 has no active `BODY.DAT` read. |
+| pump_poll frequency | every 64 entries or four packed run descriptors at <=20 fps; one end poll for a non-empty 24-30 fps descriptor frame | sp `expand_frame` | Runtime-selected cadence. Low-rate pattern-supply streams use the packed run path and restore mid-expansion CDC service every four descriptors. A high-fps block with at most 1024 updates preserves the old end-of-frame poll. Frame 0 has no active `BODY.DAT` read. |
 | `CMD_SWAP` priority | handshake before opportunistic pump | sp `stream_loop` | While Main is genuinely idle, Sub keeps draining ready sectors. Once Main has requested a bank swap, or has already cleared the completed request, Sub services that handshake before another optional sector pump. This prevents future-data work from consuming the current frame's fixed-N2 deadline. |
-| ring-full skip | occ >= 424 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the ring is this full (back-pressure). |
-| apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip draining if the apply ring is this full. |
+| ring-full skip | occ >= 424 KB (`RING_SIZE-0x1000`) | sp `pump_poll` | Skip the next payload sector if PrgBuf is this full. It does not block control or padding. |
+| apply-full skip | occ >= 30 KB (`APPLY_SIZE-0x1000`) | sp `pump_poll` | Skip the next control sector if APPLY is this full. It does not block payload or padding. |
 | `FRAME_SECTORS` | max 5 | pack -> sp (`cur_fsec`) | Routing-byte maximum. With `FEATURE_FIXED_N2`, 400 frames receive exactly 1001 sectors: 199 two-sector and 201 three-sector allowances. Feature-clear 24fps and 15fps retain the delivery-paced 75/fps schedule (3.125 and 5 sectors/frame). In v6+ each `BODY.DAT` slot is control / future payload / pad; v7+ packs the control and total counts into one routing byte. |
 | `HEADER_SECTORS` | 1 | sp / pack | The fixed metadata sector at the start of `HEADER.DAT`; the v13 boot stage, ADPCM tables, WordBuf0 / WordBuf1 / DicBuf boot-pattern regions, startup audio, frame 0, routing, and PREBUFFER follow it in the same file. |
 | `FEATURE_COLD_RUNS` | header bit 0 at offset 62 | pack / sp | Appends `(slot_start,count)` cold-run descriptors after each aligned audio chunk. At 24fps or above, and for every multi-source pattern-supply stream, the Sub copies eligible blocks by these runs instead of scanning every update entry again. Those streams use a movie-wide logical-to-physical permutation: the encoder freezes logical decisions in a seed pass, accounts for the map's real run cost, and accepts only a display-equivalent completed map whose whole trace is funded. The optimizer minimizes the maximum source-aware run count across every 85%-cap-or-heavier frame and aims for 30, but 30 is not a universal per-source acceptance limit. Visible cold payload and an appended raw-prefetch suffix are each emitted in ascending physical-slot order, while name updates remain in cell order. A specialized plain-Prg stream below 24fps deliberately retains the proven 64-entry-polling legacy walker, which reconstructs runs in name-update order. Such a stream automatically retains the contiguous allocator's identity physical map; applying the suffix-order permutation there can fragment the actual player work even while the suffix looks compact. The sim requires the legacy and packed counts to agree frame by frame. Old streams use the same entry fallback; old players ignore the suffix via `total_len`. |
@@ -250,13 +267,12 @@ allowance), Same, Near/Flbk (reuse a resident tile), Buf (accurate load
 funded by saved whole-movie allowance or a boot-preload credit), or Miss. Raw
 and Buf are quality-funding classes; Prg/Wr0/Wr1/Dic independently records the
 physical source. These thresholds steer the choice.
-Frequently changed profile values use their TOML names below. The remaining
-`CBRSIM_*` variables are advanced shared experiments; do not put per-movie
-values in this document.
+Only source-specific profile values use TOML names below. The remaining
+`CBRSIM_*` variables are advanced shared experiments, not per-movie settings.
 
 | Name | Default | Meaning |
 |---|---|---|
-| `encoder.vram_tiles` | 1518 | Resident tile pool size (LRU), shared by H32 and H40. The pool starts at tile 1 and may run right up to the first movie name table at tile 1536 (`0xC000`), so the maximum is 1535 tiles (1-1535). The common 16-glyph hexadecimal font no longer sits above the pool: it is fixed at tile 1664 (`0xD000`) in the unused `0xD000`-`0xDFFF` gap between the two name tables, identical in DEBUG and release. Existing profiles keep 1518; raise `vram_tiles` toward 1535 to spend the freed slots. |
+| resident VRAM pool | 1535 tiles | Fixed LRU pool shared by H32 and H40. It occupies tiles 1-1535 up to the first movie name table at `0xC000`. The common hexadecimal font is fixed at tile 1664 (`0xD000`) in the gap between the two name tables, identical in DEBUG and release. |
 | `CBRSIM_RESIDENT_K` / `RESIDENT_BW` | 24 / 24 | Resident search checks at most the newest 24 candidates in the target's rendered mean-colour bucket. If its best candidate cannot improve a deferred Flbk cell, the fallback pass also checks the newest eligible candidate from each adjacent mean-colour bucket. Buckets narrow search only; acceptance still uses Near or improve-only Flbk logic. |
 | `CBRSIM_NEAR_YM` / `_YP` / `_C` | 10 / 28 / 24 | Near = reuse an almost-identical resident tile (mean/max luma diff, mean chroma diff). |
 | `CBRSIM_FLBK_IMPROVE_ONLY` / `_MIN_IMPROVE` | 1 / 0 | Flbk = fill a Miss with a resident tile only if it improves the picture. |
@@ -265,7 +281,7 @@ values in this document.
 | `AGING_ALPHA` / `WAIT_CAP` | 0.6 / 10 | Multiplier for distance-weighted `age_press`, saturating at 7x. Integer Miss wait/age reporting is separate. |
 | `CBRSIM_AGING_DIST_REF` / `_STEP_CAP` | 24 / 2.0 | Miss/Flbk pressure: mean RGB error 24 adds 1 per frame; any one frame adds at most 2. Near and exact tiles reset pressure to zero. |
 | `CBRSIM_GHOST_ESCALATE_SEC` | 0.2 | Promote a continuously approximate tile to Miss severity after `floor(seconds * fps)` frames (minimum 1): 6 at 30 fps, 4 at 24 fps, 3 at 15 fps. |
-| `encoder.dither` / `encoder.segment_palettes` | on / on | Dithering / per-segment palette swaps. |
+| output dither / segmented palettes / Near / boot VRAM prefetch | on | Fixed encoder behavior, not profile settings. |
 | `palette.algorithm` | `stl4` | Palette-line selector. `stl4` is the legacy segmented four-line Tile-Lloyd learner; `mosaic-gm` starts at one shared-core line and grows/merges only when validation improves. A selected one-line candidate receives a complete flattened-RGB333 histogram refinement and all-frame error proof before segment palettes are considered. |
 
 The normal allocator has no knob for splitting exact and fallback work. It
@@ -274,13 +290,13 @@ reserving a two-byte name entry for every deferred cell, and finally fills the
 remainder with improving Flbk residents. The reservation keeps the fallback
 stage reachable even when early exact loads would otherwise exhaust the BODY
 allowance.
-| `palette.map_weight` | 1.0 | MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |
-| `palette.seam_weight` / `palette.seam_iterations` | 8.0 / 2 | MOSAIC-GM spatial assignment cost for a quantization discontinuity introduced at an 8x8 boundary, and deterministic checkerboard passes. Real source edges are excluded from the cost. |
+| `PALETTE_MAP_WEIGHT` | 1.0 | Fixed MOSAIC-GM penalty for mapping the same RGB333 source colour differently on different palette lines. |
+| `PALETTE_SEAM_WEIGHT` / `PALETTE_SEAM_ITERATIONS` | 8.0 / 2 | Fixed MOSAIC-GM spatial assignment cost for a quantization discontinuity introduced at an 8x8 boundary, and deterministic checkerboard passes. Real source edges are excluded from the cost. |
 | `CBRSIM_PAL_GROW_REL` / `_ABS` / `_MIN_USAGE` | 0.005 / 0.002 / 0.002 | Minimum relative gain, gain per pixel, and tile-use fraction required to add another MOSAIC-GM line. |
 | `CBRSIM_PAL_CORE_SIZES` | `4,6,8,10,12,14` | Shared-colour counts tried when a specialist line grows. The remaining slots are line-specific. |
-| `palette.sample_counts` / `palette.validate_frames` | `[120,240,480]` / 120 | Whole-movie learning candidates and the separate validation sample used to select among them. |
-| `palette.segment_train_frames` / `palette.segment_validate_frames` | 240 / 60 | Maximum learning/validation frames per dark or uniform CRAM-segment candidate. |
-| `palette.segment_gain_relative` / `palette.segment_gain_per_pixel` | 0.005 / 0.002 | Improvement required before a local segment palette replaces the selected global palette. Adjacent identical choices are merged. |
+| palette sample / validation counts | `[120,240,480]` / 120 | Fixed whole-movie learning candidates and separate validation sample. |
+| segment palette train / validation counts | 240 / 60 | Fixed maximum learning/validation frames per dark or uniform CRAM-segment candidate. |
+| segment palette relative / per-pixel gain | 0.005 / 0.002 | Fixed improvement required before a local segment palette replaces the selected global palette. Adjacent identical choices are merged. |
 
 `CBRSIM_LOOP_PROFILE=1` is a diagnostic-only timing mode for the sequential
 decision loop. It reports exclusive per-frame timing percentiles, resident
@@ -317,17 +333,17 @@ physical PrgBuf
 sector schedule remains a separate exact proof in `stream_schedule.py`. See
 [`BUEFFERING.md`](BUEFFERING.md) for the complete planning flow and validation.
 
-The first logical seed pass also supplies exact control lengths and Prg demand
-to that physical proof. If independently sectorized control and payload cannot
-meet a future deadline, the scheduler identifies the deadline's origin and the
-smallest cumulative Prg-pattern reduction needed. That one frame receives a
-source-derived delivery envelope below the measured cold cap, and the existing
-slot-accounting pass applies it. The seed is not repeated, the measured cap is
-not lowered, and no per-profile knob is created. Any further mismatch caused
-by the finalized physical slot map is fed back through the accounting pass
-until the full schedule is feasible. `delivery_cold_caps` in `stats.npz` and
-`buffer_remaining.npz`, plus `physical_delivery` in `decisions.pkl`, preserve
-the exact automatic constraints.
+The first logical seed pass also supplies conservative control lengths and Prg
+demand to that physical proof. Prebuffering is limited by the cadence-derived
+normal PrgBuf capacity (384/399/404 KiB at 15/24/30fps), while subsequent
+delivery may occupy the fixed 424 KiB back-pressure range. The difference is
+the automatic jitter interval; no TOML value controls it.
+
+If independently sectorized control and payload still cannot meet a future
+deadline within those two limits, sim stops with the exact failing frame and
+resource. It does not feed a smaller local Prg/cold cap back into the encoder,
+repeat allocation with a new cap, or alter the source's qualified cold cap.
+This keeps cold quality selection separate from physical delivery diagnosis.
 
 The exact schedule and decoder verification always cover every frame. Summary
 comparisons use a separate automatic evaluation boundary: the first frame
@@ -353,7 +369,7 @@ whole-series useful total by the whole-series physical read time;
 
 ## H. Per-source TOML profiles
 
-Use one `schema_version = 2` TOML file per source/mode combination. Examples are
+Use one `schema_version = 3` TOML file per source/mode combination. Examples are
 [`configs/bad-apple-h32.toml`](configs/bad-apple-h32.toml) and
 [`configs/bad-apple-h40.toml`](configs/bad-apple-h40.toml). The profile is the
 human-edited input; `CBRSIM_*` is only the encoder's internal compatibility
@@ -417,9 +433,10 @@ and on the disc because those are TTRC format names read by the player.
 
 Before the first movie frame, specialized builds show only four hexadecimal
 digits at the physical top-left of Plane A. The value is the amount of safe
-PrgBuf preload already received, in KiB (`0000` through `0184` for the standard
-404 KiB preload). An exact negative startup status remains visible as its
-`BADx` code. Progress is sampled once per VBlank. The display uses the same
+PrgBuf preload already received, in KiB (`0000` through the profile-generated
+normal ceiling: `0180` at 15fps, `018F` at 24fps, or `0194` at 30fps). An
+exact negative startup status remains visible as its `BADx` code. Progress is
+sampled once per VBlank. The display uses the same
 16-glyph hexadecimal font as the runtime DEBUG HUD; those tiles stay reserved
 and are uploaded during startup in both DEBUG and release builds. H32 and H40
 use the same top-left placement. The generic `PLAYER_SPECIALIZE=0` diagnostic
@@ -430,13 +447,13 @@ build skips this profile-derived counter.
 | `[source]` | `path`, `fps`, `duration`, optional `sar` | Input identity and native timing. `sar` repairs missing/wrong source metadata; it does not crop. |
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when it reduces that count, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel and adds bars when the displayed aspects differ. `fit="crop"` is an explicit object-fit-cover conversion: it fills the complete output raster while preserving displayed aspect, so it may discard active pixels at the outer source edges. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
-| `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. A directory below `videos/` is exposed as a symlink to managed tmpfs. Completed results are reused automatically across invocations only when source bytes, effective encoder/TOML settings, and the output-affecting encoder-code fingerprint match; interrupted or mismatched entries are reset. Profile names, TOML formatting, and output paths do not split identical encodes. `reuse` retains its narrower decoded-input meaning inside an encode. The seed/accounting passes within one invocation share a separate identity-checked cache and delete it on exit. `CBRSIM_FORCE_REENCODE=1` explicitly bypasses completed-result reuse. Normal hardware work sets `emit_decisions=true`. |
-| `[encoder]` | `gpu`, `vram_tiles`, `dither`, `segment_palettes`, `near`, `boot_vram_prefetch`, `raw_prefetch`, optional `cold_cap` | Common codec controls. `cold_cap` may raise, but never lower, the exact mode/fps/active-tile baseline; omission uses the baseline. `boot_vram_prefetch` defaults to true: after exact Raw/Same-only frame 0 is installed, the encoder fills otherwise-free resident VRAM with future exact patterns. The grid-sized inline path is used first; a boot-only sidecar can then use backside slots up to the resident-pool limit. It prioritizes early cold-cap relief, then other protected and exact demand. Less urgent patterns receive the slots reclaimed first, and visible work may always reclaim speculative residency. `raw_prefetch` is the separate timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the effective cap. There is no fixed current-cold threshold: the exact remaining cold and BODY allowances are authoritative. A runtime batch needs room for at least four patterns and is capped at 32. GPU is the default; CPU fallback remains automatic. BODY supply comes from the exact CD-1x sector cadence after reserving control data and is not configurable per source. |
-| `[palette]` | `algorithm`, sampling/validation keys, MOSAIC-GM seam keys | Palette-selection algorithm and its training controls. |
-| `[pack]` | `fill`, `startup_audio_frames` | Disc-generation choices frozen with the encode. `fill=true` replaces CD-1x padding with useful future payload where proven safe. The DEBUG HUD is a player build choice and does not add stream data. Output paths are derived from the TOML filename. |
+| `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. A directory below `videos/` is exposed as a symlink to managed tmpfs. Completed results are reused automatically across invocations only when source bytes, effective encoder/TOML settings, and the encoder `e` version match; output-affecting encoder changes must therefore bump `tools/av_version.txt`. Interrupted or mismatched entries are reset. Profile names, TOML formatting, output paths, and individual code-file hashes do not split identical encodes. `reuse` retains its narrower decoded-input meaning inside an encode. The seed/accounting passes within one invocation share a separate identity-checked cache and delete it on exit. `CBRSIM_FORCE_REENCODE=1` explicitly bypasses completed-result reuse. Normal hardware work sets `emit_decisions=true`. |
+| `[encoder]` | optional `raw_prefetch`, optional `cold_cap` | `cold_cap` may raise, but never lower, the exact mode/fps/active-tile baseline; omission uses the baseline. `raw_prefetch` is the timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the effective cap. GPU, the 1,535-tile VRAM pool, Bayer dithering, segmented palettes, Near, boot VRAM prefetch, and Prg/Wr0/Wr1/Dic supply are fixed on. |
+| `[palette]` | `algorithm` | Palette-selection algorithm. Sampling, validation, seam, and segment-gain values are fixed shared constants. |
 
-Schema v2 removes the audio-format table and the obsolete `pack.output` key.
-Artifact paths always derive from the TOML filename.
+Schema v3 removes fixed encoder/palette keys and the entire `[pack]` table.
+Forward fill and startup-audio prefetch are fixed shared behavior. Artifact
+paths always derive from the TOML filename.
 
 The profile loader is strict: misspelled sections/keys, unsupported display
 modes, non-tile-aligned dimensions, and unsafe TOML filename characters fail
@@ -505,4 +522,4 @@ red indicator because they do not have the HUD.
 | `A` | 2 | Sub ADPCM decode phase time. One displayed unit is four 30.72 us stopwatch ticks (about 0.1229 ms); PCM builds display zero. H40 Sonic ADPCM measured `3E..42`, about 7.62..8.11 ms. At low frame rates this phase includes any opportunistic CDC pump performed inside the longer decode. |
 | `U` | 4 | Main pattern-transfer time in Mega-CD stopwatch ticks, measured from the first run through the final DMA repair or CPU-direct write. One tick is 30.72 us; the 12-bit counter wraps after 4096 ticks (about 125.83 ms). |
 | `N` | 2 | Low byte of the source-aware packed cold-run descriptor count for this frame. This is the fragmentation count before a long run is split by the VBlank word budget and wraps at 256. |
-| `J` | 2 | Sticky maximum streamed PrgBuf occupancy above the 404 KiB scheduling ceiling since BODY streaming began, in ceil-KiB units. `00` means the jitter headroom was never used. Values above `14` show that 20 KiB headroom was exhausted and sector-granular back-pressure entered the physical guard. `17` is the largest recording-gate value and proves the ring did not become full. Frame-0 boot staging is excluded. |
+| `J` | 2 | Sticky maximum streamed PrgBuf occupancy above the fps-derived normal ceiling since BODY streaming began, in ceil-KiB units. Normal ceiling/jitter is 384/40 KiB at 15fps, 399/25 KiB at 24fps, and 404/20 KiB at 30fps. The passing limits below the physical ring end are `2B`, `1C`, and `17` respectively. Frame-0 boot staging is excluded. |

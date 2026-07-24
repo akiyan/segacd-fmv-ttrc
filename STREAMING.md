@@ -358,7 +358,7 @@ make movieplay CONFIG=configs/sonic-jam-op-h40.toml \
   tmp/sonic-jam-op-h40/build/movieplay_sp.o
 
 tools/python.sh harness/cold_cap_model/extract_frames.py \
-  out/sonic-jam-op-h40 --csv /tmp/sonic-h40-frames.csv
+  out/sonic-jam-op-h40 --tsv /tmp/sonic-h40-frames.tsv
 ```
 
 Re-run the full DEBUG recording and HUD extraction before revising the 409-tick

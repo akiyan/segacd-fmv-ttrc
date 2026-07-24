@@ -23,22 +23,18 @@ from typing import Any, MutableMapping
 import av_config
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 ARTIFACT_ROOT = Path("out")
 TEMP_ROOT = Path("tmp")
 _ARTIFACT_STEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
-# VRAM tile 0 is clear, then the resident movie pool starts at tile 1 and runs
-# right up to the first movie name table at tile 1536 (0xC000).  The shared
-# hexadecimal HUD font no longer sits above the pool: it is fixed in the unused
-# 0xD000-0xDFFF gap between NT0 and NT1 (VRAM_HUD_FONT_TILE), so the pool ceiling
-# is a full 1535 slots in both DEBUG and release builds.
-VRAM_PATTERN_BASE_TILE = 1
-VRAM_FIRST_MOVIE_NT_TILE = 0xC000 // 32
+# Compatibility names for player/tooling imports.  The fixed values live in
+# av_config with the other shared hardware resources.
+VRAM_PATTERN_BASE_TILE = av_config.VRAM_PATTERN_BASE_TILE
+VRAM_FIRST_MOVIE_NT_TILE = av_config.VRAM_FIRST_MOVIE_NT_TILE
 HUD_FONT_TILES = 16
-VRAM_HUD_FONT_TILE = 0xD000 // 32  # fixed font base, tiles 1664..1679
-MAX_RESIDENT_VRAM_TILES = (
-    VRAM_FIRST_MOVIE_NT_TILE - VRAM_PATTERN_BASE_TILE)
+VRAM_HUD_FONT_TILE = av_config.VRAM_HUD_FONT_TILE
+MAX_RESIDENT_VRAM_TILES = av_config.VRAM_PATTERN_POOL_TILES
 
 # (section, key): legacy internal variable.  Keeping this table in one place is
 # deliberate: TOML is the user interface; CBRSIM_* is an implementation detail.
@@ -59,33 +55,37 @@ ENV_MAP = {
     ("output", "directory"): "CBRSIM_OUT",
     ("output", "reuse"): "CBRSIM_REUSE",
     ("output", "emit_decisions"): "CBRSIM_EMIT_DEC",
-    ("encoder", "gpu"): "CBRSIM_GPU",
-    ("encoder", "vram_tiles"): "CBRSIM_VRAM_TILES",
-    ("encoder", "dither"): "CBRSIM_DITHER",
-    ("encoder", "segment_palettes"): "CBRSIM_SEGPAL",
-    ("encoder", "near"): "CBRSIM_NEAR",
-    ("encoder", "boot_vram_prefetch"): "CBRSIM_BOOT_VRAM_PREFETCH",
     ("encoder", "raw_prefetch"): "CBRSIM_RAW_PREFETCH",
     ("encoder", "cold_cap"): "CBRSIM_COLD_CAP",
     ("palette", "algorithm"): "CBRSIM_PAL_ALGO",
-    ("palette", "map_weight"): "CBRSIM_PAL_MAP_WEIGHT",
-    ("palette", "seam_weight"): "CBRSIM_PAL_SEAM_WEIGHT",
-    ("palette", "seam_iterations"): "CBRSIM_PAL_SEAM_ITERATIONS",
-    ("palette", "sample_counts"): "CBRSIM_PAL_SAMPLE_COUNTS",
-    ("palette", "validate_frames"): "CBRSIM_PAL_VALIDATE_FRAMES",
-    ("palette", "segment_train_frames"): "CBRSIM_PAL_SEG_TRAIN_FRAMES",
-    ("palette", "segment_validate_frames"): "CBRSIM_PAL_SEG_VALIDATE_FRAMES",
-    ("palette", "segment_gain_relative"): "CBRSIM_PAL_SEG_GAIN_REL",
-    ("palette", "segment_gain_per_pixel"): "CBRSIM_PAL_SEG_GAIN_ABS",
 }
 PROFILE_ENV_DEFAULTS = {
     "CBRSIM_PREPROCESS_ENDPOINT_SNAP_BLACK_MAX": "-1",
     "CBRSIM_PREPROCESS_ENDPOINT_SNAP_WHITE_MIN": "256",
     "CBRSIM_RESIZE_FILTER": "lanczos",
     "CBRSIM_MASTER_DENOISE": "1",
-    "CBRSIM_QUALITY_BUDGET_KB": str(av_config.QUALITY_BUDGET_KB),
+    "CBRSIM_GPU": "1",
+    "CBRSIM_VRAM_TILES": str(av_config.VRAM_PATTERN_POOL_TILES),
+    "CBRSIM_DITHER": "1",
+    "CBRSIM_SEGPAL": "1",
+    "CBRSIM_NEAR": "1",
     "CBRSIM_BOOT_VRAM_PREFETCH": "1",
     "CBRSIM_RAW_PREFETCH": "0",
+    "CBRSIM_PAL_MAP_WEIGHT": str(av_config.PALETTE_MAP_WEIGHT),
+    "CBRSIM_PAL_SEAM_WEIGHT": str(av_config.PALETTE_SEAM_WEIGHT),
+    "CBRSIM_PAL_SEAM_ITERATIONS": str(av_config.PALETTE_SEAM_ITERATIONS),
+    "CBRSIM_PAL_SAMPLE_COUNTS": ",".join(
+        str(value) for value in av_config.PALETTE_SAMPLE_COUNTS),
+    "CBRSIM_PAL_VALIDATE_FRAMES": str(
+        av_config.PALETTE_VALIDATE_FRAMES),
+    "CBRSIM_PAL_SEG_TRAIN_FRAMES": str(
+        av_config.PALETTE_SEGMENT_TRAIN_FRAMES),
+    "CBRSIM_PAL_SEG_VALIDATE_FRAMES": str(
+        av_config.PALETTE_SEGMENT_VALIDATE_FRAMES),
+    "CBRSIM_PAL_SEG_GAIN_REL": str(
+        av_config.PALETTE_SEGMENT_GAIN_RELATIVE),
+    "CBRSIM_PAL_SEG_GAIN_ABS": str(
+        av_config.PALETTE_SEGMENT_GAIN_PER_PIXEL),
 }
 
 ALLOWED = {
@@ -95,7 +95,6 @@ ALLOWED = {
     "output": {key for section, key in ENV_MAP if section == "output"},
     "encoder": {key for section, key in ENV_MAP if section == "encoder"},
     "palette": {key for section, key in ENV_MAP if section == "palette"},
-    "pack": {"fill", "startup_audio_frames"},
 }
 REQUIRED = {
     "source": {"path", "fps", "duration"},
@@ -203,13 +202,6 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
     if not 1 <= active_tiles <= total_tiles:
         raise ValueError(
             f"{profile_path}: video.active_tiles must be within 1..{total_tiles}")
-    vram_tiles = int(data.get("encoder", {}).get(
-        "vram_tiles", MAX_RESIDENT_VRAM_TILES))
-    if not 1 <= vram_tiles <= MAX_RESIDENT_VRAM_TILES:
-        raise ValueError(
-            f"{profile_path}: encoder.vram_tiles must be within "
-            f"1..{MAX_RESIDENT_VRAM_TILES} so the resident pool stays below "
-            "the movie name table at tile 1536")
     try:
         source_fps = float(Fraction(str(data["source"]["fps"])))
         baseline_cold_cap = av_config.baseline_cold_cap_for_fps(
@@ -276,6 +268,14 @@ def apply_profile_env(
         environ: MutableMapping[str, str] | None = None) -> dict[str, str]:
     """Apply all TOML-backed values, replacing inherited values unconditionally."""
     env = os.environ if environ is None else environ
+    # PrgBuf, delivery jitter, and the matching quality capacity are derived
+    # from content fps in av_config. Remove retired overrides so a parent shell
+    # cannot turn them back into profile/session knobs.
+    for retired in (
+            "CBRSIM_QUALITY_BUDGET_KB",
+            "CBRSIM_RING_CAP_KB",
+            "CBRSIM_TANK_KB"):
+        env.pop(retired, None)
     applied: dict[str, str] = {}
     for (section, key), name in ENV_MAP.items():
         values = profile.data.get(section, {})

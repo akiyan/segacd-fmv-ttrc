@@ -78,7 +78,6 @@ def control_block_lengths(
         raise ValueError("updates and runs must be equal-length vectors")
     if (n_upd < 0).any() or (n_runs < 0).any():
         raise ValueError("updates and runs must be non-negative")
-    bitmap_bytes = (int(cells) + 7) // 8
     if update_lists is None:
         use_lists = np.zeros(n_upd.shape, np.bool_)
     else:
@@ -88,7 +87,8 @@ def control_block_lengths(
     update_bytes = np.where(
         use_lists,
         n_upd * shadow_updates.LIST_ITEM_BYTES,
-        bitmap_bytes + n_upd * shadow_updates.SHADOW_ENTRY_BYTES,
+        shadow_updates.aligned_bitmap_bytes(cells)
+        + n_upd * shadow_updates.SHADOW_ENTRY_BYTES,
     )
     # body prefix: frame_seq, n_upd and pal:u16 = 6 bytes. Entry words and the
     # run suffix are even-sized; only the pre-suffix body may need a byte.
@@ -179,6 +179,7 @@ def body_funded_work_bytes(
 def select_shadow_update_lists(
         cell_lists, runs, pattern_loads, *, cells, fps, ring_capacity_patterns,
         frame_sectors, audio_frame_bytes, fill=True,
+        prebuffer_capacity_patterns=None,
         max_control_bytes=0x2000, allow_control_growth=False):
     """Select faster lists without reducing physical delivery margins.
 
@@ -212,7 +213,8 @@ def select_shadow_update_lists(
         scheduled = schedule_payload_ring(
             loads, lengths, fps=fps,
             ring_capacity_patterns=ring_capacity_patterns,
-            frame_sectors=frame_sectors, fill=fill)
+            frame_sectors=frame_sectors, fill=fill,
+            prebuffer_capacity_patterns=prebuffer_capacity_patterns)
         return lengths, scheduled
 
     baseline_lengths, baseline = run_schedule(np.zeros(n_upd.shape, np.bool_))
@@ -402,13 +404,19 @@ def split_body_payload_classes(
 
 def schedule_payload_ring(
         pattern_loads, block_lengths, *, fps, ring_capacity_patterns,
-        frame_sectors, fill=True):
+        frame_sectors, fill=True, prebuffer_capacity_patterns=None):
     """Schedule control JIT and payload prefetch, including physical RING use.
 
     ``ring_occupancy[i]`` is the number of 32-byte pattern slots physically in
     PrgBuf at the end of frame ``i``.  It includes padding in the last
     payload sector because the player receives and advances whole sectors.
     Frame 0 is loaded from HEADER.DAT and does not consume this RING.
+
+    ``prebuffer_capacity_patterns`` is the normal fps-specific PrgBuf ceiling.
+    ``ring_capacity_patterns`` is the larger hard physical-delivery ceiling
+    below player back-pressure. Keeping them separate lets continuous BODY
+    delivery absorb cadence-scaled jitter without pretending that the encoder
+    owns the reserved interval as ordinary time-shifting capacity.
     """
     n_load = np.asarray(pattern_loads, np.int64)
     blk_len = np.asarray(block_lengths, np.int64)
@@ -418,6 +426,18 @@ def schedule_payload_ring(
         raise ValueError("the stream must contain at least one frame")
     if (n_load < 0).any() or (blk_len < 0).any():
         raise ValueError("pattern loads and block lengths must be non-negative")
+    physical_capacity = int(ring_capacity_patterns)
+    prebuffer_capacity = (
+        physical_capacity
+        if prebuffer_capacity_patterns is None
+        else int(prebuffer_capacity_patterns)
+    )
+    if physical_capacity <= 0:
+        raise ValueError("physical ring capacity must be positive")
+    if not 0 < prebuffer_capacity <= physical_capacity:
+        raise ValueError(
+            "prebuffer capacity must be positive and no larger than the "
+            "physical ring capacity")
 
     nfr = len(n_load)
     nc = np.zeros(nfr, np.int64)
@@ -440,8 +460,10 @@ def schedule_payload_ring(
     delivered = np.zeros(nfr, np.int64)
 
     if fill:
-        ring_sec = int(ring_capacity_patterns) // PATTERNS_PER_SECTOR
-        prebuffer_sec = int(min(ring_sec, total_payload_sec))
+        prebuffer_sec = int(min(
+            prebuffer_capacity // PATTERNS_PER_SECTOR,
+            total_payload_sec,
+        ))
 
         # Back-propagate future cold deadlines through each slot's hard sector
         # cap.  This is the minimum cumulative payload that must have arrived.
@@ -471,7 +493,7 @@ def schedule_payload_ring(
             due = int(ratedelta[i]) - rate_lead
             soft_pay = max(0, due - int(nc[i]))
             hi_ring = (
-                int(consumed[i]) + int(ring_capacity_patterns)
+                int(consumed[i]) + physical_capacity
             ) // PATTERNS_PER_SECTOR
             hi = min(prev + int(cap_sec[i]), total_payload_sec, int(hi_ring))
             lo = max(prev, int(need[i]))
@@ -521,6 +543,21 @@ def schedule_payload_ring(
     n_pay_sec[0] = delivered[0] - prebuffer_sec
     n_pay_sec[1:] = delivered[1:] - delivered[:-1]
     occupancy = delivered * PATTERNS_PER_SECTOR - consumed
+    # Independent of the rate-shaped choice above, this is the most Prg
+    # payload that could physically have arrived before each frame after
+    # reserving its control sectors. It is the safe cumulative catch-up
+    # ceiling for a stateful accounting pass: unlike the projected demand
+    # curve, it does not permanently suppress work that was merely deferred.
+    max_prebuffer_sec = (
+        prebuffer_capacity // PATTERNS_PER_SECTOR)
+    timed_cap_sec = cap_sec.copy()
+    timed_cap_sec[0] = 0
+    max_delivered_sec = (
+        max_prebuffer_sec + np.cumsum(timed_cap_sec, dtype=np.int64))
+    max_cumulative_prg_consumption = np.zeros(nfr, np.int64)
+    if nfr > 1:
+        max_cumulative_prg_consumption[1:] = (
+            max_delivered_sec[:-1] * PATTERNS_PER_SECTOR)
     payload_frames = np.flatnonzero(n_pay_sec > 0)
     # Once the final payload sector has arrived, the terminal suffix can only
     # consume what remains.  Keep that suffix in the feasibility proof, but do
@@ -588,11 +625,19 @@ def schedule_payload_ring(
         "over": over,
         "under": under,
         "prebuf_pat": prebuffer_sec * PATTERNS_PER_SECTOR,
+        "prebuffer_capacity_patterns": prebuffer_capacity,
+        "ring_capacity_patterns": physical_capacity,
+        "jitter_headroom_patterns": (
+            physical_capacity - prebuffer_capacity),
         "ring_peak": int(occupancy.max()),
+        "ring_jitter_peak": max(
+            0, int(occupancy.max()) - prebuffer_capacity),
         "ring_min": int(occupancy.min()),
         "ring_min_evaluation": int(evaluation_occupancy.min()),
         "evaluation_end_frame": int(evaluation_end_frame),
         "ring_occupancy": occupancy,
+        "max_cumulative_prg_consumption": (
+            max_cumulative_prg_consumption),
         "ready_min": ready_min,
         "ctrl_min": ctrl_min,
         "blk_len": blk_len,

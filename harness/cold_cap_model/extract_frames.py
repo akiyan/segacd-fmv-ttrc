@@ -16,7 +16,7 @@ DEBUG HUD `N` column of a recording of the same stream.
 
 Usage:
   tools/python.sh harness/cold_cap_model/extract_frames.py \
-      out/sonic-jam-op-h40 --csv /tmp/frames_175.csv
+      out/sonic-jam-op-h40 --tsv /tmp/frames_175.tsv
 """
 
 from __future__ import annotations
@@ -178,9 +178,12 @@ def parse_frame(raw: bytes, seq: int, cells: int, pool: int,
         pos += n_upd * 4
     else:
         bitmap_len = (cells + 7) // 8
-        entries = struct.unpack_from(f">{n_upd}H", raw, pos + bitmap_len)
+        entries_pos = (pos + bitmap_len + 1) & ~1
+        if any(raw[pos + bitmap_len:entries_pos]):
+            die(f"frame {seq}: bitmap alignment pad is nonzero")
+        entries = struct.unpack_from(f">{n_upd}H", raw, entries_pos)
         cold_entries = sum(1 for e in entries if e & 0x8000)
-        pos += bitmap_len + n_upd * 2
+        pos = entries_pos + n_upd * 2
 
     check_count = (not use_list
                    and not features & FEATURE_VRAM_RAW_PREFETCH)
@@ -221,8 +224,8 @@ def read_pack(pack_dir: Path) -> tuple[list[FrameRow], dict]:
     body = (pack_dir / "BODY.DAT").read_bytes()
     magic, version, nfr, cols, rows, cells, pool = struct.unpack_from(
         ">4sHHHHHH", header)
-    if magic != b"TTRC" or version != 15:
-        die(f"expected TTRC v15, got {magic!r} v{version}")
+    if magic != b"TTRC" or version != 16:
+        die(f"expected TTRC v16, got {magic!r} v{version}")
     if cols * rows != cells:
         die(f"grid {cols}x{rows} != {cells} cells")
     routing_sec = struct.unpack_from(">L", header, 26)[0]
@@ -294,11 +297,11 @@ def read_pack(pack_dir: Path) -> tuple[list[FrameRow], dict]:
     return rows_out, meta
 
 
-def cross_check_hud(rows: list[FrameRow], hud_csv: Path) -> None:
+def cross_check_hud(rows: list[FrameRow], hud_tsv: Path) -> None:
     """Verify parsed n_runs low bytes against a HUD OCR series (column N)."""
     by_frame = {}
-    with hud_csv.open() as fh:
-        for rec in csv.DictReader(fh):
+    with hud_tsv.open() as fh:
+        for rec in csv.DictReader(fh, delimiter="\t"):
             if rec["loop"] != "0":
                 continue
             by_frame[int(rec["frame"])] = int(rec["cold_runs_low8"])
@@ -315,36 +318,40 @@ def cross_check_hud(rows: list[FrameRow], hud_csv: Path) -> None:
         for frame, n_runs, hud_n in mismatches[:10]:
             print(f"  MISMATCH frame {frame}: parsed n_runs={n_runs} "
                   f"HUD N={hud_n}", file=sys.stderr)
-        die(f"{len(mismatches)}/{checked} HUD N mismatches against {hud_csv}")
-    print(f"HUD cross-check OK: {checked} frames match column N ({hud_csv})")
+        die(f"{len(mismatches)}/{checked} HUD N mismatches against {hud_tsv}")
+    print(f"HUD cross-check OK: {checked} frames match column N ({hud_tsv})")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("pack_dir", type=Path,
                     help="directory containing HEADER.DAT + BODY.DAT")
-    ap.add_argument("--csv", type=Path, required=True,
-                    help="output CSV path")
-    ap.add_argument("--hud-csv", type=Path,
-                    help="optional HUD OCR csv of the same stream; "
+    ap.add_argument("--tsv", type=Path, required=True,
+                    help="output TSV path")
+    ap.add_argument("--hud-tsv", type=Path,
+                    help="optional HUD OCR TSV of the same stream; "
                          "validates parsed n_runs against column N")
     args = ap.parse_args()
+    if args.tsv.suffix.lower() != ".tsv":
+        ap.error("--tsv output must use the .tsv extension")
+    if args.hud_tsv is not None and args.hud_tsv.suffix.lower() != ".tsv":
+        ap.error("--hud-tsv input must use the .tsv extension")
 
     rows, meta = read_pack(args.pack_dir)
     print(f"{args.pack_dir}: TTRC v{meta['version']} frames={meta['nframes']} "
           f"cells={meta['cells']} pool={meta['pool']} "
           f"features=0x{meta['features']:04X}")
 
-    if args.hud_csv:
-        cross_check_hud(rows, args.hud_csv)
+    if args.hud_tsv:
+        cross_check_hud(rows, args.hud_tsv)
 
     fields = [f for f in FrameRow.__dataclass_fields__]
-    with args.csv.open("w", newline="") as fh:
-        writer = csv.writer(fh)
+    with args.tsv.open("w", newline="") as fh:
+        writer = csv.writer(fh, delimiter="\t", lineterminator="\n")
         writer.writerow(fields)
         for row in rows:
             writer.writerow([getattr(row, f) for f in fields])
-    print(f"wrote {len(rows)} rows -> {args.csv}")
+    print(f"wrote {len(rows)} rows -> {args.tsv}")
 
 
 if __name__ == "__main__":

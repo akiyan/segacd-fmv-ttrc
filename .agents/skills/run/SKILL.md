@@ -4,7 +4,7 @@ description: >-
   Orchestrate the complete SEGA-CD FMV delivery pipeline for one or more source
   videos: inspect geometry, create a strict H32/H40 profile, simulate and verify
   the packed stream, make a DEBUG lossless emulator recording, require its
-  complete HUD gate to pass, then render/upload the analysis and create/upload
+  complete HUD gate to be upload-capable, then render/upload the analysis and create/upload
   the boot-preserving square-pixel compilation. Use when the user invokes
   "$run", says "same as usual", or asks for /sim, /record, and /compilation as
   one end-to-end job, including sequential batches.
@@ -31,9 +31,10 @@ Include all of the following unless the user explicitly excludes a stage:
 1. Source inspection and a checked-in-style strict TOML profile
 2. Full simulation, persistent TSV, and detailed timeline PNG/Gist
 3. Packed-stream verification
-4. DEBUG disc build, synchronized native lossless emulator capture, and passing HUD gate
-5. Analysis render, metadata, CRAM chapters, verification, and upload
-6. Square-pixel playback compilation, boot-aware CRAM chapters, verification, and upload
+4. DEBUG disc build, synchronized native lossless emulator capture, and upload-capable HUD gate
+5. Complete-recording HUD timeline PNG, inline review, and public Gist
+6. Analysis render, metadata, CRAM chapters, verification, and upload
+7. Square-pixel playback compilation, boot-aware CRAM chapters, verification, and upload
 
 Treat both uploads as part of `$run`, not as optional follow-up work. Upload
 analysis and playback videos as unlisted, category 20.
@@ -107,12 +108,14 @@ Follow `sim` source inspection exactly:
 - preserve the displayed aspect with the mode's HAR-aware fit/pad conversion;
 - allow starvation instead of shrinking the raster.
 
-Create or update one strict `schema_version = 1` profile under `configs/`. Put
-the exact full duration, source timing and aspect, mode raster, audio format,
-output path, encoder settings, palette settings, and DEBUG pack settings in the
-profile. Use ADPCM22 unless the user explicitly requests PCM13 or a
-physical-console-qualified fallback. Use the filename-derived profile identity
-and canonical `videos/` artifact paths from `AGENTS.md`.
+Create or update one strict `schema_version = 3` profile under `configs/`. Put
+the exact full duration, source timing and aspect, mode raster, output path,
+optional timed `raw_prefetch`, optional qualified `cold_cap`, and palette
+algorithm in the profile. ADPCM22, the 1,535-tile VRAM pool, GPU, Bayer
+dithering, segmented palettes, Near, boot VRAM prefetch, Prg/Wr0/Wr1/Dic
+pattern supply, forward fill, and startup-audio policy are fixed pipeline
+behavior and must not be repeated as TOML keys. Use the filename-derived
+profile identity and canonical `videos/` artifact paths from `AGENTS.md`.
 
 Do not bump `tools/av_version.txt` merely for a new source profile. Apply the
 version policy in `AGENTS.md` if output-affecting encoder or player code changes.
@@ -136,7 +139,8 @@ shown as unused bandwidth.
 Write the persistent TSV immediately with the zero-frame analysis-data mode,
 run the `timeline` skill, inspect the PNG, publish it to a public Gist, and show
 it to the user. Do not render, mux, verify, or upload the full 1920x1080
-analysis MP4 yet. The emulator recording and complete HUD gate must pass first.
+analysis MP4 yet. The emulator recording must first receive `PASS` or
+`WARNING` from the complete HUD gate.
 
 ## Stage 3: Pack, Prove, and Build the DEBUG Disc
 
@@ -185,16 +189,28 @@ Before accepting the recording, verify:
 - representative lossless frames against the sim when timing or fps behavior is new or suspect.
 - one complete HUD loop with `harness/startup_resync/analyze.py --gate-json`;
   pass the encode profile as the required second positional argument and
-  require every expected movie frame. Fixed-N2 requires `S/D/R/C=00`, `M<=01`;
-  delivery-paced 15 fps permits `C<=04`, `M<=04`; delivery-paced 24 fps permits
-  `C<=03`, `M<=03`. Every cadence requires `S/D/R=00` and `J<=17`.
-  Explicitly report whether `J` exceeded the 20 KiB jitter headroom (`J>14`).
-  Preserve the CSV and passing gate JSON next to the recording.
+  require every expected movie frame. Fixed-N2 warns when `C>00` and requires
+  `S/D/R=00`, `M<=01`; delivery-paced 15 fps warns when `C>04` and requires
+  `M<=04`; delivery-paced 24 fps warns when `C>03` and requires `M<=03`.
+  Every cadence requires `S/D/R=00`. A C warning remains upload-capable. The
+  generated gate uses
+  the fps-derived normal PrgBuf ceiling: `J<=2B` at 15fps, `J<=1C` at 24fps,
+  and `J<=17` at 30fps. Explicitly report whether `J` exceeded that cadence's
+  normal jitter interval (`28`, `19`, or `14` respectively).
+  Preserve the TSV and upload-capable gate JSON next to the recording.
 
 Use `tools/extract_verification_frames.sh` for representative recording stills. Pass named
 timestamps and a `videos/<stem>/record_check` base; inspect only the new directory and its
 manifest/montage. Never build a montage from a shared `*.png` glob or loose stills left by a
 previous capture.
+
+Immediately after the HUD TSV and gate JSON exist, invoke the `hudline` skill
+with those exact sidecars and the same profile. Inspect and show its complete
+first-loop PNG, publish it to a public Gist, and preserve the image, layout
+receipt, and Gist receipt beside the recording. Do this for PASS, WARNING, and
+FAIL results; a FAIL is still published as diagnostic evidence but stops Stage 5.
+`hudline` shares `/timeline`'s frame x-coordinate contract so a future
+`/mixline` can combine both without resampling.
 
 Do not apply waveform-threshold gates to routine recordings; legitimate source
 transients and lossy-preview ringing make them content-dependent. State that
@@ -204,12 +220,14 @@ recording, not a physical hardware recording.
 Use full HUD OCR only for requested diagnostics or to investigate a failure.
 Never use HUD OCR to choose a publication head cue or chapter offset.
 
-Do not enter Stage 5 when the HUD gate is missing or fails. Never waive or edit
-the sidecar.
+Do not enter Stage 5 when the HUD gate is missing or has status `FAIL`, or when the
+matching hudline image/Gist receipt is absent. Never waive or edit the
+sidecars.
 
 ## Stage 5: Render and Upload the Analysis
 
-Only after Stage 4 produced a matching `pass: true` gate JSON, render the full
+Only after Stage 4 produced a matching `PASS` or `WARNING` gate JSON
+(`pass: true`), render the full
 canonical 1920x1080 analysis with `tools/render_analysis.py`. Verify its video,
 audio, duration, and selected frames. Confirm the source aspect, content,
 category/miss panels, and layout are visually credible.
@@ -230,7 +248,8 @@ another approval merely because the gate ran.
 
 ## Stage 6: Compile and Upload Playback
 
-Pass only the latest verified native lossless MKV with its matching passing
+Pass only the latest verified native lossless MKV with its matching
+upload-capable
 HUD gate JSON to `compilation`. Bake the
 validated H32/H40 pixel aspect into 2048x1568 square pixels using nearest-neighbor
 scaling, H.264 CRF 10 slow, yuv420p, AAC 192 kbps, and faststart. Do not add
@@ -261,8 +280,9 @@ Stop before the next source whenever a stage fails. Preserve logs and evidence,
 identify the failing layer, fix it when the requested scope permits, and rerun
 the failed stage plus every downstream stage whose inputs changed.
 
-An absent or failed `S/D/R/C/M/J` gate is a Stage 4 failure. Do not create or
-upload either public MP4 until a newly recorded, complete loop passes.
+An absent or `FAIL` `S/D/R/C/M/J` gate is a Stage 4 failure. A `WARNING`
+remains upload-capable and must be reported. Do not create or upload either
+public MP4 until a complete loop returns `PASS` or `WARNING`.
 
 For new frame rates such as 24 fps, do not hide a player, recorder, or encoder
 defect by changing fps, shrinking the raster, loosening checks blindly, or
@@ -270,9 +290,11 @@ substituting offline audio. Prove whether an anomaly is in the source, sim,
 pack, playback, or harness, and resume only after the exact case passes.
 
 On an interrupted run, inspect timestamps, profile hashes, reports, and logs.
-Reuse an artifact only when it was produced by the current code, profile, and
-source and has already passed the relevant gate. Rebuild every public upload
-artifact from current inputs, as required by `AGENTS.md`.
+Reuse an artifact only when source bytes, effective profile settings, and the
+encoder `e` version match and it has already passed the relevant gate.
+Individual code-file hashes are deliberately not an identity input;
+output-affecting changes must bump the encoder version. Rebuild every public
+upload artifact from current inputs, as required by `AGENTS.md`.
 
 ## Completion Report
 
@@ -282,6 +304,7 @@ Report one compact result block per source with:
 - analysis URL, output path, average rate, and starvation result;
 - pack verification result;
 - lossless recording and preview paths, duration, raster/fps, and audio metrics;
+- hudline path, `S/D/R/C/M/J` maxima, and public Gist/raw image URLs;
 - whether startup was retained and whether human listening was performed;
 - playback compilation URL and path, duration, raster/SAR/DAR, and audio presence;
 - any diagnosed anomaly, workaround, or remaining limitation.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "HUD Timeline"
+  short_description: "Render and publish full-recording HUD timelines"
+  default_prompt: "Use $hudline to render the complete DEBUG HUD recording as a full-movie timeline and publish it to a public Gist."

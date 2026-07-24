@@ -68,7 +68,7 @@ source within what the hardware allows — not fixed project constants:
   sized to the per-frame DMA budget and the source's display aspect.
 - **Frame rate:** the source's native rate is kept (15 / 24 / 30 fps, etc.).
 - **Audio:** checkpointed 22.05 kHz mono IMA ADPCM, decoded directly by the Sub
-  CPU and written to the RF5C164. It is the sole TTRC v15 audio format. Routine
+  CPU and written to the RF5C164. It is the sole TTRC v16 audio format. Routine
   recording verifies audio stream structure but does not apply
   content-dependent waveform thresholds. Real hardware and additional
   cadence/display combinations are broader compatibility checks. See
@@ -157,7 +157,7 @@ category.
   movie table. H32 and H40 share the same 30-cell internal order
   `F/P/S/D/R/L/C/W/M/A/U/N/J`. `U/N` show Main pattern-transfer time and the
   source-aware cold-run count; `J` is the sticky maximum streamed PrgBuf
-  occupancy above the 404 KiB scheduling ceiling. Only those 30 cells are
+  occupancy above the stream's fps-derived normal ceiling. Only those 30 cells are
   replaced; the unused right-hand cells retain the current movie frame. Before
   playback, specialized DEBUG and
   release builds use the same 16-glyph font to show loaded PrgBuf KiB as four

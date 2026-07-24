@@ -23,8 +23,8 @@ Outputs:
 
 - `palette_by_segment.png`: all CRAM segments, grouped by P0-P3 and index;
 - `palette_global.png`: unique colours actually displayed across the movie;
-- `palette_slots.csv`: every segment/palette/index slot and its use count;
-- `palette_global.csv`: global unique-colour counts and locations;
+- `palette_slots.tsv`: every segment/palette/index slot and its use count;
+- `palette_global.tsv`: global unique-colour counts and locations;
 - `summary.txt`: concise exact counts and colour values.
 
 The near-white dither check compares the Bayer input with the actual codec
