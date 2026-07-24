@@ -49,6 +49,7 @@ CONFIG_PROFILE = consume_config_arg(
 import av_config  # noqa: E402
 import analysis_style as analysis_style  # noqa: E402
 import ima_adpcm  # noqa: E402
+import palette_segments  # noqa: E402
 import pattern_supply  # noqa: E402
 import raw_prefetch  # noqa: E402
 import stream_schedule  # noqa: E402
@@ -383,31 +384,15 @@ def detect_palette_segments(frames, metrics=None):
         dark = np.asarray(dark, dtype=np.float64).reshape(n)
         uniform = np.asarray(uniform, dtype=np.float64).reshape(n)
 
-    def cluster(metric, hit):
-        hits = np.where(hit)[0]
-        bounds = []
-        if len(hits):
-            start = previous = int(hits[0])
-            for value in hits[1:]:
-                value = int(value)
-                if value - previous <= SEG_GAP:
-                    previous = value
-                else:
-                    bounds.append(start + int(np.argmax(metric[start:previous + 1])))
-                    start = previous = value
-            bounds.append(start + int(np.argmax(metric[start:previous + 1])))
-        return bounds
-
-    dark_bounds = cluster(dark, dark >= DARK_THR)
-    uniform_bounds = cluster(uniform, uniform >= UNI_THR)
-    additions = [value for value in uniform_bounds
-                 if min([abs(value - dark_value) for dark_value in dark_bounds] + [1 << 30]) > UNI_NEAR]
-    edges = sorted(set([0, *dark_bounds, *additions, n]))
-    return [
-        (edges[index], edges[index + 1])
-        for index in range(len(edges) - 1)
-        if edges[index + 1] - edges[index] >= SEG_MIN
-    ]
+    return palette_segments.segment_ranges(
+        dark,
+        uniform,
+        gap=SEG_GAP,
+        min_frames=SEG_MIN,
+        dark_threshold=DARK_THR,
+        uniform_threshold=UNI_THR,
+        uniform_near=UNI_NEAR,
+    )
 
 
 def segment_and_train(frames, frame_cache=None):

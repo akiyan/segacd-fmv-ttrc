@@ -244,7 +244,7 @@ allowance.
 | `CBRSIM_PAL_GROW_REL` / `_ABS` / `_MIN_USAGE` | 0.005 / 0.002 / 0.002 | Minimum relative gain, gain per pixel, and tile-use fraction required to add another MOSAIC-GM line. |
 | `CBRSIM_PAL_CORE_SIZES` | `4,6,8,10,12,14` | Shared-colour counts tried when a specialist line grows. The remaining slots are line-specific. |
 | palette sample / validation counts | `[120,240,480]` / 120 | Fixed whole-movie learning candidates and separate validation sample. |
-| segment palette train / validation counts | 240 / 60 | Fixed maximum learning/validation frames per dark or uniform CRAM-segment candidate. |
+| segment palette train / validation counts | 240 / 60 | Fixed maximum learning/validation frames per dark or uniform CRAM-segment candidate. The peak dark/uniform frame remains on the preceding palette; a new CRAM segment begins on the following frame so the safe transition is displayed once before the switch. |
 | segment palette relative / per-pixel gain | 0.005 / 0.002 | Fixed improvement required before a local segment palette replaces the selected global palette. Adjacent identical choices are merged. |
 
 `CBRSIM_LOOP_PROFILE=1` is a diagnostic-only timing mode for the sequential
