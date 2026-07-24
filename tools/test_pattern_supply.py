@@ -88,7 +88,7 @@ class PatternSupplyPlannerTests(unittest.TestCase):
             budget.total, prediction.exact_cold + 1)
         self.assertEqual(int(budget.total[0]), 0)
 
-    def test_hardship_prefers_miss_risk_below_cold_cap(self):
+    def test_feedback_prefers_miss_below_cold_cap(self):
         prediction = DemandPrediction(
             exact_bytes=np.array([0, 0, 128, 0, 96]),
             protected_bytes=np.array([0, 0, 128, 0, 96]),
@@ -100,56 +100,77 @@ class PatternSupplyPlannerTests(unittest.TestCase):
             wr_patterns=1,
             dic_patterns=0,
             cold_cap=4,
-            prg_supply_patterns=np.array([0, 0, 0, 4, 0]),
-            prg_capacity_patterns=100,
+            feedback_miss=np.array([0, 0, 0, 0, 3]),
+            feedback_cold=np.array([0, 0, 4, 0, 1]),
+            feedback_prg_remaining=np.array([8, 8, 8, 8, 0]),
+            feedback_mode="miss",
+            active_tiles=4,
+            prg_capacity_patterns=8,
         )
 
-        # Frame 2 has the larger raw burst, but it already reaches the cap.
-        # The one credit can remove risk from below-cap frame 4 instead.
+        # Baseline demand gives the one even credit to frame 2. Seed feedback
+        # moves it to below-cap frame 4, where an actual Miss was measured.
         np.testing.assert_array_equal(budget.wr, [0, 0, 0, 0, 1])
-        np.testing.assert_array_equal(budget.cold_headroom, [4, 4, 0, 4, 1])
+        self.assertEqual(budget.reallocated_wr_patterns, 1)
 
-    def test_hardship_prefers_low_seed_prgbuf(self):
+    def test_feedback_prefers_low_physical_prgbuf(self):
         prediction = DemandPrediction(
-            exact_bytes=np.array([0, 128, 64, 0, 64]),
-            protected_bytes=np.array([0, 128, 64, 0, 64]),
-            exact_cold=np.array([0, 4, 2, 0, 2]),
-            protected_cold=np.array([0, 4, 2, 0, 2]),
+            exact_bytes=np.array([0, 0, 64, 0, 64]),
+            protected_bytes=np.array([0, 0, 64, 0, 64]),
+            exact_cold=np.array([0, 0, 2, 0, 2]),
+            protected_cold=np.array([0, 0, 2, 0, 2]),
         )
         budget = supply.plan_frame_budgets(
             prediction,
             wr_patterns=1,
             dic_patterns=0,
             cold_cap=2,
-            prg_supply_patterns=np.array([1, 1, 1, 5, 1]),
+            feedback_miss=np.zeros(5, np.int64),
+            feedback_cold=np.full(5, 2, np.int64),
+            feedback_prg_remaining=np.array([8, 8, 8, 8, 0]),
+            feedback_mode="prg",
+            active_tiles=4,
             prg_capacity_patterns=8,
         )
 
-        self.assertEqual(int(budget.wr[2]), 1)
-        self.assertEqual(int(budget.wr[4]), 0)
-        self.assertLess(
-            int(budget.seed_prg_without_wr[2]),
-            int(budget.seed_prg_without_wr[4]),
-        )
+        self.assertEqual(int(budget.wr[2]), 0)
+        self.assertEqual(int(budget.wr[4]), 1)
 
-    def test_hardship_still_water_fills_multiple_frames(self):
+    def test_feedback_reallocation_is_bounded_per_parity(self):
+        exact_bytes = np.full(9, 512, np.int64)
+        exact_bytes[0] = 0
+        exact_cold = np.full(9, 16, np.int64)
+        exact_cold[0] = 0
         prediction = DemandPrediction(
-            exact_bytes=np.array([0, 0, 64, 0, 64, 0, 64]),
-            protected_bytes=np.array([0, 0, 64, 0, 64, 0, 64]),
-            exact_cold=np.array([0, 0, 2, 0, 2, 0, 2]),
-            protected_cold=np.array([0, 0, 2, 0, 2, 0, 2]),
+            exact_bytes=exact_bytes,
+            protected_bytes=exact_bytes,
+            exact_cold=exact_cold,
+            protected_cold=exact_cold,
         )
+        baseline = supply.plan_frame_budgets(
+            prediction, wr_patterns=32, dic_patterns=0)
+        prg = np.full(9, 64, np.int64)
+        prg[7:] = 0
         budget = supply.plan_frame_budgets(
             prediction,
-            wr_patterns=2,
+            wr_patterns=32,
             dic_patterns=0,
-            cold_cap=2,
-            prg_supply_patterns=np.full(7, 2),
-            prg_capacity_patterns=8,
+            cold_cap=16,
+            feedback_miss=np.zeros(9, np.int64),
+            feedback_cold=np.full(9, 16, np.int64),
+            feedback_prg_remaining=prg,
+            active_tiles=16,
+            prg_capacity_patterns=64,
         )
 
-        self.assertEqual(int(np.count_nonzero(budget.wr[::2])), 2)
-        self.assertEqual(int(budget.wr[::2].sum()), 2)
+        delta = budget.wr - baseline.wr
+        self.assertEqual(budget.reallocated_wr_patterns, 2)
+        self.assertEqual(int(delta[delta > 0].sum()), 2)
+        self.assertLessEqual(int(np.abs(delta).max()), 1)
+        self.assertEqual(int(np.count_nonzero(delta > 0)), 2)
+        self.assertEqual(int(np.count_nonzero(delta < 0)), 2)
+        self.assertEqual(int(budget.wr[::2].sum()), 32)
+        self.assertEqual(int(budget.wr[1::2].sum()), 32)
 
     def test_whole_runs_are_assigned_and_pattern_order_is_preserved(self):
         # Frame 1 has one two-pattern run; frame 2 has two one-pattern runs.

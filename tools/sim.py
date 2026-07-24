@@ -634,6 +634,13 @@ OUT = sim_work_dir()
 _PASS_CACHE_PATH = os.environ.get("CBRSIM_PASS_CACHE", "").strip()
 _PASS_CACHE_INVOCATION = os.environ.get(
     "CBRSIM_PASS_CACHE_INVOCATION", "").strip()
+_PATTERN_SUPPLY_FEEDBACK_PATH = os.environ.get(
+    "CBRSIM_PATTERN_SUPPLY_FEEDBACK", "").strip()
+_PATTERN_SUPPLY_MODE = os.environ.get(
+    "CBRSIM_PATTERN_SUPPLY_MODE", "combined").strip().lower()
+if _PATTERN_SUPPLY_MODE not in {"baseline", "miss", "prg", "combined"}:
+    raise ValueError(
+        f"invalid CBRSIM_PATTERN_SUPPLY_MODE: {_PATTERN_SUPPLY_MODE}")
 # 実機TTRCエンコード用の決定ログ出力先。既定off(mp4出力に一切影響しない・追加のみ)。
 # 毎フレームの「更新セル(cell,pal,key)」＋区間パレットを吐き、pack_streamが再生してTTRC化する。
 _EMIT_DEC_ENV = os.environ.get("CBRSIM_EMIT_DEC", "").strip()
@@ -642,6 +649,26 @@ _EMIT_DEC_ENV = os.environ.get("CBRSIM_EMIT_DEC", "").strip()
 EMIT_DEC = (str(OUT / "decisions.pkl")
             if _EMIT_DEC_ENV.lower() in {"1", "true", "yes", "on"}
             else _EMIT_DEC_ENV)
+
+
+def _load_pattern_supply_feedback(path, frame_count):
+    with np.load(path, allow_pickle=False) as feedback:
+        schema = int(feedback["schema_version"])
+        if schema != 1:
+            raise ValueError(
+                f"unsupported pattern-supply feedback schema: {schema}")
+        result = {
+            "miss": np.asarray(feedback["miss"], np.int64),
+            "cold": np.asarray(feedback["cold"], np.int64),
+            "prg_remaining": np.asarray(
+                feedback["prg_remaining"], np.int64),
+        }
+    expected = (int(frame_count),)
+    if any(values.shape != expected for values in result.values()):
+        raise ValueError("pattern-supply feedback frame count differs")
+    if any(np.any(values < 0) for values in result.values()):
+        raise ValueError("pattern-supply feedback must be non-negative")
+    return result
 
 
 def _source_run_groups(
@@ -1713,34 +1740,9 @@ def main():
             )
             if boot_prefetch_plan else baseline_demand_prediction
         )
-        # Estimate how many fresh Prg patterns the nominal BODY allowance can
-        # carry after the dry run's name entries and conservative per-cold run
-        # descriptors. This guides WordBuf placement only; the later physical
-        # schedule still proves the exact control and payload trace.
-        seed_name_bytes = np.maximum(
-            demand_prediction.exact_bytes
-            - demand_prediction.exact_cold * PATTERN_BYTES,
-            0,
-        )
-        seed_prg_supply_patterns = (
-            np.maximum(
-                upgrade_supply
-                - seed_name_bytes
-                - (
-                    demand_prediction.exact_cold
-                    * stream_schedule.RUN_DESCRIPTOR_BYTES
-                ),
-                0,
-            )
-            // PATTERN_BYTES
-        )
         supply_budget = pattern_supply.plan_frame_budgets(
             demand_prediction,
             enabled=PATTERN_SUPPLY_ON,
-            cold_cap=MAX_COLD,
-            prg_supply_patterns=seed_prg_supply_patterns,
-            prg_capacity_patterns=(
-                PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
         )
         if RAW_PREFETCH_ON:
             prefetch_forecast = raw_prefetch.forecast_requests(
@@ -1793,6 +1795,29 @@ def main():
                 f"({cache_path.stat().st_size / 1024**2:.1f} MiB)",
                 flush=True,
             )
+    if _PATTERN_SUPPLY_FEEDBACK_PATH:
+        supply_feedback = _load_pattern_supply_feedback(
+            _PATTERN_SUPPLY_FEEDBACK_PATH, n)
+        supply_budget = pattern_supply.plan_frame_budgets(
+            demand_prediction,
+            enabled=PATTERN_SUPPLY_ON,
+            cold_cap=MAX_COLD,
+            feedback_miss=supply_feedback["miss"],
+            feedback_cold=supply_feedback["cold"],
+            feedback_prg_remaining=supply_feedback["prg_remaining"],
+            feedback_mode=_PATTERN_SUPPLY_MODE,
+            active_tiles=ACTIVE_TILES,
+            prg_capacity_patterns=(
+                PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES),
+        )
+        print(
+            "pattern supply feedback: "
+            f"mode={_PATTERN_SUPPLY_MODE} "
+            f"reallocated={supply_budget.reallocated_wr_patterns} "
+            f"Miss={int(supply_feedback['miss'].sum())} "
+            f"Prg_min={int(supply_feedback['prg_remaining'][1:].min())}",
+            flush=True,
+        )
     boot_inline_requests = min(
         len(boot_prefetch_plan), boot_inline_capacity)
     boot_sidecar_requests = len(boot_prefetch_plan) - boot_inline_requests
@@ -1882,33 +1907,33 @@ def main():
         f"Wr1={supply_budget.wr1_patterns}/{pattern_supply.WORD_BUF_PATTERNS} "
         f"Dic={supply_budget.dic_patterns}/{pattern_supply.DIC_BUF_PATTERNS} "
         f"hits={int(supply_budget.dic.sum())} "
-        f"frames={int(np.count_nonzero(supply_budget.total))}",
+        f"frames={int(np.count_nonzero(supply_budget.total))} "
+        f"reallocated={supply_budget.reallocated_wr_patterns}",
         flush=True,
     )
-    supply_seed_prg_without_wr = (
-        np.asarray(supply_budget.seed_prg_without_wr, np.int64)
-        if supply_budget.seed_prg_without_wr is not None
+    supply_feedback_miss = (
+        np.asarray(supply_budget.feedback_miss, np.int64)
+        if supply_budget.feedback_miss is not None
         else np.zeros(n, np.int64)
     )
-    supply_seed_prg_with_wr = (
-        np.asarray(supply_budget.seed_prg_with_wr, np.int64)
-        if supply_budget.seed_prg_with_wr is not None
+    supply_feedback_cold = (
+        np.asarray(supply_budget.feedback_cold, np.int64)
+        if supply_budget.feedback_cold is not None
         else np.zeros(n, np.int64)
     )
-    supply_cold_headroom = (
-        np.asarray(supply_budget.cold_headroom, np.int64)
-        if supply_budget.cold_headroom is not None
+    supply_feedback_prg = (
+        np.asarray(supply_budget.feedback_prg_remaining, np.int64)
+        if supply_budget.feedback_prg_remaining is not None
         else np.zeros(n, np.int64)
     )
-    if supply_budget.seed_prg_without_wr is not None:
+    if supply_budget.feedback_miss is not None:
         print(
-            "  WordBuf hardship seed: "
-            f"Prg min "
-            f"{int(supply_seed_prg_without_wr.min())}->"
-            f"{int(supply_seed_prg_with_wr.min())} patterns; "
-            f"mean "
-            f"{float(supply_seed_prg_without_wr.mean()):.1f}->"
-            f"{float(supply_seed_prg_with_wr.mean()):.1f}",
+            "  WordBuf measured feedback: "
+            f"Miss_frames={int(np.count_nonzero(supply_feedback_miss))} "
+            f"below_cap_Miss_frames={int(np.count_nonzero(
+                (supply_feedback_miss > 0)
+                & (supply_feedback_cold < MAX_COLD)))} "
+            f"Prg_min={int(supply_feedback_prg[1:].min())} patterns",
             flush=True,
         )
     print(
@@ -3755,7 +3780,7 @@ def main():
         # silently drive any of the four hardware meters.
         np.savez(
             OUT / "buffer_remaining.npz",
-            schema_version=np.int64(7),
+            schema_version=np.int64(8),
             remaining_kind=np.array("three_consumptive_plus_dicbuf"),
             # Compatibility aliases for offline readers predating schema 4.
             remaining=prg_remaining,
@@ -3782,9 +3807,11 @@ def main():
             exact_demand_bytes=demand_prediction.exact_bytes,
             protected_demand_bytes=demand_prediction.protected_bytes,
             preload_credit_bytes=preload_credit_bytes,
-            word_seed_prg_without_wr=supply_seed_prg_without_wr,
-            word_seed_prg_with_wr=supply_seed_prg_with_wr,
-            word_cold_headroom=supply_cold_headroom,
+            word_feedback_miss=supply_feedback_miss,
+            word_feedback_cold=supply_feedback_cold,
+            word_feedback_prg_remaining=supply_feedback_prg,
+            word_feedback_reallocated=np.int64(
+                supply_budget.reallocated_wr_patterns),
             upgrade_demand_bytes=upgrade_demand,
             upgrade_planned_demand_bytes=upgrade_demand,
             upgrade_unavoidable_shortfall_bytes=np.zeros(
@@ -3921,17 +3948,24 @@ def main():
                 ),
             },
             "pattern_supply": {
-                "schema_version": 3,
+                "schema_version": 4,
                 "enabled": bool(PATTERN_SUPPLY_ON),
                 "sources": supply_sources_log,
                 "planned_wr": np.asarray(supply_budget.wr, np.uint16),
                 "planned_dic": np.asarray(supply_budget.dic, np.uint16),
-                "seed_prg_without_wr": np.asarray(
-                    supply_seed_prg_without_wr, np.int64),
-                "seed_prg_with_wr": np.asarray(
-                    supply_seed_prg_with_wr, np.int64),
-                "cold_headroom": np.asarray(
-                    supply_cold_headroom, np.int64),
+                "feedback_miss": np.asarray(
+                    supply_feedback_miss, np.int64),
+                "feedback_cold": np.asarray(
+                    supply_feedback_cold, np.int64),
+                "feedback_prg_remaining": np.asarray(
+                    supply_feedback_prg, np.int64),
+                "feedback_reallocated": int(
+                    supply_budget.reallocated_wr_patterns),
+                "feedback_mode": (
+                    _PATTERN_SUPPLY_MODE
+                    if supply_budget.feedback_miss is not None
+                    else "baseline"
+                ),
                 "dic_dictionary": list(
                     supply_budget.dic_dictionary_packed),
                 "prg_loads": prg_loads.astype(np.uint16),
@@ -4140,8 +4174,51 @@ def _derive_completed_slot_map(decision_log, output_path):
     )
 
 
+def _write_pattern_supply_feedback(output_path):
+    """Freeze measured seed Miss/cold/Prg traces for bounded reallocation."""
+    with np.load(OUT / "stats.npz", allow_pickle=True) as stats_file:
+        columns = tuple(str(stats_file["cols"]).split())
+        index = {name: column for column, name in enumerate(columns)}
+        if "miss" not in index:
+            raise ValueError("seed stats have no Miss trace")
+        miss = np.asarray(
+            stats_file["stats"][:, index["miss"]], np.int64)
+    with np.load(OUT / "buffer_remaining.npz", allow_pickle=False) as buffer:
+        prg_remaining = np.asarray(buffer["prg_remaining"], np.int64)
+        cold = sum(
+            np.asarray(buffer[name], np.int64)
+            for name in (
+                "prg_loads", "wr0_loads", "wr1_loads", "dic_loads")
+        )
+    if len(miss) != len(cold) or len(miss) != len(prg_remaining):
+        raise ValueError("seed pattern-supply feedback frame count differs")
+    miss = miss.copy()
+    cold = cold.copy()
+    prg_remaining = prg_remaining.copy()
+    if len(miss):
+        miss[0] = 0
+        cold[0] = 0
+        prg_remaining[0] = (
+            PRG_BUF_CAP_KB * 1024 // PATTERN_BYTES)
+    np.savez(
+        output_path,
+        schema_version=np.int64(1),
+        miss=miss,
+        cold=cold,
+        prg_remaining=prg_remaining,
+    )
+    print(
+        "pattern supply seed feedback: "
+        f"Miss={int(miss.sum())} "
+        f"below_cap_Miss_frames={int(np.count_nonzero(
+            (miss > 0) & (cold < MAX_COLD)))} "
+        f"Prg_min={int(prg_remaining[1:].min())}patterns",
+        flush=True,
+    )
+
+
 def _run_slot_locality_pipeline():
-    """Use one logical seed and bounded slot-map accounting passes."""
+    """Use baseline/feedback seeds and bounded slot-map accounting passes."""
     import subprocess
 
     command = [sys.executable, *_ORIGINAL_ARGV]
@@ -4176,6 +4253,25 @@ def _run_slot_locality_pipeline():
         print("slot locality seed pass: logical decisions", flush=True)
         result = subprocess.run(command, env=seed_env, check=False)
         result.check_returncode()
+
+        if _PATTERN_SUPPLY_MODE != "baseline":
+            feedback_path = cache_lease.entry / "pattern-supply-feedback.npz"
+            _write_pattern_supply_feedback(feedback_path)
+            common_env["CBRSIM_PATTERN_SUPPLY_FEEDBACK"] = str(feedback_path)
+            feedback_seed_env = common_env.copy()
+            feedback_seed_env["CBRSIM_SLOT_LOCALITY_STAGE"] = "seed"
+            feedback_seed_env["CBRSIM_NOPANELS"] = "1"
+            feedback_seed_env["CBRSIM_SLOT_LOCALITY_REUSE"] = "1"
+            feedback_seed_env.pop("CBRSIM_SLOT_LOCALITY_MAP", None)
+            print(
+                "slot locality feedback seed pass: "
+                f"mode={_PATTERN_SUPPLY_MODE} "
+                "bounded WordBuf reallocation",
+                flush=True,
+            )
+            result = subprocess.run(
+                command, env=feedback_seed_env, check=False)
+            result.check_returncode()
 
         # Physical delivery is a proof, not an automatic cold-cap tuning loop.
         # If it fails, stop this run and report that layer unchanged.

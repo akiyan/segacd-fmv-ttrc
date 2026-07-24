@@ -44,7 +44,7 @@ can schedule.
 | `prg_buf_cap_kb(fps)` | 15fps: 382 KB; 24fps: 397 KB; 30fps: 402 KB | cfg -> sim / pack / player | Normal `PrgBuf` prebuffer and quality ceiling = the 422 KB scheduled-delivery ceiling minus the cadence-scaled jitter interval. `PRG_BUF_CAP_KB` and `RING_CAP_KB` remain 30fps compatibility aliases only. |
 | `physical_delivery_cap_kb(fps)` | 422 KB | cfg -> sim / pack | Hard exact-schedule occupancy ceiling. Scheduled delivery may temporarily use the cadence-scaled jitter interval above the normal PrgBuf ceiling, while staying one sector below pump back-pressure. |
 | `quality_budget_kb(fps)` | same as normal `PrgBuf` | cfg -> sim | Capacity of offline quality accounting. It has an independent trace and no physical meter. It is derived from fps, not a profile or environment knob. |
-| `WordBuf0` / `WordBuf1` | 880 patterns each (27.5 KB each) | sp / ip / sim / pack | Different boot-preloaded sequences in the two physical Word-RAM banks at offset `+0x15200..+0x1C000`. Wr0 serves even timed frames and Wr1 odd timed frames; they are not duplicated copies. Allocation water-fills predicted Miss-risk, with bounded preference for below-cap cold demand and a low dry-run PrgBuf seed level. |
+| `WordBuf0` / `WordBuf1` | 880 patterns each (27.5 KB each) | sp / ip / sim / pack | Different boot-preloaded sequences in the two physical Word-RAM banks at offset `+0x15200..+0x1C000`. Wr0 serves even timed frames and Wr1 odd timed frames; they are not duplicated copies. A baseline dry run measures Miss, physical cold loads, and PrgBuf remaining; at most one sixteenth of each bank is then reallocated toward measured hardship. |
 | `DicBuf` | 256 patterns (8 KB) | ip / sim / pack | Persistent dictionary boot-staged at Word-RAM `+0xD000`, then copied once to Main RAM `0xFF6600..0xFF8600`. Either frame parity may reuse entries by 8-bit index without consuming them. |
 | `BACKPRESSURE_KB` | 424 KB (`RING_SIZE-4`) | cfg | Where `pump_poll` stops draining the CDC to avoid overrunning the PRG ring. The exact schedule stops one 2 KB sector below this boundary. |
 | routing table | 16 KB per 1M Word-RAM bank, 16384 frames (v7+) | sp / pack | One byte per frame: bits 0-2 are control sectors, bits 3-5 are total control-plus-payload sectors, and bits 6-7 must be zero. `routing_sec` is exactly `ceil(frames / 2048)`. v16 retains the v7 one-byte layout. The table is copied identically into both banks at boot, so the Sub can read it regardless of delivery/display frame parity. v6 used two bytes per frame and was limited to 8192 frames. |
@@ -257,19 +257,24 @@ After quantization, the encoder dry-runs the exact target through the shared
 VRAM allocator and predicts each frame's name-table and cold-pattern demand.
 It first selects the persistent DicBuf from whole-movie reuse, removes those
 hits from provisional Prg demand, and water-fills the finite WordBuf0/WordBuf1
-credits across the remaining risky bursts. The WordBuf marginal score retains
-the protected-demand tier, then adds bounded weight when predicted cold demand
-is still below the cap and when a simple dry-run PrgBuf estimate is low. Both
-physical parity banks are reconsidered after every single 32-byte credit, so
-the added pressure does not turn into one-shot allocation to one scene. This
-estimate only guides boot-preload placement; the later exact physical delivery
-schedule remains authoritative. For the narrower Main Miss-risk trace, if a
-continuous burst needs more than the complete quality-budget capacity, that
-shortage cannot be prevented. The planner applies one common served fraction
-from the burst start through its peak so the first frame does not absorb the
-entire unavoidable loss. A backwards pass over this capacity-feasible risk
-demand then derives the minimum offline quality reserve needed after every
-frame. This is the only quality-budget allocation path.
+credits across the remaining risky bursts. That baseline seed is encoded once
+to measure actual Miss cells, physical cold loads, and physical PrgBuf
+remaining. A second seed keeps the protected-demand tier and moves individual
+32-byte credits toward frames where Miss coincides with unused cold-cap room
+or where PrgBuf is low. Donors and receivers are reconsidered after each move,
+no more than one sixteenth of either physical parity bank may move, and each
+frame may gain or lose only one credit relative to the baseline. This retains
+the original whole-movie water-fill and spreads the feedback across the
+timeline instead of letting one difficult scene absorb the boot preload. The
+feedback guides WordBuf placement only; the later exact physical delivery
+schedule remains authoritative. For
+the narrower Main Miss-risk trace, if a continuous burst needs more than the
+complete quality-budget capacity, that shortage cannot be prevented. The
+planner applies one common served fraction from the burst start through its
+peak so the first frame does not absorb the entire unavoidable loss. A
+backwards pass over this capacity-feasible risk demand then derives the minimum
+offline quality reserve needed after every frame. This is the only
+quality-budget allocation path.
 
 Optional Raw/Buf upgrades protect against the complete exact-demand trace.
 That larger trace remains strict rather than distributing its intentionally

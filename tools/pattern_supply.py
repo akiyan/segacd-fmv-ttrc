@@ -21,6 +21,9 @@ PATTERN_BYTES = 32
 HARDSHIP_SCALE = 1024
 MISS_HEADROOM_WEIGHT = 2
 PRG_DEPLETION_WEIGHT = 1
+FEEDBACK_REALLOCATION_DIVISOR = 16
+FEEDBACK_MAX_DELTA_PER_FRAME = 1
+FEEDBACK_MODES = frozenset({"miss", "prg", "combined"})
 
 SOURCE_PRG = 0
 SOURCE_WR = 1
@@ -209,9 +212,10 @@ class FrameSupplyBudget:
     wr: np.ndarray
     dic: np.ndarray
     dic_dictionary: tuple[bytes, ...] = ()
-    seed_prg_without_wr: np.ndarray | None = None
-    seed_prg_with_wr: np.ndarray | None = None
-    cold_headroom: np.ndarray | None = None
+    feedback_miss: np.ndarray | None = None
+    feedback_cold: np.ndarray | None = None
+    feedback_prg_remaining: np.ndarray | None = None
+    reallocated_wr_patterns: int = 0
 
     @property
     def total(self) -> np.ndarray:
@@ -278,11 +282,7 @@ def _credit_priority(
     protected_bytes: np.ndarray,
     exact_cold: np.ndarray,
     protected_cold: np.ndarray,
-    *,
-    cold_cap: int = 0,
-    seed_prg_remaining: np.ndarray | None = None,
-    prg_capacity: int = 0,
-) -> tuple[int, int, int, int, int]:
+) -> tuple[int, int, int, int]:
     """Return the marginal priority of one more preload credit.
 
     Credits first flatten frames whose protected changes are predicted to need
@@ -294,82 +294,67 @@ def _credit_priority(
     used = int(allocated[frame])
     exact_left = max(0, int(exact_bytes[frame]) - used * PATTERN_BYTES)
     cold_left = max(0, int(exact_cold[frame]) - used)
-    protected = used < int(protected_cold[frame])
-    if protected:
+    if used < int(protected_cold[frame]):
         protected_left = max(
             0, int(protected_bytes[frame]) - used * PATTERN_BYTES)
-        tier = 2
-        primary = protected_left
-    else:
-        tier = 1
-        primary = exact_left
+        return (2, protected_left, exact_left, cold_left)
+    return (1, exact_left, cold_left, 0)
 
+
+def _feedback_priority(
+    frame: int,
+    allocated: np.ndarray,
+    exact_bytes: np.ndarray,
+    protected_bytes: np.ndarray,
+    exact_cold: np.ndarray,
+    protected_cold: np.ndarray,
+    feedback_miss: np.ndarray,
+    feedback_cold: np.ndarray,
+    feedback_prg_remaining: np.ndarray,
+    feedback_mode: str,
+    *,
+    active_tiles: int,
+    cold_cap: int,
+    prg_capacity: int,
+) -> tuple[int, int, int, int, int]:
+    """Weight one marginal credit by measured seed-pass hardship."""
+    tier, primary, exact_left, cold_left = _credit_priority(
+        frame,
+        allocated,
+        exact_bytes,
+        protected_bytes,
+        exact_cold,
+        protected_cold,
+    )
     weighted = primary * HARDSHIP_SCALE
-    if protected and cold_cap > 0:
-        # A protected frame below the cold ceiling can still turn more preload
-        # credit directly into fewer risky cells. At the ceiling, another
-        # source rather than more local cold capacity is the limiting factor.
-        headroom = min(
-            int(cold_cap),
-            max(0, int(cold_cap) - int(exact_cold[frame])),
-        )
+    headroom = min(
+        int(cold_cap),
+        max(0, int(cold_cap) - int(feedback_cold[frame])),
+    )
+    miss = min(int(active_tiles), max(0, int(feedback_miss[frame])))
+    if feedback_mode in {"miss", "combined"} and miss and headroom:
         weighted += (
-            primary * MISS_HEADROOM_WEIGHT * headroom * HARDSHIP_SCALE
-            // int(cold_cap)
+            primary
+            * MISS_HEADROOM_WEIGHT
+            * miss
+            * headroom
+            * HARDSHIP_SCALE
+            // (int(active_tiles) * int(cold_cap))
         )
-    if seed_prg_remaining is not None and prg_capacity > 0:
+    if feedback_mode in {"prg", "combined"}:
         depletion = min(
             int(prg_capacity),
-            max(0, int(prg_capacity) - int(seed_prg_remaining[frame])),
+            max(0, int(prg_capacity)
+                - int(feedback_prg_remaining[frame])),
         )
         weighted += (
-            primary * PRG_DEPLETION_WEIGHT * depletion * HARDSHIP_SCALE
+            primary
+            * PRG_DEPLETION_WEIGHT
+            * depletion
+            * HARDSHIP_SCALE
             // int(prg_capacity)
         )
     return (tier, weighted, primary, exact_left, cold_left)
-
-
-def _seed_prg_levels(
-    exact_cold: np.ndarray,
-    allocated: np.ndarray,
-    prg_supply_patterns: np.ndarray,
-    capacity: int,
-) -> np.ndarray:
-    """Approximate local PrgBuf drawdown after each dry-run frame.
-
-    Full exact demand intentionally exceeds CD supply for much of a difficult
-    movie, so a whole-movie accumulator would quickly stick at zero and stop
-    distinguishing scenes. Instead, measure the cumulative supply/demand
-    drawdown from the highest balance inside one nominal buffer-fill window.
-    This keeps the signal local while retaining the real capacity and supply
-    scale. The final pack/sim schedule remains the source of truth.
-    """
-    from collections import deque
-
-    capacity = max(0, int(capacity))
-    result = np.zeros(exact_cold.shape, np.int64)
-    positive_supply = np.asarray(prg_supply_patterns, np.int64)
-    positive_supply = positive_supply[positive_supply > 0]
-    nominal_supply = (
-        max(1, int(np.median(positive_supply)))
-        if len(positive_supply) else 1
-    )
-    window = max(1, (capacity + nominal_supply - 1) // nominal_supply)
-    balance = 0
-    peaks: deque[tuple[int, int]] = deque([(-1, 0)])
-    for frame in range(len(exact_cold)):
-        demand = max(
-            0, int(exact_cold[frame]) - int(allocated[frame]))
-        balance += max(0, int(prg_supply_patterns[frame])) - demand
-        oldest = frame - window
-        while peaks and peaks[0][0] < oldest:
-            peaks.popleft()
-        while peaks and peaks[-1][1] <= balance:
-            peaks.pop()
-        peaks.append((frame, balance))
-        drawdown = max(0, int(peaks[0][1]) - balance)
-        result[frame] = max(0, capacity - min(capacity, drawdown))
-    return result
 
 
 def _allocate_credits(
@@ -386,7 +371,7 @@ def _allocate_credits(
     """Water-fill one physical source over its eligible frames."""
     import heapq
 
-    heap: list[tuple[int, int, int, int, int, int, int]] = []
+    heap: list[tuple[int, int, int, int, int, int]] = []
 
     def push(frame: int) -> None:
         if int(available[frame]) <= 0:
@@ -419,69 +404,116 @@ def _allocate_credits(
         push(frame)
 
 
-def _allocate_hardship_word_credits(
+def _reallocate_feedback_word_credits(
     target: np.ndarray,
     available: np.ndarray,
     allocated: np.ndarray,
-    capacity: int,
+    frames: Sequence[int],
+    move_limit: int,
     exact_bytes: np.ndarray,
     protected_bytes: np.ndarray,
     exact_cold: np.ndarray,
     protected_cold: np.ndarray,
+    feedback_miss: np.ndarray,
+    feedback_cold: np.ndarray,
+    feedback_prg_remaining: np.ndarray,
+    feedback_mode: str,
     *,
+    active_tiles: int,
     cold_cap: int,
-    prg_supply_patterns: np.ndarray,
     prg_capacity: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Jointly water-fill Wr0/Wr1 using the current dry Prg estimate."""
-    without_wr = _seed_prg_levels(
-        exact_cold, allocated, prg_supply_patterns, prg_capacity)
-    remaining = [max(0, int(capacity)), max(0, int(capacity))]
-    frames = (
-        tuple(range(2, len(exact_bytes), 2)),
-        tuple(range(1, len(exact_bytes), 2)),
-    )
-    parity = 0
-    while remaining[0] or remaining[1]:
-        if not remaining[parity]:
-            parity ^= 1
-            if not remaining[parity]:
-                break
-        candidates = [
-            frame for frame in frames[parity]
+) -> int:
+    """Move a bounded number of baseline credits toward measured hardship."""
+    eligible = tuple(int(frame) for frame in frames)
+    baseline = target.copy()
+    moved = 0
+    while moved < max(0, int(move_limit)):
+        receivers = [
+            frame for frame in eligible
             if int(available[frame]) > 0
+            and int(target[frame] - baseline[frame])
+            < FEEDBACK_MAX_DELTA_PER_FRAME
         ]
-        if not candidates:
-            remaining[parity] = 0
-            parity ^= 1
-            continue
-        seed_prg = _seed_prg_levels(
-            exact_cold, allocated, prg_supply_patterns, prg_capacity)
-        frame = max(
-            candidates,
-            key=lambda candidate: (
-                *_credit_priority(
-                    candidate,
+        if not receivers:
+            break
+        receiver = max(
+            receivers,
+            key=lambda frame: (
+                *_feedback_priority(
+                    frame,
                     allocated,
                     exact_bytes,
                     protected_bytes,
                     exact_cold,
                     protected_cold,
+                    feedback_miss,
+                    feedback_cold,
+                    feedback_prg_remaining,
+                    feedback_mode,
+                    active_tiles=active_tiles,
                     cold_cap=cold_cap,
-                    seed_prg_remaining=seed_prg,
                     prg_capacity=prg_capacity,
                 ),
-                -int(candidate),
+                -frame,
             ),
         )
-        target[frame] += 1
-        available[frame] -= 1
-        allocated[frame] += 1
-        remaining[parity] -= 1
-        parity ^= 1
-    with_wr = _seed_prg_levels(
-        exact_cold, allocated, prg_supply_patterns, prg_capacity)
-    return without_wr, with_wr
+        donors = [
+            frame for frame in eligible
+            if frame != receiver and int(target[frame]) > 0
+            and int(baseline[frame] - target[frame])
+            < FEEDBACK_MAX_DELTA_PER_FRAME
+        ]
+        if not donors:
+            break
+        donor_priorities = []
+        for frame in donors:
+            allocated[frame] -= 1
+            priority = _feedback_priority(
+                frame,
+                allocated,
+                exact_bytes,
+                protected_bytes,
+                exact_cold,
+                protected_cold,
+                feedback_miss,
+                feedback_cold,
+                feedback_prg_remaining,
+                feedback_mode,
+                active_tiles=active_tiles,
+                cold_cap=cold_cap,
+                prg_capacity=prg_capacity,
+            )
+            allocated[frame] += 1
+            donor_priorities.append((priority, frame))
+        donor_priority, donor = min(
+            donor_priorities,
+            key=lambda item: (*item[0], item[1]),
+        )
+        receiver_priority = _feedback_priority(
+            receiver,
+            allocated,
+            exact_bytes,
+            protected_bytes,
+            exact_cold,
+            protected_cold,
+            feedback_miss,
+            feedback_cold,
+            feedback_prg_remaining,
+            feedback_mode,
+            active_tiles=active_tiles,
+            cold_cap=cold_cap,
+            prg_capacity=prg_capacity,
+        )
+        if receiver_priority <= donor_priority:
+            break
+        target[receiver] += 1
+        available[receiver] -= 1
+        allocated[receiver] += 1
+        target[donor] -= 1
+        available[donor] += 1
+        allocated[donor] -= 1
+        moved += 1
+    return moved
 
 
 def plan_frame_budgets(
@@ -491,7 +523,11 @@ def plan_frame_budgets(
     wr_patterns: int = WORD_BUF_PATTERNS,
     dic_patterns: int = DIC_BUF_PATTERNS,
     cold_cap: int = 0,
-    prg_supply_patterns: np.ndarray | None = None,
+    feedback_miss: np.ndarray | None = None,
+    feedback_cold: np.ndarray | None = None,
+    feedback_prg_remaining: np.ndarray | None = None,
+    feedback_mode: str = "combined",
+    active_tiles: int = 0,
     prg_capacity_patterns: int = 0,
 ) -> FrameSupplyBudget:
     """Select DicBuf hits, then allocate residual Wr credits.
@@ -516,18 +552,34 @@ def plan_frame_budgets(
         raise ValueError("pattern-supply demand must be non-negative")
     if np.any(protected_cold > exact_cold):
         raise ValueError("protected cold demand exceeds complete exact demand")
-    hardship_enabled = prg_supply_patterns is not None
-    if hardship_enabled:
-        prg_supply_patterns = np.asarray(
-            prg_supply_patterns, dtype=np.int64)
-        if prg_supply_patterns.shape != shape:
+    feedback_values = (
+        feedback_miss,
+        feedback_cold,
+        feedback_prg_remaining,
+    )
+    feedback_enabled = any(value is not None for value in feedback_values)
+    if feedback_enabled:
+        feedback_mode = str(feedback_mode).strip().lower()
+        if feedback_mode not in FEEDBACK_MODES:
             raise ValueError(
-                "Prg supply signal must match pattern-supply demand")
-        if np.any(prg_supply_patterns < 0):
-            raise ValueError("Prg supply signal must be non-negative")
-        if int(cold_cap) <= 0 or int(prg_capacity_patterns) <= 0:
+                f"invalid pattern-supply feedback mode: {feedback_mode}")
+        if any(value is None for value in feedback_values):
+            raise ValueError("pattern-supply feedback arrays are incomplete")
+        feedback_miss = np.asarray(feedback_miss, dtype=np.int64)
+        feedback_cold = np.asarray(feedback_cold, dtype=np.int64)
+        feedback_prg_remaining = np.asarray(
+            feedback_prg_remaining, dtype=np.int64)
+        if any(value.shape != shape for value in (
+                feedback_miss, feedback_cold, feedback_prg_remaining)):
             raise ValueError(
-                "hardship allocation requires positive cold and Prg caps")
+                "pattern-supply feedback must match demand")
+        if any(np.any(value < 0) for value in (
+                feedback_miss, feedback_cold, feedback_prg_remaining)):
+            raise ValueError("pattern-supply feedback must be non-negative")
+        if (int(cold_cap) <= 0 or int(active_tiles) <= 0
+                or int(prg_capacity_patterns) <= 0):
+            raise ValueError(
+                "feedback allocation requires positive cold, active, and Prg caps")
 
     wr = np.zeros(shape, np.int64)
     dic = np.zeros(shape, np.int64)
@@ -561,70 +613,78 @@ def plan_frame_budgets(
         available = residual_exact_cold.copy()
         available[0] = 0
         allocated = np.zeros(shape, np.int64)
-        seed_without = None
-        seed_with = None
-        cold_headroom = None
-        if hardship_enabled:
-            seed_without, seed_with = _allocate_hardship_word_credits(
-                wr,
-                available,
-                allocated,
-                wr_patterns,
-                residual_exact_bytes,
-                residual_protected_bytes,
-                residual_exact_cold,
-                residual_protected_cold,
-                cold_cap=int(cold_cap),
-                prg_supply_patterns=prg_supply_patterns,
-                prg_capacity=int(prg_capacity_patterns),
-            )
-            cold_headroom = np.maximum(
-                int(cold_cap) - residual_exact_cold, 0)
-        else:
+        for parity in (0, 1):
+            _allocate_credits(
+                wr, available, allocated,
+                range(2 if parity == 0 else 1, len(exact_bytes), 2),
+                wr_patterns, residual_exact_bytes,
+                residual_protected_bytes, residual_exact_cold,
+                residual_protected_cold)
+        reallocated = 0
+        if feedback_enabled:
+            move_limit = max(
+                1, int(wr_patterns) // FEEDBACK_REALLOCATION_DIVISOR)
             for parity in (0, 1):
-                _allocate_credits(
-                    wr, available, allocated,
+                reallocated += _reallocate_feedback_word_credits(
+                    wr,
+                    available,
+                    allocated,
                     range(2 if parity == 0 else 1, len(exact_bytes), 2),
-                    wr_patterns, residual_exact_bytes,
-                    residual_protected_bytes, residual_exact_cold,
-                    residual_protected_cold)
+                    move_limit,
+                    residual_exact_bytes,
+                    residual_protected_bytes,
+                    residual_exact_cold,
+                    residual_protected_cold,
+                    feedback_miss,
+                    feedback_cold,
+                    feedback_prg_remaining,
+                    feedback_mode,
+                    active_tiles=int(active_tiles),
+                    cold_cap=int(cold_cap),
+                    prg_capacity=int(prg_capacity_patterns),
+                )
         return FrameSupplyBudget(
             wr=wr,
             dic=dic,
             dic_dictionary=dictionary,
-            seed_prg_without_wr=seed_without,
-            seed_prg_with_wr=seed_with,
-            cold_headroom=cold_headroom,
+            feedback_miss=feedback_miss,
+            feedback_cold=feedback_cold,
+            feedback_prg_remaining=feedback_prg_remaining,
+            reallocated_wr_patterns=reallocated,
         )
 
     available = exact_cold.copy()
     available[0] = 0
     allocated = np.zeros(shape, np.int64)
-    seed_without = None
-    seed_with = None
-    cold_headroom = None
-    if hardship_enabled:
-        seed_without, seed_with = _allocate_hardship_word_credits(
-            wr,
-            available,
-            allocated,
-            wr_patterns,
-            exact_bytes,
-            protected_bytes,
-            exact_cold,
-            protected_cold,
-            cold_cap=int(cold_cap),
-            prg_supply_patterns=prg_supply_patterns,
-            prg_capacity=int(prg_capacity_patterns),
-        )
-        cold_headroom = np.maximum(int(cold_cap) - exact_cold, 0)
-    else:
+    for parity in (0, 1):
+        _allocate_credits(
+            wr, available, allocated,
+            range(2 if parity == 0 else 1, len(exact_bytes), 2),
+            wr_patterns, exact_bytes, protected_bytes,
+            exact_cold, protected_cold)
+    reallocated = 0
+    if feedback_enabled:
+        move_limit = max(
+            1, int(wr_patterns) // FEEDBACK_REALLOCATION_DIVISOR)
         for parity in (0, 1):
-            _allocate_credits(
-                wr, available, allocated,
+            reallocated += _reallocate_feedback_word_credits(
+                wr,
+                available,
+                allocated,
                 range(2 if parity == 0 else 1, len(exact_bytes), 2),
-                wr_patterns, exact_bytes, protected_bytes,
-                exact_cold, protected_cold)
+                move_limit,
+                exact_bytes,
+                protected_bytes,
+                exact_cold,
+                protected_cold,
+                feedback_miss,
+                feedback_cold,
+                feedback_prg_remaining,
+                feedback_mode,
+                active_tiles=int(active_tiles),
+                cold_cap=int(cold_cap),
+                prg_capacity=int(prg_capacity_patterns),
+            )
     _allocate_credits(
         dic, available, allocated, range(1, len(exact_bytes)),
         dic_patterns, exact_bytes, protected_bytes,
@@ -641,9 +701,10 @@ def plan_frame_budgets(
     return FrameSupplyBudget(
         wr=wr,
         dic=dic,
-        seed_prg_without_wr=seed_without,
-        seed_prg_with_wr=seed_with,
-        cold_headroom=cold_headroom,
+        feedback_miss=feedback_miss,
+        feedback_cold=feedback_cold,
+        feedback_prg_remaining=feedback_prg_remaining,
+        reallocated_wr_patterns=reallocated,
     )
 
 

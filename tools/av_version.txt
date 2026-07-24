@@ -11,6 +11,18 @@
 # The title version string = <date>.e<e>.p<p>, e.g. 20260710.e2.p2
 #
 # History:
+#   e119: Split measured WordBuf feedback into reproducible baseline,
+#         Miss-only, PrgBuf-only, and combined comparison modes. Completed sim
+#         identities include the selected mode so their output and runtime can
+#         be compared without cross-mode artifact reuse.
+#   e118: Limit measured-feedback WordBuf changes to one 32-byte credit gained
+#         or lost per frame. The one-sixteenth bank-wide bound remains, but the
+#         feedback is spread across the timeline instead of concentrating as
+#         many as ten credits in one difficult scene.
+#   e117: Replace e116's all-exact Prg proxy with a measured baseline seed.
+#         Reallocate at most one sixteenth of each WordBuf bank using actual
+#         Miss, physical cold, and PrgBuf traces, preserving the original
+#         water-fill for the other fifteen sixteenths.
 #   e116: Reweight finite WordBuf allocation toward protected frames whose
 #         predicted cold demand remains below the cap and whose dry-run PrgBuf
 #         seed level is low. Recompute both parity banks after each 32-byte
@@ -801,5 +813,5 @@
 #        clamps it from AUDIO bytes/frame with a 0x200 safety margin below
 #        SYNC_MAX (45 frames at 30fps, 22 at 15fps).
 date=20260724
-e=116
+e=119
 p=90
