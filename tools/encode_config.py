@@ -202,12 +202,8 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
     if not 1 <= active_tiles <= total_tiles:
         raise ValueError(
             f"{profile_path}: video.active_tiles must be within 1..{total_tiles}")
-    try:
-        source_fps = float(Fraction(str(data["source"]["fps"])))
-        baseline_cold_cap = av_config.baseline_cold_cap_for_fps(
-            source_fps, mode, active_tiles)
-    except av_config.ColdCapMeasurementRequired as exc:
-        raise ValueError(f"{profile_path}: {exc}") from exc
+    source_fps = float(Fraction(str(data["source"]["fps"])))
+    baseline_cold_cap = av_config.baseline_cold_cap_for_fps(source_fps)
     requested_cold_cap = data.get("encoder", {}).get("cold_cap")
     if requested_cold_cap is not None:
         if isinstance(requested_cold_cap, bool) or not isinstance(
@@ -217,8 +213,7 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         if requested_cold_cap < baseline_cold_cap:
             raise ValueError(
                 f"{profile_path}: encoder.cold_cap {requested_cold_cap} is "
-                f"below baseline {baseline_cold_cap} for mode={mode} "
-                f"fps={source_fps:g} active_tiles={active_tiles}")
+                f"below baseline {baseline_cold_cap} for fps={source_fps:g}")
     if str(data["video"]["fit"]).lower() not in {"pad", "crop"}:
         raise ValueError(f"{profile_path}: video.fit must be 'pad' or 'crop'")
     resize_filter = str(data["video"].get("resize_filter", "lanczos")).lower()
@@ -292,16 +287,13 @@ def apply_profile_env(
         value = str(int(video["width"]) * int(video["height"]) // 64)
         env["CBRSIM_ACTIVE_TILES"] = value
         applied["CBRSIM_ACTIVE_TILES"] = value
-    # Omission means the exact measured baseline, never an inherited value
-    # from another source. An explicit profile value was already applied by
-    # ENV_MAP and validated not to lower that baseline.
+    # Omission means the fps-derived baseline, never an inherited value from
+    # another source. An explicit profile value was already applied by ENV_MAP
+    # and validated not to lower that baseline.
     if "CBRSIM_COLD_CAP" not in applied:
-        video = profile.data["video"]
         source = profile.data["source"]
-        active_tiles = int(applied["CBRSIM_ACTIVE_TILES"])
         value = str(av_config.baseline_cold_cap_for_fps(
-            float(Fraction(str(source["fps"]))),
-            str(video["mode"]), active_tiles))
+            float(Fraction(str(source["fps"])))))
         env["CBRSIM_COLD_CAP"] = value
         applied["CBRSIM_COLD_CAP"] = value
     for name, value in PROFILE_ENV_DEFAULTS.items():

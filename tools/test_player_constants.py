@@ -9,11 +9,12 @@ import pattern_supply
 
 
 def make_header(*, mode=0, fps=30, features=None, audio_bytes=None, audio_fd=0x345,
-                supply_counts=(0, 0, 0), pool=1400, base=1):
+                supply_counts=(0, 0, 0), pool=1400, base=1,
+                tcols=None, trows=28):
     if features is None:
         features = ttrc_routing.FEATURE_COLD_RUNS | ttrc_routing.FEATURE_FIXED_N2
-    tcols = 32 if mode == 0 else 40
-    trows = 28
+    if tcols is None:
+        tcols = 32 if mode == 0 else 40
     cells = tcols * trows
     frames = 2714
     if audio_bytes is None:
@@ -77,6 +78,14 @@ class PlayerConstantsTest(unittest.TestCase):
         self.assertEqual(values.prg_buf_cap_patterns, 384 * 1024 // 32)
         self.assertEqual(values.prg_delivery_cap_patterns, 424 * 1024 // 32)
         self.assertEqual(values.jitter_headroom_kb, 40)
+
+    def test_h40_centers_a_36x25_stream_without_expanding_its_grid(self):
+        values = player_constants.parse_header_sector(
+            make_header(mode=1, tcols=36, trows=25))
+        self.assertEqual((values.tcols, values.trows, values.cells), (36, 25, 900))
+        self.assertEqual((values.screen_cols, values.screen_rows), (40, 28))
+        self.assertEqual((values.col0, values.row0), (2, 1))
+        self.assertEqual(values.bmbytes, 113)
 
     def test_prg_jitter_constants_follow_content_fps(self):
         expected = {

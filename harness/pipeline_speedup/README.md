@@ -109,14 +109,17 @@ test.
 
 ### Startup arming removes the last `S=1`
 
-The remaining slip already existed on displayed frame 0 and never increased, then
-repeated once on the next loop. Frame 0 was being expanded while the continuous
-FRAMES read had already started. The player now:
+The remaining slip already existed on displayed frame 0 and never increased,
+then repeated once on the next loop. Frame 0 was being expanded while the
+continuous FRAMES read had already started. The first armed-startup version
+fixed the Sub-side expansion overlap. The current handshake additionally keeps
+BODY stopped until the Main CPU has completed the frame-0 VRAM/name-table build:
 
 1. drains HEADER through PREBUFFER;
-2. stops the CDC and expands frame 0 completely;
-3. starts a new continuous read at the exact FRAMES sector;
-4. pre-drains frame 1 before enabling PCM and releasing frame 0.
+2. stops the CDC, expands frame 0, and hands its bank to Main;
+3. lets Main build and display frame 0;
+4. starts a new continuous read at the exact BODY sector;
+5. pre-drains frame 1 before the first timed handoff and PCM start.
 
 For the measured Sonic file the split is sector 211, leaving 6777 timed sectors.
 `S` is not cleared at that split: prefix slips remain visible, and the first FRAMES

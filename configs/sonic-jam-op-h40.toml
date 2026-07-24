@@ -8,15 +8,15 @@ sar = "32:35"
 
 [video]
 mode = "H40"
-width = 320
-height = 224
+width = 288
+height = 200
 fit = "pad"
 master_denoise = false
-master_filter = "setsar=1,pad=320:224:16:12:color=black"
-raw_filter = "setsar=1,pad=320:224:16:12:color=black"
+master_filter = "setsar=1"
+raw_filter = "setsar=1"
 
 [output]
-directory = "videos/SonicJamOp_H40_320x224_adpcm22/tmp"
+directory = "videos/SonicJamOp_H40_288x200_adpcm22/tmp"
 reuse = false
 emit_decisions = true
 

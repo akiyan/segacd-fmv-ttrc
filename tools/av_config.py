@@ -20,9 +20,9 @@ Delivery jitter scales with the time represented by one content frame: 20 KiB
 at 30 fps, 40 KiB at 15 fps, and 25 KiB at 24 fps. The
 player's ``RING_SIZE`` is asserted equal to
 ``RING_SIZE_KB`` at build time (``tools/check_player_ring.py``, run by the
-Makefile). This module also owns the measured cold-cap qualification table used
-by the encoder, packer, profile validator, and analysis renderer. The packer
-refuses to re-cap an already encoded stream.
+Makefile). This module also owns the fps-derived cold-cap baseline used by the
+encoder, packer, profile validator, and analysis renderer. The packer refuses
+to re-cap an already encoded stream.
 """
 
 import math
@@ -299,114 +299,57 @@ def audio_frame_layout(fps):
 # per-source `CBRSIM_COLD_CAP_REALIZED` env override. The pack still asserts
 # realized <= cap as a guard. frame0 (the full-load header) is exempt.
 
-# --- Per-frame cold cap as a qualified physical draw/delivery limit ---
-# A qualification applies only to the exact display mode, nominal fps, and
-# active-tile count that was measured.  Never extrapolate a measurement to
-# another active area or cadence.  A missing tuple is a measurement task, not
-# a reason to silently fall back to a scaled/default cap.
-_COLD_CAP_MODES = {"H32", "H40", "MODE4"}
+# --- Per-frame cold cap as an fps-derived physical draw/delivery limit ---
+# The common baseline is 360 patterns at 15 fps and scales with the duration of
+# one content frame: round(360 * 15 / fps) == round(5400 / fps). Display mode
+# and active-tile count do not participate in this limit.
+COLD_CAP_PATTERNS_PER_SECOND = 5400
 
 
 @dataclass(frozen=True)
 class ColdCapQualification:
-    mode: str
     fps: float
-    active_tiles: int
     cap: int
     baseline_cap: int | None = None
     source: str = "baseline"
 
 
-class ColdCapMeasurementRequired(ValueError):
-    """No measured cold-cap tuple exactly matches the playback geometry."""
-
-
-# Full-length pipeline qualifications.  Keep this ordered data as the single
-# source of truth; sim, pack, profile validation, and analysis all call the
-# selector below.
-COLD_CAP_QUALIFICATIONS = (
-    ColdCapQualification("H32", 24.0, 896, 219),
-    ColdCapQualification("H32", 30.0, 896, 175),
-    ColdCapQualification("H40", 15.0, 720, 500),
-    ColdCapQualification("H40", 15.0, 760, 360),
-    ColdCapQualification("H40", 15.0, 1040, 400),
-    ColdCapQualification("H40", 15.0, 1120, 360),
-    ColdCapQualification("H40", 24.0, 1120, 200),
-    ColdCapQualification("H40", 30.0, 1120, 180),
-)
-
-
-def _normalize_cold_cap_request(fps, mode, active_tiles):
-    """Validate and normalize one cold-cap selector request."""
-    mode_key = str(mode).upper()
-    if mode_key not in _COLD_CAP_MODES:
-        raise ValueError(f"unsupported display mode for cold cap: {mode!r}")
+def _normalize_cold_cap_fps(fps):
+    """Validate and normalize one cold-cap frame rate."""
     fps_value = float(fps)
     if fps_value <= 0:
         raise ValueError(f"fps must be positive, got {fps!r}")
-    active_tiles_value = int(active_tiles)
-    if active_tiles_value <= 0:
-        raise ValueError(f"active tile count must be positive: {active_tiles!r}")
-    return mode_key, fps_value, active_tiles_value
+    return fps_value
 
 
-def baseline_cold_cap_qualification(fps, mode, active_tiles):
-    """Return the exact measured baseline tuple without any override."""
-    mode_key, fps_value, active_tiles_value = _normalize_cold_cap_request(
-        fps, mode, active_tiles)
-    same_rate = [
-        item for item in COLD_CAP_QUALIFICATIONS
-        if item.mode == mode_key and math.isclose(
-            item.fps, fps_value, rel_tol=0.0, abs_tol=1e-9)
-    ]
-    exact = [
-        item for item in same_rate
-        if item.active_tiles == active_tiles_value
-    ]
-    if exact:
-        item = exact[0]
-        return ColdCapQualification(
-            item.mode, item.fps, item.active_tiles, item.cap,
-            baseline_cap=item.cap, source="baseline")
-
-    coverage = (
-        ", ".join(
-            f"{item.active_tiles} tiles -> cap {item.cap}"
-            for item in sorted(same_rate, key=lambda item: item.active_tiles)
-        )
-        or "none"
-    )
-    raise ColdCapMeasurementRequired(
-        "cold-cap measurement required for "
-        f"mode={mode_key} fps={fps_value:g} active_tiles={active_tiles_value}; "
-        f"measured tuples at this mode/fps: {coverage}")
+def baseline_cold_cap_qualification(fps):
+    """Return the fps-derived baseline without a profile override."""
+    fps_value = _normalize_cold_cap_fps(fps)
+    cap = max(1, round(COLD_CAP_PATTERNS_PER_SECOND / fps_value))
+    return ColdCapQualification(
+        fps_value, cap, baseline_cap=cap, source="baseline")
 
 
-def baseline_cold_cap_for_fps(fps, mode, active_tiles):
-    """Return only the exact measured baseline cap."""
-    return baseline_cold_cap_qualification(fps, mode, active_tiles).cap
+def baseline_cold_cap_for_fps(fps):
+    """Return only the fps-derived baseline cap."""
+    return baseline_cold_cap_qualification(fps).cap
 
 
-def cold_cap_qualification(
-        fps, mode, active_tiles, *, requested_cap=None):
-    """Return the effective cap for the exact measured baseline tuple.
-
-    Results are not reused across active-tile counts, display modes, or nominal
-    frame rates even when another measurement looks more conservative.
+def cold_cap_qualification(fps, *, requested_cap=None):
+    """Return the effective cap for one content frame rate.
 
     ``requested_cap`` is the optional per-profile cap. It may raise the
     baseline after a source-specific qualification, but may never lower it.
     When omitted, ``CBRSIM_COLD_CAP`` is the internal TOML handoff. If neither
-    is present, the measured baseline is returned.
+    is present, the fps-derived baseline is returned.
 
-    CBRSIM_COLD_CAP_DIAG replaces the measured cap with an UNQUALIFIED value
+    CBRSIM_COLD_CAP_DIAG replaces the baseline with an UNQUALIFIED value
     for cap-raise measurement streams only (harness/cold_cap_model).  It is
     deliberately loud, never a production fallback, and the resulting stream
-    must not be published or used to update the qualification table without a
-    full-length hardware qualification of its own.
+    must not be published without a full-length hardware qualification of its
+    own.
     """
-    mode_key, fps_value, active_tiles_value = _normalize_cold_cap_request(
-        fps, mode, active_tiles)
+    fps_value = _normalize_cold_cap_fps(fps)
 
     diag = os.environ.get("CBRSIM_COLD_CAP_DIAG", "").strip()
     if diag:
@@ -415,15 +358,13 @@ def cold_cap_qualification(
             raise ValueError(f"CBRSIM_COLD_CAP_DIAG must be positive: {diag!r}")
         print(
             f"[cold-cap] DIAGNOSTIC OVERRIDE: cap={diag_cap} for "
-            f"mode={mode_key} fps={fps_value:g} active_tiles={active_tiles_value}"
-            " (UNQUALIFIED - measurement stream only)",
+            f"fps={fps_value:g} (UNQUALIFIED - measurement stream only)",
             file=sys.stderr)
         return ColdCapQualification(
-            mode_key, fps_value, active_tiles_value, diag_cap,
+            fps_value, diag_cap,
             baseline_cap=None, source="diagnostic")
 
-    baseline = baseline_cold_cap_qualification(
-        fps_value, mode_key, active_tiles_value)
+    baseline = baseline_cold_cap_qualification(fps_value)
     if requested_cap is None:
         raw_cap = os.environ.get("CBRSIM_COLD_CAP", "").strip()
     else:
@@ -438,23 +379,22 @@ def cold_cap_qualification(
     if effective_cap < baseline.cap:
         raise ValueError(
             f"profile cold cap {effective_cap} is below baseline "
-            f"{baseline.cap} for mode={mode_key} fps={fps_value:g} "
-            f"active_tiles={active_tiles_value}")
+            f"{baseline.cap} for fps={fps_value:g}")
     return ColdCapQualification(
-        mode_key, fps_value, active_tiles_value, effective_cap,
+        fps_value, effective_cap,
         baseline_cap=baseline.cap, source="profile")
 
 
-def cold_cap_for_fps(fps, mode, active_tiles):
-    """Per-frame cold cap from an exact measured mode/fps/active-tile tuple.
+def cold_cap_for_fps(fps):
+    """Per-frame cold cap derived only from content fps.
 
     Frame 0 is exempt because the header loads it before timed playback.
     """
-    return cold_cap_qualification(fps, mode, active_tiles).cap
+    return cold_cap_qualification(fps).cap
 
 
-def cold_realized_ceiling_for_fps(fps, mode, active_tiles):
+def cold_realized_ceiling_for_fps(fps):
     """Pack-time realized-cold ceiling. Now == the cap: the shared two-pass allocator
     makes the pack's realized cold equal the sim's cap exactly, so the ceiling is the
     cap itself (the assert `realized <= ceiling` holds by construction)."""
-    return cold_cap_for_fps(fps, mode, active_tiles)
+    return cold_cap_for_fps(fps)

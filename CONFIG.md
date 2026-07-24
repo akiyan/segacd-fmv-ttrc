@@ -89,99 +89,45 @@ four rows. Frames are then quantised against this final palette grouping.
 "Cold" = 32-byte tile patterns newly written to VRAM this frame, whether their
 physical source is Prg, Wr0, Wr1, or Dic (as opposed to reusing a resident
 tile). More cold gives the encoder more exact updates, but the player still has
-a measured per-frame processing ceiling.
+a per-frame processing ceiling.
 
-The baseline cap is selected from `av_config.COLD_CAP_QUALIFICATIONS` by display
-mode, nominal fps, and active picture-tile count, and shared by profile
-validation, sim, pack, and analysis. All three conditions must exactly match a
-measured tuple. A result measured for a larger or smaller active picture is not
-reused, even at the same mode and fps. If no exact measurement exists, profile
-loading stops with `cold-cap measurement required`; there is no scaled/default
-fallback.
+The shared baseline depends only on content fps:
 
-`[encoder].cold_cap` may optionally raise that exact baseline for a
-source-specific full-length qualification. Omitting it selects the baseline and
-overwrites any inherited internal value. A value below the baseline is an error
-and stops profile loading before sim. This is one automatic algorithm with a
-profile-bound physical qualification, not a runtime quality knob.
+```text
+baseline cold patterns/frame = round(5400 / fps)
+```
 
-| Mode | fps | Measured active tiles | Qualified cap |
-|---|---:|---:|---:|
-| H32 | 24 | 896 | 219 |
-| H32 | 30 | 896 | 175 |
-| H40 | 15 | 720 | 500 |
-| H40 | 15 | 760 | 360 |
-| H40 | 15 | 1,040 | 400 |
-| H40 | 15 | 1,120 | 360 |
-| H40 | 24 | 1,120 | 200 |
-| H40 | 30 | 1,120 | 180 |
+Display mode, encoded tile-grid size, and `active_tiles` do not participate in
+this calculation. The same fps therefore gets the same baseline in H32, H40,
+and any smaller tile-aligned picture inside those display modes.
 
-For example, H40/15 at 720, 760, 1,040, or 1,120 active tiles uses its exact
-baseline of 500, 360, 400, or 360. H40/15 at 900 tiles has no exact
-measurement and is rejected. The sim and pack use ONE tile allocator
-(`tools/tile_alloc.py`), so the pack's realized cold exactly matches the sim's
-selected cold and never exceeds the cap (the old +overhead from
-LRU-vs-contig re-loads is gone).
+| fps | Baseline cap |
+|---:|---:|
+| 15 | 360 |
+| 24 | 225 |
+| 30 | 180 |
+
+`[encoder].cold_cap` may optionally raise the fps-derived baseline for a
+source-specific full-length qualification. Omitting it selects the calculated
+baseline and overwrites any inherited internal value. A value below the
+baseline is an error and stops profile loading before sim.
+
+The sim and pack use one tile allocator (`tools/tile_alloc.py`), so the pack's
+realized cold exactly matches the sim's selected cold and never exceeds the cap
+(the old extra reload overhead from separate LRU and contiguous allocators is
+gone).
 
 | Name | Value | Where | Meaning |
 |---|---|---|---|
-| baseline `baseline_cold_cap_for_fps` | selected from the measured table above | cfg (auto) | Exact mode/fps/active-tile baseline. A missing tuple is an error. |
-| effective cap `cold_cap_for_fps` | optional `[encoder].cold_cap`, otherwise baseline | profile / cfg | **Per-frame cold cap.** A profile may raise but never lower its exact baseline. |
-| realized cold | at most the mode/fps/active-tile cap | pack (measured) | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
+| baseline `baseline_cold_cap_for_fps` | `round(5400 / fps)` | cfg (auto) | Shared fps-only default. |
+| effective cap `cold_cap_for_fps` | optional `[encoder].cold_cap`, otherwise baseline | profile / cfg | **Per-frame cold cap.** A profile may raise but never lower its fps baseline. |
+| realized cold | at most the effective cap | pack | Uses the shared two-pass allocator. The pack asserts `realized <= cap` as a guard. `COLD_CAP_REALIZED` / `CBRSIM_COLD_CAP_REALIZED` are removed. |
 
-The H40/15 fps/720-active-tile value of 500 is full-length-qualified with the
-2,293-frame Machi OP stream. Its confirmed active rows are fitted to a 320x139
-picture touching 40x18 tile cells. The pack reached cold 500, decoded every
-frame exactly, and kept the physical PrgBuf evaluation minimum at 6 KiB with no
-underrun. The cadence-aware DEBUG gate passed with `S/D/R=0`, `C/M=4`, and
-`J=8 KiB`; run count was at most 134 and Main pattern-transfer time was at most
-1,669 ticks (51.29 ms).
-
-The cropped 760-active-tile Machi OP profile has a baseline of 360 and
-explicitly requests 380 for full-run qualification. That profile override is
-kept separate from PrgBuf delivery feasibility: an exact physical-schedule
-failure stops the sim and must not lower cold cap or create per-frame local
-caps. Cold-cap adjustment belongs to a completed recording whose cadence-aware
-`C/W/A/S/D/R` evidence shows player-side load trouble.
-
-Higher 720-tile probes exposed non-monotonic phase sensitivity rather than a useful
-portable increase. A cap720 stream realized cold 689 and passed, and a cap689
-stream also passed while reaching 65.37 ms. Cap680 then failed the same gate at
-`M=5`, with 2,193 ticks (67.37 ms), despite its lower cap. The larger caps also
-produced more approximate reuse and fewer total exact cold loads than cap500 for this encode.
-They remain diagnostic results. This cap applies only to exactly 720 active
-tiles; the separate 1,040-tile measurement below applies only to exactly 1,040.
-
-The H40/30 fps/1,120-active-tile value of 180 is full-length-qualified with the
-2,714-frame Sonic Jam OP stream. The movie-wide physical-slot permutation keeps
-the repaired heavy plateau compact, the pack reconstructs every frame exactly,
-and the complete DEBUG gate keeps `S/D/R/C=0` and `M=1`. The final recording's
-`J=22 KiB` remains inside the 23 KiB physical-ring gate but proves that the
-20 KiB scheduling headroom was consumed, so the older cap185 result is not
-treated as a phase-robust general limit. Whole-movie run total is not a gate:
-light frames may gain runs when that lowers a deadline cliff. This value is
-specific to H40, 30 fps, and the full 1,120-tile raster.
-
-The previously qualified Bad Apple H40 full-raster stream combined cap 175
-with a 1,440-tile resident VRAM pool. Its 6,576-frame TTRC v11 stream selected 557
-completed shadow-update lists, saved 3,565,954 modelled Main-CPU cycles, and
-reduced control by 28,126 bytes. Pack verification reconstructed every frame
-exactly with no ring underrun; the minimum PrgBuf occupancy was 59 patterns.
-Two independent full DEBUG recordings kept `S=0`, `D=0`, `R=0`, and `C=0`,
-with all 6,575 timed intervals exactly two VBlanks. Main's Sub-wait counter was
-at most 99 lines and the pattern-transfer timer was at most 539 ticks. The two
-recordings also matched exactly in decoded video frames, PCM samples, packet
-timelines, and stream metadata.
-
-The historical H40/15 fps/1,040-active-tile value of 400 is full-length-qualified with the
-3,998-frame Machi ED stream. Its 320x204 picture touches 40x26 tile cells after
-being placed at y=10 in the 320x224 raster. The pack had `under=0`, a one-pattern
-minimum ready payload, and exact reconstruction. Across the 3,997 timed DEBUG
-HUD groups, `S`, `D`, and `R` stayed zero, Main-CPU VBlank waits were at most
-two, cold-run count was at most 221, and the longest pattern-update interval was
-1,648 ticks (50.63 ms). The lossless recording passed packet, frame, audio, and
-extracted-frame checks. Current full-raster H40/15 profiles use the separate
-1,120-tile baseline of 360.
+Source-specific higher caps remain profile qualifications rather than baseline
+entries. The cropped Machi OP profile raises 15 fps from 360 to 480, Machi ED
+raises it to 380, and the Sonic Jam H40 profile raises 30 fps from 180 to 190.
+An exact physical-schedule failure stops the sim; it must not synthesize a
+smaller local cap or repeat allocation.
 
 ## C. Audio sync throttles
 
@@ -215,10 +161,12 @@ profile-specialized 24/30 fps decoder omits that counter and call entirely.
 
 ## D. CD pump throttles (keeping the Sub from dropping sectors)
 
-Startup is deliberately two-phase: read `HEADER.DAT` through PREBUFFER, fully
-expand frame 0 after that request ends, then start one continuous `BODY.DAT`
-read at frame 1. The steady read delivers 75 sectors/s, so the Sub must drain it
-continuously.
+Startup is deliberately two-phase: read `HEADER.DAT` through PREBUFFER and let
+the Sub CPU expand frame 0 after that request ends. It hands the frame-0 bank to
+the Main CPU while BODY is still stopped. Only after Main has completed the
+VRAM/name-table build and displayed frame 0 does it acknowledge one continuous
+`BODY.DAT` read at frame 1. The steady read delivers 75 sectors/s, so the Sub
+must drain it continuously.
 `pump_poll` grabs one ready sector if that sector's actual receiver has room.
 The routing byte is checked before back-pressure: a control sector consults
 only APPLY, a payload sector consults only PrgBuf, and padding consults neither
@@ -448,7 +396,7 @@ build skips this profile-derived counter.
 | `[source.preprocess.endpoint_snap]` | `black_max`, `white_min` | Optional RGB888 source preprocessing before denoise, geometry conversion, and encoding. Each RGB channel at or below `black_max` becomes 0; each channel at or above `white_min` becomes 255; middle values remain unchanged. Omitting the table disables it. |
 | `[video]` | `mode`, `width`, `height`, `fit`, optional `active_tiles`, `resize_filter`, `master_denoise`, `master_filter`, `raw_filter` | Sega output raster and HAR-aware conversion. `active_tiles` counts tiles that are ever non-black after conversion, including partially covered boundary tiles. Omit it for the conservative full-grid count; when it reduces that count, sim scans every master frame and rejects a mismatch. `fit="pad"` preserves every source pixel and adds bars when the displayed aspects differ. `fit="crop"` is an explicit object-fit-cover conversion: it fills the complete output raster while preserving displayed aspect, so it may discard active pixels at the outer source edges. `resize_filter` defaults to `lanczos`; `master_denoise` defaults to `true` and controls the master-only upscale, denoise, and blur pass. H32 uses PAR 8:7 and H40 uses 32:35. |
 | `[output]` | `directory`, `reuse`, `emit_decisions` | Sim work directory, decoded-input reuse, and decision-log emission. A directory below `videos/` is exposed as a symlink to managed tmpfs. Completed results are reused automatically across invocations only when source bytes, effective encoder/TOML settings, and the encoder `e` version match; output-affecting encoder changes must therefore bump `tools/av_version.txt`. Interrupted or mismatched entries are reset. Profile names, TOML formatting, output paths, and individual code-file hashes do not split identical encodes. `reuse` retains its narrower decoded-input meaning inside an encode. The seed/accounting passes within one invocation share a separate identity-checked cache and delete it on exit. `CBRSIM_FORCE_REENCODE=1` explicitly bypasses completed-result reuse. Normal hardware work sets `emit_decisions=true`. |
-| `[encoder]` | optional `raw_prefetch`, optional `cold_cap` | `cold_cap` may raise, but never lower, the exact mode/fps/active-tile baseline; omission uses the baseline. `raw_prefetch` is the timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the effective cap. GPU, the 1,535-tile VRAM pool, Bayer dithering, segmented palettes, Near, boot VRAM prefetch, and Prg/Wr0/Wr1/Dic supply are fixed on. |
+| `[encoder]` | optional `raw_prefetch`, optional `cold_cap` | `cold_cap` may raise, but never lower, the fps-derived `round(5400 / fps)` baseline; omission uses the baseline. Mode and tile count do not affect it. `raw_prefetch` is the timed-frame option and defaults to false. When enabled, the encoder may spend spare BODY/cold capacity to place exact patterns needed by the next frame when its protected cold demand exceeds the effective cap. GPU, the 1,535-tile VRAM pool, Bayer dithering, segmented palettes, Near, boot VRAM prefetch, and Prg/Wr0/Wr1/Dic supply are fixed on. |
 | `[palette]` | `algorithm` | Palette-selection algorithm. Sampling, validation, seam, and segment-gain values are fixed shared constants. |
 
 Schema v3 removes fixed encoder/palette keys and the entire `[pack]` table.
@@ -461,11 +409,11 @@ immediately. Profile values replace
 inherited per-source environment values unconditionally. Shared hardware
 limits such as PrgBuf size, quality-budget capacity, preload capacities, and
 the baseline cold-cap table stay in `tools/av_config.py`.
-`video.active_tiles` supplies source geometry to that shared selector.
-`encoder.cold_cap` records a higher source-specific qualification while leaving
-the shared baseline unchanged. Profile loading fails before encoding when no
-measured tuple exactly matches the requested mode, fps, and active-tile count,
-or when an explicit cap is below that tuple's baseline.
+`video.active_tiles` describes source geometry for encoder accounting and does
+not affect the cold baseline. `encoder.cold_cap` records a higher
+source-specific qualification while leaving the shared fps baseline unchanged.
+Profile loading fails before encoding when an explicit cap is below that
+baseline.
 
 ## Diagnostic HUD readouts (DEBUG=1 builds)
 

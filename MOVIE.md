@@ -133,13 +133,14 @@ BODY.DAT
 ```
 
 The player drains all of `HEADER.DAT`, writing STARTUP_AUDIO to wave RAM while
-PCM is stopped. After the header request has ended, it expands and prepares
-frame 0, starts `BODY.DAT` at its own first sector, and fully pre-drains frame 1.
-Only then does it release frame 0 to the Main CPU for display. PCM stays stopped
-until the Main CPU confirms that display; timed playback then begins while the
-`BODY.DAT` read remains continuous until the movie ends. Frame 0 therefore has
-no time budget and never competes with frame 1 delivery, while PrgBuf starts
-frame 1 pre-filled to its usable scheduling ceiling.
+PCM is stopped. After the header request has ended, the Sub CPU expands frame 0
+and hands its completed Word-RAM bank to the Main CPU while `BODY.DAT` remains
+stopped. The Main CPU finishes the frame-0 VRAM/name-table build, displays it,
+and only then acknowledges the BODY start. The Sub CPU starts `BODY.DAT` at its
+own first sector and fully pre-drains frame 1 before timed handoffs begin. PCM
+stays stopped until the first timed handoff. Frame 0 therefore has no time
+budget and never competes with frame 1 delivery, while PrgBuf starts frame 1
+pre-filled to its usable scheduling ceiling.
 
 Frame 0 never uses approximation classes. Its complete name table points only
 at exact target patterns: the first physical load of each distinct pattern is

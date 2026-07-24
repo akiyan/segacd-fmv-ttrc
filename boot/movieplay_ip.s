@@ -33,7 +33,7 @@
 
 .equ CMD_STREAM, 0x50
 .equ CMD_SWAP,   0x51
-.equ STAT_BOOT_VRAM, 0x8002		/* frame-0 bank ready; BODY not started */
+.equ STAT_BOOT_VRAM, 0x8002		/* frame-0 bank ready; BODY waits for built/displayed ack */
 .equ STAT_READY, 0x8003
 .equ STAT_END,   0x8004			/* SPからの映画終端通知(15秒待って再ループ) */
 
@@ -132,8 +132,14 @@
 /* Fixed-N2 specialized H40 builds copy the back name table with one linear
    Main-RAM DMA inside the flip VBlank (64-entry-pitch staging, ~18 blank
    lines) instead of the FIFO-throttled CPU blit (~8 ms of active display).
-   This frees the pre-transfer phase so Pass2 can catch field 1's VBlank. */
+   The complete 40x28 visible aperture is staged so a smaller encoded grid
+   stays centered with zero entries around it.  This frees the pre-transfer
+   phase so Pass2 can catch field 1's VBlank. */
 .equ NT_DMA_FLIP, 1
+.equ NT_STAGE_PITCH, 64
+.equ NT_STAGE_ROWS, 28
+.equ NT_STAGE_WORDS, NT_STAGE_PITCH*NT_STAGE_ROWS
+.equ NT_STAGE_ROW_SKIP, (NT_STAGE_PITCH-PC_TCOLS)*2
 .endif
 .endif
 .endif
@@ -248,13 +254,25 @@ ip_entry:
 	clr.w	dbg_seg
 	clr.w	display_blank			/* .bss is not cleared by the BIOS */
 
+.ifdef NT_DMA_FLIP
+	/* Main RAM .bss is not initialized by the BIOS.  Clear every staged name
+	   entry once so columns/rows outside a centered movie remain transparent. */
+	lea	nt_stage, a0
+	moveq	#0, d0
+	move.w	#(NT_STAGE_WORDS/2)-1, d1
+1:
+	move.l	d0, (a0)+
+	dbra	d1, 1b
+.endif
+
 	clr.w	back_idx			/* 裏=NT0(0) から構築, 表示=NT1 */
 
 	move.w	#CMD_STREAM, d0
 .ifdef PLAYER_SPECIALIZED
 	bsr	cmd_wait_startup
-	/* Hide post-preload initialization, then reveal frame 0 only after its
-	   complete Plane A table has been selected in do_flip. */
+	/* Sub is now paused at STAT_BOOT_VRAM. Hide post-preload initialization,
+	   then reveal frame 0 only after its complete Plane A table has been
+	   selected in do_flip. BODY remains stopped through that build. */
 	move.w	#0x8134, (VDP_CTRL).l		/* display off; keep VInt, DMA and mode 5 */
 	move.w	#1, display_blank
 .else
@@ -326,6 +344,28 @@ ip_entry:
 	sub.w	md_trows, d2			/* row0 = (screen_rows-trows)/2 */
 	lsr.w	#1, d2
 	move.w	d2, md_row0
+	/* Generic DEBUG builds need the same fps-scaled normal PrgBuf ceiling as
+	   generated players: (424-ceil(600/fps)) KiB, then KiB -> patterns. */
+	moveq	#0, d2
+	move.w	56(a0), d2			/* integer content fps */
+	bne.s	1f
+	moveq	#1, d2				/* corrupt-header divide-by-zero guard */
+1:
+	move.l	#600, d3
+	divu.w	d2, d3
+	swap	d3				/* remainder */
+	tst.w	d3
+	beq.s	2f
+	swap	d3
+	addq.w	#1, d3				/* ceil(600/fps) */
+	bra.s	3f
+2:
+	swap	d3				/* exact quotient */
+3:
+	move.w	#424, d2
+	sub.w	d3, d2
+	lsl.w	#5, d2				/* 1 KiB = 32 patterns */
+	move.w	d2, md_prg_buf_cap_patterns
 .endif
 .ifdef MAIN_CODEGEN
 	/* Generate once, before playback.  A failed range/size proof leaves
@@ -431,6 +471,10 @@ play_loop:
 1:
 	move.w	#1, started
 	bsr	build_frame
+	tst.w	frame_no			/* BODY starts only after frame 0 is fully built/displayed */
+	bne.s	1f
+	bsr	arm_body_after_frame0
+1:
 
 	addq.w	#1, frame_no
 	bra	play_loop
@@ -442,7 +486,7 @@ movie_end_md:
 	bsr	wait_vblank
 	dbra	d2, 1b
 	move.w	#CMD_STREAM, d0			/* SPを再ストリーム開始させる */
-	bsr	cmd_wait_ready			/* SPのframe0準備完了(STAT_READY)まで待つ */
+	bsr	cmd_wait_ready			/* SPのframe0バンク準備完了(BODY停止中)まで待つ */
 	clr.w	frame_no
 	clr.w	started
 	clr.w	dbg_seg
@@ -873,17 +917,20 @@ bf_blit:
 	lsl.l	#5, d5				/* back_idx*0x2000 */
 	add.l	#NT0, d5			/* back_base = 0xC000 or 0xE000 (flipまで保持) */
 .ifdef NT_DMA_FLIP
-	/* Re-stage the 40-words/row shadow into the 64-entry plane pitch so the
-	   flip-blank copy is ONE linear DMA.  Plain RAM-to-RAM copy in active
-	   time (~1.5 ms) replacing the ~8 ms FIFO-throttled data-port blit. */
+	/* Re-stage only the encoded grid at its centered location inside the
+	   zeroed 64-entry-pitch visible aperture.  The flip-blank copy remains
+	   ONE linear DMA. */
 	lea	shadow, a0
-	lea	nt_stage, a1
+	lea	nt_stage+((PC_ROW0*NT_STAGE_PITCH+PC_COL0)*2), a1
 	move.w	#PC_TROWS-1, d0
 9:
-	.rept 20				/* 40 words = one visible H40 row */
+	.rept PC_TCOLS/2
 	move.l	(a0)+, (a1)+
 	.endr
-	lea	48(a1), a1			/* skip plane columns 40-63 */
+.if (PC_TCOLS & 1) != 0
+	move.w	(a0)+, (a1)+
+.endif
+	lea	NT_STAGE_ROW_SKIP(a1), a1
 	dbra	d0, 9b
 	bra	bf_dma				/* NT copied by DMA inside the flip blank */
 .endif
@@ -1450,13 +1497,12 @@ wait_dma_done:
 	rts
 
 .ifdef NT_DMA_FLIP
-/* Copy the complete shadow name table into the inactive back table with one
-   Main-RAM DMA.  Call inside the flip VBlank; ~11 blank lines for PC_CELLS
-   words.  trashes d0, d2. */
+/* Copy the complete 40x28 visible name-table aperture into the inactive back
+   table with one Main-RAM DMA.  Call inside the flip VBlank.  trashes d0,d2. */
 nt_dma_flip:
 	move.w	#0x8F02, (VDP_CTRL).l
-	move.w	#0x9300|((64*PC_TROWS)&0xFF), (VDP_CTRL).l
-	move.w	#0x9400|(((64*PC_TROWS)>>8)&0xFF), (VDP_CTRL).l
+	move.w	#0x9300|(NT_STAGE_WORDS&0xFF), (VDP_CTRL).l
+	move.w	#0x9400|((NT_STAGE_WORDS>>8)&0xFF), (VDP_CTRL).l
 	move.l	#nt_stage, d2
 	lsr.l	#1, d2
 	move.w	#0x9500, d0
@@ -1576,6 +1622,7 @@ startup_write_hex:
 /* Initial-stream wait with live PrgBuf preload progress. COMSTAT1 is otherwise
    still free for boot errors and later desync diagnostics. */
 cmd_wait_startup:
+	clr.w	body_start_pending
 	move.w	d0, (GA_COMCMD0).l
 	move.w	#0xFFFF, d5			/* last displayed remaining count */
 1:
@@ -1603,10 +1650,8 @@ cmd_wait_startup:
 	bra	1b
 8:
 	bsr	load_boot_vram_sidecar
-	move.w	#1, (GA_COMCMD1).l
-9:
-	cmp.w	#STAT_READY, (GA_COMSTAT0).l
-	bne.s	9b
+	move.w	#1, body_start_pending
+	rts					/* keep CMD_STREAM asserted; Sub stays before BODY */
 3:
 	moveq	#0, d0
 	bsr	startup_update_prg
@@ -1619,6 +1664,7 @@ cmd_wait_startup:
 .endif
 
 cmd_wait_ready:
+	clr.w	body_start_pending
 	move.w	d0, (GA_COMCMD0).l
 1:
 	move.w	(GA_COMSTAT0).l, d0
@@ -1634,11 +1680,29 @@ cmd_wait_ready:
 	rts
 3:
 	bsr	load_boot_vram_sidecar
+	move.w	#1, body_start_pending
+	rts					/* build/display frame 0 before acknowledging BODY */
+
+/* Complete the two-stage startup handshake after build_frame has selected
+   frame 0 for display.  COMCMD1 is the explicit BODY-start acknowledgement;
+   until this point Sub remains parked at STAT_BOOT_VRAM with no BODY read
+   active.  Old single-stage READY responses leave pending clear and need no
+   second handshake. */
+arm_body_after_frame0:
+	tst.w	body_start_pending
+	beq.s	3f
 	move.w	#1, (GA_COMCMD1).l
-4:
+1:
 	cmp.w	#STAT_READY, (GA_COMSTAT0).l
-	bne.s	4b
-	bra.s	1b
+	bne.s	1b
+	move.w	#0, (GA_COMCMD1).l
+	move.w	#0, (GA_COMCMD0).l
+2:
+	tst.w	(GA_COMSTAT0).l
+	bne.s	2b
+	clr.w	body_start_pending
+3:
+	rts
 /* v13 boot-stage directory at +0xAFC0:
      "BVRM", count_A.w, count_B.w, count_C.w
    Records are [zero-based physical_slot.w, packed_pattern[32]] in three holes
@@ -1812,9 +1876,15 @@ prepare_dbg:
 	   Convert only the excess above the fps-specific normal PrgBuf cap, rounding
 	   upward so any use of the physical jitter reserve displays J>=01. */
 	move.w	(GA_COMSTAT2).l, d4
+.ifdef PLAYER_SPECIALIZED
 	cmp.w	#PC_PRG_BUF_CAP_PATTERNS, d4
 	bls.s	1f
 	sub.w	#PC_PRG_BUF_CAP_PATTERNS, d4
+.else
+	cmp.w	md_prg_buf_cap_patterns, d4
+	bls.s	1f
+	sub.w	md_prg_buf_cap_patterns, d4
+.endif
 	add.w	#31, d4
 	lsr.w	#5, d4				/* 32 patterns = 1 KiB */
 	bra.s	2f
@@ -1926,7 +1996,7 @@ shadow:
 dbg_row:
 	.space 36*2				/* prebuilt values-only row; 30 cells common, +V/O/E on H40 DEBUG */
 nt_stage:
-	.space 64*32*2				/* 64-entry-pitch staging for the flip-blank NT DMA */
+	.space 64*28*2				/* zero-bordered visible H40 staging for flip-blank DMA */
 .ifndef PLAYER_SPECIALIZED
 md_mode:
 	.space 2
@@ -1952,11 +2022,15 @@ md_col0:
 	.space 2
 md_vbudget:
 	.space 2
+md_prg_buf_cap_patterns:
+	.space 2				/* fps-scaled normal PrgBuf ceiling for DEBUG J */
 .endif
 back_idx:
 	.space 2
 display_blank:
 	.space 2				/* startup-to-frame0 VDP blanking latch */
+body_start_pending:
+	.space 2				/* STAT_BOOT_VRAM held until frame 0 build/display completes */
 frame_no:
 	.space 2
 started:

@@ -126,7 +126,7 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertTrue(env["CBRSIM_OUT"].endswith(
             "videos/BadApple_H32_256x224_adpcm22/tmp"))
 
-    def test_sonic_h40_centers_native_truemotion_raster_without_scaling(self) -> None:
+    def test_sonic_h40_encodes_only_native_truemotion_raster(self) -> None:
         root = Path(__file__).resolve().parents[1]
         profile = load_profile(root / "configs/sonic-jam-op-h40.toml")
         env = apply_profile_env(profile, {})
@@ -135,16 +135,15 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_DURATION"], "90.466667")
         self.assertEqual(env["CBRSIM_SOURCE_SAR"], "32:35")
         self.assertEqual(env["CBRSIM_MODE"], "H40")
-        self.assertEqual(env["CBRSIM_W"], "320")
-        self.assertEqual(env["CBRSIM_H"], "224")
+        self.assertEqual(env["CBRSIM_W"], "288")
+        self.assertEqual(env["CBRSIM_H"], "200")
+        self.assertEqual(env["CBRSIM_ACTIVE_TILES"], "900")
         self.assertEqual(env["CBRSIM_GEOMETRY_FIT"], "pad")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "0")
-        self.assertEqual(
-            env["CBRSIM_MASTER_VF"],
-            "setsar=1,pad=320:224:16:12:color=black")
-        self.assertEqual(
-            env["CBRSIM_RAW_VF"],
-            "setsar=1,pad=320:224:16:12:color=black")
+        self.assertEqual(env["CBRSIM_MASTER_VF"], "setsar=1")
+        self.assertEqual(env["CBRSIM_RAW_VF"], "setsar=1")
+        self.assertTrue(env["CBRSIM_OUT"].endswith(
+            "videos/SonicJamOp_H40_288x200_adpcm22/tmp"))
 
     def test_machi_op_uses_confirmed_black_bar_crop_and_native_h40_sar(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -161,8 +160,7 @@ class EncodeProfileArtifactTests(unittest.TestCase):
             env["CBRSIM_RAW_VF"], "setsar=1,crop=320:152:0:34")
         # The hardware baseline remains 360; this qualified profile explicitly
         # raises the encoder ceiling to the cap-480 result.
-        self.assertEqual(
-            av_config.baseline_cold_cap_for_fps(15, "H40", 760), 360)
+        self.assertEqual(av_config.baseline_cold_cap_for_fps(15), 360)
         self.assertEqual(env["CBRSIM_COLD_CAP"], "480")
 
     def test_machi_ed_uses_full_h40_grid_and_profile_cap_380(self) -> None:
@@ -190,7 +188,7 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         self.assertEqual(env["CBRSIM_RESIZE_FILTER"], "lanczos")
         self.assertEqual(env["CBRSIM_MASTER_DENOISE"], "1")
         self.assertEqual(env["CBRSIM_RAW_PREFETCH"], "0")
-        self.assertEqual(env["CBRSIM_COLD_CAP"], "175")
+        self.assertEqual(env["CBRSIM_COLD_CAP"], "180")
         self.assertEqual(
             env["CBRSIM_VRAM_TILES"],
             str(av_config.VRAM_PATTERN_POOL_TILES))
@@ -213,9 +211,9 @@ class EncodeProfileArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "lowered-cold-cap.toml"
             path.write_text(PROFILE.replace(
-                "[palette]", "[encoder]\ncold_cap = 174\n\n[palette]"))
+                "[palette]", "[encoder]\ncold_cap = 179\n\n[palette]"))
             with self.assertRaisesRegex(
-                    ValueError, "cold_cap 174 is below baseline 175"):
+                    ValueError, "cold_cap 179 is below baseline 180"):
                 load_profile(path)
 
     def test_profile_cold_cap_must_be_an_integer(self) -> None:
@@ -273,25 +271,16 @@ class EncodeProfileArtifactTests(unittest.TestCase):
                     ValueError, "unknown \\[encoder\\] keys.*vram_tiles"):
                 load_profile(path)
 
-    def test_profile_without_measured_cold_cap_is_rejected(self) -> None:
+    def test_profile_baseline_depends_only_on_fps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "unmeasured-h32-15.toml"
-            path.write_text(PROFILE.replace('fps = "30"', 'fps = "15"'))
-            with self.assertRaisesRegex(
-                    ValueError, "cold-cap measurement required.*H32.*15"):
-                load_profile(path)
-
-    def test_profile_without_exact_active_tile_measurement_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "unmeasured-h40-15-900.toml"
+            path = Path(tmp) / "h40-15-900.toml"
             path.write_text(
                 PROFILE.replace('fps = "30"', 'fps = "15"')
                 .replace('mode = "H32"', 'mode = "H40"')
                 .replace('width = 256', 'width = 320')
                 .replace('fit = "pad"', 'fit = "pad"\nactive_tiles = 900'))
-            with self.assertRaisesRegex(
-                    ValueError, "cold-cap measurement required.*H40.*900"):
-                load_profile(path)
+            env = apply_profile_env(load_profile(path), {})
+        self.assertEqual(env["CBRSIM_COLD_CAP"], "360")
 
     def test_removed_audio_section_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -249,7 +249,7 @@ def dummy_data():
                 supply_remaining={name: values[126] for name, values in supply_series.items()},
                 cold=displayed_cold + prefetch, cold_prefetch=prefetch,
                 prefetch_cap=32,
-                cold_cap=av_config.cold_cap_for_fps(fps, "H32", 896),
+                cold_cap=av_config.cold_cap_for_fps(fps),
                 dma_tiles=dma_tiles, dma_runs=23,
                 tl=tl, supply_series=supply_series, tln=tln,
                 time_s=42.0, frame=1260, total_frames=2712)
