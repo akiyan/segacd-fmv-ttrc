@@ -95,6 +95,42 @@ def screen_aspect(mode):
     return m["sw"] * m["par"] / m["sh"]
 
 
+def source_panel_geometry(raw_w, raw_h, canvas_w, canvas_h,
+                          sar_num, sar_den, box_w, box_h):
+    """Place an unscaled source raster inside its intended display canvas.
+
+    The returned sizes are panel pixels. ``canvas_*`` and ``raw_*`` remain in
+    coded-pixel space, while the source SAR determines the displayed canvas
+    aspect. This preserves a source authored as a centered sub-aperture instead
+    of enlarging it to fill the Source panel.
+    """
+    values = (raw_w, raw_h, canvas_w, canvas_h, sar_num, sar_den, box_w, box_h)
+    if any(int(value) <= 0 for value in values):
+        raise ValueError("source panel geometry values must be positive")
+    if raw_w > canvas_w or raw_h > canvas_h:
+        raise ValueError(
+            f"source raster {raw_w}x{raw_h} exceeds its "
+            f"{canvas_w}x{canvas_h} analysis canvas")
+    display_aspect = (canvas_w / canvas_h) * (sar_num / sar_den)
+    if display_aspect >= box_w / box_h:
+        panel_w, panel_h = box_w, round(box_w / display_aspect)
+    else:
+        panel_h, panel_w = box_h, round(box_h * display_aspect)
+    panel_x = (box_w - panel_w) // 2
+    panel_y = (box_h - panel_h) // 2
+    content_w = round(panel_w * raw_w / canvas_w)
+    content_h = round(panel_h * raw_h / canvas_h)
+    content_x = round(panel_w * (canvas_w - raw_w) / (2 * canvas_w))
+    content_y = round(panel_h * (canvas_h - raw_h) / (2 * canvas_h))
+    return {
+        "panel_size": (panel_w, panel_h),
+        "panel_offset": (panel_x, panel_y),
+        "content_size": (content_w, content_h),
+        "content_offset": (content_x, content_y),
+        "display_aspect": display_aspect,
+    }
+
+
 def dma_frame_max(mode, fps):
     """1コマで転送できる理論値 = (1コマ内のVBLANK数=60/fps) × 1VBLANK理論値。
     15fps→4×, 30fps→2×, 24fps→2.5×。"""

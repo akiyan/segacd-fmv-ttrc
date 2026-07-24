@@ -96,7 +96,11 @@ Low-resolution grids therefore appear at their true on-screen size.
 ## Right column
 
 - **Source** (top): the source frame after crop, scaled into the panel (4:3
-  panel, same footprint as the category map).
+  panel, same footprint as the category map). Its displayed width respects
+  `source.sar`. A profile may set `analysis.source_canvas = [width, height]`
+  when the raw raster is an intentionally centered sub-aperture; the renderer
+  keeps that raster centered at coded size inside a black canvas before fitting
+  the complete canvas into the panel.
 - **Legend** (between Source and the category map): five entries on the first
   row and three on the second, ordered `Raw Same Near Flbk Miss` then
   `Prg Wrd Dic`. The nine mutually exclusive data classes remain intact,
